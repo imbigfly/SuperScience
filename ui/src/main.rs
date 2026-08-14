@@ -1419,6 +1419,153 @@ fn App() -> impl IntoView {
     };
     refresh_quick_actions();
     refresh_workflow_templates();
+    // Session mode flags backing the agent-menu toggles and the /plan and
+    // /permission commands. Declared with the composer picker state so the
+    // picker, the slash runner, and the agent menu all share one copy.
+    let local_plan_mode = create_rw_signal::<Option<bool>>(Some(false));
+    let plan_mode_busy = create_rw_signal(false);
+    let full_permission_enabled = create_rw_signal(false);
+    let full_permission_busy = create_rw_signal(false);
+    let ui_confirm = create_rw_signal::<Option<UiConfirm>>(None);
+    // One flag, two backends, exactly like the composer toggle: a built-in
+    // session reads its own plan flag, an ACP-bound one reads the agent's
+    // mode. `None` = the session is ACP-bound, so the toggle drives the ACP
+    // mode picker instead of this flag. A session-less composer counts as
+    // built-in.
+    let plan_mode_active = Signal::derive(move || {
+        if let Some(enabled) = local_plan_mode.get() {
+            return enabled;
+        }
+        let Some(session_id) = active_session.get() else {
+            return false;
+        };
+        acp_session_modes
+            .with(|all| acp_current_mode_id(all.get(&session_id)).is_some_and(is_plan_mode_id))
+    });
+    // Agents without a plan mode still push plan updates — a Claude Code todo
+    // list arrives as one. The card renders, but there is no mode to approve
+    // out of, so it is badged as a read-only compatibility plan instead.
+    // Built-in sessions always have one to approve out of.
+    let plan_compat = Signal::derive(move || {
+        if local_plan_mode.get().is_some() {
+            return false;
+        }
+        let Some(session_id) = active_session.get() else {
+            return true;
+        };
+        acp_session_modes.with(|all| plan_mode_pair(all.get(&session_id)).is_none())
+    });
+    // Single entry point behind the agent-menu toggle and /plan: ACP-bound
+    // sessions switch the agent's own plan/default mode pair, built-in ones
+    // flip the local flag (creating a session when the composer has none).
+    let set_plan_first = Callback::new(move |enabled: bool| {
+        let loc = locale.get_untracked();
+        let session_id = active_session.get_untracked();
+        let acp_pair = match (local_plan_mode.get_untracked(), &session_id) {
+            (None, Some(id)) => acp_session_modes.with_untracked(|all| plan_mode_pair(all.get(id))),
+            _ => None,
+        };
+        let Some((plan_mode, exit_mode)) = acp_pair else {
+            local_plan_mode.set(Some(enabled));
+            plan_mode_busy.set(true);
+            spawn_local(async move {
+                let (session_id, created_session) = match active_session.get_untracked() {
+                    Some(session_id) => (session_id, false),
+                    None if enabled => {
+                        let Some(session_id) =
+                            invoke("new_session", JsValue::UNDEFINED).await.as_string()
+                        else {
+                            local_plan_mode.set(Some(false));
+                            plan_mode_busy.set(false);
+                            return;
+                        };
+                        (session_id, true)
+                    }
+                    None => {
+                        local_plan_mode.set(Some(false));
+                        plan_mode_busy.set(false);
+                        return;
+                    }
+                };
+                let args = to_value(&serde_json::json!({
+                    "sessionId": session_id.clone(),
+                    "enabled": enabled,
+                }))
+                .unwrap();
+                let saved = invoke_checked("set_session_plan_mode", args)
+                    .await
+                    .ok()
+                    .and_then(|value| value.as_bool());
+                if created_session {
+                    active_session.set(Some(session_id.clone()));
+                    items.set(vec![]);
+                    refresh_session_history();
+                }
+                if active_session.get_untracked().as_deref() == Some(session_id.as_str()) {
+                    local_plan_mode.set(Some(saved.unwrap_or(!enabled)));
+                    plan_mode_busy.set(false);
+                }
+                if saved.is_some() {
+                    show_toast(&t(
+                        loc,
+                        if enabled {
+                            "plan.enabled"
+                        } else {
+                            "plan.default_enabled"
+                        },
+                    ));
+                }
+            });
+            return;
+        };
+        let target = if enabled { plan_mode } else { exit_mode };
+        let Some(session_id) = session_id else {
+            return;
+        };
+        spawn_local(async move {
+            if apply_acp_mode(acp_session_modes, session_id, target).await {
+                show_toast(&t(
+                    loc,
+                    if enabled {
+                        "plan.enabled"
+                    } else {
+                        "plan.default_enabled"
+                    },
+                ));
+            }
+        });
+    });
+    // Turning Full Permission off needs no warning; enabling always goes
+    // through UiConfirm::EnableFullPermission. Shared by the agent-menu
+    // toggle and /permission ask.
+    let disable_full_permission = Callback::new(move |_| {
+        let Some(session_id) = active_session.get_untracked() else {
+            full_permission_enabled.set(false);
+            return;
+        };
+        full_permission_enabled.set(false);
+        full_permission_busy.set(true);
+        let loc = locale.get_untracked();
+        spawn_local(async move {
+            let args = to_value(&serde_json::json!({
+                "sessionId": session_id.clone(),
+                "enabled": false,
+            }))
+            .unwrap();
+            let disabled = invoke_checked("set_session_full_permission", args)
+                .await
+                .ok()
+                .and_then(|value| value.as_bool())
+                == Some(false);
+            if active_session.get_untracked().as_deref() == Some(session_id.as_str()) {
+                full_permission_enabled.set(!disabled);
+            }
+            full_permission_busy.set(false);
+            if disabled {
+                show_toast(&t(loc, "full_permission.disabled"));
+            }
+        });
+    });
     let picker_mode = create_rw_signal(None::<ComposerPickerMode>);
     let picker_token_range = create_rw_signal(None::<(usize, usize)>);
     let picker_query = create_rw_signal(String::new());
@@ -1559,6 +1706,9 @@ fn App() -> impl IntoView {
                     "fork" => !acp && branchable,
                     "review" | "remember" => has_items,
                     "context" => active_context_usage.get().is_some(),
+                    // Hidden where the agent has no plan mode to switch into
+                    // (same condition that drops the agent-menu toggle row).
+                    "plan" => !plan_compat.get(),
                     _ => true,
                 };
                 let loc = locale.get();
@@ -5628,6 +5778,33 @@ fn App() -> impl IntoView {
                 focus_composer();
                 return true;
             }
+            // Permission modes: `full` flips the session's Full Permission
+            // flag (through the same warning modal as the agent-menu toggle),
+            // `ask` returns to per-call approval, `auto` is not built yet.
+            "permission" => {
+                input.set(String::new());
+                match payload {
+                    "full" => {
+                        if full_permission_enabled.get_untracked() {
+                            show_toast(&t(locale.get_untracked(), "permission.full_already"));
+                        } else {
+                            ui_confirm.set(Some(UiConfirm::EnableFullPermission));
+                        }
+                    }
+                    "ask" => {
+                        if full_permission_enabled.get_untracked() {
+                            disable_full_permission.call(());
+                        } else {
+                            show_toast(&t(locale.get_untracked(), "permission.ask_already"));
+                        }
+                    }
+                    "auto" => {
+                        show_toast(&t(locale.get_untracked(), "permission.auto_unavailable"));
+                    }
+                    _ => status.set(t(locale.get_untracked(), "composer.cmd_permission_usage")),
+                }
+                return true;
+            }
             _ => {}
         }
         input.set(String::new());
@@ -5686,6 +5863,12 @@ fn App() -> impl IntoView {
             "context" => {
                 if active_context_usage.get_untracked().is_some() {
                     context_usage_open.set(true);
+                }
+            }
+            // Same switch as the agent menu's Plan first toggle.
+            "plan" => {
+                if !plan_compat.get_untracked() {
+                    set_plan_first.call(!plan_mode_active.get_untracked());
                 }
             }
             "skills" => open_settings_fn(Some("skills".into())),
@@ -5861,40 +6044,6 @@ fn App() -> impl IntoView {
             },
         )
     };
-
-    // Built-in plan mode for the active session. `None` = the session is
-    // ACP-bound, so the composer's "Plan first" toggle drives the ACP mode
-    // picker instead of this flag. A session-less composer counts as built-in.
-    let local_plan_mode = create_rw_signal::<Option<bool>>(Some(false));
-    let plan_mode_busy = create_rw_signal(false);
-
-    // One flag, two backends, exactly like the composer toggle: a built-in
-    // session reads its own plan flag, an ACP-bound one reads the agent's mode.
-    // The card's action bar only makes sense while plan mode is actually on.
-    let plan_mode_active = Signal::derive(move || {
-        if let Some(enabled) = local_plan_mode.get() {
-            return enabled;
-        }
-        let Some(session_id) = active_session.get() else {
-            return false;
-        };
-        acp_session_modes
-            .with(|all| acp_current_mode_id(all.get(&session_id)).is_some_and(is_plan_mode_id))
-    });
-
-    // Agents without a plan mode still push plan updates — a Claude Code todo
-    // list arrives as one. The card renders, but there is no mode to approve out
-    // of, so it is badged as a read-only compatibility plan instead. Built-in
-    // sessions always have one to approve out of.
-    let plan_compat = Signal::derive(move || {
-        if local_plan_mode.get().is_some() {
-            return false;
-        }
-        let Some(session_id) = active_session.get() else {
-            return true;
-        };
-        acp_session_modes.with(|all| plan_mode_pair(all.get(&session_id)).is_none())
-    });
 
     // ponytail: an ACP plan update is a todo list with no id to approve, so
     // "approve" is the mode switch plus one ordinary turn. Upgrade to a
@@ -6301,7 +6450,6 @@ fn App() -> impl IntoView {
     let branch_merge_guidance_open = create_rw_signal(false);
     let branch_merge_guidance = create_rw_signal(String::new());
     let branch_merge_detail = create_rw_signal::<Option<(String, String)>>(None);
-    let ui_confirm = create_rw_signal::<Option<UiConfirm>>(None);
     let generate_branch_summary = Callback::new(
         move |(id, expected_guard_hash, current_version, user_guidance): (
             String,
@@ -6400,8 +6548,6 @@ fn App() -> impl IntoView {
             },
         )
     };
-    let full_permission_enabled = create_rw_signal(false);
-    let full_permission_busy = create_rw_signal(false);
     let compose_menu_open = create_rw_signal(false);
     let agent_menu_open = create_rw_signal(false);
     let reviewer_model_menu_open = create_rw_signal(false);
@@ -11053,16 +11199,24 @@ fn App() -> impl IntoView {
                         {move || picker_mode.get().map(|mode| {
                             let loc = locale.get();
                             let matches = picker_items.get();
+                            // The `/` menu layers its rows under small section
+                            // labels; the reference pickers keep one title for
+                            // the whole list.
+                            let grouped = matches!(mode, ComposerPickerMode::Skill);
                             let title = match mode {
-                                ComposerPickerMode::Artifact => "composer.ref_artifacts",
-                                ComposerPickerMode::Session => "composer.ref_sessions",
-                                ComposerPickerMode::Skill => "composer.ref_slash",
+                                ComposerPickerMode::Artifact => Some("composer.ref_artifacts"),
+                                ComposerPickerMode::Session => Some("composer.ref_sessions"),
+                                ComposerPickerMode::Skill => None,
                             };
+                            let mut last_section = None;
                             view! {
                                 <div class="mention-backdrop" on:mousedown=move |_| picker_mode.set(None)></div>
                                 <div class="mention-menu">
-                                    <div class="mention-group-label">{t(loc, title)}</div>
+                                    {title.map(|key| view! { <div class="mention-group-label">{t(loc, key)}</div> })}
                                     {matches.into_iter().enumerate().map(|(i, item)| {
+                                        let section = if grouped { picker_item_section(&item) } else { None };
+                                        let header = (section != last_section).then_some(section).flatten();
+                                        last_section = section;
                                         let (name, sub, icon) = match item {
                                             // Uploads are artifacts too, so the origin badge is the
                                             // only thing separating a file the user dropped in from
@@ -11082,11 +11236,10 @@ fn App() -> impl IntoView {
                                                 "folder",
                                             ),
                                             ComposerPickerItem::Skill(s) => (s.name, s.description, "skill"),
-                                            ComposerPickerItem::Command { name, description } => (
-                                                format!("/{name}"),
-                                                description,
-                                                "terminal",
-                                            ),
+                                            ComposerPickerItem::Command { name, description } => {
+                                                let icon = slash_command_icon(&name);
+                                                (format!("/{name}"), description, icon)
+                                            }
                                             ComposerPickerItem::Workflow(workflow) => (
                                                 workflow.name,
                                                 workflow.description,
@@ -11100,6 +11253,7 @@ fn App() -> impl IntoView {
                                             ),
                                         };
                                         view! {
+                                            {header.map(|key| view! { <div class="mention-group-label">{t(loc, key)}</div> })}
                                             <button type="button" class="mention-item" class:active=move || picker_index.get() == i
                                                 on:mousemove=move |_| picker_index.set(i)
                                                 on:mousedown=move |ev| { ev.prevent_default(); select_picker_item.call(i); }>
@@ -11248,59 +11402,7 @@ fn App() -> impl IntoView {
                                                         prop:checked=on_plan
                                                         disabled=move || plan_mode_busy.get()
                                                         on:change=move |ev| {
-                                                            let enabled = event_target_checked(&ev);
-                                                            let loc = locale.get_untracked();
-                                                            let Some((plan_mode, exit_mode)) = acp_pair.clone() else {
-                                                                local_plan_mode.set(Some(enabled));
-                                                                plan_mode_busy.set(true);
-                                                                spawn_local(async move {
-                                                                    let (session_id, created_session) = match active_session.get_untracked() {
-                                                                        Some(session_id) => (session_id, false),
-                                                                        None if enabled => {
-                                                                            let Some(session_id) = invoke("new_session", JsValue::UNDEFINED).await.as_string() else {
-                                                                                local_plan_mode.set(Some(false));
-                                                                                plan_mode_busy.set(false);
-                                                                                return;
-                                                                            };
-                                                                            (session_id, true)
-                                                                        }
-                                                                        None => {
-                                                                            local_plan_mode.set(Some(false));
-                                                                            plan_mode_busy.set(false);
-                                                                            return;
-                                                                        }
-                                                                    };
-                                                                    let args = to_value(&serde_json::json!({
-                                                                        "sessionId": session_id.clone(),
-                                                                        "enabled": enabled,
-                                                                    })).unwrap();
-                                                                    let saved = invoke_checked("set_session_plan_mode", args).await
-                                                                        .ok()
-                                                                        .and_then(|value| value.as_bool());
-                                                                    if created_session {
-                                                                        active_session.set(Some(session_id.clone()));
-                                                                        items.set(vec![]);
-                                                                        refresh_session_history();
-                                                                    }
-                                                                    if active_session.get_untracked().as_deref() == Some(session_id.as_str()) {
-                                                                        local_plan_mode.set(Some(saved.unwrap_or(!enabled)));
-                                                                        plan_mode_busy.set(false);
-                                                                    }
-                                                                    if saved.is_some() {
-                                                                        show_toast(&t(loc, if enabled { "plan.enabled" } else { "plan.default_enabled" }));
-                                                                    }
-                                                                });
-                                                                return;
-                                                            };
-                                                            let target = if enabled { plan_mode } else { exit_mode };
-                                                            let Some(session_id) = session_id.clone() else {
-                                                                return;
-                                                            };
-                                                            spawn_local(async move {
-                                                                if apply_acp_mode(acp_session_modes, session_id, target).await {
-                                                                    show_toast(&t(loc, if enabled { "plan.enabled" } else { "plan.default_enabled" }));
-                                                                }
-                                                            });
+                                                            set_plan_first.call(event_target_checked(&ev));
                                                         } />
                                                     <span class="toggle-track" aria-hidden="true"></span>
                                                 </span>
@@ -11329,31 +11431,7 @@ fn App() -> impl IntoView {
                                                         ui_confirm.set(Some(UiConfirm::EnableFullPermission));
                                                         return;
                                                     }
-                                                    let Some(session_id) = active_session.get_untracked() else {
-                                                        full_permission_enabled.set(false);
-                                                        return;
-                                                    };
-                                                    full_permission_enabled.set(false);
-                                                    full_permission_busy.set(true);
-                                                    let loc = locale.get_untracked();
-                                                    spawn_local(async move {
-                                                        let args = to_value(&serde_json::json!({
-                                                            "sessionId": session_id.clone(),
-                                                            "enabled": false,
-                                                        })).unwrap();
-                                                        let disabled = invoke_checked("set_session_full_permission", args)
-                                                            .await
-                                                            .ok()
-                                                            .and_then(|value| value.as_bool())
-                                                            == Some(false);
-                                                        if active_session.get_untracked().as_deref() == Some(session_id.as_str()) {
-                                                            full_permission_enabled.set(!disabled);
-                                                        }
-                                                        full_permission_busy.set(false);
-                                                        if disabled {
-                                                            show_toast(&t(loc, "full_permission.disabled"));
-                                                        }
-                                                    });
+                                                    disable_full_permission.call(());
                                                 } />
                                             <span class="toggle-track" aria-hidden="true"></span>
                                         </span>

@@ -1875,9 +1875,11 @@ test("composer / suggests the built-in /compact command", async ({ page }) => {
   const composerInput = composer(page);
 
   await composerInput.pressSequentially("/comp");
-  await expect(page.locator(".mention-menu")).toContainText("Commands, Skills & Workflows");
+  // Filtering to one command collapses the menu to its single section.
+  await expect(page.locator(".mention-menu .mention-group-label")).toHaveText(["Commands"]);
   const commandItem = page.locator(".mention-menu .mention-item").filter({ hasText: "/compact" });
   await expect(commandItem).toContainText("Archive full history");
+  await expect(commandItem.locator(".mention-item-icon svg")).toBeVisible();
   await commandItem.click();
   // Commands fill the composer instead of attaching a reference chip.
   await expect(composerInput).toHaveValue("/compact");
@@ -1901,9 +1903,12 @@ test("composer slash commands run the matching shell actions", async ({ page }) 
 
   // Empty session lists the shell commands but hides the turn-bound ones.
   await composerInput.pressSequentially("/");
+  await expect(menu.locator(".mention-group-label")).toHaveText(["Commands", "Workflows", "Skills"]);
   await expect(menu).toContainText("/compact");
   await expect(menu).toContainText("/fork");
   await expect(menu).toContainText("/btw");
+  await expect(menu).toContainText("/plan");
+  await expect(menu).toContainText("/permission");
   await expect(menu).toContainText("/save-as-skill");
   await expect(menu).toContainText("/skills");
   await expect(menu).toContainText("/files");
@@ -2004,6 +2009,78 @@ test("composer slash commands run the matching shell actions", async ({ page }) 
     sessionId: expect.stringMatching(/^branch-/),
     message: "branch this idea",
   });
+});
+
+test("composer / menu layers sections and gives each command its own icon", async ({ page }) => {
+  await enterApp(page);
+  const composerInput = composer(page);
+
+  await composerInput.pressSequentially("/");
+  const menu = page.locator(".mention-menu");
+  await expect(menu.locator(".mention-group-label")).toHaveText(["Commands", "Workflows", "Skills"]);
+  const commandRows = menu.locator(".mention-item").filter({
+    has: page.locator(".mention-item-name", { hasText: /^\// }),
+  });
+  await expect(commandRows.first()).toBeVisible();
+  // Every command row carries an icon, and no two commands share one.
+  const svgs = await commandRows
+    .locator(".mention-item-icon svg")
+    .evaluateAll((nodes) => nodes.map((node) => node.innerHTML));
+  expect(svgs.length).toBeGreaterThan(5);
+  expect(new Set(svgs).size).toBe(svgs.length);
+
+  // A query matching no command keeps the remaining sections layered.
+  await composerInput.fill("");
+  await composerInput.pressSequentially("/alpha");
+  await expect(menu.locator(".mention-group-label")).toHaveText(["Skills"]);
+  await expect(menu).toContainText("alphafold2");
+});
+
+test("composer /plan and /permission drive the session mode flags", async ({ page }) => {
+  await enterApp(page);
+  const composerInput = composer(page);
+
+  // /plan flips plan-first mode, exactly like the agent-menu toggle.
+  await composerInput.fill("/plan");
+  await composerInput.press("Enter");
+  await expect.poll(() => lastInvokeArgs(page, "set_session_plan_mode")).toMatchObject({
+    enabled: true,
+  });
+  await composerInput.fill("/plan");
+  await composerInput.press("Enter");
+  await expect.poll(() => lastInvokeArgs(page, "set_session_plan_mode")).toMatchObject({
+    enabled: false,
+  });
+
+  // /permission fills the composer; the mode payload runs on Enter. Enabling
+  // full permission always passes through the same warning as the toggle.
+  await composerInput.pressSequentially("/perm");
+  const menu = page.locator(".mention-menu");
+  await menu.locator(".mention-item").filter({ hasText: "/permission" }).click();
+  await expect(composerInput).toHaveValue("/permission ");
+  await composerInput.pressSequentially("full");
+  await composerInput.press("Enter");
+  await expect(page.getByRole("heading", { name: "Enable Full Permission?" })).toBeVisible();
+  expect(await invokeArgsList(page, "set_session_full_permission")).toHaveLength(0);
+  await page.getByRole("button", { name: "Enable Full Permission" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "set_session_full_permission")).toMatchObject({
+    enabled: true,
+  });
+
+  // Repeating full reports the mode is already on; ask returns to approvals.
+  await composerInput.fill("/permission full");
+  await composerInput.press("Enter");
+  await expect(page.locator(".copy-toast")).toContainText("already on");
+  await composerInput.fill("/permission ask");
+  await composerInput.press("Enter");
+  await expect.poll(() => lastInvokeArgs(page, "set_session_full_permission")).toMatchObject({
+    enabled: false,
+  });
+
+  // auto is part of the mode family but not built yet.
+  await composerInput.fill("/permission auto");
+  await composerInput.press("Enter");
+  await expect(page.locator(".copy-toast")).toContainText("not available yet");
 });
 
 test("composer picker follows manual caret insertions and ignores pasted text", async ({ page }) => {

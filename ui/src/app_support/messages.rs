@@ -242,6 +242,10 @@ pub(crate) fn compose_icon(kind: &str) -> impl IntoView {
         "terminal" => view! { <path d="m4 17 6-5-6-5"/><path d="M12 19h8"/> }.into_view(),
         "grid" => view! { <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/> }.into_view(),
         "list" => view! { <path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/> }.into_view(),
+        "compact" => view! { <path d="M4 14h6v6"/><path d="M20 10h-6V4"/><path d="m14 10 7-7"/><path d="m3 21 7-7"/> }.into_view(),
+        "fork" => view! { <circle cx="12" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9v2c0 .6-.5 1-1 1H7c-.6 0-1-.4-1-1V9"/><path d="M12 12v3"/> }.into_view(),
+        "save" => view! { <path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"/><path d="M7 3v4a1 1 0 0 0 1 1h7"/> }.into_view(),
+        "shield" => view! { <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/> }.into_view(),
         _ => view! { <path d="M9 18l6-6-6-6"/> }.into_view(), // chevron
     };
     let size = if matches!(

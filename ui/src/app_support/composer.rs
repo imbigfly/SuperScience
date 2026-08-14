@@ -628,11 +628,47 @@ pub(crate) const SLASH_COMMANDS: &[&str] = &[
     "review",
     "remember",
     "context",
+    "plan",
+    "permission",
     "save-as-skill",
     "skills",
     "files",
     "upload",
 ];
+
+/// Each command owns a distinct icon in the `/` picker so rows scan by
+/// shape, not just by name. The fallback only covers names added to the
+/// picker without a mapping here.
+pub(crate) fn slash_command_icon(name: &str) -> &'static str {
+    match name {
+        "compact" => "compact",
+        "fork" => "fork",
+        "btw" => "bubble",
+        "rewind" => "undo",
+        "review" => "review",
+        "remember" => "memory",
+        "context" => "gauge",
+        "plan" => "plan",
+        "permission" => "shield",
+        "save-as-skill" => "save",
+        "skills" => "book",
+        "files" => "folder",
+        "upload" => "upload",
+        _ => "terminal",
+    }
+}
+
+/// Group-label key under which an item sits in the `/` menu. The menu is
+/// layered commands → workflows → skills; other pickers leave their rows
+/// ungrouped under one title.
+pub(crate) fn picker_item_section(item: &ComposerPickerItem) -> Option<&'static str> {
+    match item {
+        ComposerPickerItem::Command { .. } => Some("composer.group_commands"),
+        ComposerPickerItem::Workflow(_) => Some("composer.group_workflows"),
+        ComposerPickerItem::Skill(_) => Some("composer.group_skills"),
+        _ => None,
+    }
+}
 
 /// `/` commands whose name matches the picker query (already lowercased).
 pub(crate) fn slash_command_matches(query: &str) -> Vec<&'static str> {
@@ -660,10 +696,11 @@ pub(crate) fn parse_slash_command(text: &str) -> Option<(&'static str, &str)> {
 }
 
 /// True for commands the picker fills into the composer — `/compact` for
-/// confirmation, `/fork` and `/btw` because they need a payload. Action
-/// commands (`/rewind`, `/review`, …) run immediately on selection instead.
+/// confirmation, `/fork`, `/btw`, and `/permission` because they need a
+/// payload. Action commands (`/rewind`, `/review`, …) run immediately on
+/// selection instead.
 pub(crate) fn slash_command_fills_text(name: &str) -> bool {
-    matches!(name, "compact" | "fork" | "btw")
+    matches!(name, "compact" | "fork" | "btw" | "permission")
 }
 
 pub(crate) fn scroll_picker_item(selector: &str, index: usize) {
@@ -682,7 +719,8 @@ pub(crate) fn scroll_picker_item(selector: &str, index: usize) {
 mod mention_tests {
     use super::{
         active_composer_trigger, composer_picker_accepts_edit, parse_slash_command,
-        slash_command_fills_text, slash_command_matches, ComposerPickerMode,
+        slash_command_fills_text, slash_command_icon, slash_command_matches, ComposerPickerMode,
+        SLASH_COMMANDS,
     };
 
     #[test]
@@ -690,9 +728,21 @@ mod mention_tests {
         assert!(slash_command_matches("").contains(&"compact"));
         assert_eq!(slash_command_matches("comp"), vec!["compact"]);
         assert_eq!(slash_command_matches("fo"), vec!["fork"]);
+        assert_eq!(slash_command_matches("perm"), vec!["permission"]);
         assert!(slash_command_matches("s").contains(&"skills"));
         assert!(slash_command_matches("s").contains(&"save-as-skill"));
         assert!(slash_command_matches("boltz").is_empty());
+    }
+
+    #[test]
+    fn every_slash_command_has_a_distinct_icon() {
+        let icons: std::collections::HashSet<_> = SLASH_COMMANDS
+            .iter()
+            .map(|name| slash_command_icon(name))
+            .collect();
+        assert_eq!(icons.len(), SLASH_COMMANDS.len());
+        // "terminal" is the fallback for unmapped names, not a real mapping.
+        assert!(!icons.contains("terminal"));
     }
 
     #[test]
@@ -706,6 +756,10 @@ mod mention_tests {
             parse_slash_command("  /btw   这个峰什么意思？"),
             Some(("btw", "这个峰什么意思？"))
         );
+        assert_eq!(
+            parse_slash_command("/permission full"),
+            Some(("permission", "full"))
+        );
         // Unknown commands, substrings, and embedded commands are not intercepted.
         assert_eq!(parse_slash_command("/compact2"), None);
         assert_eq!(parse_slash_command("/quit"), None);
@@ -718,7 +772,9 @@ mod mention_tests {
         assert!(slash_command_fills_text("compact"));
         assert!(slash_command_fills_text("fork"));
         assert!(slash_command_fills_text("btw"));
+        assert!(slash_command_fills_text("permission"));
         assert!(!slash_command_fills_text("rewind"));
+        assert!(!slash_command_fills_text("plan"));
         assert!(!slash_command_fills_text("upload"));
     }
 
