@@ -898,7 +898,8 @@ pub(super) fn SettingsView(
                 if let Ok(value) =
                     invoke_checked("get_browser_url_filters", JsValue::UNDEFINED).await
                 {
-                    if let Ok(filters) = serde_wasm_bindgen::from_value::<BrowserUrlFilters>(value) {
+                    if let Ok(filters) = serde_wasm_bindgen::from_value::<BrowserUrlFilters>(value)
+                    {
                         browser_filters.set(filters);
                     }
                 }
@@ -911,7 +912,8 @@ pub(super) fn SettingsView(
             let arg = to_value(&serde_json::json!({ "filters": next })).unwrap();
             match invoke_checked("set_browser_url_filters", arg).await {
                 Ok(value) => {
-                    if let Ok(filters) = serde_wasm_bindgen::from_value::<BrowserUrlFilters>(value) {
+                    if let Ok(filters) = serde_wasm_bindgen::from_value::<BrowserUrlFilters>(value)
+                    {
                         browser_filters.set(filters);
                         browser_filters_msg.set(Some((
                             true,
