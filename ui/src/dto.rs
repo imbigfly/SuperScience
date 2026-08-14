@@ -345,7 +345,7 @@ fn default_evidence_coverage() -> u8 {
 pub(crate) enum ChatItem {
     User(String),
     /// A user turn queued (#433) while the same session is still running. It
-    /// waits, editable/cancellable, until the backend drains it into a fresh
+    /// waits, cancellable, until the backend drains it into a fresh
     /// turn (or a cut-in folds it into the running one) and emits the matching
     /// User event. `id` is the frontend-assigned key the queue commands target.
     QueuedUser {
