@@ -85,6 +85,22 @@
   overflow-wrap: anywhere; white-space: pre-line;
 }
 .share-modal .share-thinking .share-text { color: var(--text-muted); font-style: italic; }
+.share-modal .share-format { display: flex; align-items: center; gap: 12px; }
+.share-modal .share-format-label { font-size: 12px; font-weight: 500; color: var(--text-muted); }
+.share-modal .share-format-seg {
+  display: inline-flex; padding: 2px; gap: 2px; border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); background: var(--bg-input);
+}
+.share-modal .share-format-seg button {
+  border: 0; border-radius: calc(var(--radius-sm) - 2px); background: transparent;
+  color: var(--text-muted); font: inherit; font-size: 12.5px; padding: 4px 12px;
+  cursor: pointer; transition: background .12s ease, color .12s ease;
+}
+.share-modal .share-format-seg button:hover { color: var(--text); }
+.share-modal .share-format-seg button.active {
+  background: var(--bg-elev); color: var(--text); font-weight: 600;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.08);
+}
 
 .portfolio-planner-modal { max-width: 560px; }
 .portfolio-planner-modal .hint {

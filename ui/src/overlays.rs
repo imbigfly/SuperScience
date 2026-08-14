@@ -1,6 +1,7 @@
 use crate::app_support::{
     compose_icon, js_error_text, parse_redact_keywords, redact_text, refresh_execution_contexts,
-    refresh_runtimes, share_markdown_blocks, show_toast, ShareMessage, ShareRole,
+    refresh_runtimes, share_html_document, share_markdown_blocks, show_toast, ShareHtmlRow,
+    ShareMessage, ShareRole,
 };
 use crate::bindings::{invoke_checked, open_external_url, render_share_png};
 use crate::dto::*;
@@ -222,6 +223,8 @@ pub(super) fn ShareOverlay(
     let keywords = create_rw_signal(String::new());
     let busy = create_rw_signal(false);
     let error = create_rw_signal(None::<String>);
+    // Export format: false = long PNG image, true = self-contained HTML page.
+    let format_html = create_rw_signal(false);
     // Render from the open flag, not the editable draft, so checkbox toggles
     // and keyword input do not rebuild the dialog DOM and drop focus.
     let open = create_memo(move |_| draft.with(|value| value.is_some()));
@@ -231,6 +234,7 @@ pub(super) fn ShareOverlay(
             keywords.set(String::new());
             busy.set(false);
             error.set(None);
+            format_html.set(false);
         }
         now
     });
@@ -254,25 +258,8 @@ pub(super) fn ShareOverlay(
         let loc = locale.get_untracked();
         let messages = draft.get_untracked().unwrap_or_default();
         let redact = parse_redact_keywords(&keywords.get_untracked());
-        let rows: Vec<serde_json::Value> = messages
-            .iter()
-            .filter(|message| message.selected)
-            .map(|message| {
-                let text = redact_text(&message.text, &redact);
-                let mut row = serde_json::json!({
-                    "kind": message.role.tag(),
-                    "label": t(loc, share_role_key(message.role)),
-                });
-                if message.role == ShareRole::Assistant {
-                    // Assistant replies render as Markdown in the image.
-                    row["blocks"] = serde_json::json!(share_markdown_blocks(&text));
-                } else {
-                    row["text"] = serde_json::json!(text);
-                }
-                row
-            })
-            .collect();
-        if rows.is_empty() {
+        let selected: Vec<&ShareMessage> = messages.iter().filter(|m| m.selected).collect();
+        if selected.is_empty() {
             error.set(Some(t(loc, "share.none_selected")));
             return;
         }
@@ -284,27 +271,72 @@ pub(super) fn ShareOverlay(
             .and_then(|iso| iso.get(..10))
             .unwrap_or("")
             .to_string();
-        let payload = serde_json::json!({
-            "title": "wisp-science",
-            "subtitle": stamp,
-            "footer": t(loc, "share.image_footer"),
-            "messages": rows,
-        })
-        .to_string();
+        let footer = t(loc, "share.image_footer");
+        let html_format = format_html.get_untracked();
+        // Build the export payload up front (pure CPU); the spawned task only
+        // awaits the optional canvas render and the native save call.
+        let (png_payload, html_args) = if html_format {
+            let rows: Vec<ShareHtmlRow> = selected
+                .iter()
+                .map(|message| ShareHtmlRow {
+                    role: message.role,
+                    label: t(loc, share_role_key(message.role)).to_string(),
+                    text: redact_text(&message.text, &redact),
+                })
+                .collect();
+            let html = share_html_document("wisp-science", &stamp, &footer, &rows);
+            let args = to_value(&serde_json::json!({
+                "html": html,
+                "defaultName": format!("wisp-share-{stamp}.html"),
+            }))
+            .unwrap();
+            (String::new(), Some(args))
+        } else {
+            let rows: Vec<serde_json::Value> = selected
+                .iter()
+                .map(|message| {
+                    let text = redact_text(&message.text, &redact);
+                    let mut row = serde_json::json!({
+                        "kind": message.role.tag(),
+                        "label": t(loc, share_role_key(message.role)),
+                    });
+                    if message.role == ShareRole::Assistant {
+                        // Assistant replies render as Markdown in the image.
+                        row["blocks"] = serde_json::json!(share_markdown_blocks(&text));
+                    } else {
+                        row["text"] = serde_json::json!(text);
+                    }
+                    row
+                })
+                .collect();
+            let payload = serde_json::json!({
+                "title": "wisp-science",
+                "subtitle": stamp,
+                "footer": footer,
+                "messages": rows,
+            })
+            .to_string();
+            (payload, None)
+        };
         spawn_local(async move {
-            let result = async {
-                let png = render_share_png(&payload)
-                    .await?
-                    .as_string()
-                    .unwrap_or_default();
-                let args = to_value(&serde_json::json!({
-                    "pngBase64": png,
-                    "defaultName": format!("wisp-share-{stamp}.png"),
-                }))
-                .unwrap();
-                invoke_checked("save_share_image", args).await
-            }
-            .await;
+            let result = match html_args {
+                Some(args) => invoke_checked("save_share_html", args).await,
+                None => {
+                    async {
+                        let png = render_share_png(&png_payload)
+                            .await?
+                            .as_string()
+                            .unwrap_or_default();
+                        let args = to_value(&serde_json::json!({
+                            "pngBase64": png,
+                            "defaultName": format!("wisp-share-{stamp}.png"),
+                        }))
+                        .unwrap();
+                        invoke_checked("save_share_image", args).await
+                    }
+                    .await
+                }
+            };
             busy.set(false);
             match result {
                 // A string result is the saved path; null means the user
@@ -386,6 +418,20 @@ pub(super) fn ShareOverlay(
                             prop:value=move || keywords.get()
                             on:input=move |ev| keywords.set(event_target_value(&ev)) />
                     </label>
+                    <div class="share-format">
+                        <span class="share-format-label">{move || t(locale.get(), "share.format_label")}</span>
+                        <div class="share-format-seg" role="group"
+                            aria-label=move || t(locale.get(), "share.format_label")>
+                            <button type="button" data-testid="share-format-png"
+                                class:active=move || !format_html.get()
+                                on:click=move |_| format_html.set(false)>
+                                {move || t(locale.get(), "share.format_png")}</button>
+                            <button type="button" data-testid="share-format-html"
+                                class:active=move || format_html.get()
+                                on:click=move |_| format_html.set(true)>
+                                {move || t(locale.get(), "share.format_html")}</button>
+                        </div>
+                    </div>
                     {move || error.get().map(|message| view! {
                         <div class="settings-status fail">{message}</div>
                     })}
@@ -396,6 +442,8 @@ pub(super) fn ShareOverlay(
                             disabled=move || busy.get() || selected_count.get() == 0
                             on:click=export>{move || if busy.get() {
                                 t(locale.get(), "share.exporting")
+                            } else if format_html.get() {
+                                t(locale.get(), "share.export_html")
                             } else {
                                 t(locale.get(), "share.export")
                             }}</button>

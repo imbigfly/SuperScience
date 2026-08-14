@@ -311,6 +311,41 @@ pub(super) async fn save_share_image(
     Ok(Some(dest_path.to_string_lossy().into_owned()))
 }
 
+// Generous ceiling for one self-contained share HTML document.
+const MAX_SHARE_HTML_BYTES: usize = 16 * 1024 * 1024;
+
+/// Save a frontend-built `/share` HTML document through the native save
+/// dialog. Returns the saved path, or `None` when the user cancels.
+#[tauri::command]
+pub(super) async fn save_share_html(
+    app: AppHandle,
+    html: String,
+    default_name: String,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    if html.len() > MAX_SHARE_HTML_BYTES {
+        return Err("share HTML exceeds the size limit".into());
+    }
+    if html.trim().is_empty() {
+        return Err("share HTML is empty".into());
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_file_name(&share_image_file_name(&default_name))
+        .save_file(move |p| {
+            let _ = tx.send(p);
+        });
+    let Some(dest) = rx.await.map_err(|e| format!("{e}"))? else {
+        return Ok(None); // user cancelled
+    };
+    let dest_path = std::path::PathBuf::from(dest.to_string());
+    tokio::fs::write(&dest_path, html)
+        .await
+        .map_err(|e| format!("write failed: {e}"))?;
+    Ok(Some(dest_path.to_string_lossy().into_owned()))
+}
+
 #[tauri::command]
 pub(super) async fn get_capabilities(
     state: State<'_, AppState>,

@@ -119,6 +119,116 @@ fn ci_prefix_len(text: &str, needle_lower: &[char]) -> Option<usize> {
     None
 }
 
+// --- HTML export -------------------------------------------------------------
+
+/// One selected row of the HTML export: a role, its localized label, and the
+/// (already redacted) message text.
+pub(crate) struct ShareHtmlRow {
+    pub(crate) role: ShareRole,
+    pub(crate) label: String,
+    pub(crate) text: String,
+}
+
+/// Minimal escaping for plain-text rows and metadata; assistant Markdown goes
+/// through `md_to_html`, which is trusted the same way chat rendering is.
+fn escape_html(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Inline stylesheet mirroring the PNG long-image design: quiet page, right
+/// accent bubbles for the user, white cards for assistant Markdown, muted
+/// italic bubbles for thinking.
+const SHARE_HTML_CSS: &str = "\
+:root { color-scheme: light; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #f5f6f8; color: #1d2733;
+  font: 15px/1.6 system-ui, \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif; }
+.page { max-width: 720px; margin: 0 auto; padding: 32px 28px 24px; }
+header h1 { margin: 0; font-size: 19px; font-weight: 600; }
+header .date { margin: 2px 0 6px; font-size: 11px; color: #8a97a5; }
+header .bar { width: 34px; height: 3px; border-radius: 2px; background: #2f6fed; }
+.msg { margin-top: 18px; }
+.label { display: block; font-size: 11px; color: #8a97a5; margin-bottom: 4px; }
+.msg.user { text-align: right; }
+.msg.user .bubble { display: inline-block; text-align: left; background: #2f6fed; color: #fff;
+  border-radius: 12px; padding: 10px 14px; white-space: pre-line; overflow-wrap: anywhere; }
+.msg.assistant .card { background: #fff; border: 1px solid rgba(29,39,51,.08);
+  border-radius: 12px; padding: 14px 16px; overflow-wrap: anywhere; }
+.msg.thinking .bubble { display: inline-block; background: #eef0f3; border: 1px solid #dfe3e8;
+  color: #71808f; font-style: italic; border-radius: 12px; padding: 10px 14px;
+  white-space: pre-line; overflow-wrap: anywhere; }
+.card > :first-child { margin-top: 0; }
+.card > :last-child { margin-bottom: 0; }
+.card h1, .card h2, .card h3 { line-height: 1.35; }
+.card code { background: #e9edf1; border-radius: 4px; padding: 1px 5px;
+  font: 13.5px ui-monospace, \"Cascadia Mono\", Consolas, monospace; }
+.card pre { background: #f1f3f5; border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
+.card pre code { background: none; padding: 0; }
+.card blockquote { margin: 8px 0; padding: 2px 0 2px 12px; border-left: 3px solid #d8dee4;
+  color: #66727f; }
+.card table { border-collapse: collapse; }
+.card th, .card td { border: 1px solid #d8dee4; padding: 4px 10px; }
+.card a { color: #2f6fed; }
+.card img { max-width: 100%; }
+footer { margin-top: 28px; font-size: 11px; color: #8a97a5; }
+";
+
+/// Build a self-contained HTML document of the selected conversation: inline
+/// CSS, no external assets, assistant messages rendered as Markdown.
+pub(crate) fn share_html_document(
+    title: &str,
+    subtitle: &str,
+    footer: &str,
+    messages: &[ShareHtmlRow],
+) -> String {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(4096);
+    let _ = write!(
+        out,
+        "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
+         <title>{}</title>\n<style>{SHARE_HTML_CSS}</style>\n</head>\n<body>\n<main class=\"page\">\n\
+         <header>\n<h1>{}</h1>\n<p class=\"date\">{}</p>\n<div class=\"bar\"></div>\n</header>\n",
+        escape_html(title),
+        escape_html(title),
+        escape_html(subtitle),
+    );
+    for message in messages {
+        let tag = message.role.tag();
+        let _ = write!(
+            out,
+            "<section class=\"msg {tag}\">\n<span class=\"label\">{}</span>\n",
+            escape_html(&message.label),
+        );
+        match message.role {
+            ShareRole::Assistant => {
+                let _ = write!(
+                    out,
+                    "<div class=\"card\">{}</div>\n",
+                    crate::text::md_to_html(&message.text)
+                );
+            }
+            _ => {
+                let _ = write!(
+                    out,
+                    "<div class=\"bubble\">{}</div>\n",
+                    escape_html(&message.text)
+                );
+            }
+        }
+        out.push_str("</section>\n");
+    }
+    let _ = write!(
+        out,
+        "<footer>{}</footer>\n</main>\n</body>\n</html>\n",
+        escape_html(footer),
+    );
+    out
+}
+
 // --- Markdown → canvas blocks ----------------------------------------------
 
 /// Inline style flags carried by each text run. The JS canvas renderer maps
@@ -541,6 +651,39 @@ mod share_tests {
         assert_eq!(blocks[2], json!({"t": "hr"}));
         assert_eq!(blocks[3]["t"], json!("code"));
         assert_eq!(blocks[3]["text"], json!("a | b\n1 | 2"));
+    }
+
+    #[test]
+    fn html_document_renders_markdown_and_escapes_plain_rows() {
+        let rows = vec![
+            ShareHtmlRow {
+                role: ShareRole::User,
+                label: "我".into(),
+                text: "<script>alert(1)</script>\n第二行".into(),
+            },
+            ShareHtmlRow {
+                role: ShareRole::Assistant,
+                label: "助手".into(),
+                text: "结果 **加粗** 见 `fit()`。\n\n## 小结\n- 一项\n".into(),
+            },
+            ShareHtmlRow {
+                role: ShareRole::Thinking,
+                label: "思考".into(),
+                text: "a & b".into(),
+            },
+        ];
+        let html = share_html_document("wisp-science", "2026-08-14", "Shared", &rows);
+        assert!(html.contains("<title>wisp-science</title>"));
+        assert!(html.contains("<section class=\"msg user\">"));
+        assert!(html.contains("&lt;script&gt;"));
+        assert!(!html.contains("<script>"));
+        assert!(html.contains("<section class=\"msg assistant\">"));
+        assert!(html.contains("<strong>加粗</strong>"));
+        assert!(html.contains("<h2>小结</h2>"));
+        assert!(html.contains("<li>一项</li>"));
+        assert!(html.contains("<section class=\"msg thinking\">"));
+        assert!(html.contains("a &amp; b"));
+        assert!(html.contains("<footer>Shared</footer>"));
     }
 
     #[test]

@@ -3654,6 +3654,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return "/mock/export.zip";
           case "save_share_image":
             return "/mock/wisp-share.png";
+          case "save_share_html":
+            return "/mock/wisp-share.html";
           case "import_session_archive":
             return {
               frame_id: "imported-frame",

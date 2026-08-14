@@ -7916,6 +7916,7 @@ pub fn run() {
             app_commands::pick_executable_file,
             app_commands::download_file,
             app_commands::save_share_image,
+            app_commands::save_share_html,
             export_session,
             import_session_archive,
             debug_request::export_debug_request,

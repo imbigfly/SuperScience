@@ -2081,6 +2081,25 @@ test("/share exports selected, keyword-redacted messages as a PNG", async ({ pag
   expect(String(args.pngBase64).length).toBeGreaterThan(10000);
   await expect(overlay).toHaveCount(0);
 
+  // HTML format: same dialog exports a self-contained rendered document.
+  await composerInput.fill("/share");
+  await composerInput.press("Enter");
+  await expect(overlay).toBeVisible();
+  await overlay.getByTestId("share-format-html").click();
+  await expect(overlay.getByTestId("share-export")).toHaveText("Export HTML");
+  await overlay.locator("#share-redact-input").fill("alice");
+  await overlay.getByTestId("share-export").click();
+  await expect.poll(() => lastInvokeArgs(page, "save_share_html")).toMatchObject({
+    defaultName: expect.stringMatching(/^wisp-share-\d{4}-\d{2}-\d{2}\.html$/),
+  });
+  const html = String((await lastInvokeArgs(page, "save_share_html")).html);
+  expect(html).toContain("<!doctype html>");
+  expect(html).toContain("xxx confirmed the <strong>spectrum</strong>");
+  expect(html).toContain("<h2>Fit summary</h2>");
+  expect(html).toContain("<li>peak A at 530 nm</li>");
+  expect(html).toContain("fit(spectrum)");
+  await expect(overlay).toHaveCount(0);
+
   // The composer "+" menu offers the same entry once the session has content.
   await page.locator(".composer-plus").click();
   await expect(shareItem).toBeEnabled();
