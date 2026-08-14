@@ -15,7 +15,7 @@ pub mod provenance;
 pub mod subagent;
 pub mod system_prompt;
 
-pub use agent::{agent_loop, agent_loop_continue, GuidanceQueue};
+pub use agent::{agent_loop, agent_loop_continue, AgentLoopOutcome, GuidanceQueue};
 pub use context::{ContextManager, ContextToolDetail, ContextUsage, ContextUsageDetails};
 pub use delegation::{
     degraded_delivery_marker, is_degraded_delivery, AgentArtifact, AgentAuthorizationSnapshot,
@@ -187,7 +187,7 @@ impl Agent {
         user_input: &str,
         output: &dyn Output,
         cancel: Option<&std::sync::atomic::AtomicBool>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<AgentLoopOutcome> {
         agent_loop(
             &mut self.ctx,
             self.provider.as_ref(),
@@ -210,7 +210,7 @@ impl Agent {
         output: &dyn Output,
         cancel: Option<&std::sync::atomic::AtomicBool>,
         guidance: Option<&GuidanceQueue>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<AgentLoopOutcome> {
         agent::agent_loop_with_images(
             &mut self.ctx,
             self.provider.as_ref(),
@@ -234,7 +234,7 @@ impl Agent {
         output: &dyn Output,
         cancel: Option<&std::sync::atomic::AtomicBool>,
         guidance: Option<&GuidanceQueue>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<AgentLoopOutcome> {
         agent_loop_continue(
             &mut self.ctx,
             self.provider.as_ref(),

@@ -54,6 +54,53 @@ test("composer shortcut hint appears only while the composer is focused or hover
   await expect.poll(() => hint.evaluate((el) => getComputedStyle(el).opacity)).toBe("1");
 });
 
+test("composer resize target stays functional without drawing a horizontal line", async ({ page }) => {
+  await enterApp(page);
+  const resizer = page.locator(".composer-resizer");
+  await expect(resizer).toHaveCount(1);
+  await expect.poll(() => resizer.evaluate((el) => getComputedStyle(el, "::after").content)).toBe("none");
+
+  const input = page.locator(".composer-inner textarea").first();
+  const box = await resizer.boundingBox();
+  expect(box).not.toBeNull();
+  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box!.x + box!.width / 2, box!.y - 40);
+  await page.mouse.up();
+
+  await expect.poll(() => input.evaluate((el) => parseFloat(getComputedStyle(el).height))).toBeGreaterThan(220);
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("composerHeightCustom"))).toBe("1");
+});
+
+test("settings toggles use a softened active track and light thumb", async ({ page }) => {
+  await enterApp(page);
+  await page.locator(".sidebar").getByRole("button", { name: "Settings", exact: true }).click();
+
+  const checkbox = page.getByTestId("notifications-enabled");
+  const track = page.locator('[data-testid="notifications-enabled"] + .toggle-track');
+  await expect(checkbox).toBeChecked();
+  await expect(track).toBeVisible();
+
+  const colors = await track.evaluate((el) => {
+    const swatch = document.createElement("span");
+    swatch.style.background = "var(--clay)";
+    document.body.appendChild(swatch);
+    const accent = getComputedStyle(swatch).backgroundColor;
+    swatch.style.background = "var(--on-clay)";
+    const onAccent = getComputedStyle(swatch).backgroundColor;
+    swatch.remove();
+    return {
+      accent,
+      onAccent,
+      track: getComputedStyle(el).backgroundColor,
+      thumb: getComputedStyle(el, "::after").backgroundColor,
+    };
+  });
+
+  expect(colors.track).not.toBe(colors.accent);
+  expect(colors.thumb).toBe(colors.onAccent);
+});
+
 test("right-pane tabs keep their labels and scroll instead of ellipsizing", async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 700 });
   await enterApp(page);

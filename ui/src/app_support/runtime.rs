@@ -16,6 +16,15 @@ pub(crate) fn refresh_execution_contexts(into: RwSignal<Vec<ExecutionContext>>) 
     });
 }
 
+pub(crate) fn refresh_default_execution_context(into: RwSignal<Option<String>>) {
+    spawn_local(async move {
+        let v = invoke("get_default_execution_context", JsValue::UNDEFINED).await;
+        if let Ok(id) = serde_wasm_bindgen::from_value::<Option<String>>(v) {
+            into.set(id);
+        }
+    });
+}
+
 pub(crate) fn refresh_session_execution_contexts(
     into: RwSignal<HashSet<String>>,
     active_session: RwSignal<Option<String>>,

@@ -686,7 +686,7 @@ fn provider_config() -> Result<ProviderConfig> {
         match kind.as_str() {
             "anthropic" => "claude-sonnet-5",
             "openai_responses" => "gpt-5.5",
-            _ => "deepseek-v4-pro",
+            _ => "deepseek-v4-flash",
         },
     );
     if api_key.is_empty() {
@@ -726,7 +726,7 @@ async fn run_prompt(agent: &mut Agent, prompt: &str, output: &dyn Output) -> Res
     let result = agent.run(&stamped, output, None).await;
     agent.ctx.clear_runtime_injections();
     agent.save();
-    result
+    result.map(|_| ())
 }
 
 #[tokio::main]

@@ -580,6 +580,7 @@ pub fn parse_ssh_config_aliases(config: &str) -> Vec<String> {
 
 pub fn render_contexts_section(
     contexts: &[superscience_store::ExecutionContext],
+    default: Option<&superscience_store::ExecutionContext>,
 ) -> Option<String> {
     let contexts: Vec<_> = contexts
         .iter()
@@ -591,7 +592,7 @@ pub fn render_contexts_section(
             )
         })
         .collect();
-    if contexts.is_empty() {
+    if contexts.is_empty() && default.is_none() {
         return None;
     }
     let mut s = String::from(
@@ -603,7 +604,8 @@ compute when they fit the task. Submit remote discovery, real work, and all long
 observe or cancel it through the Runs control plane. Remote paths are not local \
 paths. To watch a submitted Run or wait for its result, call `monitor_run` \
 exactly once instead of repeatedly calling `get_run`. For persistent interactive analysis, call `python` or `r` with the \
-matching `context_id`; omitting it selects `local`. Interpreter paths come from \
+matching `context_id`; omitting it uses the default analysis environment below when one is \
+configured, otherwise `local`. Interpreter paths come from \
 the execution context's saved settings or probe result, not shell environment \
 changes. For one-off `run_in_context` scripts, use the exact probed interpreter \
 path shown in capabilities; do not guess `python` when the probe found `python3`. \
@@ -623,6 +625,19 @@ the user's IP. A successful SSH connection followed by any remote command/applic
 failure—including exit 127—is normal exploration: inspect stderr, correct the command \
 using the probed capabilities, and continue.\n\n",
     );
+    if let Some(default) = default {
+        let name = if default.label.trim().is_empty() {
+            default.id.as_str()
+        } else {
+            default.label.as_str()
+        };
+        s.push_str(&format!(
+            "Default analysis environment: `{}` — {name}. Tools that accept `context_id` \
+             (such as `python` or `r`) run there when `context_id` is omitted; pass \
+             `local` explicitly to use this machine instead.\n\n",
+            default.id
+        ));
+    }
     for ctx in contexts {
         let cfg: serde_json::Value = serde_json::from_str(&ctx.config_json).unwrap_or_default();
         match ctx.kind {
@@ -960,6 +975,43 @@ async fn remove_context_for_alias(
         .map_err(|e| e.to_string())
 }
 
+/// Settings key holding the user's default analysis execution context id
+/// (for example `ssh:gpu` or `wsl:Ubuntu`). Absent (or empty) means no
+/// default: tools that accept `context_id` fall back to `local`.
+pub const DEFAULT_EXECUTION_CONTEXT_KEY: &str = "default_execution_context_id";
+
+/// Read the persisted default analysis context. Returns `None` when no default
+/// is set or when the setting points at a deleted (or local) context; a stale
+/// setting is cleared as a side effect.
+pub async fn stored_default_execution_context(
+    store: &superscience_store::Store,
+) -> Option<String> {
+    let id = match store.get_setting(DEFAULT_EXECUTION_CONTEXT_KEY).await {
+        Ok(Some(id)) => id.trim().to_string(),
+        Ok(None) => return None,
+        Err(e) => {
+            tracing::warn!("read default execution context failed: {e}");
+            return None;
+        }
+    };
+    if id.is_empty() {
+        return None;
+    }
+    match store.get_execution_context(&id).await {
+        Ok(Some(ctx)) if ctx.kind != superscience_store::ExecutionContextKind::Local => Some(id),
+        Ok(_) => {
+            if let Err(e) = store.set_setting(DEFAULT_EXECUTION_CONTEXT_KEY, "").await {
+                tracing::warn!("clear stale default execution context failed: {e}");
+            }
+            None
+        }
+        Err(e) => {
+            tracing::warn!("load default execution context {id} failed: {e}");
+            None
+        }
+    }
+}
+
 pub async fn stored_compute_section(
     store: &superscience_store::Store,
     frame_id: &str,
@@ -977,18 +1029,72 @@ pub async fn stored_compute_section(
             return None;
         }
     };
+    let default = match stored_default_execution_context(store).await {
+        Some(id) => match store.get_execution_context(&id).await {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                tracing::warn!("load default execution context failed: {e}");
+                None
+            }
+        },
+        None => None,
+    };
     match store.list_execution_contexts().await {
         Ok(contexts) => render_contexts_section(
             &contexts
                 .into_iter()
                 .filter(|context| selected.contains(&context.id))
                 .collect::<Vec<_>>(),
+            default.as_ref(),
         ),
         Err(e) => {
             tracing::warn!("load execution contexts failed: {e}");
             None
         }
     }
+}
+
+#[tauri::command]
+pub async fn set_default_execution_context(
+    state: State<'_, crate::AppState>,
+    context_id: Option<String>,
+) -> Result<Option<String>, String> {
+    match context_id
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+    {
+        Some(id) => {
+            match state.store.get_execution_context(&id).await {
+                Ok(Some(ctx)) if ctx.kind != wisp_store::ExecutionContextKind::Local => {}
+                Ok(Some(_)) => {
+                    return Err("Local compute is always available; no default needed".into())
+                }
+                Ok(None) => return Err(format!("Execution context not found: {id}")),
+                Err(e) => return Err(e.to_string()),
+            }
+            state
+                .store
+                .set_setting(DEFAULT_EXECUTION_CONTEXT_KEY, &id)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(Some(id))
+        }
+        None => {
+            state
+                .store
+                .set_setting(DEFAULT_EXECUTION_CONTEXT_KEY, "")
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(None)
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn get_default_execution_context(
+    state: State<'_, crate::AppState>,
+) -> Result<Option<String>, String> {
+    Ok(stored_default_execution_context(&state.store).await)
 }
 
 #[tauri::command]
@@ -1405,7 +1511,7 @@ Host -unsafe bad/name !negated
         })
         .to_string();
 
-        let s = render_contexts_section(&[ctx]).unwrap();
+        let s = render_contexts_section(&[ctx], None).unwrap();
         assert!(s.starts_with("## Compute contexts"), "{s}");
         assert!(s.contains("ssh:gpu-box"), "context id missing:\n{s}");
         assert!(s.contains("alice@gpu-box:2222"), "ssh target missing:\n{s}");
@@ -1455,7 +1561,7 @@ Host -unsafe bad/name !negated
         ctx.config_json = serde_json::json!({ "alias": "down" }).to_string();
         ctx.last_probe_status = Some("error".into());
         ctx.last_probe_error = Some("Connection timed out".into());
-        let s = render_contexts_section(&[ctx]).unwrap();
+        let s = render_contexts_section(&[ctx], None).unwrap();
         assert!(s.contains("CONNECTIVITY: last probe failed"), "{s}");
         assert!(s.contains("Connection timed out"), "{s}");
         assert!(s.contains("Do not attempt SSH"), "{s}");
@@ -1473,7 +1579,7 @@ Host -unsafe bad/name !negated
         })
         .to_string();
 
-        let rendered = render_contexts_section(&[local, selected]).unwrap();
+        let rendered = render_contexts_section(&[local, selected], None).unwrap();
         assert!(rendered.contains("ssh:on"));
         assert!(!rendered.contains("- local"));
         assert!(rendered.contains("current conversation"));
@@ -1666,7 +1772,7 @@ Host -unsafe bad/name !negated
             superscience_store::ExecutionContext::new("wsl:Ubuntu-22.04", "Ubuntu-22.04").unwrap();
         ctx.config_json = serde_json::json!({ "distro": "Ubuntu-22.04" }).to_string();
 
-        let s = render_contexts_section(&[ctx]).unwrap();
+        let s = render_contexts_section(&[ctx], None).unwrap();
         assert!(s.contains("wsl:Ubuntu-22.04"), "context id missing:\n{s}");
         assert!(
             s.contains("Linux execution context"),
@@ -1693,7 +1799,7 @@ Host -unsafe bad/name !negated
         })
         .to_string();
 
-        let s = render_contexts_section(&[ctx]).unwrap();
+        let s = render_contexts_section(&[ctx], None).unwrap();
         assert!(s.contains("Linux/x86_64"), "os/arch missing:\n{s}");
         assert!(s.contains("GPU 0: NVIDIA A100"), "gpu missing:\n{s}");
         assert!(s.contains("scheduler: slurm"), "scheduler missing:\n{s}");
@@ -1701,5 +1807,60 @@ Host -unsafe bad/name !negated
             s.contains("python: /usr/bin/python3 (Python 3.11.8)"),
             "python executable missing:\n{s}"
         );
+    }
+
+    #[test]
+    fn render_contexts_announces_default_analysis_environment() {
+        let mut ctx = wisp_store::ExecutionContext::new("ssh:gpu", "GPU box").unwrap();
+        ctx.config_json = serde_json::json!({ "alias": "gpu" }).to_string();
+        let s = render_contexts_section(&[], Some(&ctx)).unwrap();
+        assert!(
+            s.contains("Default analysis environment: `ssh:gpu` — GPU box"),
+            "default line missing:\n{s}"
+        );
+        assert!(
+            s.contains("run there when `context_id` is omitted"),
+            "omission guidance missing:\n{s}"
+        );
+        assert!(
+            s.contains("`local` explicitly"),
+            "local escape missing:\n{s}"
+        );
+        assert!(render_contexts_section(&[], None).is_none());
+    }
+
+    #[tokio::test]
+    async fn stored_default_execution_context_drops_stale_setting() {
+        let path =
+            std::env::temp_dir().join(format!("wisp_default_ctx_{}.sqlite", uuid::Uuid::new_v4()));
+        let store = wisp_store::Store::open(&path).await.unwrap();
+        store
+            .upsert_execution_context(&wisp_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(stored_default_execution_context(&store).await, None);
+
+        store
+            .set_setting(DEFAULT_EXECUTION_CONTEXT_KEY, "ssh:gpu")
+            .await
+            .unwrap();
+        assert_eq!(
+            stored_default_execution_context(&store).await.as_deref(),
+            Some("ssh:gpu")
+        );
+
+        store.delete_execution_context("ssh:gpu").await.unwrap();
+        assert_eq!(stored_default_execution_context(&store).await, None);
+        assert_eq!(
+            store
+                .get_setting(DEFAULT_EXECUTION_CONTEXT_KEY)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("")
+        );
+
+        let _ = std::fs::remove_file(path);
     }
 }

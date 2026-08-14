@@ -316,6 +316,23 @@ test("send streams a mocked assistant reply", async ({ page, context }) => {
   await expect(page.locator(".copy-toast")).toHaveText("Copied");
 });
 
+test("sending a follow-up hides suggestions before the User event arrives", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("hello there");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  const followUps = page.getByTestId("follow-up-questions");
+  await expect(followUps.getByRole("button")).toHaveCount(4);
+
+  await page.evaluate(() => {
+    (window as any).__userEventDelayMs = 800;
+  });
+  await composer(page).fill("how to read this figure");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("how to read this figure")).toBeVisible();
+  await expect(followUps).toHaveCount(0, { timeout: 300 });
+});
+
 test("completed turns propose editable memory and require confirmation", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("summarize this project convention");
@@ -927,59 +944,137 @@ test("model selection stays bound to its conversation", async ({ page }) => {
   await expect(page.locator(".model-picker-label")).toHaveText("opus-4.8");
 });
 
-test("reasoning effort stays scoped to the current conversation", async ({ page }) => {
+test("model effort is revealed on hover and saved to the model profile", async ({ page }) => {
   await enterApp(page, "/?mockSessionModels=1");
-  await page.locator('[data-session-id="s-model-a"]').click();
-
   await page.locator(".model-picker-btn").click();
-  await page.getByRole("button", { name: /opus-4\.8/ }).click();
-  await page.getByTestId("model-switch-confirm")
-    .getByRole("button", { name: "Yes, switch" }).click();
-  await expect(page.locator(".model-picker-label")).toHaveText("opus-4.8");
+  await page.mouse.move(0, 0);
 
-  await page.locator(".model-picker-btn").click();
-  const effortTrigger = page.locator(".model-menu-effort-trigger");
-  const effortValue = page.locator(".model-menu-effort-value");
-  await expect(effortValue).toHaveText("max");
-  await effortTrigger.click();
-  await page.locator(".model-menu-effort-option[data-effort='high']").click();
-  await expect.poll(() => lastInvokeArgs(page, "set_session_reasoning_effort")).toMatchObject({
-    sessionId: "s-model-a",
-    effort: "high",
+  // Effort has no resting layout box, then overlays the model info on hover.
+  const opusRow = page.locator(".model-menu-row", { hasText: "opus-4.8" });
+  const deepseekRow = page.locator(".model-menu-row", { hasText: "deepseek-v4-pro" });
+  await expect(opusRow.locator(".model-menu-effort-tag")).toBeHidden();
+  await expect(deepseekRow.locator(".model-menu-effort-tag")).toBeHidden();
+  expect(await opusRow.locator(".model-menu-effort-tag").boundingBox()).toBeNull();
+  await opusRow.hover();
+  await expect(opusRow.locator(".model-menu-effort-tag")).toHaveText("max");
+  await expect(opusRow.locator(".model-menu-effort-tag")).toBeVisible();
+  await expect(opusRow.locator(".model-menu-effort-edit")).toBeVisible();
+  await expect(opusRow.locator(".model-menu-effort-edit svg")).toHaveCount(0);
+  const [effortBox, textBox] = await Promise.all([
+    opusRow.locator(".model-menu-effort-tag").boundingBox(),
+    opusRow.locator(".model-menu-text").boundingBox(),
+  ]);
+  expect(effortBox).not.toBeNull();
+  expect(textBox).not.toBeNull();
+  expect(effortBox!.x).toBeGreaterThanOrEqual(textBox!.x);
+  expect(effortBox!.x + effortBox!.width).toBeLessThanOrEqual(textBox!.x + textBox!.width + 1);
+
+  const menuBoxBefore = await page.locator(".model-menu").boundingBox();
+  await opusRow.locator(".model-menu-effort-edit").click();
+  const flyout = page.locator(".model-menu-effort-flyout[data-effort-for='opus']");
+  await expect(flyout).toBeVisible();
+  await expect.poll(() => flyout.evaluate((el) => el.parentElement?.classList.contains("model-picker"))).toBe(true);
+  const [menuBox, flyoutBox] = await Promise.all([
+    page.locator(".model-menu").boundingBox(),
+    flyout.boundingBox(),
+  ]);
+  expect(menuBox).not.toBeNull();
+  expect(flyoutBox).not.toBeNull();
+  expect(menuBoxBefore).not.toBeNull();
+  expect(menuBox!.x).toBeLessThan(menuBoxBefore!.x);
+  expect(flyoutBox!.x).toBeGreaterThanOrEqual(menuBox!.x + menuBox!.width + 5);
+  expect(flyoutBox!.x + flyoutBox!.width).toBeLessThanOrEqual(page.viewportSize()!.width - 7);
+
+  // Switching editors while the first flyout is open keeps the same stable
+  // right-side anchor instead of recalculating from the already shifted menu.
+  await deepseekRow.hover();
+  await deepseekRow.locator(".model-menu-effort-edit").click();
+  const deepseekFlyout = page.locator(".model-menu-effort-flyout");
+  await expect(deepseekFlyout).toBeVisible();
+  await expect(deepseekFlyout).not.toHaveAttribute("data-effort-for", "opus");
+  const [switchedMenuBox, switchedFlyoutBox] = await Promise.all([
+    page.locator(".model-menu").boundingBox(),
+    deepseekFlyout.boundingBox(),
+  ]);
+  expect(switchedMenuBox).not.toBeNull();
+  expect(switchedFlyoutBox).not.toBeNull();
+  expect(Math.abs(switchedMenuBox!.x - menuBox!.x)).toBeLessThanOrEqual(1.5);
+  expect(switchedFlyoutBox!.x).toBeGreaterThanOrEqual(switchedMenuBox!.x + switchedMenuBox!.width + 5);
+
+  await opusRow.hover();
+  await opusRow.locator(".model-menu-effort-edit").click();
+  await expect(flyout).toBeVisible();
+  // The stored value carries the check mark.
+  await expect(
+    flyout.locator(".model-menu-effort-option[data-effort='max'] .model-menu-effort-check"),
+  ).toBeVisible();
+  await flyout.locator(".model-menu-effort-option[data-effort='high']").click();
+
+  // The effort is written onto the model profile, not the conversation.
+  await expect.poll(() => lastInvokeArgs(page, "save_model")).toMatchObject({
+    profile: { id: "opus", reasoning_effort: "high" },
   });
-  await expect.poll(() => lastInvokeArgs(page, "save_model")).toBeNull();
-  await page.locator(".model-menu-backdrop").click();
+  await expect.poll(() => lastInvokeArgs(page, "set_session_reasoning_effort")).toBeNull();
 
-  await page.locator('[data-session-id="s-model-b"]').click();
-  await page.locator(".model-picker-btn").click();
-  await expect(page.locator(".model-menu-effort-value")).toHaveText("low");
-  await page.locator(".model-menu-backdrop").click();
+  // The flyout closes, the menu stays open, and the row shows the new value.
+  await expect(page.locator(".model-menu-effort-flyout")).toHaveCount(0);
+  await expect(page.locator(".model-menu")).toBeVisible();
+  await expect(opusRow.locator(".model-menu-effort-tag")).toHaveText("high");
 
-  await page.locator('[data-session-id="s-model-a"]').click();
-  await page.locator(".model-picker-btn").click();
-  await expect(page.locator(".model-menu-effort-value")).toHaveText("high");
-
-  // "default" clears the override: the session follows the bound profile
-  // (opus-4.8 defaults to max) instead of pinning "provider default".
-  await effortTrigger.click();
-  await page.locator(".model-menu-effort-option[data-effort='default']").click();
-  await expect.poll(() => lastInvokeArgs(page, "set_session_reasoning_effort")).toMatchObject({
-    sessionId: "s-model-a",
-    effort: "",
+  // "default" clears the profile value again.
+  await opusRow.locator(".model-menu-effort-edit").click();
+  await flyout.locator(".model-menu-effort-option[data-effort='default']").click();
+  await expect.poll(() => lastInvokeArgs(page, "save_model")).toMatchObject({
+    profile: { id: "opus", reasoning_effort: "" },
   });
-  await expect(page.locator(".model-menu-effort-value")).toHaveText("max");
+  await expect(opusRow.locator(".model-menu-effort-tag")).toHaveCount(0);
 });
 
-test("effort options close on Escape before the model menu", async ({ page }) => {
-  await enterApp(page, "/?mockSessionModels=1");
-  await page.locator('[data-session-id="s-model-a"]').click();
+test("model picker uses a compact left-aligned ACP group label", async ({ page }) => {
+  await enterApp(page);
   await page.locator(".model-picker-btn").click();
-  await page.locator(".model-menu-effort-trigger").click();
-  await expect(page.locator(".model-menu-effort-options")).toBeVisible();
 
-  // One Escape closes only the effort options; the model menu stays open.
+  const label = page.locator(".model-menu-acp-label");
+  const acpRowLabel = page.locator(".model-menu-row", { hasText: "Test ACP Agent" })
+    .locator(".model-menu-label");
+  await expect(label).toHaveText("ACP");
+  await expect(label).not.toContainText("Agents");
+  const [labelBox, rowLabelBox, labelPadding] = await Promise.all([
+    label.boundingBox(),
+    acpRowLabel.boundingBox(),
+    label.evaluate((el) => Number.parseFloat(getComputedStyle(el).paddingLeft)),
+  ]);
+  expect(labelBox).not.toBeNull();
+  expect(rowLabelBox).not.toBeNull();
+  expect(Math.abs(labelBox!.x + labelPadding - rowLabelBox!.x)).toBeLessThanOrEqual(1);
+});
+
+test("Chinese reasoning effort title does not duplicate the English label", async ({ page }) => {
+  await page.goto("/?mockSessionModels=1&mockLocale=zh");
+  await page.locator(".proj-card-main").first().click();
+  await expect(page.locator(".sidebar").getByRole("button", { name: "新建会话" })).toBeVisible();
+  await page.locator(".model-picker-btn").click();
+  const opusRow = page.locator(".model-menu-row", { hasText: "opus-4.8" });
+  await opusRow.hover();
+  await opusRow.locator(".model-menu-effort-edit").click();
+
+  const title = page.locator(".model-menu-effort-flyout-label");
+  await expect(title).toHaveText("推理强度");
+  await expect(title).not.toContainText(/thinking effort/i);
+});
+
+test("effort flyout closes on Escape before the model menu", async ({ page }) => {
+  await enterApp(page, "/?mockSessionModels=1");
+  await page.locator(".model-picker-btn").click();
+  await page
+    .locator(".model-menu-row", { hasText: "opus-4.8" })
+    .locator(".model-menu-effort-edit")
+    .click();
+  await expect(page.locator(".model-menu-effort-flyout")).toBeVisible();
+
+  // One Escape closes only the flyout; the model menu stays open.
   await page.keyboard.press("Escape");
-  await expect(page.locator(".model-menu-effort-options")).toHaveCount(0);
+  await expect(page.locator(".model-menu-effort-flyout")).toHaveCount(0);
   await expect(page.locator(".model-menu")).toBeVisible();
 
   await page.keyboard.press("Escape");
@@ -1098,7 +1193,9 @@ test("ACP turn maps config, overlapping tools, plan, usage, and exact permission
   });
   await expect(permission).toHaveCount(0);
   const contextTrigger = page.getByTestId("context-usage-trigger");
-  await expect(contextTrigger).toContainText("15%");
+  await expect(contextTrigger).toHaveText("");
+  await expect.poll(() => contextTrigger.evaluate((el) =>
+    getComputedStyle(el).getPropertyValue("--context-gauge-angle").trim())).toBe("-76.5deg");
   await expect(page.locator(".topbar .hint")).toHaveCount(0);
   await contextTrigger.click();
   const contextPanel = page.getByTestId("context-usage-panel");
@@ -1753,6 +1850,276 @@ test("composer @ # and / add typed context references", async ({ page }) => {
   await expect(page.locator(".msg.user .body")).not.toContainText("Target environments:");
 });
 
+test("composer / suggests the built-in /compact command", async ({ page }) => {
+  await enterApp(page);
+  const composerInput = composer(page);
+
+  await composerInput.pressSequentially("/comp");
+  // The matching command leads under its own section label.
+  await expect(page.locator(".mention-menu .mention-group-label").first()).toHaveText("Commands");
+  const commandItem = page.locator(".mention-menu .mention-item").filter({ hasText: "/compact" });
+  await expect(commandItem).toContainText("Archive full history");
+  await expect(commandItem.locator(".mention-item-icon svg")).toBeVisible();
+  await commandItem.click();
+  // Commands fill the composer instead of attaching a reference chip.
+  await expect(composerInput).toHaveValue("/compact");
+  await expect(composerInput).toBeFocused();
+  await expect(page.locator(".composer-reference-card")).toHaveCount(0);
+
+  await composerInput.fill("");
+  await composerInput.pressSequentially("/comp");
+  await expect(commandItem).toBeVisible();
+  // Enter selects the highlighted command; it must not send the message yet.
+  await composerInput.press("Enter");
+  await expect(composerInput).toHaveValue("/compact");
+  await expect(page.locator(".mention-menu")).toHaveCount(0);
+  expect(await lastInvokeArgs(page, "send_message")).toBeNull();
+});
+
+test("composer slash commands run the matching shell actions", async ({ page }) => {
+  await enterApp(page);
+  const composerInput = composer(page);
+  const menu = page.locator(".mention-menu");
+
+  // Empty session lists the shell commands but hides the turn-bound ones.
+  await composerInput.pressSequentially("/");
+  await expect(menu.locator(".mention-group-label")).toHaveText(["Commands", "Workflows", "Skills"]);
+  await expect(menu).toContainText("/compact");
+  await expect(menu).toContainText("/fork");
+  await expect(menu).toContainText("/btw");
+  await expect(menu).toContainText("/plan");
+  await expect(menu).toContainText("/permission");
+  await expect(menu).toContainText("/save-as-skill");
+  await expect(menu).toContainText("/skills");
+  await expect(menu).toContainText("/files");
+  await expect(menu).toContainText("/upload");
+  await expect(menu).not.toContainText("/rewind");
+  await expect(menu).not.toContainText("/review");
+  await expect(menu).not.toContainText("/remember");
+  await expect(menu).not.toContainText("/context");
+  await expect(menu).not.toContainText("/share");
+  await page.keyboard.press("Escape");
+
+  // /btw opens the side chat; a payload goes straight to it.
+  await composerInput.fill("/btw");
+  await composerInput.press("Enter");
+  const panel = page.locator(".rightpane");
+  await expect(panel.locator(".sidechat-in-pane")).toBeVisible();
+  expect(await lastInvokeArgs(page, "side_chat")).toBeNull();
+
+  await composerInput.fill("/btw what did the main thread miss?");
+  await composerInput.press("Enter");
+  await expect.poll(() => lastInvokeArgs(page, "side_chat")).toMatchObject({
+    question: "what did the main thread miss?",
+  });
+
+  // /save-as-skill drafts the skill-creator prompt into the composer.
+  await composerInput.fill("/save-as-skill");
+  await composerInput.press("Enter");
+  await expect(composerInput).toHaveValue(/skill-creator/);
+  await composerInput.fill("");
+
+  // /skills opens the skills settings page.
+  await composerInput.fill("/skills");
+  await composerInput.press("Enter");
+  await expect(page.locator(".settings-page")).toBeVisible();
+  await expect(page.locator(".settings-nav button.active")).toHaveText("Skills");
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".settings-page")).toHaveCount(0);
+
+  // /files opens the file panel in the right pane.
+  await composerInput.fill("/files");
+  await composerInput.press("Enter");
+  await expect(panel.locator(".rp-files")).toBeVisible();
+
+  // A completed turn unlocks the turn-bound commands.
+  await composerInput.fill("hello there");
+  await composerInput.press("Enter");
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+
+  // Picked action commands run immediately without filling the composer.
+  await composerInput.pressSequentially("/rev");
+  await menu.locator(".mention-item").filter({ hasText: "/review" }).click();
+  await expect(composerInput).toHaveValue("");
+  await expect.poll(() => lastInvokeArgs(page, "review_session")).toMatchObject({
+    sessionId: expect.stringMatching(/^s-/),
+  });
+
+  // /remember distills the latest turn, like the message-level Memory button.
+  await composerInput.fill("/remember");
+  await composerInput.press("Enter");
+  const memoryModal = page.getByTestId("turn-memory-overlay");
+  await expect(memoryModal).toBeVisible();
+  await expect.poll(() => lastInvokeArgs(page, "propose_turn_memory")).toMatchObject({
+    turnIndex: 0,
+    automatic: false,
+  });
+  await page.keyboard.press("Escape");
+  await expect(memoryModal).toHaveCount(0);
+
+  // /rewind previews the rollback of the latest turn, like the Undo button.
+  await composerInput.fill("/rewind");
+  await composerInput.press("Enter");
+  const undoModal = page.getByTestId("turn-undo-modal");
+  await expect(undoModal).toBeVisible();
+  await expect.poll(() => lastInvokeArgs(page, "preview_turn_undo")).toMatchObject({
+    userIndex: 0,
+  });
+  await page.keyboard.press("Escape");
+  await expect(undoModal).toHaveCount(0);
+
+  // Unknown slash text still goes to the model untouched.
+  await composerInput.fill("/notacommand");
+  await composerInput.press("Enter");
+  await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
+    message: "/notacommand",
+  });
+
+  // /fork fills via the picker; Enter then sends the payload as a branch,
+  // exactly like the "Branch in new session" send-mode item.
+  await composerInput.pressSequentially("/fork");
+  await menu.locator(".mention-item").filter({ hasText: "/fork" }).click();
+  await expect(composerInput).toHaveValue("/fork ");
+  await composerInput.pressSequentially("branch this idea");
+  await composerInput.press("Enter");
+  await expect.poll(() => lastInvokeArgs(page, "branch_session")).toMatchObject({
+    title: "branch this idea",
+    checkpointKind: "after_response",
+  });
+  await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
+    sessionId: expect.stringMatching(/^branch-/),
+    message: "branch this idea",
+  });
+});
+
+test("/share exports selected, keyword-redacted messages as a PNG", async ({ page }) => {
+  await enterApp(page);
+  const composerInput = composer(page);
+  const overlay = page.getByTestId("share-overlay");
+
+  // Empty session: /share is hidden from the picker and opens nothing.
+  await composerInput.pressSequentially("/sha");
+  await expect(page.locator(".mention-menu .mention-item").filter({ hasText: "/share" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await composerInput.fill("/share");
+  await composerInput.press("Enter");
+  await expect(overlay).toHaveCount(0);
+  expect(await lastInvokeArgs(page, "send_message")).toBeNull();
+
+  // Seed one turn that streams a thinking block before the reply.
+  await composerInput.fill("SHARETHINK check the spectrum");
+  await composerInput.press("Enter");
+  await expect(page.getByText("Alice confirmed the spectrum is clean.")).toBeVisible({ timeout: 10_000 });
+
+  await composerInput.fill("/share");
+  await composerInput.press("Enter");
+  await expect(overlay).toBeVisible();
+  // One Escape right after opening closes only the dialog; chat stays up.
+  await page.keyboard.press("Escape");
+  await expect(overlay).toHaveCount(0);
+  await expect(composerInput).toBeVisible();
+
+  // Reopen through the picker row; the action runs immediately.
+  await composerInput.pressSequentially("/share");
+  await page.locator(".mention-menu .mention-item").filter({ hasText: "/share" }).click();
+  await expect(overlay).toBeVisible();
+
+  // User and assistant rows are preselected; thinking is listed but hidden.
+  const rows = overlay.locator(".share-row");
+  await expect(rows).toHaveCount(3);
+  await expect(rows.nth(0).locator("input")).toBeChecked();
+  await expect(rows.nth(1)).toHaveClass(/share-thinking/);
+  await expect(rows.nth(1).locator("input")).not.toBeChecked();
+  await expect(rows.nth(2).locator("input")).toBeChecked();
+
+  // Keywords mask the preview text case-insensitively.
+  await overlay.locator("#share-redact-input").fill("alice，spectrum");
+  await expect(rows.nth(2)).toContainText("xxx confirmed the xxx is clean.");
+
+  // Deselect the user turn and export: the PNG bytes reach the save command
+  // and the saved toast closes the dialog.
+  await rows.nth(0).locator("input").click();
+  await overlay.getByTestId("share-export").click();
+  await expect.poll(() => lastInvokeArgs(page, "save_share_image")).toMatchObject({
+    defaultName: expect.stringMatching(/^wisp-share-\d{4}-\d{2}-\d{2}\.png$/),
+  });
+  const args = await lastInvokeArgs(page, "save_share_image");
+  expect(String(args.pngBase64).length).toBeGreaterThan(1000);
+  await expect(overlay).toHaveCount(0);
+});
+
+test("composer / menu layers sections and gives each command its own icon", async ({ page }) => {
+  await enterApp(page);
+  const composerInput = composer(page);
+
+  await composerInput.pressSequentially("/");
+  const menu = page.locator(".mention-menu");
+  await expect(menu.locator(".mention-group-label")).toHaveText(["Commands", "Workflows", "Skills"]);
+  const commandRows = menu.locator(".mention-item").filter({
+    has: page.locator(".mention-item-name", { hasText: /^\// }),
+  });
+  await expect(commandRows.first()).toBeVisible();
+  // Every command row carries an icon, and no two commands share one.
+  const svgs = await commandRows
+    .locator(".mention-item-icon svg")
+    .evaluateAll((nodes) => nodes.map((node) => node.innerHTML));
+  expect(svgs.length).toBeGreaterThan(5);
+  expect(new Set(svgs).size).toBe(svgs.length);
+
+  // A query matching no command keeps the remaining sections layered.
+  await composerInput.fill("");
+  await composerInput.pressSequentially("/alpha");
+  await expect(menu.locator(".mention-group-label")).toHaveText(["Skills"]);
+  await expect(menu).toContainText("alphafold2");
+});
+
+test("composer /plan and /permission drive the session mode flags", async ({ page }) => {
+  await enterApp(page);
+  const composerInput = composer(page);
+
+  // /plan flips plan-first mode, exactly like the agent-menu toggle.
+  await composerInput.fill("/plan");
+  await composerInput.press("Enter");
+  await expect.poll(() => lastInvokeArgs(page, "set_session_plan_mode")).toMatchObject({
+    enabled: true,
+  });
+  await composerInput.fill("/plan");
+  await composerInput.press("Enter");
+  await expect.poll(() => lastInvokeArgs(page, "set_session_plan_mode")).toMatchObject({
+    enabled: false,
+  });
+
+  // /permission fills the composer; the mode payload runs on Enter. Enabling
+  // full permission always passes through the same warning as the toggle.
+  await composerInput.pressSequentially("/perm");
+  const menu = page.locator(".mention-menu");
+  await menu.locator(".mention-item").filter({ hasText: "/permission" }).click();
+  await expect(composerInput).toHaveValue("/permission ");
+  await composerInput.pressSequentially("full");
+  await composerInput.press("Enter");
+  await expect(page.getByRole("heading", { name: "Enable Full Permission?" })).toBeVisible();
+  expect(await invokeArgsList(page, "set_session_full_permission")).toHaveLength(0);
+  await page.getByRole("button", { name: "Enable Full Permission" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "set_session_full_permission")).toMatchObject({
+    enabled: true,
+  });
+
+  // Repeating full reports the mode is already on; ask returns to approvals.
+  await composerInput.fill("/permission full");
+  await composerInput.press("Enter");
+  await expect(page.locator(".copy-toast")).toContainText("already on");
+  await composerInput.fill("/permission ask");
+  await composerInput.press("Enter");
+  await expect.poll(() => lastInvokeArgs(page, "set_session_full_permission")).toMatchObject({
+    enabled: false,
+  });
+
+  // auto is part of the mode family but not built yet.
+  await composerInput.fill("/permission auto");
+  await composerInput.press("Enter");
+  await expect(page.locator(".copy-toast")).toContainText("not available yet");
+});
+
 test("composer picker follows manual caret insertions and ignores pasted text", async ({ page }) => {
   await enterApp(page);
   const composerInput = composer(page);
@@ -1919,7 +2286,18 @@ test("context usage moves out of the topbar and opens a categorized detail panel
   await page.getByRole("button", { name: "Send", exact: true }).click();
 
   const trigger = page.getByTestId("context-usage-trigger");
-  await expect(trigger).toContainText("62%");
+  await expect(trigger).toHaveText("");
+  await expect.poll(() => trigger.evaluate((el) =>
+    getComputedStyle(el).getPropertyValue("--context-gauge-angle").trim())).toBe("-34.2deg");
+  await expect.poll(() => trigger.locator("svg path").first().evaluate((el) =>
+    getComputedStyle(el).transform)).not.toBe("none");
+  const [triggerBox, modelBox] = await Promise.all([
+    trigger.boundingBox(),
+    page.locator(".model-picker-btn").boundingBox(),
+  ]);
+  expect(triggerBox).not.toBeNull();
+  expect(modelBox).not.toBeNull();
+  expect(triggerBox!.x + triggerBox!.width).toBeLessThanOrEqual(modelBox!.x);
   await expect(page.locator(".topbar .hint")).toHaveCount(0);
 
   await trigger.click();
@@ -1932,6 +2310,34 @@ test("context usage moves out of the topbar and opens a categorized detail panel
   await expect(panel).toContainText("~79.9K / 128K Tokens");
   await expect(panel.locator(".context-usage-row")).toHaveCount(7);
   await expect(panel.locator(".context-usage-segment")).toHaveCount(7);
+  const firstUsageRow = panel.locator(".context-usage-row").first();
+  const paletteColors = await firstUsageRow.evaluate((row) => {
+    const root = document.documentElement;
+    const originalTheme = root.getAttribute("data-theme");
+    const originalLight = root.getAttribute("data-light-palette");
+    const originalDark = root.getAttribute("data-dark-palette");
+    (row as HTMLElement).style.transition = "none";
+    root.setAttribute("data-theme", "light");
+    root.setAttribute("data-light-palette", "paper");
+    const paper = getComputedStyle(row).backgroundColor;
+    root.setAttribute("data-light-palette", "codex");
+    const codex = getComputedStyle(row).backgroundColor;
+    root.setAttribute("data-theme", "dark");
+    root.setAttribute("data-dark-palette", "charcoal");
+    const charcoal = getComputedStyle(row).backgroundColor;
+    for (const [attribute, value] of [
+      ["data-theme", originalTheme],
+      ["data-light-palette", originalLight],
+      ["data-dark-palette", originalDark],
+    ]) {
+      if (value === null) root.removeAttribute(attribute);
+      else root.setAttribute(attribute, value);
+    }
+    (row as HTMLElement).style.removeProperty("transition");
+    return { paper, codex, charcoal };
+  });
+  expect(paletteColors.paper).not.toBe("rgb(239, 239, 239)");
+  expect(new Set(Object.values(paletteColors)).size).toBe(3);
   await expect(panel.getByText("Conversation", { exact: true })).toBeVisible();
   await expect(panel.getByText("36.3K", { exact: true })).toBeVisible();
   await expect(panel.locator(".context-usage-row.expandable")).toHaveCount(6);
@@ -1970,7 +2376,9 @@ test("legacy native usage totals fall back to Conversation, not Agent-managed", 
   await page.getByRole("button", { name: "Send", exact: true }).click();
 
   const trigger = page.getByTestId("context-usage-trigger");
-  await expect(trigger).toContainText("20%");
+  await expect(trigger).toHaveText("");
+  await expect.poll(() => trigger.evaluate((el) =>
+    getComputedStyle(el).getPropertyValue("--context-gauge-angle").trim())).toBe("-72.0deg");
   await trigger.click();
   const panel = page.getByTestId("context-usage-panel");
   await expect(panel).toBeVisible();
@@ -1987,7 +2395,8 @@ test("context usage limit follows the session's current model", async ({ page })
   await page.getByRole("button", { name: "Send", exact: true }).click();
 
   const trigger = page.getByTestId("context-usage-trigger");
-  await expect(trigger).toContainText("62%");
+  await expect.poll(() => trigger.evaluate((el) =>
+    getComputedStyle(el).getPropertyValue("--context-gauge-angle").trim())).toBe("-34.2deg");
   await trigger.click();
   await expect(page.getByTestId("context-usage-panel")).toContainText("~79.9K / 128K Tokens");
   await page.keyboard.press("Escape");
@@ -1998,9 +2407,33 @@ test("context usage limit follows the session's current model", async ({ page })
   await page.getByTestId("model-switch-confirm")
     .getByRole("button", { name: "Yes, switch" }).click();
   await expect(page.locator(".model-picker-label")).toHaveText("opus-4.8");
-  await expect(trigger).toContainText("40%");
+  await expect.poll(() => trigger.evaluate((el) =>
+    getComputedStyle(el).getPropertyValue("--context-gauge-angle").trim())).toBe("-54.0deg");
   await trigger.click();
   await expect(page.getByTestId("context-usage-panel")).toContainText("~79.9K / 200K Tokens");
+});
+
+test("context usage keeps the running agent window until a model switch boundary", async ({ page }) => {
+  await enterApp(page);
+  await page.locator("#composer-input").fill("CONTEXTUSAGERUNNING");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+
+  const trigger = page.getByTestId("context-usage-trigger");
+  await expect.poll(() => trigger.evaluate((el) =>
+    getComputedStyle(el).getPropertyValue("--context-gauge-angle").trim())).toBe("-34.2deg");
+
+  await page.locator(".model-picker-btn").click();
+  await page.getByRole("button", { name: /opus-4\.8/ }).click();
+  await page.getByTestId("model-switch-confirm")
+    .getByRole("button", { name: "Yes, switch" }).click();
+
+  // The binding changes immediately, but the in-flight request remains on
+  // the old 128K Agent until Done.
+  await expect.poll(() => trigger.evaluate((el) =>
+    getComputedStyle(el).getPropertyValue("--context-gauge-angle").trim())).toBe("-34.2deg");
+  await expect(page.getByRole("button", { name: "Send", exact: true })).toBeVisible({ timeout: 3_000 });
+  await expect.poll(() => trigger.evaluate((el) =>
+    getComputedStyle(el).getPropertyValue("--context-gauge-angle").trim())).toBe("-54.0deg");
 });
 
 test("artifact type badges stay neutral instead of rainbow pills", async ({ page }) => {
@@ -2044,6 +2477,8 @@ test("Cmd+K opens search and the composer shows the macOS shortcut", async ({ pa
     .locator(".action-shortcut")).toHaveText("⌘N");
   await expect(actionPalette.locator(".action-palette-row", { hasText: "Search" })
     .locator(".action-shortcut")).toHaveText("⌘K");
+  await expect(actionPalette.locator(".action-palette-row", { hasText: "Privacy mode" })
+    .locator(".action-shortcut")).toHaveText("⌘⇧H");
 });
 
 test("Cmd+Enter sends when the modifier shortcut is selected on macOS", async ({ page }) => {
@@ -2155,6 +2590,108 @@ test("Ctrl+P command palette runs commands and switches themes", async ({ page }
   const before = await page.evaluate(() => ((window as any).__skillInvokeLog ?? []).filter((c: any) => c.cmd === "new_session").length);
   await page.keyboard.press("Control+n");
   await expect.poll(() => page.evaluate(() => ((window as any).__skillInvokeLog ?? []).filter((c: any) => c.cmd === "new_session").length)).toBeGreaterThan(before);
+});
+
+test("privacy mode hides selected projects and recent sessions, then restores them", async ({ page }) => {
+  await page.goto("/");
+  const privateProject = page.locator(".proj-card", { hasText: "wisp-science" });
+  const otherProject = page.locator(".proj-card", { hasText: "Other project" });
+  await expect(privateProject).toBeVisible();
+  await expect(page.getByTestId("recent-session-card")).toHaveCount(2);
+
+  await page.keyboard.press("Control+p");
+  const palette = page.getByRole("dialog", { name: "Command Palette" });
+  await page.locator("#action-palette-input").fill("privacy mode");
+  const privacyAction = palette.locator(".action-palette-row", { hasText: "Privacy mode" });
+  await expect(privacyAction.locator(".action-shortcut")).toHaveText("Ctrl+Shift+H");
+  await privacyAction.click();
+
+  const modal = page.getByRole("dialog", { name: "Privacy mode" });
+  await expect(modal).toBeVisible();
+  // Root-owned Escape must work before focus moves into the modal.
+  await page.keyboard.press("Escape");
+  await expect(modal).toBeHidden();
+
+  await page.keyboard.press("Control+Shift+h");
+  await expect(modal).toBeVisible();
+  const projectRow = modal.locator(".privacy-project-row", { hasText: "wisp-science" });
+  await expect(projectRow).toHaveCSS("flex-direction", "row");
+  await projectRow.locator('input[type="checkbox"]').check();
+  await modal.getByRole("button", { name: "Hide selected" }).click();
+
+  await expect(privateProject).toBeHidden();
+  await expect(otherProject).toBeVisible();
+  await expect(page.getByTestId("recent-session-card")).toHaveCount(0);
+  await expect(page.locator(".privacy-mode-banner")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("wisp-privacy-mode-active"))).toBe("1");
+
+  await page.reload();
+  await expect(otherProject).toBeVisible();
+  await expect(privateProject).toBeHidden();
+  await expect(page.locator(".privacy-mode-banner")).toHaveCount(0);
+  await expect(page.getByText("Privacy mode")).toHaveCount(0);
+  await expect(page.getByTestId("recent-session-card")).toHaveCount(0);
+  await page.keyboard.press("Control+k");
+  const search = page.getByRole("dialog", { name: "Search" });
+  await expect(search).not.toContainText("wisp-science");
+  await expect(search).not.toContainText("Enumerate MCP bio-tools databases");
+  await page.keyboard.press("Escape");
+
+  await page.keyboard.press("Control+Shift+h");
+  await expect(modal.locator(".privacy-project-row", { hasText: "wisp-science" })
+    .locator('input[type="checkbox"]')).toBeChecked();
+  await modal.getByRole("button", { name: "Restore all" }).click();
+  await expect(privateProject).toBeVisible();
+  await expect(page.getByTestId("recent-session-card")).toHaveCount(2);
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("wisp-privacy-mode-active"))).toBeNull();
+});
+
+test("privacy mode select all toggles every project at once", async ({ page }) => {
+  await page.goto("/");
+  const privateProject = page.locator(".proj-card", { hasText: "wisp-science" });
+  const otherProject = page.locator(".proj-card", { hasText: "Other project" });
+  await expect(privateProject).toBeVisible();
+  await expect(otherProject).toBeVisible();
+
+  await page.keyboard.press("Control+Shift+h");
+  const modal = page.getByRole("dialog", { name: "Privacy mode" });
+  await expect(modal).toBeVisible();
+
+  const selectAll = modal.getByTestId("privacy-select-all");
+  const projectBoxes = modal.locator('.privacy-project-row:not(.privacy-project-row-all) input[type="checkbox"]');
+  await expect(projectBoxes).toHaveCount(2);
+  await expect(selectAll).not.toBeChecked();
+
+  await selectAll.check();
+  await expect(selectAll).toBeChecked();
+  for (const box of await projectBoxes.all()) {
+    await expect(box).toBeChecked();
+  }
+
+  // Unchecking one project clears the select-all state.
+  await projectBoxes.first().uncheck();
+  await expect(selectAll).not.toBeChecked();
+  await selectAll.check();
+  await expect(selectAll).toBeChecked();
+
+  await modal.getByRole("button", { name: "Hide selected" }).click();
+  await expect(privateProject).toBeHidden();
+  await expect(otherProject).toBeHidden();
+  await expect(page.getByTestId("recent-session-card")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("wisp-privacy-mode-active"))).toBe("1");
+
+  await page.keyboard.press("Control+Shift+h");
+  await expect(selectAll).toBeChecked();
+  await selectAll.uncheck();
+  for (const box of await projectBoxes.all()) {
+    await expect(box).not.toBeChecked();
+  }
+  await expect(modal.getByRole("button", { name: "Hide selected" })).toBeDisabled();
+
+  await modal.getByRole("button", { name: "Restore all" }).click();
+  await expect(privateProject).toBeVisible();
+  await expect(otherProject).toBeVisible();
+  await expect(page.getByTestId("recent-session-card")).toHaveCount(2);
 });
 
 test("Ctrl+P changes UI and code font sizes", async ({ page }) => {
@@ -4092,6 +4629,32 @@ test("compute menu selects remote resources per session", async ({ page }) => {
   await expect(nextMenu.locator('[data-context-id="ssh:gpu-server"]')).not.toHaveClass(/enabled/);
   await expect.poll(async () => (await lastInvokeArgs(page, "list_session_execution_context_ids"))?.sessionId)
     .not.toBe(firstSession);
+});
+
+test("compute menu sets and clears a default analysis environment", async ({ page }) => {
+  await enterApp(page);
+
+  const menu = await openComputeMenu(page);
+  const server = menu.locator('[data-context-id="ssh:gpu-server"]');
+  await expect(server.locator(".compute-resource-default")).toHaveCount(0);
+  await server.getByRole("button", { name: "Set as default analysis environment" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "set_default_execution_context")).toMatchObject({
+    contextId: "ssh:gpu-server",
+  });
+  // Setting the default also selects it for the current session.
+  await expect.poll(() => lastInvokeArgs(page, "set_session_execution_context_enabled")).toMatchObject({
+    sessionId: expect.any(String),
+    contextId: "ssh:gpu-server",
+    enabled: true,
+  });
+  await expect(server).toHaveClass(/enabled/);
+  await expect(server.locator(".compute-resource-default")).toHaveText("Default");
+
+  await server.getByRole("button", { name: "Remove default" }).click();
+  await expect.poll(async () =>
+    (await lastInvokeArgs(page, "set_default_execution_context"))?.contextId ?? null
+  ).toBeNull();
+  await expect(server.locator(".compute-resource-default")).toHaveCount(0);
 });
 
 test("environment panel attaches and detaches remote servers", async ({ page }) => {
@@ -6345,7 +6908,7 @@ test("vision assignment keeps model fields and stored key placeholder untouched"
     useForVision: true,
     profile: {
       provider: "openai_responses",
-      // gpt-5.6-* matches the MODEL_LIMITS auto-fill (128K out / 1.05M ctx)
+      // gpt-5.6-luna is in the baked catalog (128K out / 1.05M ctx).
       context_window: 1050000,
       reasoning_effort: "medium",
       use_for_vision: true,
@@ -6362,7 +6925,7 @@ test("model settings rejects max output tokens above the known ceiling", async (
   await enterApp(page);
   await openModelsSettings(page);
 
-  // deepseek-v4-pro matches the MODEL_LIMITS family (384K output ceiling).
+  // deepseek-v4-pro is in the baked catalog (384K output ceiling).
   const maxTokens = page.getByLabel("Max output tokens");
   await maxTokens.fill("1000000");
   await page.getByRole("button", { name: "Save" }).click();
@@ -6377,20 +6940,51 @@ test("model settings rejects max output tokens above the known ceiling", async (
     .toMatchObject({ profile: { max_tokens: 384000 } });
 });
 
-test("onboarding key setup adds the flash model before the pro model", async ({ page }) => {
+test("model settings auto-fills catalog limits and save clamps to them", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Models");
+  await page.getByRole("button", { name: /Add model/i }).click();
+
+  // The lookup fires on model input and reads the current API URL, so the
+  // URL must be in place before the model id is typed.
+  await page.getByLabel("API URL").fill("https://api.kimi.com/coding/v1");
+  await page.getByLabel("Model").fill("k3-256k");
+  await page.getByLabel("API key (stored in OS keyring)").fill("sk-k3");
+
+  // kimi-for-coding/k3-256k is in the baked catalog (262144 ctx / 131072 out).
+  await expect(page.getByLabel("Max output tokens")).toHaveValue("131072");
+  await expect(page.getByLabel("Context window")).toHaveValue("262144");
+  await expect(page.getByTestId("model-catalog-limits-hint")).toContainText("262144");
+
+  // Overriding the context window past the catalog ceiling gets clamped by
+  // the backend on save.
+  await page.getByLabel("Context window").fill("1000000");
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "save_model"))
+    .toMatchObject({ profile: { model: "k3-256k" } });
+  // The invoke log records what the UI sent; the clamp happens inside the
+  // (mocked) backend, so assert on the stored profile via list_models.
+  const stored: any = await page.evaluate(async () => {
+    const models: any[] = await (window as any).__TAURI__.core.invoke("list_models");
+    return models.find((m: any) => m.model === "k3-256k") ?? null;
+  });
+  expect(stored).toMatchObject({ context_window: 262144, max_tokens: 131072 });
+});
+
+test("onboarding key setup lands on flash after adding pro", async ({ page }) => {
   await page.goto("/?mockOnboarding=1");
   await expect(page.locator(".onboard-overlay")).toBeVisible();
   await page.getByLabel("API key (stored in OS keyring)").fill("sk-onboard");
   await page.getByRole("button", { name: "Next" }).click();
-  // Order matters: save_model activates each new profile, so pro must land
-  // last for the user to start on it.
+  // Order matters: save_model activates each new profile, so flash must land
+  // last for the user to start on the cheaper default.
   await expect.poll(() => page.evaluate(() => ((window as any).__skillInvokeLog ?? [])
     .filter((c: any) => c.cmd === "save_model")
     .map((c: any) => {
       const args = c.args instanceof Map ? Object.fromEntries(c.args) : c.args;
       const profile = args.profile instanceof Map ? Object.fromEntries(args.profile) : args.profile;
       return profile.model;
-    }))).toEqual(["deepseek-v4-flash", "deepseek-v4-pro"]);
+    }))).toEqual(["deepseek-v4-pro", "deepseek-v4-flash"]);
   // The built-in Reader gets bound to the flash profile so reading-heavy
   // work runs on the cheap tier out of the box.
   await expect.poll(() => page.evaluate(() => ((window as any).__skillInvokeLog ?? [])
@@ -6399,7 +6993,7 @@ test("onboarding key setup adds the flash model before the pro model", async ({ 
       const args = c.args instanceof Map ? Object.fromEntries(c.args) : c.args;
       const spec = args.spec instanceof Map ? Object.fromEntries(args.spec) : args.spec;
       return { id: spec.id, model_id: spec.model_id };
-    }))).toEqual([{ id: "reader", model_id: "m1" }]);
+    }))).toEqual([{ id: "reader", model_id: "m2" }]);
 });
 
 test("gpt-image-2 can be assigned for generation but not selected for chat", async ({ page }) => {
@@ -7228,7 +7822,7 @@ test("provider switch fills current API defaults", async ({ page }) => {
   await expect(page.getByLabel("Model")).toHaveValue("claude-sonnet-5");
   await providerSelect(page).selectOption("openai");
   await expect(page.getByLabel("API URL")).toHaveValue("https://api.deepseek.com");
-  await expect(page.getByLabel("Model")).toHaveValue("deepseek-v4-pro");
+  await expect(page.getByLabel("Model")).toHaveValue("deepseek-v4-flash");
 });
 
 test("model form input keeps focus while typing (#62)", async ({ page }) => {
@@ -7433,6 +8027,28 @@ test("settings permissions lists and revokes remembered approvals", async ({ pag
   await expect(page.getByText("No remembered approvals.")).toBeVisible();
 });
 
+test("browser URL filters persist block and prefer hosts", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Browser");
+  await expect(page.getByTestId("browser-url-filters")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".settings-page")).toHaveCount(0);
+
+  await openSettingsSection(page, "Browser");
+  await page.getByTestId("browser-block-host").fill("hijacked.example");
+  await page.getByTestId("browser-block-reason").fill("domain taken over");
+  await page.getByTestId("browser-block-add").click();
+  await expect(page.getByTestId("browser-block-list")).toContainText("hijacked.example");
+  await expect(page.getByTestId("browser-block-list")).toContainText("domain taken over");
+
+  await page.getByTestId("browser-prefer-host").fill("pubmed.ncbi.nlm.nih.gov");
+  await page.getByTestId("browser-prefer-add").click();
+  await expect(page.getByTestId("browser-prefer-list")).toContainText("pubmed.ncbi.nlm.nih.gov");
+
+  await page.getByTestId("browser-block-remove").click();
+  await expect(page.getByTestId("browser-block-list")).toContainText("No blocked hosts.");
+});
+
 test("chat stays pinned to the bottom while streaming a long reply (#61)", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("SCROLLTEST");
@@ -7462,16 +8078,29 @@ test("streaming assistant keeps formatted Markdown with a lightweight live tail"
   const live = page.locator(".msg.assistant .streaming-markdown");
   await expect(live).toBeVisible();
   await expect(live.locator(".streaming-markdown-prefix strong").first()).toBeVisible();
-  await live.evaluate((element) => ((element as any).__liveMarkdownProbe = true));
+  // Deltas and the Markdown commit interval are both ~50 ms. A Playwright poll
+  // started after line 18 can miss every pending-tail window under CI load, so
+  // watch the attribute continuously from the page instead.
+  await live.evaluate((element) => {
+    (element as any).__liveMarkdownProbe = true;
+    const seen = { max: 0 };
+    const record = () => {
+      seen.max = Math.max(seen.max, Number(element.getAttribute("data-pending-bytes") ?? 0));
+      (window as any).__maxPendingBytes = seen.max;
+    };
+    (window as any).__maxPendingBytes = 0;
+    record();
+    const observer = new MutationObserver(record);
+    observer.observe(element, { attributes: true, attributeFilter: ["data-pending-bytes"] });
+    const tick = () => {
+      record();
+      if (element.isConnected) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
 
   await expect(page.getByText("stream line 18", { exact: false })).toBeVisible({ timeout: 10_000 });
-  // Deltas and the minimum Markdown commit interval are both 50 ms. Polling at
-  // Playwright's default cadence can repeatedly sample just after each commit
-  // and miss the short-lived plain-text tail entirely.
-  await expect.poll(
-    async () => Number(await live.getAttribute("data-pending-bytes") ?? 0),
-    { intervals: [10], timeout: 10_000 },
-  )
+  await expect.poll(() => page.evaluate(() => Number((window as any).__maxPendingBytes ?? 0)))
     .toBeGreaterThan(0);
   expect(await live.evaluate((element) => (element as any).__liveMarkdownProbe === true)).toBe(true);
 
@@ -7784,11 +8413,14 @@ test("conversation outline loads and jumps to an older user question", async ({ 
 
   const toggle = page.getByRole("button", { name: "Show conversation outline" });
   await expect(toggle).toBeVisible();
+  await expect(page.getByTestId("conversation-outline")).toHaveCount(0);
   await toggle.click();
   const outline = page.getByTestId("conversation-outline");
   await expect(outline).toBeVisible();
+  await expect(outline).toHaveClass(/is-open/);
   await page.keyboard.press("Escape");
-  await expect(outline).toHaveCount(0);
+  await expect(outline).toBeHidden();
+  await expect(page.getByTestId("conversation-outline")).toHaveCount(0);
   await expect(toggle).toBeVisible();
 
   await toggle.click();
@@ -7824,8 +8456,9 @@ test("conversation outline loads and jumps to an older user question", async ({ 
   })).toBe(true);
 
   await page.getByRole("button", { name: "Hide conversation outline" }).click();
-  await expect(outline).toHaveCount(0);
+  await expect(outline).toBeHidden();
   await expect(toggle).toBeVisible();
+  await expect(page.getByTestId("conversation-outline")).toHaveCount(0);
 });
 
 test("long transcript rendering keeps a bounded turn window", async ({ page }) => {
@@ -9257,6 +9890,32 @@ test("queued follow-ups can be reordered up and down (#433)", async ({ page }) =
       .filter((c: any) => c.cmd === "queued_turn_action")
       .map((c: any) => c.args?.action),
   )).toEqual(["move_up", "move_down"]);
+});
+
+test("editing a queued follow-up restores it to the composer", async ({ page }) => {
+  await page.addInitScript(parallelMock);
+  await page.goto("/");
+  await page.locator(".proj-card-main").first().click();
+  await expect(newSessionButton(page)).toBeVisible();
+
+  await composer(page).fill("alpha");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("echo:alpha")).toBeVisible({ timeout: 10_000 });
+
+  await composer(page).fill("what is QC?");
+  await page.getByRole("button", { name: "Queue…" }).click();
+  const queued = page.locator(".msg.user.queued", { hasText: "what is QC?" });
+  await expect(queued).toBeVisible({ timeout: 500 });
+  await expect(queued.getByRole("button", { name: "Guide now" })).toBeVisible();
+
+  await queued.getByRole("button", { name: "Edit" }).click();
+  await expect(queued).toHaveCount(0);
+  await expect(composer(page)).toHaveValue("what is QC?");
+  await expect.poll(async () => page.evaluate(() =>
+    ((window as any).__sendInvokeLog ?? [])
+      .filter((c: any) => c.cmd === "queued_turn_action")
+      .map((c: any) => c.args?.action),
+  )).toEqual(["cancel"]);
 });
 
 test("project removal offers a files-preserving action in the in-app dialog (#96)", async ({ page }) => {

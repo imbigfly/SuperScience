@@ -2,6 +2,38 @@ use super::*;
 
 const MODEL_SWITCH_WARNING_DISABLED_KEY: &str = "superscience-model-switch-warning-disabled";
 
+const PRIVACY_MODE_ACTIVE_KEY: &str = "wisp-privacy-mode-active";
+const PRIVACY_MODE_PROJECTS_KEY: &str = "wisp-privacy-mode-projects";
+
+pub(crate) fn load_privacy_mode() -> (bool, HashSet<String>) {
+    let storage = web_sys::window().and_then(|window| window.local_storage().ok().flatten());
+    let projects = storage
+        .as_ref()
+        .and_then(|storage| storage.get_item(PRIVACY_MODE_PROJECTS_KEY).ok().flatten())
+        .and_then(|value| serde_json::from_str::<HashSet<String>>(&value).ok())
+        .unwrap_or_default();
+    let active = !projects.is_empty()
+        && storage
+            .and_then(|storage| storage.get_item(PRIVACY_MODE_ACTIVE_KEY).ok().flatten())
+            .is_some_and(|value| value == "1");
+    (active, projects)
+}
+
+pub(crate) fn save_privacy_mode(active: bool, projects: &HashSet<String>) {
+    let Some(storage) = web_sys::window().and_then(|window| window.local_storage().ok().flatten())
+    else {
+        return;
+    };
+    if let Ok(value) = serde_json::to_string(projects) {
+        let _ = storage.set_item(PRIVACY_MODE_PROJECTS_KEY, &value);
+    }
+    let _ = if active && !projects.is_empty() {
+        storage.set_item(PRIVACY_MODE_ACTIVE_KEY, "1")
+    } else {
+        storage.remove_item(PRIVACY_MODE_ACTIVE_KEY)
+    };
+}
+
 pub(crate) fn model_switch_warning_disabled() -> bool {
     web_sys::window()
         .and_then(|window| window.local_storage().ok().flatten())

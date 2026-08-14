@@ -345,7 +345,7 @@ fn default_evidence_coverage() -> u8 {
 pub(crate) enum ChatItem {
     User(String),
     /// A user turn queued (#433) while the same session is still running. It
-    /// waits, editable/cancellable, until the backend drains it into a fresh
+    /// waits, cancellable, until the backend drains it into a fresh
     /// turn (or a cut-in folds it into the running one) and emits the matching
     /// User event. `id` is the frontend-assigned key the queue commands target.
     QueuedUser {
@@ -1077,8 +1077,7 @@ pub(crate) fn session_model_label(
 }
 
 /// The profile a session resolves to right now: bound profile → active →
-/// first chat model. Shared by the effort/window getters and the composer
-/// effort dropdown.
+/// first chat model. Shared by the session-scoped getters.
 pub(crate) fn session_profile<'a>(
     models: &'a [ModelProfile],
     session_models: &HashMap<String, String>,
@@ -1094,25 +1093,6 @@ pub(crate) fn session_profile<'a>(
                 .find(|model| model.active && model.is_chat_model())
         })
         .or_else(|| models.iter().find(|model| model.is_chat_model()))
-}
-
-/// Effective effort for the active conversation. A value loaded from the
-/// frame wins; before that IPC read completes, fall back to the bound profile.
-/// An empty stored value means "no override" (inherit the profile again).
-pub(crate) fn session_reasoning_effort(
-    models: &[ModelProfile],
-    session_models: &HashMap<String, String>,
-    session_efforts: &HashMap<String, String>,
-    session_id: Option<&str>,
-) -> String {
-    if let Some(effort) = session_id.and_then(|id| session_efforts.get(id)) {
-        if !effort.is_empty() {
-            return effort.clone();
-        }
-    }
-    session_profile(models, session_models, session_id)
-        .map(|model| model.reasoning_effort.clone())
-        .unwrap_or_default()
 }
 
 /// Mirrors `models::effective_context_window` in src-tauri: a configured
@@ -1161,7 +1141,7 @@ mod model_label_tests {
 
 #[cfg(test)]
 mod session_context_window_tests {
-    use super::{session_context_window, session_reasoning_effort, ModelProfile};
+    use super::{session_context_window, ModelProfile};
     use std::collections::HashMap;
 
     fn profile(id: &str, active: bool, context_window: u64) -> ModelProfile {
@@ -1189,39 +1169,6 @@ mod session_context_window_tests {
         assert_eq!(
             session_context_window(&models, &bindings, Some("s1")),
             Some(1_000_000)
-        );
-    }
-
-    #[test]
-    fn session_effort_override_wins_without_changing_profile() {
-        let mut active = profile("a", true, 128_000);
-        active.reasoning_effort = "max".into();
-        let mut bound = profile("b", false, 128_000);
-        bound.reasoning_effort = "max".into();
-        let models = vec![active, bound];
-        let bindings = HashMap::from([("s1".to_string(), "b".to_string())]);
-        let efforts = HashMap::from([("s1".to_string(), "high".to_string())]);
-
-        assert_eq!(
-            session_reasoning_effort(&models, &bindings, &efforts, Some("s1")),
-            "high"
-        );
-        assert_eq!(models[0].reasoning_effort, "max");
-        assert_eq!(models[1].reasoning_effort, "max");
-    }
-
-    #[test]
-    fn empty_effort_override_inherits_profile_again() {
-        let mut bound = profile("b", true, 128_000);
-        bound.reasoning_effort = "max".into();
-        let models = vec![bound];
-        let bindings = HashMap::from([("s1".to_string(), "b".to_string())]);
-        // Legacy rows and a just-cleared override both surface as "".
-        let efforts = HashMap::from([("s1".to_string(), String::new())]);
-
-        assert_eq!(
-            session_reasoning_effort(&models, &bindings, &efforts, Some("s1")),
-            "max"
         );
     }
 
@@ -1645,6 +1592,22 @@ pub(crate) struct Settings {
     pub(crate) notifications_enabled: bool,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct BrowserUrlFilterRule {
+    #[serde(default)]
+    pub(crate) host: String,
+    #[serde(default)]
+    pub(crate) reason: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct BrowserUrlFilters {
+    #[serde(default)]
+    pub(crate) block: Vec<BrowserUrlFilterRule>,
+    #[serde(default)]
+    pub(crate) prefer: Vec<BrowserUrlFilterRule>,
+}
+
 fn default_sync_backend() -> String {
     "relay".into()
 }
@@ -1770,8 +1733,8 @@ impl Default for Settings {
         Self {
             provider: "openai".into(),
             api_url: "https://api.deepseek.com".into(),
-            model: "deepseek-v4-pro".into(),
-            label: "deepseek-v4-pro".into(),
+            model: "deepseek-v4-flash".into(),
+            label: "deepseek-v4-flash".into(),
             has_api_key: false,
             locale: Locale::default().code().into(),
             workspace_dir: String::new(),
@@ -2776,6 +2739,20 @@ pub(crate) struct ModelForm {
     pub(crate) supports_vision: bool,
     pub(crate) use_for_vision: bool,
     pub(crate) use_for_image_generation: bool,
+}
+
+/// `model_catalog_lookup` projection of one baked catalog entry.
+#[derive(Deserialize, Clone)]
+pub(crate) struct CatalogEntryDto {
+    pub(crate) context_window: u64,
+    pub(crate) max_tokens: u64,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub(crate) input_limit: Option<u64>,
+    #[allow(dead_code)]
+    pub(crate) supports_vision: bool,
+    #[allow(dead_code)]
+    pub(crate) efforts: Vec<String>,
 }
 
 fn default_model_context_window() -> u64 {

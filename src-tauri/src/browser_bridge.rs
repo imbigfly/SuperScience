@@ -27,7 +27,10 @@ use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, 
 use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{accept_hdr_async, WebSocketStream};
+use superscience_store::Store;
 use uuid::Uuid;
+
+use crate::browser_url_filters::{self, BrowserUrlFilters};
 
 const BRIDGE_ADDR: &str = "127.0.0.1:18765";
 const EXTENSION_ORIGIN: &str = "chrome-extension://gnkjgagleagkgdlkkcianolobfdoocnp";
@@ -505,6 +508,22 @@ fn tab_id_arg(args: &Value) -> Result<Option<i64>, String> {
         .ok_or_else(|| "switch_tab_id must be an integer tab id returned by web_scan".into())
 }
 
+fn open_tab_result(tab: Value, url: &str, filters: &BrowserUrlFilters) -> Value {
+    let mut result = json!({ "tab": tab });
+    if !filters.prefer.is_empty() {
+        let preferred = filters.is_preferred(url);
+        result["preferred"] = json!(preferred);
+        if !preferred {
+            result["prefer_hosts"] = json!(filters
+                .prefer
+                .iter()
+                .map(|rule| rule.host.clone())
+                .collect::<Vec<_>>());
+        }
+    }
+    result
+}
+
 fn render_json(value: &Value) -> String {
     let rendered = serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
     if rendered.chars().count() <= MAX_RESULT_CHARS {
@@ -576,11 +595,12 @@ const TEXT_SCAN_SCRIPT: &str = r#"(() => ({
 
 pub struct BrowserSetupTool {
     bridge: Arc<BrowserBridge>,
+    store: Store,
 }
 
 impl BrowserSetupTool {
-    pub fn new(bridge: Arc<BrowserBridge>) -> Self {
-        Self { bridge }
+    pub fn new(bridge: Arc<BrowserBridge>, store: Store) -> Self {
+        Self { bridge, store }
     }
 }
 
@@ -607,7 +627,14 @@ impl Tool for BrowserSetupTool {
     }
 
     async fn run(&self, _args: &Value, _env: &dyn ToolEnv) -> ToolResult {
-        ToolResult::ok(render_json(&self.bridge.setup_info().await))
+        let mut info = self.bridge.setup_info().await;
+        let filters = browser_url_filters::load(&self.store).await;
+        info["url_filters"] = json!({
+            "block": filters.block,
+            "prefer": filters.prefer,
+            "matching": "host and subdomains; block is enforced; prefer is advisory for literature and similar tasks"
+        });
+        ToolResult::ok(render_json(&info))
     }
 }
 
@@ -707,11 +734,12 @@ impl Tool for WebScanTool {
 
 pub struct WebExecuteJsTool {
     bridge: Arc<BrowserBridge>,
+    store: Store,
 }
 
 impl WebExecuteJsTool {
-    pub fn new(bridge: Arc<BrowserBridge>) -> Self {
-        Self { bridge }
+    pub fn new(bridge: Arc<BrowserBridge>, store: Store) -> Self {
+        Self { bridge, store }
     }
 }
 
@@ -770,6 +798,10 @@ impl Tool for WebExecuteJsTool {
                 "window.close() cannot close ordinary browser tabs. Use the browser-use skill's tab command: {\"cmd\":\"tabs\",\"method\":\"close\",\"tabIds\":[...]} with tab ids returned by web_open_tab/web_scan.",
             );
         }
+        let filters = browser_url_filters::load(&self.store).await;
+        if let Some((url, rule)) = filters.blocked_navigation(script) {
+            return ToolResult::fail(browser_url_filters::block_message(&url, rule));
+        }
         let tab_id = match tab_id_arg(args) {
             Ok(tab_id) => tab_id,
             Err(error) => return ToolResult::fail(error),
@@ -795,11 +827,12 @@ impl Tool for WebExecuteJsTool {
 
 pub struct WebOpenTabTool {
     bridge: Arc<BrowserBridge>,
+    store: Store,
 }
 
 impl WebOpenTabTool {
-    pub fn new(bridge: Arc<BrowserBridge>) -> Self {
-        Self { bridge }
+    pub fn new(bridge: Arc<BrowserBridge>, store: Store) -> Self {
+        Self { bridge, store }
     }
 }
 
@@ -812,7 +845,7 @@ impl Tool for WebOpenTabTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             self.name(),
-            "Open a new tab at an http(s) URL in the user's real, persistent Chrome/Chromium session. Works even when no tab is open yet, so use this to start browsing. The result includes the new tab id; pass it as switch_tab_id to web_scan or web_execute_js to act on the new tab.",
+            "Open a new tab at an http(s) URL in the user's real, persistent Chrome/Chromium session. Works even when no tab is open yet, so use this to start browsing. The result includes the new tab id; pass it as switch_tab_id to web_scan or web_execute_js to act on the new tab. User-defined blocked hosts from Settings → Browser are refused before the tab opens. When url_filters.prefer is non-empty, prefer those hosts for literature and similar retrieval.",
             json!({
                 "type": "object",
                 "properties": {
@@ -845,9 +878,13 @@ impl Tool for WebOpenTabTool {
         if !(url.starts_with("http://") || url.starts_with("https://")) {
             return ToolResult::fail("url must be an absolute http:// or https:// address");
         }
+        let filters = browser_url_filters::load(&self.store).await;
+        if let Some(rule) = filters.blocked(url) {
+            return ToolResult::fail(browser_url_filters::block_message(url, rule));
+        }
         let active = args.get("active").and_then(Value::as_bool).unwrap_or(false);
         match self.bridge.open_tab(url, active).await {
-            Ok(tab) => ToolResult::ok(render_json(&json!({ "tab": tab }))),
+            Ok(tab) => ToolResult::ok(render_json(&open_tab_result(tab, url, &filters))),
             Err(error) => ToolResult::fail(error),
         }
     }
@@ -962,6 +999,12 @@ mod tests {
         async fn emit(&self, _event: superscience_tools::ToolEvent) {}
     }
 
+    async fn empty_store() -> (Store, PathBuf) {
+        let tmp =
+            std::env::temp_dir().join(format!("wisp_browser_tool_{}.sqlite", uuid::Uuid::new_v4()));
+        (Store::open(&tmp).await.unwrap(), tmp)
+    }
+
     #[test]
     fn manifest_key_matches_the_only_accepted_extension_origin() {
         let manifest_path = superscience_paths::browser_extension_dir()
@@ -995,27 +1038,30 @@ mod tests {
         assert!(!allowed_extension_origin(None));
     }
 
-    #[test]
-    fn page_access_tools_always_require_approval() {
+    #[tokio::test]
+    async fn page_access_tools_always_require_approval() {
         let bridge = Arc::new(BrowserBridge::new(PathBuf::from("extension")));
+        let (store, tmp) = empty_store().await;
         assert_eq!(
             WebScanTool::new(bridge.clone()).minimum_approval(),
             Approval::Ask
         );
         assert_eq!(
-            WebExecuteJsTool::new(bridge.clone()).minimum_approval(),
+            WebExecuteJsTool::new(bridge.clone(), store).minimum_approval(),
             Approval::Ask
         );
         assert_eq!(
             WebScreenshotTool::new(bridge).minimum_approval(),
             Approval::Ask
         );
+        let _ = std::fs::remove_file(tmp);
     }
 
     #[tokio::test]
     async fn execute_js_rejects_window_close_with_the_tab_command() {
         let bridge = Arc::new(BrowserBridge::new(PathBuf::from("extension")));
-        let result = WebExecuteJsTool::new(bridge)
+        let (store, tmp) = empty_store().await;
+        let result = WebExecuteJsTool::new(bridge, store)
             .run(
                 &json!({ "script": "window.close(); 'close-requested'" }),
                 &NoEnv(PathBuf::from(".")),
@@ -1024,6 +1070,7 @@ mod tests {
         assert!(!result.success);
         assert!(result.content.contains("\"method\":\"close\""));
         assert!(result.content.contains("tabIds"));
+        let _ = std::fs::remove_file(tmp);
     }
 
     #[test]
@@ -1051,6 +1098,7 @@ mod tests {
     async fn setup_reports_the_extension_folder_without_requiring_approval() {
         let extension_dir = superscience_paths::browser_extension_dir().unwrap();
         let bridge = Arc::new(BrowserBridge::new(extension_dir.clone()));
+        let (store, tmp) = empty_store().await;
         let info = bridge.setup_info().await;
         let expected_path = dunce::canonicalize(extension_dir).unwrap();
 
@@ -1084,7 +1132,7 @@ mod tests {
                 .unwrap()
                 .contains("wait for the user to confirm")
         );
-        assert!(WebExecuteJsTool::new(bridge.clone())
+        assert!(WebExecuteJsTool::new(bridge.clone(), store.clone())
             .schema()
             .function
             .description
@@ -1097,9 +1145,10 @@ mod tests {
             .unavailable_message("not connected")
             .contains(info["extension_path"].as_str().unwrap()));
         assert_eq!(
-            BrowserSetupTool::new(bridge).minimum_approval(),
+            BrowserSetupTool::new(bridge, store).minimum_approval(),
             Approval::Allow
         );
+        let _ = std::fs::remove_file(tmp);
     }
 
     #[tokio::test]
@@ -1199,6 +1248,75 @@ mod tests {
 
         let tab = running.await.unwrap().unwrap();
         assert_eq!(tab["id"], 99);
+    }
+
+    #[tokio::test]
+    async fn open_tab_and_execute_js_refuse_blocked_hosts() {
+        let bridge = Arc::new(BrowserBridge::new(PathBuf::from("extension")));
+        let (store, tmp) = empty_store().await;
+        crate::browser_url_filters::save(
+            &store,
+            BrowserUrlFilters {
+                block: vec![crate::browser_url_filters::BrowserUrlFilterRule {
+                    host: "blocked.test".into(),
+                    reason: "hijacked".into(),
+                }],
+                prefer: vec![crate::browser_url_filters::BrowserUrlFilterRule {
+                    host: "pubmed.ncbi.nlm.nih.gov".into(),
+                    reason: String::new(),
+                }],
+            },
+        )
+        .await
+        .unwrap();
+
+        let opened = WebOpenTabTool::new(bridge.clone(), store.clone())
+            .run(
+                &json!({ "url": "https://www.blocked.test/paper" }),
+                &NoEnv(PathBuf::from(".")),
+            )
+            .await;
+        assert!(!opened.success);
+        assert!(opened.content.contains("hijacked"));
+        assert!(opened.content.contains("blocked.test"));
+
+        let navigated = WebExecuteJsTool::new(bridge.clone(), store.clone())
+            .run(
+                &json!({ "script": "location.href='https://blocked.test/js'" }),
+                &NoEnv(PathBuf::from(".")),
+            )
+            .await;
+        assert!(!navigated.success);
+        assert!(navigated.content.contains("blocked by user URL filter"));
+
+        let setup = BrowserSetupTool::new(bridge, store)
+            .run(&json!({}), &NoEnv(PathBuf::from(".")))
+            .await;
+        assert!(setup.success);
+        assert!(setup.content.contains("blocked.test"));
+        assert!(setup.content.contains("pubmed.ncbi.nlm.nih.gov"));
+        let _ = std::fs::remove_file(tmp);
+    }
+
+    #[test]
+    fn open_tab_result_flags_non_preferred_hosts() {
+        let filters = BrowserUrlFilters {
+            prefer: vec![crate::browser_url_filters::BrowserUrlFilterRule {
+                host: "pubmed.ncbi.nlm.nih.gov".into(),
+                reason: String::new(),
+            }],
+            ..BrowserUrlFilters::default()
+        };
+        let flagged = open_tab_result(json!({ "id": 1 }), "https://scholar.google.com", &filters);
+        assert_eq!(flagged["preferred"], false);
+        assert_eq!(flagged["prefer_hosts"][0], "pubmed.ncbi.nlm.nih.gov");
+        let preferred = open_tab_result(
+            json!({ "id": 1 }),
+            "https://pubmed.ncbi.nlm.nih.gov/1",
+            &filters,
+        );
+        assert_eq!(preferred["preferred"], true);
+        assert!(preferred.get("prefer_hosts").is_none());
     }
 
     #[test]

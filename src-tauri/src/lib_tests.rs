@@ -831,6 +831,72 @@ fn mcp_app_presentations_are_persisted_for_session_restore() {
 }
 
 #[test]
+fn terminal_turn_events_are_persisted_for_diagnostics() {
+    assert!(should_persist_ui_event(&AgentEvent::Done {
+        frame_id: "f".into(),
+        stop_reason: None,
+        effective_max_iter: None,
+    }));
+    assert!(should_persist_ui_event(&AgentEvent::Error {
+        frame_id: "f".into(),
+        message: "api: 524 gateway timeout".into(),
+        effective_max_iter: None,
+    }));
+
+    let raw = vec![
+        serde_json::to_string(&AgentEvent::Text {
+            frame_id: "f".into(),
+            delta: "partial".into(),
+        })
+        .unwrap(),
+        serde_json::to_string(&AgentEvent::Error {
+            frame_id: "f".into(),
+            message: "api: 524 gateway timeout".into(),
+            effective_max_iter: None,
+        })
+        .unwrap(),
+    ];
+    let terminal = super::terminal_ui_events(&raw);
+    assert_eq!(terminal.len(), 1);
+    assert_eq!(terminal[0]["kind"], "Error");
+    assert_eq!(terminal[0]["message"], "api: 524 gateway timeout");
+
+    let terminal = super::terminal_ui_events(&[serde_json::to_string(&AgentEvent::Done {
+        frame_id: "f".into(),
+        stop_reason: Some("max_iterations".into()),
+        effective_max_iter: Some(20),
+    })
+    .unwrap()]);
+    assert_eq!(terminal[0]["stop_reason"], "max_iterations");
+    assert_eq!(terminal[0]["effective_max_iter"], 20);
+
+    let events = vec![AgentEvent::Error {
+        frame_id: "f".into(),
+        message: "api: 524 gateway timeout".into(),
+        effective_max_iter: None,
+    }];
+    let (items, _) = events_to_items(&events);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].role, "assistant");
+    assert_eq!(items[0].text, "Error: api: 524 gateway timeout");
+}
+
+#[tokio::test]
+async fn busy_agent_invalidation_survives_until_the_next_lock_owner() {
+    let runtime = SessionRuntime::new();
+    let mut busy = runtime.agent.lock().await;
+
+    runtime.invalidate_cached_agent();
+    assert!(runtime.discard_stale_agent(&mut busy));
+    assert!(!runtime.discard_stale_agent(&mut busy));
+
+    // A second invalidation after the first was consumed must create a new
+    // generation instead of being erased by the earlier lock owner.
+    runtime.invalidate_cached_agent();
+    assert!(runtime.discard_stale_agent(&mut busy));
+}
+
+#[test]
 fn pending_ui_event_merge_stays_bounded() {
     let frame_id = "f".to_string();
     let mut pending = Some(AgentEvent::Text {
@@ -888,6 +954,7 @@ async fn live_agent_events_merge_deltas_and_preserve_order() {
     tx.send(AgentEvent::Done {
         frame_id,
         stop_reason: None,
+        effective_max_iter: None,
     })
     .unwrap();
     drop(tx);

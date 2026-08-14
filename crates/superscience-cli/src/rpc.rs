@@ -426,7 +426,11 @@ pub async fn serve(mut agent: Agent) -> Result<()> {
                 agent.ctx.clear_runtime_injections();
                 agent.save();
                 match result {
-                    Ok(()) => output.emit(json!({"type": "turn_completed", "ok": true})),
+                    Ok(outcome) => output.emit(json!({
+                        "type": "turn_completed",
+                        "ok": true,
+                        "stop_reason": outcome.stop_reason(),
+                    })),
                     Err(error) => output.emit(json!({
                         "type": "turn_completed",
                         "ok": false,

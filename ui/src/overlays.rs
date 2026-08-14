@@ -1,7 +1,8 @@
 use crate::app_support::{
-    compose_icon, js_error_text, refresh_execution_contexts, refresh_runtimes, show_toast,
+    compose_icon, js_error_text, parse_redact_keywords, redact_text, refresh_execution_contexts,
+    refresh_runtimes, show_toast, ShareMessage, ShareRole,
 };
-use crate::bindings::{invoke_checked, open_external_url};
+use crate::bindings::{invoke_checked, open_external_url, render_share_png};
 use crate::capabilities_home::{
     CapabilityAction, CapabilityGroup, CapabilityTileGrid,
 };
@@ -202,6 +203,195 @@ pub(super) fn AddHostOverlay(
         </div>
     </div>
 }.into_view())
+    }
+}
+
+fn share_role_key(role: ShareRole) -> &'static str {
+    match role {
+        ShareRole::User => "share.role_user",
+        ShareRole::Assistant => "share.role_assistant",
+        ShareRole::Thinking => "share.role_thinking",
+    }
+}
+
+/// `/share` preview dialog: pick messages, mask keywords, export a long PNG.
+/// `draft` is root-owned (`None` = closed) so the app-level Escape stack can
+/// dismiss it in visual order.
+#[component]
+pub(super) fn ShareOverlay(
+    locale: RwSignal<Locale>,
+    draft: RwSignal<Option<Vec<ShareMessage>>>,
+) -> impl IntoView {
+    let keywords = create_rw_signal(String::new());
+    let busy = create_rw_signal(false);
+    let error = create_rw_signal(None::<String>);
+    // Render from the open flag, not the editable draft, so checkbox toggles
+    // and keyword input do not rebuild the dialog DOM and drop focus.
+    let open = create_memo(move |_| draft.with(|value| value.is_some()));
+    create_effect(move |previous: Option<bool>| {
+        let now = open.get();
+        if now && previous != Some(true) {
+            keywords.set(String::new());
+            busy.set(false);
+            error.set(None);
+        }
+        now
+    });
+    let selected_count = create_memo(move |_| {
+        draft.with(|value| {
+            value
+                .as_ref()
+                .map_or(0, |messages| messages.iter().filter(|m| m.selected).count())
+        })
+    });
+    let set_all = move |selected: bool| {
+        draft.update(|value| {
+            if let Some(messages) = value {
+                for message in messages.iter_mut() {
+                    message.selected = selected;
+                }
+            }
+        });
+    };
+    let export = move |_| {
+        let loc = locale.get_untracked();
+        let messages = draft.get_untracked().unwrap_or_default();
+        let redact = parse_redact_keywords(&keywords.get_untracked());
+        let rows: Vec<serde_json::Value> = messages
+            .iter()
+            .filter(|message| message.selected)
+            .map(|message| {
+                serde_json::json!({
+                    "kind": message.role.tag(),
+                    "label": t(loc, share_role_key(message.role)),
+                    "text": redact_text(&message.text, &redact),
+                })
+            })
+            .collect();
+        if rows.is_empty() {
+            error.set(Some(t(loc, "share.none_selected")));
+            return;
+        }
+        busy.set(true);
+        error.set(None);
+        let date = js_sys::Date::new_0().to_iso_string().as_string();
+        let stamp = date
+            .as_deref()
+            .and_then(|iso| iso.get(..10))
+            .unwrap_or("")
+            .to_string();
+        let payload = serde_json::json!({
+            "title": "wisp-science",
+            "subtitle": stamp,
+            "footer": t(loc, "share.image_footer"),
+            "messages": rows,
+        })
+        .to_string();
+        spawn_local(async move {
+            let result = async {
+                let png = render_share_png(&payload)
+                    .await?
+                    .as_string()
+                    .unwrap_or_default();
+                let args = to_value(&serde_json::json!({
+                    "pngBase64": png,
+                    "defaultName": format!("wisp-share-{stamp}.png"),
+                }))
+                .unwrap();
+                invoke_checked("save_share_image", args).await
+            }
+            .await;
+            busy.set(false);
+            match result {
+                // A string result is the saved path; null means the user
+                // cancelled the save dialog — keep the overlay open silently.
+                Ok(value) => {
+                    if let Some(path) = value.as_string().filter(|path| !path.is_empty()) {
+                        show_toast(&tf(
+                            locale.get_untracked(),
+                            "share.saved",
+                            &[("path", &path)],
+                        ));
+                        draft.set(None);
+                    }
+                }
+                Err(value) => error.set(Some(localize_backend(
+                    locale.get_untracked(),
+                    &js_error_text(value),
+                ))),
+            }
+        });
+    };
+
+    move || {
+        open.get().then(|| view! {
+            <div class="overlay">
+                <div class="modal share-modal" role="dialog" aria-modal="true"
+                    aria-labelledby="share-modal-title" data-testid="share-overlay">
+                    <div class="ps-head">
+                        <h2 id="share-modal-title">{move || t(locale.get(), "share.title")}</h2>
+                        <button type="button" class="ps-close"
+                            title=move || t(locale.get(), "share.cancel")
+                            aria-label=move || t(locale.get(), "share.cancel")
+                            on:click=move |_| draft.set(None)>
+                            {compose_icon("close")}
+                        </button>
+                    </div>
+                    <p class="hint">{move || t(locale.get(), "share.hint")}</p>
+                    <div class="share-select-row">
+                        <button type="button" class="linklike"
+                            on:click=move |_| set_all(true)>{move || t(locale.get(), "share.select_all")}</button>
+                        <button type="button" class="linklike"
+                            on:click=move |_| set_all(false)>{move || t(locale.get(), "share.select_none")}</button>
+                    </div>
+                    <div class="share-list">
+                        {move || {
+                            let loc = locale.get();
+                            let redact = parse_redact_keywords(&keywords.get());
+                            draft.get().unwrap_or_default().into_iter().enumerate().map(|(index, message)| {
+                                let row_class = format!("share-row share-{}", message.role.tag());
+                                let preview = redact_text(&message.text, &redact);
+                                view! {
+                                    <label class=row_class>
+                                        <input type="checkbox" prop:checked=message.selected
+                                            on:change=move |_| draft.update(|value| {
+                                                if let Some(messages) = value {
+                                                    if let Some(row) = messages.get_mut(index) {
+                                                        row.selected = !row.selected;
+                                                    }
+                                                }
+                                            }) />
+                                        <span class="share-role">{t(loc, share_role_key(message.role))}</span>
+                                        <span class="share-text">{preview}</span>
+                                    </label>
+                                }
+                            }).collect_view()
+                        }}
+                    </div>
+                    <label class="share-redact" for="share-redact-input">
+                        {move || t(locale.get(), "share.redact_label")}
+                        <input id="share-redact-input" autocomplete="off"
+                            placeholder=move || t(locale.get(), "share.redact_ph")
+                            prop:value=move || keywords.get()
+                            on:input=move |ev| keywords.set(event_target_value(&ev)) />
+                    </label>
+                    {move || error.get().map(|message| view! {
+                        <div class="settings-status fail">{message}</div>
+                    })}
+                    <div class="row">
+                        <button type="button" disabled=move || busy.get()
+                            on:click=move |_| draft.set(None)>{move || t(locale.get(), "share.cancel")}</button>
+                        <button type="button" class="primary" data-testid="share-export"
+                            disabled=move || busy.get() || selected_count.get() == 0
+                            on:click=export>{move || if busy.get() {
+                                t(locale.get(), "share.exporting")
+                            } else {
+                                t(locale.get(), "share.export")
+                            }}</button>
+                    </div>
+                </div>
+            </div>
+        })
     }
 }
 

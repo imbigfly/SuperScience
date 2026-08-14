@@ -208,6 +208,7 @@ pub(crate) fn compose_icon(kind: &str) -> impl IntoView {
         "expand" => view! { <path d="M15 3h6v6"/><path d="m21 3-7 7"/><path d="M9 21H3v-6"/><path d="m3 21 7-7"/> }.into_view(),
         "download" => view! { <path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/> }.into_view(),
         "upload" => view! { <path d="M12 21V9"/><path d="m7 14 5-5 5 5"/><path d="M5 3h14"/> }.into_view(),
+        "share" => view! { <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.59 13.51 6.83 3.98"/><path d="m15.41 6.51-6.83 3.98"/> }.into_view(),
         "sync" => view! { <path d="M20 7h-9"/><path d="m16 3 4 4-4 4"/><path d="M4 17h9"/><path d="m8 21-4-4 4-4"/> }.into_view(),
         "loader" => view! { <circle cx="12" cy="12" r="9" opacity="0.16"/><path d="M21 12a9 9 0 0 0-9-9"/><path d="M21 12a9 9 0 0 0-5.2-8.2" opacity="0.4"/> }.into_view(),
         "circle-alert" => view! { <circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/> }.into_view(),
@@ -249,9 +250,14 @@ pub(crate) fn compose_icon(kind: &str) -> impl IntoView {
         "moon" => view! {
             <path d="M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z"/>
         }.into_view(),
+        "eye-off" => view! { <path d="m3 3 18 18"/><path d="M10.6 10.6a2 2 0 0 0 2.8 2.8"/><path d="M9.9 4.2A10.8 10.8 0 0 1 12 4c5 0 9 5 9 8a12.4 12.4 0 0 1-2 3.7"/><path d="M6.6 6.6C4.4 8 3 10.2 3 12c0 3 4 8 9 8a10.4 10.4 0 0 0 4.2-.9"/> }.into_view(),
         "terminal" => view! { <path d="m4 17 6-5-6-5"/><path d="M12 19h8"/> }.into_view(),
         "grid" => view! { <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/> }.into_view(),
         "list" => view! { <path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/> }.into_view(),
+        "compact" => view! { <path d="M4 14h6v6"/><path d="M20 10h-6V4"/><path d="m14 10 7-7"/><path d="m3 21 7-7"/> }.into_view(),
+        "fork" => view! { <circle cx="12" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9v2c0 .6-.5 1-1 1H7c-.6 0-1-.4-1-1V9"/><path d="M12 12v3"/> }.into_view(),
+        "save" => view! { <path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"/><path d="M7 3v4a1 1 0 0 0 1 1h7"/> }.into_view(),
+        "shield" => view! { <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/> }.into_view(),
         _ => view! { <path d="M9 18l6-6-6-6"/> }.into_view(), // chevron
     };
     let size = if matches!(
@@ -455,14 +461,14 @@ pub(crate) enum QueueOp {
     Cancel(u64),
     /// Fold it into the running turn now (native sessions only).
     CutIn(u64),
-    /// Replace its text (runs with the latest when it drains).
-    Save(u64, String),
+    /// Unqueue it and restore its text to the composer.
+    Edit(u64),
     /// Swap one place earlier / later in the FIFO order (clamped at the ends).
     MoveUp(u64),
     MoveDown(u64),
 }
 
-/// Queue (#433): a queued user turn bubble with inline edit + cancel + cut-in.
+/// Queue (#433): a queued user turn bubble with edit / cancel / cut-in.
 /// `id == 0` marks a transient cut-in bubble (no controls). `can_cut_in` is
 /// false for ACP sessions, which cannot fold a message into a running turn.
 #[component]
@@ -473,72 +479,39 @@ pub(crate) fn QueuedMessage(
     on_queue: Callback<QueueOp>,
 ) -> impl IntoView {
     let locale = use_locale();
-    let editing = create_rw_signal(false);
-    let draft = create_rw_signal(text.clone());
     let show_controls = id != 0;
-    let body = text.clone();
     view! {
         <div class="role">{move || t(locale.get(), "composer.queued")}</div>
         <div class="user-bubble queued-bubble">
-            {move || if editing.get() {
-                view! {
-                    <textarea class="queue-edit" prop:value=move || draft.get()
-                        on:input=move |ev| draft.set(event_target_value(&ev))></textarea>
-                    <div class="queue-actions">
+            <div class="body">{text}</div>
+            {show_controls.then(|| view! {
+                <div class="queue-actions">
+                    <button type="button" class="tool-btn queue-move"
+                        title=move || t(locale.get(), "queue.move_up")
+                        on:click=move |_| on_queue.call(QueueOp::MoveUp(id))>
+                        {compose_icon("up")}
+                    </button>
+                    <button type="button" class="tool-btn queue-move"
+                        title=move || t(locale.get(), "queue.move_down")
+                        on:click=move |_| on_queue.call(QueueOp::MoveDown(id))>
+                        {compose_icon("chevron-down")}
+                    </button>
+                    {can_cut_in.then(|| view! {
                         <button type="button" class="tool-btn"
-                            on:click=move |_| editing.set(false)>
-                            {move || t(locale.get(), "settings.cancel")}
+                            on:click=move |_| on_queue.call(QueueOp::CutIn(id))>
+                            {move || t(locale.get(), "queue.cut_in")}
                         </button>
-                        <button type="button" class="tool-btn"
-                            on:click=move |_| {
-                                let v = draft.get();
-                                if !v.trim().is_empty() {
-                                    editing.set(false);
-                                    on_queue.call(QueueOp::Save(id, v));
-                                }
-                            }>
-                            {move || t(locale.get(), "settings.save")}
-                        </button>
-                    </div>
-                }.into_view()
-            } else {
-                let body = body.clone();
-                let edit_from = body.clone();
-                view! {
-                    <div class="body">{body}</div>
-                    {show_controls.then(|| view! {
-                        <div class="queue-actions">
-                            <button type="button" class="tool-btn queue-move"
-                                title=move || t(locale.get(), "queue.move_up")
-                                on:click=move |_| on_queue.call(QueueOp::MoveUp(id))>
-                                {compose_icon("up")}
-                            </button>
-                            <button type="button" class="tool-btn queue-move"
-                                title=move || t(locale.get(), "queue.move_down")
-                                on:click=move |_| on_queue.call(QueueOp::MoveDown(id))>
-                                {compose_icon("chevron-down")}
-                            </button>
-                            {can_cut_in.then(|| view! {
-                                <button type="button" class="tool-btn"
-                                    on:click=move |_| on_queue.call(QueueOp::CutIn(id))>
-                                    {move || t(locale.get(), "queue.cut_in")}
-                                </button>
-                            })}
-                            <button type="button" class="tool-btn"
-                                on:click={
-                                    let edit_from = edit_from.clone();
-                                    move |_| { draft.set(edit_from.clone()); editing.set(true); }
-                                }>
-                                {move || t(locale.get(), "msg.edit")}
-                            </button>
-                            <button type="button" class="tool-btn"
-                                on:click=move |_| on_queue.call(QueueOp::Cancel(id))>
-                                {move || t(locale.get(), "settings.cancel")}
-                            </button>
-                        </div>
                     })}
-                }.into_view()
-            }}
+                    <button type="button" class="tool-btn"
+                        on:click=move |_| on_queue.call(QueueOp::Edit(id))>
+                        {move || t(locale.get(), "queue.edit")}
+                    </button>
+                    <button type="button" class="tool-btn"
+                        on:click=move |_| on_queue.call(QueueOp::Cancel(id))>
+                        {move || t(locale.get(), "settings.cancel")}
+                    </button>
+                </div>
+            })}
         </div>
     }
 }

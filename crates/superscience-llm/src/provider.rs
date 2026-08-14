@@ -103,12 +103,14 @@ impl LlmError {
 pub fn is_retriable(err: &LlmError) -> bool {
     match err {
         LlmError::Api { status, body } => {
-            matches!(*status, 408 | 429 | 500 | 502 | 503 | 529)
-                || body.contains("overloaded")
-                || body.contains("rate_limit")
-                || body.contains("1305")
-                || body.contains("too many requests")
-                || body.contains("访问量过大")
+            let lower = body.to_ascii_lowercase();
+            matches!(*status, 408 | 429)
+                || (500..=599).contains(status)
+                || lower.contains("overloaded")
+                || lower.contains("rate_limit")
+                || lower.contains("1305")
+                || lower.contains("too many requests")
+                || lower.contains("访问量过大")
         }
         LlmError::Http(e) => e.is_timeout() || e.is_connect() || e.is_request(),
         _ => false,
@@ -160,7 +162,14 @@ pub struct ProviderConfig {
 pub(crate) fn http_client(cfg: &ProviderConfig) -> reqwest::Client {
     let mut b = reqwest::Client::builder()
         .user_agent("superscience")
-        .timeout(std::time::Duration::from_secs(300));
+        // A total request timeout also caps a healthy, actively streaming SSE
+        // response. Long agent turns therefore used to die at five minutes
+        // even while bytes were still arriving. Bound connection setup and
+        // each individual read instead: active streams may run as long as
+        // needed, while a silent/broken socket still becomes a retriable
+        // reqwest timeout.
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .read_timeout(std::time::Duration::from_secs(300));
     match cfg.proxy.as_deref().map(str::trim) {
         None | Some("") => {}
         Some("none") => b = b.no_proxy(),
@@ -392,5 +401,26 @@ mod tests {
             body: "rate_limit".into()
         }
         .is_context_overflow());
+    }
+
+    #[test]
+    fn transient_gateway_statuses_are_retried() {
+        for status in [500, 503, 504, 520, 522, 524, 529, 599] {
+            assert!(
+                is_retriable(&LlmError::Api {
+                    status,
+                    body: "gateway failure".into(),
+                }),
+                "status {status} should be retriable"
+            );
+        }
+        assert!(is_retriable(&LlmError::Api {
+            status: 400,
+            body: "OVERLOADED upstream".into(),
+        }));
+        assert!(!is_retriable(&LlmError::Api {
+            status: 400,
+            body: "invalid request".into(),
+        }));
     }
 }

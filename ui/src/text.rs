@@ -73,15 +73,16 @@ pub(crate) fn provider_value(provider: &str) -> &'static str {
     }
 }
 
-/// Cheap DeepSeek tier onboarding adds next to the default (pro) model, so a
-/// first-run user has something to switch to for reading-heavy work.
+/// Default DeepSeek chat model for new profiles. Flash is the cheaper tier
+/// after the v4-pro price increase; pro stays available as an explicit add.
 pub(crate) const DEEPSEEK_FLASH_MODEL: &str = "deepseek-v4-flash";
+pub(crate) const DEEPSEEK_PRO_MODEL: &str = "deepseek-v4-pro";
 
 pub(crate) fn provider_defaults(provider: &str) -> (&'static str, &'static str) {
     match provider_value(provider) {
         "anthropic" => ("https://api.anthropic.com", "claude-sonnet-5"),
         "openai_responses" => ("https://api.openai.com/v1", "gpt-5.5"),
-        _ => ("https://api.deepseek.com", "deepseek-v4-pro"),
+        _ => ("https://api.deepseek.com", DEEPSEEK_FLASH_MODEL),
     }
 }
 
@@ -808,10 +809,7 @@ mod artifact_group_tests {
             source_item: 0,
             superseded: false,
         };
-        assert_eq!(
-            artifact_group_key(&snapshot, r"D:\project"),
-            "results/"
-        );
+        assert_eq!(artifact_group_key(&snapshot, r"D:\project"), "results/");
     }
 
     #[test]
@@ -1835,5 +1833,18 @@ mod md_catalog_tests {
             (Some("tool.badge.skill"), "use_skill".to_string())
         );
         assert_eq!(tool_card_label("shell", "ls"), (None, "shell".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod provider_defaults_tests {
+    use super::{provider_defaults, DEEPSEEK_FLASH_MODEL};
+
+    #[test]
+    fn openai_compatible_defaults_to_deepseek_flash() {
+        assert_eq!(
+            provider_defaults("openai"),
+            ("https://api.deepseek.com", DEEPSEEK_FLASH_MODEL)
+        );
     }
 }

@@ -24,22 +24,26 @@ does not change model context, exports, artifacts, or the saved transcript.
 SuperScience calls remote LLM APIs through model profiles. Desktop users
 configure these in **Settings -> Models**. Each row is a model profile with its
 own display name, provider, API URL, model ID, advanced options, and API key.
-For recognized model families the form auto-fills **Max output tokens** and
-**Context window** to the vendor's documented ceilings, and saving a max-output
-value above the documented ceiling is rejected with an inline error instead of
-failing mid-turn with a provider 400.
+A models.dev catalog baked in at build time maps exact model IDs to the
+vendor's documented ceilings: for a catalog-known model the form auto-fills
+**Max output tokens** and **Context window** and shows the ceiling next to the
+inputs. Saving a max-output value above the documented ceiling is rejected with
+an inline error instead of failing mid-turn with a provider 400, and a context
+window above the ceiling is clamped down on save. Models absent from the
+catalog keep manually entered values.
 
 The composer model picker binds the selected HTTP model to the current
 conversation. Switching one populated conversation asks for confirmation and
 does not change any other conversation. Empty conversations switch immediately
 without a warning. The active profile in Settings remains the default for new
-conversations. The reasoning-effort selector in the same menu is also scoped to
-the current conversation: changing it overrides that conversation's model
-profile without editing the profile or affecting other conversations. A new
-conversation inherits the reasoning effort configured on its model profile.
-The selector lists the effort levels the bound model family is documented to
-support (same curated list as the model form in Settings), and choosing
-"default" clears the conversation override so it follows the profile again.
+conversations. Hovering a model row in the picker overlays the reasoning effort
+inside the model information area without reserving a separate column, and
+reveals its **Edit** button. The button opens a flyout to the right of the model
+menu listing the effort levels the model family is documented to support (same
+curated list as the model form in Settings).
+Choosing a level saves it as the profile's default — it applies to every
+conversation using that model and is not scoped to the current conversation.
+Choosing "default" clears the value so the provider decides.
 
 Model profiles describe model access and capabilities for the **built-in SuperScience
 agent**. External coding agents (Codex / Claude via ACP) are configured under
@@ -134,17 +138,24 @@ questions are not generated for that interrupted turn.
 default. Following mangopi-cli's model-boundary approach, SuperScience checks the
 estimated context before every native-agent model call, including later calls
 after large tool results and ephemeral host/reviewer injections. At 80% it
-archives the complete pre-compact history and targets 60%, leaving headroom so
-the next ordinary result does not immediately trigger another rewrite. Older
-tool output, reasoning, and images are safely pruned first without shortening
-user messages or visible assistant answers; oversized recent tool payloads
-become bounded excerpts that point to the archive. If semantic turns must be
-removed, SuperScience summarizes a sanitized projection of the original history before
-deleting them, then retains one incrementally updated summary checkpoint plus
-at most two recent turns in an 8K-token tail. Raw images and large tool results
-are not replayed to the summary model. The internal summary instruction is
-never added to the conversation, and a failed compaction rolls back the rewrite
-and stops before SuperScience can send the known-oversized main request. Tool
+archives the complete pre-compact history and targets the trigger minus an
+adaptive headroom (twice the measured per-iteration growth, at least ~16K
+tokens, at most 20% of the window), so slow conversations keep more context
+while fast tool loops still land well clear of the next trigger. Older tool
+output, reasoning, and images are safely pruned first without shortening user
+messages or visible assistant answers — protection is counted in agent rounds
+(user messages and tool-call batches), so a single instruction followed by
+hundreds of tool calls still leaves old rounds prunable; oversized recent tool
+payloads become bounded excerpts that point to the archive. If semantic turns
+must be removed, SuperScience summarizes a sanitized projection of the original
+history before deleting them, then retains one incrementally updated summary
+checkpoint plus at most two recent turns in an 8K-token tail. Raw images and
+large tool results are not replayed to the summary model. The internal summary
+instruction is never added to the conversation, and a failed compaction rolls
+back the rewrite and stops before SuperScience can send the known-oversized main
+request; after such a failure, automatic retries are suppressed until the
+estimate grows by another tenth of the window, so a doomed compaction is not
+repaid at every model boundary. Tool
 results are also capped to a 16 KiB head/tail excerpt when they enter model
 context (the full result is still shown in the tool event), preventing one
 read, grep, browser, or MCP response from consuming the whole window. Each
@@ -213,7 +224,7 @@ The `superscience` headless CLI uses environment variables and supports API prov
 ```powershell
 $env:SUPERSCIENCE_PROVIDER = "openai"           # openai, openai_responses, or anthropic
 $env:SUPERSCIENCE_API_URL  = "https://api.deepseek.com"
-$env:SUPERSCIENCE_MODEL    = "deepseek-v4-pro"
+$env:SUPERSCIENCE_MODEL    = "deepseek-v4-flash"
 $env:SUPERSCIENCE_API_KEY  = "<your provider key>"
 
 The headless CLI reads `SUPERSCIENCE_*`. The desktop shell currently still

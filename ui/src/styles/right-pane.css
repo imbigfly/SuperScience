@@ -101,7 +101,7 @@
 .run-command { margin-top:6px; min-width:0; overflow:hidden; color:var(--text-muted); font:11.5px/1.45 var(--font-mono); white-space:pre-wrap; overflow-wrap:anywhere; }
 .context-meta { font-family:var(--font-mono); }
 .run-remote { display:flex; align-items:baseline; gap:6px; margin-top:6px; min-width:0; color:var(--text-faint); font-size:11px; }
-.run-remote code { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-muted); }
+.run-remote code { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-muted); font-family:var(--font-mono); }
 .run-output { margin-top:8px; font-size:11.5px; color:var(--text-muted); }
 .run-output summary { cursor:pointer; user-select:none; }
 .run-output pre { max-height:220px; margin:6px 0 0; padding:9px 10px; overflow:auto; border:1px solid var(--border); border-radius:var(--radius-xs); background:var(--bg-sunken); color:var(--text); font:11px/1.45 var(--font-mono); white-space:pre-wrap; overflow-wrap:anywhere; }
@@ -143,15 +143,15 @@ button.run-status:hover { filter:brightness(0.96); }
 .method-search-detail-head strong { font-size:12px; }
 .method-search-loading { color:var(--text-faint); font-size:11.5px; }
 .method-search-approval { display:flex; flex-direction:column; gap:8px; padding:9px; border:1px solid color-mix(in srgb, var(--ok) 24%, var(--border)); border-radius:var(--radius-sm); background:var(--bg-elev); }
-.method-search-status-row code, .method-search-integrity code { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-faint); font-size:9.5px; }
+.method-search-status-row code, .method-search-integrity code { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-faint); font-family:var(--font-mono); font-size:9.5px; }
 .method-search-approval > p { margin:0; color:var(--text-muted); font-size:11.5px; line-height:1.45; }
 .method-search-contract-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; margin:0; }
 .method-search-contract-grid > div { min-width:0; padding:6px; border:1px solid var(--border); border-radius:var(--radius-xs); background:var(--bg-sunken); }
 .method-search-contract-grid dt { color:var(--text-faint); font-size:9.5px; }
 .method-search-contract-grid dd { min-width:0; margin:2px 0 0; overflow:hidden; text-overflow:ellipsis; color:var(--text); font-size:10.5px; }
-.method-search-contract-grid code { font-size:9.5px; }
+.method-search-contract-grid code { font-family:var(--font-mono); font-size:9.5px; }
 .method-search-tags > span { color:var(--text-faint); font-size:10px; }
-.method-search-tags code { padding:2px 6px; border:1px solid var(--border); border-radius:999px; color:var(--text-muted); font-size:9.5px; }
+.method-search-tags code { padding:2px 6px; border:1px solid var(--border); border-radius:999px; color:var(--text-muted); font-family:var(--font-mono); font-size:9.5px; }
 .method-search-findings { margin:0; padding-left:18px; color:var(--text-muted); font-size:10.5px; line-height:1.5; }
 .method-search-actions { padding-top:2px; }
 .method-search-actions button { min-height:27px; padding:4px 9px; font-size:10.5px; }
@@ -164,7 +164,7 @@ button.run-status:hover { filter:brightness(0.96); }
 .method-search-lineage summary { cursor:pointer; font-weight:600; }
 .method-search-lineage > div { display:flex; max-height:220px; flex-direction:column; gap:5px; margin-top:6px; overflow:auto; }
 .method-search-lineage article { display:flex; align-items:center; flex-wrap:wrap; gap:5px; padding:6px; border:1px solid var(--border); border-radius:var(--radius-xs); background:var(--bg-elev); }
-.method-search-lineage article code { font-size:9px; }
+.method-search-lineage article code { font-family:var(--font-mono); font-size:9px; }
 .method-search-lineage article strong { margin-left:auto; font:10px/1.4 var(--font-mono); color:var(--text); }
 .method-search-lineage article p { flex-basis:100%; margin:0; line-height:1.4; }
 .method-search-integrity { color:var(--text-faint); font-size:9px; }

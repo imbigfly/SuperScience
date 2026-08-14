@@ -12,6 +12,7 @@
 - Standalone CTAs use `.btn-primary` / `.btn-ghost` from `ui/src/styles/base.css`.
 - Toolbar rows that already own chrome (modal/settings `.row`, plugin toolbar, plan/approval actions, file retry) use `button.primary` for the filled clay look; do not redefine clay fills per surface.
 - Do not use bare `button.primary` for sidebar nav — `.side-btn.primary` is a soft affordance, not a filled CTA.
+- Toggle switches use the shared softened clay track and light thumb; keep the full accent fill for primary actions instead of making settings switches visually compete with them.
 
 ## Spacing, type, and radius
 
@@ -27,6 +28,9 @@
 
 ## Composer attachments and references
 
+- The composer keeps its top-edge resize affordance invisible at rest while preserving the full-width drag target and persisted custom height.
+- Context usage sits immediately left of the model picker as a number-free gauge; its needle sweeps from upper-left to upper-right as the active conversation fills its context window.
+- Context-usage category rows use semantic elevated, sunken, hover, and accent tokens rather than native button fills, so every light and dark palette keeps the panel visually consistent.
 - Files, images, skills, artifacts, conversations, execution environments, and runtime references must remain visually distinguishable before and after send.
 - Image attachments use a real thumbnail when the project file is readable. Other files use a document card with a filename and type label.
 - Persisted transcript markers such as `Uploaded files:` and `Selected skills:` are transport metadata. The chat UI renders them as cards instead of exposing the raw marker text.

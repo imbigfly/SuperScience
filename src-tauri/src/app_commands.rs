@@ -262,6 +262,55 @@ pub(super) async fn download_file(
     Ok(Some(dest_path.to_string_lossy().into_owned()))
 }
 
+/// Keep only a safe file-name component for the share-image save dialog.
+pub(super) fn share_image_file_name(default_name: &str) -> String {
+    std::path::Path::new(default_name)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty() && *name != "." && *name != ".." && !name.contains('\0'))
+        .map(|name| name.to_string())
+        .unwrap_or_else(|| "wisp-share.png".to_string())
+}
+
+// Generous ceiling for one long conversation image (base64 of ~48 MB PNG).
+const MAX_SHARE_PNG_BASE64_BYTES: usize = 64 * 1024 * 1024;
+
+/// Save a frontend-rendered `/share` PNG through the native save dialog.
+/// Returns the saved path, or `None` when the user cancels.
+#[tauri::command]
+pub(super) async fn save_share_image(
+    app: AppHandle,
+    png_base64: String,
+    default_name: String,
+) -> Result<Option<String>, String> {
+    use base64::Engine;
+    use tauri_plugin_dialog::DialogExt;
+    if png_base64.len() > MAX_SHARE_PNG_BASE64_BYTES {
+        return Err("share image exceeds the size limit".into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(png_base64.trim())
+        .map_err(|e| format!("invalid base64: {e}"))?;
+    if bytes.is_empty() {
+        return Err("share image is empty".into());
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_file_name(&share_image_file_name(&default_name))
+        .save_file(move |p| {
+            let _ = tx.send(p);
+        });
+    let Some(dest) = rx.await.map_err(|e| format!("{e}"))? else {
+        return Ok(None); // user cancelled
+    };
+    let dest_path = std::path::PathBuf::from(dest.to_string());
+    tokio::fs::write(&dest_path, bytes)
+        .await
+        .map_err(|e| format!("write failed: {e}"))?;
+    Ok(Some(dest_path.to_string_lossy().into_owned()))
+}
+
 #[tauri::command]
 pub(super) async fn get_capabilities(
     state: State<'_, AppState>,
@@ -467,4 +516,21 @@ pub(super) async fn dismiss_onboarding(state: State<'_, AppState>) -> Result<(),
         .set_setting("onboarding_done", "1")
         .await
         .map_err(|e| format!("{e}"))
+}
+
+#[cfg(test)]
+mod share_image_tests {
+    use super::share_image_file_name;
+
+    #[test]
+    fn keeps_only_a_safe_file_name_component() {
+        assert_eq!(
+            share_image_file_name("wisp-share-2026-08-14.png"),
+            "wisp-share-2026-08-14.png"
+        );
+        assert_eq!(share_image_file_name("../../etc/passwd"), "passwd");
+        assert_eq!(share_image_file_name("/tmp/evil/name.png"), "name.png");
+        assert_eq!(share_image_file_name(""), "wisp-share.png");
+        assert_eq!(share_image_file_name(".."), "wisp-share.png");
+    }
 }

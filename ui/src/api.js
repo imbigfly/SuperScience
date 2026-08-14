@@ -165,6 +165,141 @@ export async function crop_region_to_upload(hostId, left, top, width, height) {
   return String(path);
 }
 
+// --- /share long-image renderer -------------------------------------------
+
+const SHARE_WIDTH = 720;
+const SHARE_SCALE = 2;
+const SHARE_PAD = 28;
+const SHARE_BUBBLE_PAD = 14;
+const SHARE_GAP = 18;
+const SHARE_LINE_HEIGHT = 22;
+const SHARE_FONT = '15px system-ui, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif';
+const SHARE_LABEL_FONT = '11px system-ui, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif';
+
+/** Greedy wrap that measures with the canvas font; breaks at the last space
+ * when one exists in the overflowing run, else mid-run (CJK has no spaces). */
+function shareWrapLine(ctx, line, maxWidth) {
+  if (!line) return [""];
+  const out = [];
+  let current = "";
+  let lastSpace = -1;
+  for (const ch of line) {
+    const next = current + ch;
+    if (current && ctx.measureText(next).width > maxWidth) {
+      if (lastSpace > 0) {
+        out.push(current.slice(0, lastSpace));
+        current = current.slice(lastSpace).replace(/^\s+/, "") + ch;
+      } else {
+        out.push(current);
+        current = ch === " " ? "" : ch;
+      }
+      lastSpace = current.lastIndexOf(" ") + 1 || -1;
+    } else {
+      current = next;
+      if (ch === " ") lastSpace = current.length;
+    }
+  }
+  out.push(current);
+  return out;
+}
+
+function shareLayout(ctx, messages, maxTextWidth) {
+  return messages.map((message) => {
+    ctx.font = SHARE_FONT;
+    const lines = String(message.text).split("\n")
+      .flatMap((line) => shareWrapLine(ctx, line, maxTextWidth));
+    const width = Math.ceil(Math.max(
+      60,
+      ...lines.map((line) => ctx.measureText(line).width),
+    ));
+    const height = lines.length * SHARE_LINE_HEIGHT + SHARE_BUBBLE_PAD * 2;
+    return { ...message, lines, width, height };
+  });
+}
+
+function shareRoundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  if (ctx.roundRect) {
+    ctx.roundRect(x, y, w, h, r);
+  } else {
+    ctx.rect(x, y, w, h);
+  }
+}
+
+/**
+ * Draw the selected conversation messages as one tall PNG and return it as a
+ * base64 string (no data-URL prefix). Payload: {title, subtitle, footer,
+ * messages: [{kind: "user"|"assistant"|"thinking", label, text}]}.
+ * @param {string} payloadJson
+ */
+export async function render_share_png(payloadJson) {
+  const payload = JSON.parse(payloadJson);
+  const messages = Array.isArray(payload.messages) ? payload.messages : [];
+  const measure = document.createElement("canvas").getContext("2d");
+  if (!measure) throw new Error("Canvas is not available");
+  measure.font = SHARE_FONT;
+
+  const maxTextWidth = SHARE_WIDTH - SHARE_PAD * 2 - SHARE_BUBBLE_PAD * 2 - 64;
+  const laid = shareLayout(measure, messages, maxTextWidth);
+  const headerHeight = 78;
+  const footerHeight = 46;
+  // Each bubble adds its label row (16px) above the bubble body.
+  const bodyHeight = laid.reduce((sum, m) => sum + m.height + 16 + SHARE_GAP, 0);
+  const totalHeight = headerHeight + bodyHeight + footerHeight;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = SHARE_WIDTH * SHARE_SCALE;
+  canvas.height = totalHeight * SHARE_SCALE;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas is not available");
+  ctx.scale(SHARE_SCALE, SHARE_SCALE);
+
+  ctx.fillStyle = "#f6f7f9";
+  ctx.fillRect(0, 0, SHARE_WIDTH, totalHeight);
+
+  ctx.fillStyle = "#1d2733";
+  ctx.font = '600 19px system-ui, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif';
+  ctx.fillText(String(payload.title || ""), SHARE_PAD, 40);
+  ctx.fillStyle = "#71808f";
+  ctx.font = SHARE_LABEL_FONT;
+  ctx.fillText(String(payload.subtitle || ""), SHARE_PAD, 60);
+
+  let y = headerHeight;
+  for (const message of laid) {
+    const user = message.kind === "user";
+    const thinking = message.kind === "thinking";
+    const bubbleWidth = message.width + SHARE_BUBBLE_PAD * 2;
+    const x = user ? SHARE_WIDTH - SHARE_PAD - bubbleWidth : SHARE_PAD;
+
+    ctx.font = SHARE_LABEL_FONT;
+    ctx.fillStyle = "#8a97a5";
+    const labelWidth = ctx.measureText(message.label).width;
+    ctx.fillText(message.label, user ? SHARE_WIDTH - SHARE_PAD - labelWidth : SHARE_PAD, y + 10);
+    y += 16;
+
+    ctx.fillStyle = user ? "#2f6fed" : thinking ? "#eef0f3" : "#ffffff";
+    ctx.strokeStyle = thinking ? "#dfe3e8" : "rgba(29, 39, 51, 0.08)";
+    shareRoundRect(ctx, x, y, bubbleWidth, message.height, 12);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = user ? "#ffffff" : thinking ? "#71808f" : "#1d2733";
+    ctx.font = thinking ? `italic ${SHARE_FONT}` : SHARE_FONT;
+    message.lines.forEach((line, i) => {
+      ctx.fillText(line, x + SHARE_BUBBLE_PAD, y + SHARE_BUBBLE_PAD + 15 + i * SHARE_LINE_HEIGHT);
+    });
+    y += message.height + SHARE_GAP;
+  }
+
+  ctx.fillStyle = "#8a97a5";
+  ctx.font = SHARE_LABEL_FONT;
+  ctx.fillText(String(payload.footer || ""), SHARE_PAD, totalHeight - 18);
+
+  const dataUrl = canvas.toDataURL("image/png");
+  const comma = dataUrl.indexOf(",");
+  return comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+}
+
 /** Attach an uploaded crop, optionally returning from its preview to chat. */
 export function attach_cropped_region(path, jumpToChat) {
   window.dispatchEvent(new CustomEvent("superscience:region-attach", {

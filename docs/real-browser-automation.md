@@ -84,13 +84,18 @@ These settings must be changed manually because internal settings pages such as
 ## Agent tools
 
 - `browser_setup`: report bridge status, the exact bundled extension directory,
-  and one-time installation steps. It does not read browser page content and
-  does not require approval.
+  one-time installation steps, and the user's URL filter lists (`url_filters`).
+  It does not read browser page content and does not require approval.
 - `web_scan`: list real browser tabs, extract page text, or return a compact
   snapshot of visible actionable elements and selectors.
 - `web_execute_js`: execute JavaScript in the selected real tab. It also accepts
   a JSON `{ "cmd": "cdp", ... }` request for a single Chrome DevTools Protocol
   method when trusted browser input or another CDP-only action is required.
+  Navigational JSON/JS that targets a blocked host is refused.
+- `web_open_tab`: open an HTTP(S) tab. Blocked hosts from
+  **Settings → Browser** are refused before the tab opens. When a prefer list
+  is set, a successful result includes `preferred` so literature tasks can stay
+  on those sites.
 - `web_screenshot`: capture the visible viewport of the selected real tab as a
   JPEG and read it with the configured vision model, for rendered layout,
   charts, canvas/WebGL pages, QR codes, or a page that looks wrong. It captures
@@ -119,3 +124,8 @@ HTTP(S) tab in that Chrome profile.
   approved CDP `Input.*` command when a site requires trusted input.
 - SuperScience and GenericAgent's TMWebDriver use the same default port. Run only one
   bridge server on port `18765` at a time.
+- **Settings → Browser** stores global host block and prefer lists. A blocked
+  host (and its subdomains) cannot be opened or navigated to through
+  `web_open_tab` or an explicit navigational `web_execute_js` script. Prefer
+  hosts are advisory. Indirect JavaScript navigation can still change the
+  current tab; `web_scan` of an already-open tab is not blocked.

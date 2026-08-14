@@ -138,12 +138,19 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && !inputs.publish
         uses: actions/upload-artifact@v4
         with:
-          projectPath: src-tauri
-          tauriScript: cargo tauri
-          tagName: ${{ env.RELEASE_TAG }}
-          releaseName: superscience ${{ env.RELEASE_TAG }}
-          releaseBody: ${{ steps.notes.outputs.body }}
-          releaseDraft: false
+          name: signed-installers-${{ env.RELEASE_TAG }}
+          path: |
+            target/release/bundle/msi/*.msi
+            target/release/bundle/nsis/*.exe
+
+      - name: Publish GitHub release
+        if: github.event_name != 'workflow_dispatch' || inputs.publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: superscience ${{ env.RELEASE_TAG }}
+          body: ${{ steps.notes.outputs.body }}
+          draft: false
           prerelease: false
           fail_on_unmatched_files: true
           files: |
