@@ -27,7 +27,8 @@ Artifact 溯源。
 
 按小 PR 交付，每个 PR 一个持久抽象，各自带迁移、工具、测试。PR 1→2→3→4 有依赖顺序
 （存储偏好为上传与取回提供目标位置；清理必须以取回确认为前置；撤回清理复用清理执行
-路径）；PR 5 是收尾策略层，可独立。
+路径）；PR 5（完成审查 modal）依赖 PR 1 的下载注册与 PR 3 的安全删除；PR 6 是收尾
+策略层，可独立。
 
 所有测试禁止真实 SSH/网络：远端行为用现有 `RunCommandRunner` fake、临时目录和
 mocked Tauri 命令覆盖。迁移同时改 `crates/wisp-store/migrations/`（新编号文件）和
@@ -188,7 +189,7 @@ cd ../ui-tests && npm ci && npx playwright test
   仍在写入的目录。
 - UI：run 详情/RunMonitorCard 增加"清理服务器文件"操作与已清理状态显示（图标走
   `compose_icon()` 新 kind）；`get_run_detail`/`list_runs` DTO 带出新字段。
-- Agent 提示：`monitor_run` 成功返回文案中提示可清理（不自动清理，自动化留给 PR 5）。
+- Agent 提示：`monitor_run` 成功返回文案中提示可清理（不自动清理，自动化留给 PR 6）。
 
 ### 接口
 
@@ -288,7 +289,60 @@ cd ui && cargo check --target wasm32-unknown-unknown
 cd ../ui-tests && npx playwright test
 ```
 
-## PR 5：保留策略 —— 成功任务自动清理（收尾，可选）
+## PR 5：任务完成审查 modal —— 按需下载与按需删除
+
+**用户问题：** 远程任务完成后，用户应能在一个 modal 里看到服务器上产生的文件，
+自主选择下载哪些（也可以不下载）、删除哪些（也可以不删），而不是只有"全自动
+harvest + 整目录清理"两个极端。
+
+### 设计
+
+- 新增 `list_run_workspace_files` Tauri 命令：通过 `sh -s` 通道在 `remote_workdir`
+  内 `find` 枚举文件（相对路径、字节数、mtime），只读不改。local/WSL 走本地遍历。
+- 新增 `download_run_files` 命令：给定 run 内相对路径列表，复用 PR 1 的
+  收集/`scp -r`/checksum 通道下载到 `<local_results_dir>/<run_id>/`，并按
+  `path:<relative>` logical key 注册为 ArtifactVersion + `run_outputs`（与 harvest
+  同一注册路径）；进度写 `progress_json`，UI 复用现有传输进度条。
+- 新增 `delete_run_files` 命令：给定相对路径列表，逐一校验解析后仍位于
+  `<remote_workdir_root>/<run_id>` 内（拒绝 `..`、绝对路径、symlink 逃逸），复用
+  PR 3 的删除通道；全目录删除仍走 `cleanup_run_workspace`。
+- Modal（UI）：run 进入终态后，RunMonitorCard/run 详情出现"结果与清理"操作打开
+  modal；当前会话内前台监控的 run 完成时自动打开一次。内容：
+  - 文件列表 + 复选框，命中 `output_specs` 的项预勾选并标注"已自动取回"状态；
+  - "下载所选"（可跳过）；"删除所选 / 清理整个工作目录"（可跳过）；关闭即什么都不做。
+  - modal 加入窗口级 Escape 栈（root-owned）；下载/删除进行中禁用重复提交。
+- Guard 交互：modal 内用户显式发起的删除视为用户确认，允许在未 harvest 时删除
+  （PR 3 的 harvested-before-clean 前置仅约束 agent/自动路径）；删除前 UI 明确
+  提示未下载的文件将丢失。
+- 下载后文件同步登记进 PR 4 的 `remote_staging` 视图不需要（工作目录文件由 run
+  生命周期覆盖）；删除成功后刷新列表，全目录清理后 modal 显示已清理状态。
+
+### 接口
+
+```rust
+list_run_workspace_files { run_id } -> Vec<{ path, size_bytes, mtime }>
+download_run_files { run_id, paths } -> Vec<HarvestedArtifact>
+delete_run_files { run_id, paths }
+```
+
+### 测试
+
+- fake runner：枚举 manifest 解析；下载注册 ArtifactVersion/run_outputs 且 checksum
+  校验失败时不注册；删除命令路径约束（`..`/绝对路径/越界被拒）。
+- 未 harvest 的 succeeded run：agent 路径清理仍被拒，modal 用户路径允许。
+- 终态才允许枚举/下载/删除；running run 拒绝。
+- UI Playwright：run 完成 → modal 自动打开一次；Escape 一次只关 modal 且 run 详情
+  保持打开；勾选下载显示进度；不下载直接删除有丢失警告；全部跳过关闭无副作用。
+
+### 验证
+
+```bash
+cargo test -p wisp-science-desktop run_files
+cd ui && cargo check --target wasm32-unknown-unknown
+cd ../ui-tests && npm ci && npx playwright test
+```
+
+## PR 6：保留策略 —— 成功任务自动清理（收尾，可选）
 
 **用户问题：** 用户不应手动清理每个任务；成功且已取回的任务应按项目策略自动回收
 远端空间。
