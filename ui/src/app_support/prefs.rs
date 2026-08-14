@@ -297,3 +297,153 @@ pub(crate) fn save_sidebar_w(w: f64) {
         let _ = s.set_item(SIDEBAR_W_KEY, &w.to_string());
     }
 }
+
+/// Docked sits in the composer column. Floating is a free window the user
+/// dragged off the dock. Last mode is in-memory only: a restart always
+/// reopens docked, while saved geometry is reused the next time it undocks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ContextUsageMode {
+    #[default]
+    Docked,
+    Floating,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ContextUsageGeom {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+pub(crate) const CONTEXT_USAGE_MIN_W: f64 = 320.0;
+
+pub(crate) const CONTEXT_USAGE_MIN_H: f64 = 220.0;
+
+pub(crate) const CONTEXT_USAGE_MARGIN: f64 = 8.0;
+
+pub(crate) const CONTEXT_USAGE_DEFAULT_W: f64 = 420.0;
+
+pub(crate) const CONTEXT_USAGE_DEFAULT_H: f64 = 360.0;
+
+const CONTEXT_USAGE_X_KEY: &str = "wisp-context-usage-x";
+const CONTEXT_USAGE_Y_KEY: &str = "wisp-context-usage-y";
+const CONTEXT_USAGE_W_KEY: &str = "wisp-context-usage-w";
+const CONTEXT_USAGE_H_KEY: &str = "wisp-context-usage-h";
+
+pub(crate) fn clamp_context_usage_geom(
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    viewport_w: f64,
+    viewport_h: f64,
+) -> ContextUsageGeom {
+    let max_w = (viewport_w - 2.0 * CONTEXT_USAGE_MARGIN).max(1.0);
+    let max_h = (viewport_h - 2.0 * CONTEXT_USAGE_MARGIN).max(1.0);
+    let w = w.clamp(CONTEXT_USAGE_MIN_W.min(max_w), max_w);
+    let h = h.clamp(CONTEXT_USAGE_MIN_H.min(max_h), max_h);
+    let max_x = (viewport_w - w).max(0.0);
+    let max_y = (viewport_h - h).max(0.0);
+    ContextUsageGeom {
+        x: x.clamp(0.0, max_x),
+        y: y.clamp(0.0, max_y),
+        w,
+        h,
+    }
+}
+
+pub(crate) fn viewport_size() -> (f64, f64) {
+    web_sys::window()
+        .map(|window| {
+            let width = window
+                .inner_width()
+                .ok()
+                .and_then(|value| value.as_f64())
+                .unwrap_or(1280.0);
+            let height = window
+                .inner_height()
+                .ok()
+                .and_then(|value| value.as_f64())
+                .unwrap_or(800.0);
+            (width, height)
+        })
+        .unwrap_or((1280.0, 800.0))
+}
+
+pub(crate) fn load_context_usage_geom() -> Option<ContextUsageGeom> {
+    let storage = web_sys::window()?.local_storage().ok().flatten()?;
+    let x = storage
+        .get_item(CONTEXT_USAGE_X_KEY)
+        .ok()
+        .flatten()?
+        .parse()
+        .ok()?;
+    let y = storage
+        .get_item(CONTEXT_USAGE_Y_KEY)
+        .ok()
+        .flatten()?
+        .parse()
+        .ok()?;
+    let w = storage
+        .get_item(CONTEXT_USAGE_W_KEY)
+        .ok()
+        .flatten()?
+        .parse()
+        .ok()?;
+    let h = storage
+        .get_item(CONTEXT_USAGE_H_KEY)
+        .ok()
+        .flatten()?
+        .parse()
+        .ok()?;
+    let (viewport_w, viewport_h) = viewport_size();
+    Some(clamp_context_usage_geom(x, y, w, h, viewport_w, viewport_h))
+}
+
+pub(crate) fn save_context_usage_geom(geom: ContextUsageGeom) {
+    if let Some(storage) =
+        web_sys::window().and_then(|window| window.local_storage().ok().flatten())
+    {
+        let _ = storage.set_item(CONTEXT_USAGE_X_KEY, &geom.x.to_string());
+        let _ = storage.set_item(CONTEXT_USAGE_Y_KEY, &geom.y.to_string());
+        let _ = storage.set_item(CONTEXT_USAGE_W_KEY, &geom.w.to_string());
+        let _ = storage.set_item(CONTEXT_USAGE_H_KEY, &geom.h.to_string());
+    }
+}
+
+#[cfg(test)]
+mod context_usage_geom_tests {
+    use super::{
+        clamp_context_usage_geom, CONTEXT_USAGE_MARGIN, CONTEXT_USAGE_MIN_H, CONTEXT_USAGE_MIN_W,
+    };
+
+    #[test]
+    fn clamp_keeps_the_panel_inside_the_viewport() {
+        let geom = clamp_context_usage_geom(2000.0, 1500.0, 480.0, 300.0, 800.0, 600.0);
+        assert_eq!(geom.w, 480.0);
+        assert_eq!(geom.h, 300.0);
+        assert_eq!(geom.x, 800.0 - 480.0);
+        assert_eq!(geom.y, 600.0 - 300.0);
+    }
+
+    #[test]
+    fn clamp_enforces_minimums_unless_the_window_is_smaller() {
+        let geom = clamp_context_usage_geom(10.0, 10.0, 100.0, 80.0, 1280.0, 800.0);
+        assert_eq!(geom.w, CONTEXT_USAGE_MIN_W);
+        assert_eq!(geom.h, CONTEXT_USAGE_MIN_H);
+        assert_eq!(geom.x, 10.0);
+        assert_eq!(geom.y, 10.0);
+    }
+
+    #[test]
+    fn clamp_shrinks_below_minimums_on_a_tiny_window() {
+        let geom = clamp_context_usage_geom(-40.0, -20.0, 500.0, 400.0, 280.0, 200.0);
+        let max_w = 280.0 - 2.0 * CONTEXT_USAGE_MARGIN;
+        let max_h = 200.0 - 2.0 * CONTEXT_USAGE_MARGIN;
+        assert_eq!(geom.w, max_w);
+        assert_eq!(geom.h, max_h);
+        assert_eq!(geom.x, 0.0);
+        assert_eq!(geom.y, 0.0);
+    }
+}

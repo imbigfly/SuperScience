@@ -236,6 +236,165 @@ fn request_turn_memory_proposal(
     });
 }
 
+const CONTEXT_USAGE_DRAG_THRESHOLD: f64 = 8.0;
+
+fn context_usage_event_target(ev: &web_sys::MouseEvent) -> Option<web_sys::Element> {
+    ev.target()
+        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
+}
+
+fn context_usage_panel_el() -> Option<web_sys::Element> {
+    web_sys::window()?
+        .document()?
+        .query_selector("[data-testid='context-usage-panel']")
+        .ok()
+        .flatten()
+}
+
+fn event_inside_selector(ev: &web_sys::MouseEvent, selector: &str) -> bool {
+    context_usage_event_target(ev)
+        .and_then(|element| element.closest(selector).ok().flatten())
+        .is_some()
+}
+
+#[component]
+fn ContextUsagePanel(
+    snapshot: ContextUsageSnapshot,
+    floating: bool,
+    locale: ReadSignal<Locale>,
+    context_usage_open: RwSignal<bool>,
+    context_usage_details: RwSignal<Option<ContextUsageDetails>>,
+    context_usage_detail_open: RwSignal<Option<String>>,
+    context_usage_geom: RwSignal<Option<ContextUsageGeom>>,
+    on_header_down: Callback<web_sys::MouseEvent>,
+    on_header_dblclick: Callback<web_sys::MouseEvent>,
+    on_dock: Callback<()>,
+    on_resize_start: Callback<web_sys::MouseEvent>,
+) -> impl IntoView {
+    let loc = locale.get();
+    let pct = context_percent(snapshot.used, snapshot.max);
+    let used = fmt_context_tokens(snapshot.used);
+    let total = if snapshot.max == 0 {
+        tf(loc, "context_usage.total_used", &[("used", &used)])
+    } else {
+        let max = fmt_context_limit(snapshot.max);
+        tf(
+            loc,
+            if snapshot.estimated {
+                "context_usage.total_estimated"
+            } else {
+                "context_usage.total_exact"
+            },
+            &[("used", &used), ("max", &max)],
+        )
+    };
+    let rows = context_usage_rows(&snapshot, loc);
+    let segments = rows.clone();
+    let denominator = snapshot.max.max(snapshot.used).max(1);
+    let mode = if floating { "floating" } else { "docked" };
+    view! {
+        <section id="context-usage-panel" class="context-usage-panel"
+            class:is-docked=!floating
+            class:is-floating=floating
+            data-testid="context-usage-panel"
+            data-mode=mode
+            role="dialog"
+            aria-labelledby="context-usage-title"
+            style=move || {
+                if !floating {
+                    String::new()
+                } else if let Some(geom) = context_usage_geom.get() {
+                    format!(
+                        "left:{}px;top:{}px;width:{}px;height:{}px;--context-usage-h:{}px",
+                        geom.x, geom.y, geom.w, geom.h, geom.h
+                    )
+                } else {
+                    String::new()
+                }
+            }>
+            <div class="context-usage-head" data-testid="context-usage-head"
+                on:mousedown=move |ev| on_header_down.call(ev)
+                on:dblclick=move |ev| on_header_dblclick.call(ev)>
+                <h2 id="context-usage-title">{t(loc, "context_usage.title")}</h2>
+                <div class="context-usage-head-actions">
+                    {floating.then(|| view! {
+                        <button type="button" class="context-usage-dock"
+                            data-testid="context-usage-dock"
+                            title=t(loc, "context_usage.dock")
+                            aria-label=t(loc, "context_usage.dock")
+                            on:click=move |_| on_dock.call(())>
+                            {compose_icon("dock")}
+                        </button>
+                    })}
+                    <button type="button" class="context-usage-close"
+                        title=t(loc, "context_usage.close")
+                        aria-label=t(loc, "context_usage.close")
+                        on:click=move |_| context_usage_open.set(false)>
+                        {compose_icon("close")}
+                    </button>
+                </div>
+            </div>
+            <div class="context-usage-summary">
+                <span>{tf(loc, "context_usage.full", &[("pct", &pct.to_string())])}</span>
+                <span>{total}</span>
+            </div>
+            <div class="context-usage-bar" role="img"
+                aria-label=tf(loc, "context_usage.full", &[("pct", &pct.to_string())])>
+                {segments.into_iter().filter(|row| row.tokens > 0).map(|row| {
+                    let width = row.tokens as f64 * 100.0 / denominator as f64;
+                    view! {
+                        <span class=format!("context-usage-segment {}", row.color)
+                            style=format!("width:{width:.4}%")></span>
+                    }
+                }).collect_view()}
+            </div>
+            <div class="context-usage-list">
+                {rows.into_iter().map(|row| {
+                    let expandable = row.color != "conversation";
+                    let color = row.color.to_string();
+                    let detail_color = color.clone();
+                    let open_color = color.clone();
+                    view! {
+                        <div class="context-usage-item">
+                            <button type="button" class="context-usage-row"
+                                class:expandable=expandable
+                                disabled=!expandable
+                                aria-expanded=move || (expandable && context_usage_detail_open.get().as_deref() == Some(open_color.as_str())).to_string()
+                                on:click=move |_| {
+                                    if expandable {
+                                        context_usage_detail_open.update(|active| {
+                                            *active = (active.as_deref() != Some(color.as_str())).then(|| color.clone());
+                                        });
+                                    }
+                                }>
+                                <span class=format!("context-usage-swatch {}", row.color)
+                                    aria-hidden="true"></span>
+                                <span class="context-usage-label">{row.label}</span>
+                                <span class="context-usage-value">{fmt_context_tokens(row.tokens)}</span>
+                                {expandable.then(|| view! { <span class="context-usage-chevron">{"⌄"}</span> })}
+                            </button>
+                            {move || (context_usage_detail_open.get().as_deref() == Some(detail_color.as_str())).then(|| {
+                                let content = context_usage_details.get()
+                                    .map(|details| context_usage_detail_text(&details, &detail_color))
+                                    .unwrap_or_else(|| t(locale.get(), "context_usage.loading").into());
+                                view! { <pre class="context-usage-detail">{content}</pre> }
+                            })}
+                        </div>
+                    }
+                }).collect_view()}
+            </div>
+            {floating.then(|| view! {
+                <button type="button" class="context-usage-resize"
+                    data-testid="context-usage-resize"
+                    title=t(loc, "context_usage.resize")
+                    aria-label=t(loc, "context_usage.resize")
+                    on:mousedown=move |ev| on_resize_start.call(ev)>
+                </button>
+            })}
+        </section>
+    }
+}
+
 #[component]
 fn App() -> impl IntoView {
     let locale = create_rw_signal(Locale::detect_browser());
@@ -546,6 +705,22 @@ fn App() -> impl IntoView {
     let acp_context_usage =
         create_rw_signal::<HashMap<String, ContextUsageSnapshot>>(HashMap::new());
     let context_usage_open = create_rw_signal(false);
+    let context_usage_mode = create_rw_signal(ContextUsageMode::Docked);
+    let context_usage_geom = create_rw_signal(load_context_usage_geom());
+    let context_usage_dragging = create_rw_signal(false);
+    let context_usage_tracking = create_rw_signal(false);
+    let context_usage_resizing = create_rw_signal(false);
+    let context_usage_drag_origin = create_rw_signal((0.0_f64, 0.0_f64));
+    let context_usage_grab = create_rw_signal((0.0_f64, 0.0_f64));
+    let context_usage_resize_origin = create_rw_signal((0.0_f64, 0.0_f64));
+    let context_usage_resize_start = create_rw_signal(ContextUsageGeom {
+        x: 0.0,
+        y: 0.0,
+        w: CONTEXT_USAGE_DEFAULT_W,
+        h: CONTEXT_USAGE_DEFAULT_H,
+    });
+    let context_usage_passed_threshold = create_rw_signal(false);
+    let context_usage_suppress_click = create_rw_signal(false);
     let context_usage_details = create_rw_signal::<Option<ContextUsageDetails>>(None);
     let context_usage_detail_open = create_rw_signal::<Option<String>>(None);
     let active_context_usage = create_memo(move |_| {
@@ -579,6 +754,23 @@ fn App() -> impl IntoView {
         context_usage_open.set(false);
         context_usage_details.set(None);
         context_usage_detail_open.set(None);
+    });
+    create_effect(move |_| {
+        let open = context_usage_open.get();
+        let docked = context_usage_mode.get() == ContextUsageMode::Docked;
+        // Wait for the slot to enter/leave the layout. Docked open pins the
+        // latest reply against the panel (B2); close/undock keep the existing
+        // follow helper so a scrolled-up reading position is not yanked.
+        set_timeout(
+            move || {
+                if open && docked {
+                    force_chat_bottom();
+                } else {
+                    schedule_chat_follow();
+                }
+            },
+            std::time::Duration::from_millis(0),
+        );
     });
     // An ACP Agent can only bind an empty frame. When the picker creates that
     // frame on demand, retain the intended selection while the async binding
@@ -6269,6 +6461,163 @@ fn App() -> impl IntoView {
         }
     };
 
+    let on_context_usage_header_down = Callback::new(move |ev: web_sys::MouseEvent| {
+        if ev.button() != 0 || event_inside_selector(&ev, "button") {
+            return;
+        }
+        let x = ev.client_x() as f64;
+        let y = ev.client_y() as f64;
+        context_usage_tracking.set(true);
+        context_usage_passed_threshold.set(false);
+        context_usage_drag_origin.set((x, y));
+        if let Some(panel) = context_usage_panel_el() {
+            let rect = panel.get_bounding_client_rect();
+            context_usage_grab.set((x - rect.x(), y - rect.y()));
+            if context_usage_geom.get_untracked().is_none() {
+                context_usage_geom.set(Some(ContextUsageGeom {
+                    x: rect.x(),
+                    y: rect.y(),
+                    w: rect.width(),
+                    h: rect.height(),
+                }));
+            }
+        }
+    });
+    let on_context_usage_header_dblclick = Callback::new(move |ev: web_sys::MouseEvent| {
+        if event_inside_selector(&ev, "button") {
+            return;
+        }
+        if context_usage_mode.get_untracked() == ContextUsageMode::Floating {
+            context_usage_mode.set(ContextUsageMode::Docked);
+        }
+    });
+    let on_context_usage_dock = Callback::new(move |()| {
+        context_usage_mode.set(ContextUsageMode::Docked);
+    });
+    let on_context_usage_drag_move = move |ev: web_sys::MouseEvent| {
+        if !context_usage_tracking.get() && !context_usage_dragging.get() {
+            return;
+        }
+        let x = ev.client_x() as f64;
+        let y = ev.client_y() as f64;
+        let (origin_x, origin_y) = context_usage_drag_origin.get();
+        let dx = x - origin_x;
+        let dy = y - origin_y;
+        if !context_usage_passed_threshold.get() {
+            if (dx * dx + dy * dy).sqrt() < CONTEXT_USAGE_DRAG_THRESHOLD {
+                return;
+            }
+            context_usage_passed_threshold.set(true);
+            context_usage_dragging.set(true);
+            if context_usage_mode.get_untracked() == ContextUsageMode::Docked {
+                let (grab_x, grab_y) = context_usage_grab.get_untracked();
+                let (width, height) = context_usage_geom
+                    .get_untracked()
+                    .map(|geom| (geom.w, geom.h))
+                    .or_else(|| {
+                        context_usage_panel_el().map(|panel| {
+                            let rect = panel.get_bounding_client_rect();
+                            (rect.width(), rect.height())
+                        })
+                    })
+                    .unwrap_or((CONTEXT_USAGE_DEFAULT_W, CONTEXT_USAGE_DEFAULT_H));
+                let (viewport_w, viewport_h) = viewport_size();
+                context_usage_geom.set(Some(clamp_context_usage_geom(
+                    x - grab_x,
+                    y - grab_y,
+                    width,
+                    height,
+                    viewport_w,
+                    viewport_h,
+                )));
+                context_usage_mode.set(ContextUsageMode::Floating);
+            }
+        }
+        if context_usage_mode.get_untracked() != ContextUsageMode::Floating {
+            return;
+        }
+        let (grab_x, grab_y) = context_usage_grab.get_untracked();
+        let (width, height) = context_usage_geom
+            .get_untracked()
+            .map(|geom| (geom.w, geom.h))
+            .unwrap_or((CONTEXT_USAGE_DEFAULT_W, CONTEXT_USAGE_DEFAULT_H));
+        let (viewport_w, viewport_h) = viewport_size();
+        context_usage_geom.set(Some(clamp_context_usage_geom(
+            x - grab_x,
+            y - grab_y,
+            width,
+            height,
+            viewport_w,
+            viewport_h,
+        )));
+    };
+    let on_context_usage_drag_end = move |_| {
+        if !context_usage_tracking.get() && !context_usage_dragging.get() {
+            return;
+        }
+        let moved = context_usage_passed_threshold.get();
+        context_usage_tracking.set(false);
+        context_usage_dragging.set(false);
+        if moved {
+            if let Some(geom) = context_usage_geom.get() {
+                save_context_usage_geom(geom);
+            }
+            context_usage_suppress_click.set(true);
+        }
+        context_usage_passed_threshold.set(false);
+    };
+    let on_context_usage_resize_start = Callback::new(move |ev: web_sys::MouseEvent| {
+        if ev.button() != 0 {
+            return;
+        }
+        ev.prevent_default();
+        ev.stop_propagation();
+        let geom = context_usage_panel_el()
+            .map(|panel| {
+                let rect = panel.get_bounding_client_rect();
+                ContextUsageGeom {
+                    x: rect.x(),
+                    y: rect.y(),
+                    w: rect.width(),
+                    h: rect.height(),
+                }
+            })
+            .or_else(|| context_usage_geom.get_untracked());
+        let Some(geom) = geom else {
+            return;
+        };
+        context_usage_geom.set(Some(geom));
+        context_usage_resizing.set(true);
+        context_usage_resize_origin.set((ev.client_x() as f64, ev.client_y() as f64));
+        context_usage_resize_start.set(geom);
+    });
+    let on_context_usage_resize_move = move |ev: web_sys::MouseEvent| {
+        if !context_usage_resizing.get() {
+            return;
+        }
+        let start = context_usage_resize_start.get();
+        let (origin_x, origin_y) = context_usage_resize_origin.get();
+        let (viewport_w, viewport_h) = viewport_size();
+        context_usage_geom.set(Some(clamp_context_usage_geom(
+            start.x,
+            start.y,
+            start.w + ev.client_x() as f64 - origin_x,
+            start.h + ev.client_y() as f64 - origin_y,
+            viewport_w,
+            viewport_h,
+        )));
+    };
+    let on_context_usage_resize_end = move |_| {
+        if !context_usage_resizing.get() {
+            return;
+        }
+        context_usage_resizing.set(false);
+        if let Some(geom) = context_usage_geom.get() {
+            save_context_usage_geom(geom);
+        }
+        context_usage_suppress_click.set(true);
+    };
+
     let open_files = move |_| {
         ensure_right_tab(RightTab::File, show_right, open_right_tabs, right_tab);
         refresh_active_file_dir(
@@ -6938,9 +7287,8 @@ fn App() -> impl IntoView {
                             if let Ok(value) =
                                 invoke_checked("get_context_storage_prefs", args).await
                             {
-                                if let Ok(prefs) = serde_wasm_bindgen::from_value::<
-                                    ContextStoragePrefsView,
-                                >(value)
+                                if let Ok(prefs) =
+                                    serde_wasm_bindgen::from_value::<ContextStoragePrefsView>(value)
                                 {
                                     if !prefs.confirmed {
                                         let label = execution_contexts
@@ -6950,9 +7298,9 @@ fn App() -> impl IntoView {
                                             .map(|context| context.label)
                                             .filter(|label| !label.trim().is_empty())
                                             .unwrap_or_else(|| prefs_context_id.clone());
-                                        storage_prefs_form.set(Some(
-                                            StoragePrefsForm::from_view(prefs, label, true),
-                                        ));
+                                        storage_prefs_form.set(Some(StoragePrefsForm::from_view(
+                                            prefs, label, true,
+                                        )));
                                     }
                                 }
                             }
@@ -8181,6 +8529,51 @@ fn App() -> impl IntoView {
                 return;
             }
             el = n.parent_element();
+        }
+    });
+
+    // Docked panel dismisses on an outside click, but the click itself must
+    // still land (caret in the input, session switch, inspector toggle).
+    window_event_listener(ev::click, move |ev| {
+        if context_usage_suppress_click.get_untracked() {
+            context_usage_suppress_click.set(false);
+            return;
+        }
+        if !context_usage_open.get_untracked()
+            || context_usage_mode.get_untracked() != ContextUsageMode::Docked
+            || context_usage_dragging.get_untracked()
+            || context_usage_resizing.get_untracked()
+        {
+            return;
+        }
+        if event_inside_selector(&ev, "[data-testid='context-usage-panel']")
+            || event_inside_selector(&ev, "[data-testid='context-usage-trigger']")
+        {
+            return;
+        }
+        context_usage_open.set(false);
+    });
+
+    window_event_listener(ev::mousemove, move |ev| {
+        if context_usage_tracking.get() || context_usage_dragging.get() {
+            on_context_usage_drag_move(ev);
+        }
+    });
+    window_event_listener(ev::mouseup, move |ev| {
+        if context_usage_tracking.get() || context_usage_dragging.get() {
+            on_context_usage_drag_end(ev);
+        }
+    });
+
+    window_event_listener(ev::resize, move |_| {
+        let Some(geom) = context_usage_geom.get_untracked() else {
+            return;
+        };
+        let (viewport_w, viewport_h) = viewport_size();
+        let clamped =
+            clamp_context_usage_geom(geom.x, geom.y, geom.w, geom.h, viewport_w, viewport_h);
+        if clamped != geom {
+            context_usage_geom.set(Some(clamped));
         }
     });
 
@@ -11116,6 +11509,32 @@ fn App() -> impl IntoView {
                         </div>
                     </div>
                 })}
+                {move || {
+                    let Some(snapshot) = active_context_usage.get() else {
+                        return None;
+                    };
+                    (context_usage_open.get()
+                        && context_usage_mode.get() == ContextUsageMode::Docked)
+                        .then(|| {
+                            view! {
+                                <div class="context-usage-slot">
+                                    <ContextUsagePanel
+                                        snapshot=snapshot
+                                        floating=false
+                                        locale=locale.read_only()
+                                        context_usage_open=context_usage_open
+                                        context_usage_details=context_usage_details
+                                        context_usage_detail_open=context_usage_detail_open
+                                        context_usage_geom=context_usage_geom
+                                        on_header_down=on_context_usage_header_down
+                                        on_header_dblclick=on_context_usage_header_dblclick
+                                        on_dock=on_context_usage_dock
+                                        on_resize_start=on_context_usage_resize_start
+                                    />
+                                </div>
+                            }
+                        })
+                }}
                 <div class="composer-inner"
                     class:composer-dragover=move || drag_over.get()
                     on:dragover=on_drag_over
@@ -12590,105 +13009,6 @@ fn App() -> impl IntoView {
                                 t(locale.get(), "composer.hint").into()
                             }
                         }}</div>
-                        {move || active_context_usage.get().map(|snapshot| {
-                            let panel_snapshot = snapshot.clone();
-                            view! {
-                                <div class="context-usage-wrap">
-                                    {move || context_usage_open.get().then(|| {
-                                        let snapshot = panel_snapshot.clone();
-                                        let loc = locale.get();
-                                        let pct = context_percent(snapshot.used, snapshot.max);
-                                        let used = fmt_context_tokens(snapshot.used);
-                                        let total = if snapshot.max == 0 {
-                                            tf(loc, "context_usage.total_used", &[("used", &used)])
-                                        } else {
-                                            let max = fmt_context_limit(snapshot.max);
-                                            tf(
-                                                loc,
-                                                if snapshot.estimated {
-                                                    "context_usage.total_estimated"
-                                                } else {
-                                                    "context_usage.total_exact"
-                                                },
-                                                &[("used", &used), ("max", &max)],
-                                            )
-                                        };
-                                        let rows = context_usage_rows(&snapshot, loc);
-                                        let segments = rows.clone();
-                                        let denominator = snapshot.max.max(snapshot.used).max(1);
-                                        view! {
-                                            <div class="context-usage-backdrop"
-                                                aria-hidden="true"
-                                                on:click=move |_| context_usage_open.set(false)></div>
-                                            <section id="context-usage-panel" class="context-usage-panel"
-                                                data-testid="context-usage-panel"
-                                                role="dialog" aria-modal="true"
-                                                aria-labelledby="context-usage-title"
-                                                on:click=|event| event.stop_propagation()>
-                                                <div class="context-usage-head">
-                                                    <h2 id="context-usage-title">{t(loc, "context_usage.title")}</h2>
-                                                    <button type="button" class="context-usage-close"
-                                                        title=t(loc, "context_usage.close")
-                                                        aria-label=t(loc, "context_usage.close")
-                                                        on:click=move |_| context_usage_open.set(false)>
-                                                        {compose_icon("close")}
-                                                    </button>
-                                                </div>
-                                                <div class="context-usage-summary">
-                                                    <span>{tf(loc, "context_usage.full", &[("pct", &pct.to_string())])}</span>
-                                                    <span>{total}</span>
-                                                </div>
-                                                <div class="context-usage-bar" role="img"
-                                                    aria-label=tf(loc, "context_usage.full", &[("pct", &pct.to_string())])>
-                                                    {segments.into_iter().filter(|row| row.tokens > 0).map(|row| {
-                                                        let width = row.tokens as f64 * 100.0 / denominator as f64;
-                                                        view! {
-                                                            <span class=format!("context-usage-segment {}", row.color)
-                                                                style=format!("width:{width:.4}%")></span>
-                                                        }
-                                                    }).collect_view()}
-                                                </div>
-                                                <div class="context-usage-list">
-                                                    {rows.into_iter().map(|row| {
-                                                        let expandable = row.color != "conversation";
-                                                        let color = row.color.to_string();
-                                                        let detail_color = color.clone();
-                                                        let open_color = color.clone();
-                                                        view! {
-                                                            <div class="context-usage-item">
-                                                                <button type="button" class="context-usage-row"
-                                                                    class:expandable=expandable
-                                                                    disabled=!expandable
-                                                                    aria-expanded=move || (expandable && context_usage_detail_open.get().as_deref() == Some(open_color.as_str())).to_string()
-                                                                    on:click=move |_| {
-                                                                        if expandable {
-                                                                            context_usage_detail_open.update(|active| {
-                                                                                *active = (active.as_deref() != Some(color.as_str())).then(|| color.clone());
-                                                                            });
-                                                                        }
-                                                                    }>
-                                                                    <span class=format!("context-usage-swatch {}", row.color)
-                                                                        aria-hidden="true"></span>
-                                                                    <span class="context-usage-label">{row.label}</span>
-                                                                    <span class="context-usage-value">{fmt_context_tokens(row.tokens)}</span>
-                                                                    {expandable.then(|| view! { <span class="context-usage-chevron">{"⌄"}</span> })}
-                                                                </button>
-                                                                {move || (context_usage_detail_open.get().as_deref() == Some(detail_color.as_str())).then(|| {
-                                                                    let content = context_usage_details.get()
-                                                                        .map(|details| context_usage_detail_text(&details, &detail_color))
-                                                                        .unwrap_or_else(|| t(locale.get(), "context_usage.loading").into());
-                                                                    view! { <pre class="context-usage-detail">{content}</pre> }
-                                                                })}
-                                                            </div>
-                                                        }
-                                                    }).collect_view()}
-                                                </div>
-                                            </section>
-                                        }
-                                    })}
-                                </div>
-                            }
-                        })}
                     </div>
                 </div>
             </div>
@@ -14192,6 +14512,31 @@ fn App() -> impl IntoView {
         </Show>
         </div>
 
+        {move || {
+            let Some(snapshot) = active_context_usage.get() else {
+                return None;
+            };
+            (context_usage_open.get()
+                && context_usage_mode.get() == ContextUsageMode::Floating)
+                .then(|| {
+                    view! {
+                        <ContextUsagePanel
+                            snapshot=snapshot
+                            floating=true
+                            locale=locale.read_only()
+                            context_usage_open=context_usage_open
+                            context_usage_details=context_usage_details
+                            context_usage_detail_open=context_usage_detail_open
+                            context_usage_geom=context_usage_geom
+                            on_header_down=on_context_usage_header_down
+                            on_header_dblclick=on_context_usage_header_dblclick
+                            on_dock=on_context_usage_dock
+                            on_resize_start=on_context_usage_resize_start
+                        />
+                    }
+                })
+        }}
+
         {move || dragging.get().then(|| view! {
             <div class="drag-overlay"
                 on:mousemove=on_resize_move
@@ -14220,6 +14565,18 @@ fn App() -> impl IntoView {
             <div class="drag-overlay drag-overlay-row"
                 on:mousemove=on_terminal_resize_move
                 on:mouseup=move |_| terminal_dragging.set(false)></div>
+        })}
+
+        {move || context_usage_dragging.get().then(|| view! {
+            <div class="drag-overlay context-usage-move"
+                on:mousemove=on_context_usage_drag_move
+                on:mouseup=on_context_usage_drag_end></div>
+        })}
+
+        {move || context_usage_resizing.get().then(|| view! {
+            <div class="drag-overlay context-usage-resize-overlay"
+                on:mousemove=on_context_usage_resize_move
+                on:mouseup=on_context_usage_resize_end></div>
         })}
 
         <BranchMergeOverlay

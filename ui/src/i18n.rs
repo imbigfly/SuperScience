@@ -1739,6 +1739,8 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "context_usage.total_used") => Some("{used} Tokens"),
         (Locale::En, "context_usage.open") => Some("Open context usage"),
         (Locale::En, "context_usage.close") => Some("Close context usage"),
+        (Locale::En, "context_usage.dock") => Some("Dock panel"),
+        (Locale::En, "context_usage.resize") => Some("Resize panel"),
         (Locale::En, "context_usage.system_prompt") => Some("System prompt"),
         (Locale::En, "context_usage.tool_definitions") => Some("Tool definitions"),
         (Locale::En, "context_usage.rules") => Some("Rules"),
@@ -3967,6 +3969,8 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "context_usage.total_used") => Some("{used} Tokens"),
         (Locale::Zh, "context_usage.open") => Some("查看上下文用量"),
         (Locale::Zh, "context_usage.close") => Some("关闭上下文用量"),
+        (Locale::Zh, "context_usage.dock") => Some("停靠面板"),
+        (Locale::Zh, "context_usage.resize") => Some("调整面板大小"),
         (Locale::Zh, "context_usage.system_prompt") => Some("系统提示词"),
         (Locale::Zh, "context_usage.tool_definitions") => Some("工具定义"),
         (Locale::Zh, "context_usage.rules") => Some("规则"),
@@ -4991,6 +4995,14 @@ mod queue_label_tests {
         // Sent-message rewind keeps its own label.
         assert_eq!(t(Locale::Zh, "msg.edit"), "回溯");
         assert_eq!(t(Locale::En, "msg.edit"), "Rewind");
+    }
+
+    #[test]
+    fn context_usage_dock_and_resize_labels_exist_in_both_locales() {
+        assert_eq!(t(Locale::En, "context_usage.dock"), "Dock panel");
+        assert_eq!(t(Locale::Zh, "context_usage.dock"), "停靠面板");
+        assert_eq!(t(Locale::En, "context_usage.resize"), "Resize panel");
+        assert_eq!(t(Locale::Zh, "context_usage.resize"), "调整面板大小");
     }
 }
 

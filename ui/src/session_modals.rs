@@ -2,9 +2,9 @@ use crate::app_support::{
     compose_icon, js_error_text, show_toast, FileEntryModal, FolderModal, SessionTransfer,
     SessionTransferMode,
 };
-use crate::i18n::localize_backend;
 use crate::bindings::invoke_checked;
 use crate::dto::*;
+use crate::i18n::localize_backend;
 use crate::i18n::{t, tf, Locale};
 use crate::text::{
     dom_value, event_target_checked, event_target_value, md_document_to_html, parent_path,
@@ -625,12 +625,13 @@ pub(crate) fn ProjSettingsOverlay(
             return;
         }
         spawn_local(async move {
-            if let Ok(value) =
-                invoke_checked("get_project_run_retention", wasm_bindgen::JsValue::UNDEFINED).await
+            if let Ok(value) = invoke_checked(
+                "get_project_run_retention",
+                wasm_bindgen::JsValue::UNDEFINED,
+            )
+            .await
             {
-                if let Ok(retention) =
-                    serde_wasm_bindgen::from_value::<serde_json::Value>(value)
-                {
+                if let Ok(retention) = serde_wasm_bindgen::from_value::<serde_json::Value>(value) {
                     let field = |key: &str| {
                         retention
                             .get(key)
