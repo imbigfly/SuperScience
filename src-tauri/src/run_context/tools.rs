@@ -125,6 +125,40 @@ impl Tool for RunInContextTool {
             Ok(req) => req,
             Err(e) => return ToolResult::fail(format!("run_in_context args error: {e}")),
         };
+        if crate::exploration_isolation::is_host_local_context(&request.context_id) {
+            let scope = match self.frame_id.as_deref() {
+                Some(frame_id) => match self.store.frame_state_scope(frame_id).await {
+                    Ok(Some(scope)) => scope,
+                    Ok(None) => {
+                        return ToolResult::fail(
+                            "run_in_context could not resolve the conversation scope",
+                        )
+                        .stop_batch()
+                    }
+                    Err(error) => {
+                        return ToolResult::fail(format!(
+                            "run_in_context could not resolve the conversation scope: {error}"
+                        ))
+                        .stop_batch()
+                    }
+                },
+                None => wisp_store::StateScope::mainline(self.project_id.clone()),
+            };
+            match crate::exploration_isolation::boundary_for_scope(&self.store, &scope).await {
+                Ok(Some(boundary)) => {
+                    if let Err(error) = boundary.check_local_source(&request.command) {
+                        return ToolResult::fail(error).stop_batch();
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    return ToolResult::fail(format!(
+                        "run_in_context could not establish the exploration boundary: {error}"
+                    ))
+                    .stop_batch()
+                }
+            }
+        }
         if let Err(error) = crate::ssh_guard::preflight_shell(&request.command) {
             return ToolResult::fail(format!(
                 "{error} For server-to-server copies, use `transfer_between_contexts`; use \

@@ -109,6 +109,11 @@ pub trait Output: Send + Sync {
     /// Fired once per producing tool call that wrote ≥1 file, with the code,
     /// result text, and diffed inputs/outputs. Default: no-op (CLI ignores it).
     fn provenance(&self, _rec: &crate::provenance::ProvenanceRecord) {}
+    /// Hard host-owned boundary checked before free-form source reaches a
+    /// local shell or language runtime.
+    fn preflight_local_execution(&self, _source: &str) -> Result<(), String> {
+        Ok(())
+    }
     /// Optional shell preflight (e.g. block free-form SSH after a prior failure).
     fn preflight_shell(&self, _cmd: &str) -> Result<(), String> {
         Ok(())
@@ -192,6 +197,9 @@ impl<'a> wisp_tools::ToolEnv for ToolEnvAdapter<'a> {
     }
     fn cancel_flag(&self) -> Option<&std::sync::atomic::AtomicBool> {
         self.cancel
+    }
+    async fn preflight_local_execution(&self, source: &str) -> Result<(), String> {
+        self.out.preflight_local_execution(source)
     }
     async fn preflight_shell(&self, cmd: &str) -> Result<(), String> {
         self.out.preflight_shell(cmd)

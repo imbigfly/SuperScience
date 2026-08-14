@@ -1470,6 +1470,26 @@ mod tests {
         assert!(!denied.success);
         assert_eq!(denied.control, wisp_tools::ToolControl::StopBatch);
         assert!(prompts.lock().unwrap()[0].contains("cannot be rolled back"));
+        let denied_mainline_run = wisp_tools::Tool::run(
+            &external_tool,
+            &serde_json::json!({
+                "context_id": "local",
+                "command": format!("cat '{}'", project.join("baseline.txt").display())
+            }),
+            &DenyExternalRunEnv {
+                root: PathBuf::from(&first.workspace_dir),
+                prompts: prompts.clone(),
+            },
+        )
+        .await;
+        assert!(!denied_mainline_run.success);
+        assert_eq!(
+            denied_mainline_run.control,
+            wisp_tools::ToolControl::StopBatch
+        );
+        assert!(denied_mainline_run
+            .content
+            .contains("exploration_scope_violation"));
         std::fs::write(project.join("later.txt"), b"later mainline result").unwrap();
         let later_mainline_version = service
             .store

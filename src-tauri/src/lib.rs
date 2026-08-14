@@ -39,6 +39,7 @@ mod device_bridge;
 mod device_hub;
 mod dynamic_workflow;
 mod exploration_commands;
+mod exploration_isolation;
 mod exploration_promotion;
 mod exploration_workspace;
 mod file_browser;
@@ -2593,6 +2594,10 @@ struct TauriOutput {
     model: String,
     project_id: String,
     project_root: PathBuf,
+    /// Exploration reads/searches must stay inside their materialized root.
+    restrict_read_paths_to_project: bool,
+    /// Hard local execution boundary; absent for ordinary mainline sessions.
+    exploration_isolation: Option<exploration_isolation::ExplorationIsolationBoundary>,
     store: Store,
     resource_leases: resource_leases::ProjectResourceCoordinator,
     cancel: Arc<AtomicBool>,
@@ -2920,6 +2925,9 @@ impl Output for TauriOutput {
             .map(|p| p.mode_for(tool))
             .unwrap_or(wisp_tools::Approval::Allow)
     }
+    fn restrict_read_paths_to_project(&self) -> bool {
+        self.restrict_read_paths_to_project
+    }
     fn acquire_tool_resources<'a>(
         &'a self,
         tool: &'a str,
@@ -3007,6 +3015,12 @@ impl Output for TauriOutput {
         }
         if let Some(tx) = &self.prov {
             let _ = tx.send(rec.clone());
+        }
+    }
+    fn preflight_local_execution(&self, source: &str) -> Result<(), String> {
+        match &self.exploration_isolation {
+            Some(boundary) => boundary.check_local_source(source),
+            None => Ok(()),
         }
     }
     fn preflight_shell(&self, cmd: &str) -> Result<(), String> {
@@ -5081,6 +5095,8 @@ async fn send_message_inner(
     let frame_scope = explicit_scope
         .clone()
         .unwrap_or_else(|| wisp_store::StateScope::mainline(ap.id.clone()));
+    let exploration_isolation =
+        exploration_isolation::boundary_for_scope(&state.store, &frame_scope).await?;
     let project_write_locked = exploration_commands::conversation_project_write_locked(
         &state.store,
         &frame_scope,
@@ -6008,6 +6024,8 @@ async fn send_message_inner(
         model: model.clone(),
         project_id: ap.id.clone(),
         project_root: ap.root.clone(),
+        restrict_read_paths_to_project: exploration_isolation.is_some(),
+        exploration_isolation,
         store: state.store.clone(),
         resource_leases: state.resource_leases.clone(),
         cancel: rt.cancel.clone(),
