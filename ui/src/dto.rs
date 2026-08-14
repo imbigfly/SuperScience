@@ -2725,6 +2725,20 @@ pub(crate) struct ModelForm {
     pub(crate) use_for_image_generation: bool,
 }
 
+/// `model_catalog_lookup` projection of one baked catalog entry.
+#[derive(Deserialize, Clone)]
+pub(crate) struct CatalogEntryDto {
+    pub(crate) context_window: u64,
+    pub(crate) max_tokens: u64,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub(crate) input_limit: Option<u64>,
+    #[allow(dead_code)]
+    pub(crate) supports_vision: bool,
+    #[allow(dead_code)]
+    pub(crate) efforts: Vec<String>,
+}
+
 fn default_model_context_window() -> u64 {
     128_000
 }

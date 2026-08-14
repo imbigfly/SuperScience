@@ -713,6 +713,53 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     },
   ];
   const activeHttpModelId = () => mockModels.find((model) => model.active)?.id ?? mockModels[0]?.id ?? "";
+  // Baked model catalog (mirrors src-tauri model_catalog): exact id match
+  // within vendor namespaces, never prefix matching.
+  type MockCatalogEntry = {
+    context_window: number;
+    max_tokens: number;
+    input_limit: number | null;
+    supports_vision: boolean;
+    efforts: string[];
+  };
+  const mockCatalog: Record<string, Record<string, MockCatalogEntry>> = {
+    deepseek: {
+      "deepseek-v4-pro": { context_window: 1000000, max_tokens: 384000, input_limit: null, supports_vision: false, efforts: [] },
+      "deepseek-v4-flash": { context_window: 1000000, max_tokens: 384000, input_limit: null, supports_vision: false, efforts: [] },
+    },
+    openai: {
+      "gpt-5.6-luna": { context_window: 1050000, max_tokens: 128000, input_limit: null, supports_vision: true, efforts: ["none", "low", "medium", "high", "xhigh"] },
+    },
+    anthropic: {
+      "claude-opus-4-8": { context_window: 1000000, max_tokens: 128000, input_limit: null, supports_vision: true, efforts: ["low", "medium", "high", "xhigh", "max"] },
+    },
+    "kimi-for-coding": {
+      "k3-256k": { context_window: 262144, max_tokens: 131072, input_limit: null, supports_vision: true, efforts: ["low", "high", "max"] },
+    },
+  };
+  const mockCatalogLookup = (provider: string, apiUrl: string, modelRaw: string): MockCatalogEntry | null => {
+    const model = modelRaw.trim().toLowerCase();
+    if (!model) return null;
+    const host = apiUrl.trim().toLowerCase().replace(/^[^:]+:\/\//, "").split("/")[0].split(":")[0];
+    const byHost: Record<string, string> = {
+      "api.anthropic.com": "anthropic",
+      "api.openai.com": "openai",
+      "api.deepseek.com": "deepseek",
+      "api.moonshot.ai": "moonshotai",
+      "api.moonshot.cn": "moonshotai",
+      "api.kimi.com": "kimi-for-coding",
+      "open.bigmodel.cn": "zhipuai",
+    };
+    const candidates = [byHost[host], provider === "anthropic" ? "anthropic" : "openai"]
+      .filter((ns): ns is string => Boolean(ns));
+    const tail = model.split("/").pop() ?? model;
+    for (const ns of [...new Set(candidates)]) {
+      const table = mockCatalog[ns];
+      const entry = table?.[model] ?? (tail !== model ? table?.[tail] : undefined);
+      if (entry) return entry;
+    }
+    return null;
+  };
   const sessionModels: Record<string, string> = query.get("mockSessionModels") === "1"
     ? { "s-model-a": "default", "s-model-b": "default" }
     : {};
@@ -2360,6 +2407,13 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return null;
           case "list_models":
             return mockModels;
+          case "model_catalog_lookup": {
+            return mockCatalogLookup(
+              String(arg("provider") ?? ""),
+              String(arg("apiUrl") ?? ""),
+              String(arg("model") ?? ""),
+            );
+          }
           case "get_storage_usage":
             return {
               data_dir: "C:\\mock\\AppData\\wisp-science",
@@ -3001,6 +3055,21 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           }
           case "save_model": {
             const profile = plain(arg("profile") ?? {});
+            // Mirror the backend: catalog-known models clamp context/output
+            // to their documented ceilings.
+            const catalogEntry = mockCatalogLookup(
+              String(profile.provider ?? ""),
+              String(profile.api_url ?? ""),
+              String(profile.model ?? ""),
+            );
+            if (catalogEntry) {
+              if (typeof profile.context_window === "number" && profile.context_window > 0) {
+                profile.context_window = Math.min(profile.context_window, catalogEntry.context_window);
+              }
+              if (typeof profile.max_tokens === "number" && profile.max_tokens > 0) {
+                profile.max_tokens = Math.min(profile.max_tokens, catalogEntry.max_tokens);
+              }
+            }
             const useForVision = Boolean(arg("useForVision") ?? profile.use_for_vision);
             const useForImageGeneration = Boolean(
               arg("useForImageGeneration") ?? profile.use_for_image_generation,

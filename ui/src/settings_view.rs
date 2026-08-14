@@ -454,9 +454,10 @@ pub(crate) const ALL_EFFORT_VALUES: &[&str] = &[
 /// docs, DeepSeek/Moonshot/Alibaba API references). `None` = unknown model
 /// (full list + "can't verify" hint); `Some(&[])` = the provider rejects the
 /// parameter for this model, so only "default" makes sense.
-/// ponytail: name-pattern table — no provider exposes a capability-discovery
-/// API for this; extend as new families matter. Keep longer patterns above
-/// their shorter siblings ("claude-opus-4-5" before "claude-opus").
+/// ponytail: the baked model catalog (model_catalog.rs) already carries
+/// per-model effort values from models.dev; swap this table for catalog
+/// lookups in a follow-up. Keep longer patterns above their shorter
+/// siblings ("claude-opus-4-5" before "claude-opus").
 pub(crate) fn known_effort_values(
     _provider: &str,
     model: &str,
@@ -598,50 +599,53 @@ mod effort_values_tests {
     }
 }
 
-/// Known model families → (max output tokens, context window), per vendor docs
-/// as of 2026-07. Prefix match, first hit wins — keep longer prefixes above
-/// their shorter siblings ("claude-sonnet-4-5" before "claude-sonnet-4").
-/// ponytail: static table; swap for a live models-API query only if providers
-/// ever expose output limits uniformly (today only Anthropic does).
-const MODEL_LIMITS: [(&str, u64, u64); 18] = [
-    ("claude-opus-4-5", 64_000, 200_000),
-    ("claude-opus-4", 128_000, 1_000_000),
-    ("claude-sonnet-4-5", 64_000, 200_000),
-    ("claude-sonnet-4", 128_000, 1_000_000),
-    ("claude-sonnet-5", 128_000, 1_000_000),
-    ("claude-haiku-4-5", 64_000, 200_000),
-    ("claude-fable-5", 128_000, 1_000_000),
-    ("claude-mythos", 128_000, 1_000_000),
-    ("gpt-5.6", 128_000, 1_050_000),
-    ("gpt-5.5", 128_000, 1_000_000),
-    ("gpt-5", 128_000, 400_000),
-    ("gpt-4.1", 32_768, 1_000_000),
-    ("gpt-4o", 16_384, 128_000),
-    ("deepseek-v4", 384_000, 1_000_000),
-    ("kimi-k3", 131_072, 1_000_000),
-    ("glm-5.2", 131_072, 1_000_000),
-    ("glm-5", 131_072, 200_000),
-    ("glm-4.6", 131_072, 200_000),
-];
-
-/// Documented (max output tokens, context window) for a known model family,
-/// or None when the model id matches no entry in `MODEL_LIMITS`.
-pub(crate) fn known_model_limits(model: &str) -> Option<(u64, u64)> {
-    let model = model.trim().to_ascii_lowercase();
-    MODEL_LIMITS
-        .iter()
-        .find(|(prefix, _, _)| model.starts_with(prefix))
-        .map(|&(_, max_tokens, context_window)| (max_tokens, context_window))
-}
-
-/// Auto-fill max_tokens/context_window to the model's documented ceiling when
-/// the model id matches a known family. Runs whenever the model id changes;
-/// unknown models keep whatever is already in the form.
-fn apply_known_model_limits(form: &mut ModelForm) {
-    if let Some((max_tokens, context_window)) = known_model_limits(&form.model) {
-        form.max_tokens = max_tokens;
-        form.context_window = context_window;
+/// Fill documented limits from the baked model catalog (models.dev, compiled
+/// in by build.rs). Exact id match only — a family id never absorbs a longer
+/// sibling (`kimi-k3` vs `k3-256k`). Unknown models keep whatever the form
+/// already has; the backend clamps authoritatively on save regardless of what
+/// this preview does.
+fn apply_catalog_limits(
+    model_form: RwSignal<Option<ModelForm>>,
+    catalog_limits: RwSignal<Option<CatalogEntryDto>>,
+) {
+    // A stale entry must never survive a model edit.
+    catalog_limits.set(None);
+    let Some(current) = model_form.get() else {
+        return;
+    };
+    let (provider, api_url, model) = (current.provider, current.api_url, current.model);
+    if model.trim().is_empty() {
+        return;
     }
+    spawn_local(async move {
+        let args = to_value(&serde_json::json!({
+            "provider": provider,
+            "apiUrl": api_url,
+            "model": model,
+        }))
+        .unwrap();
+        let dto = invoke_checked("model_catalog_lookup", args)
+            .await
+            .ok()
+            .and_then(|v| serde_wasm_bindgen::from_value::<Option<CatalogEntryDto>>(v).ok())
+            .flatten();
+        // Don't clobber edits made while the lookup was in flight.
+        if model_form
+            .get()
+            .map_or(true, |f| !f.model.trim().eq_ignore_ascii_case(model.trim()))
+        {
+            return;
+        }
+        if let Some(dto) = dto {
+            model_form.update(|o| {
+                if let Some(o) = o {
+                    o.max_tokens = dto.max_tokens;
+                    o.context_window = dto.context_window;
+                }
+            });
+            catalog_limits.set(Some(dto));
+        }
+    });
 }
 
 /// One-click presets for popular OpenAI-compatible providers (#334):
@@ -721,6 +725,7 @@ pub(super) struct SettingsViewState {
     pub(super) channels_open: RwSignal<Option<String>>,
     pub(super) connectors: RwSignal<Option<ConnectorsView>>,
     pub(super) model_form: RwSignal<Option<ModelForm>>,
+    pub(super) model_catalog_limits: RwSignal<Option<CatalogEntryDto>>,
     pub(super) conn_form: RwSignal<Option<ConnForm>>,
     pub(super) memory_selected: RwSignal<Option<String>>,
     pub(super) specialist_form: RwSignal<Option<Specialist>>,
@@ -827,6 +832,7 @@ pub(super) fn SettingsView(
         channels_open,
         connectors,
         model_form,
+        model_catalog_limits,
         conn_form,
         memory_selected,
         specialist_form,
@@ -2420,8 +2426,8 @@ pub(super) fn SettingsView(
                                                         o.provider = settings_provider_value(&p).into();
                                                         o.api_url = api_url.into();
                                                         o.model = model.into();
-                                                        apply_known_model_limits(o);
                                                     });
+                                                    apply_catalog_limits(model_form, model_catalog_limits);
                                                 }
                                                 >
                                                 <option value="openai"
@@ -2452,16 +2458,19 @@ pub(super) fn SettingsView(
                                         <label>{move || t(locale.get(), "settings.model")}
                                             <input prop:value=move || model_form.get().map(|f| f.model.clone()).unwrap_or_default()
                                                 placeholder=move || t(locale.get(), "settings.model_ph")
-                                                on:input=move |ev| model_form.update(|o| if let Some(o)=o {
-                                                    o.model = event_target_input(&ev).value();
-                                                    if o.model.trim().eq_ignore_ascii_case("gpt-image-2") {
-                                                        o.supports_vision = false;
-                                                        o.use_for_vision = false;
-                                                    }
-                                                    apply_known_model_limits(o);
-                                                }) /></label>
+                                                on:input=move |ev| {
+                                                    model_form.update(|o| if let Some(o)=o {
+                                                        o.model = event_target_input(&ev).value();
+                                                        if o.model.trim().eq_ignore_ascii_case("gpt-image-2") {
+                                                            o.supports_vision = false;
+                                                            o.use_for_vision = false;
+                                                        }
+                                                    });
+                                                    apply_catalog_limits(model_form, model_catalog_limits);
+                                                } /></label>
                                         <label>{move || t(locale.get(), "settings.max_tokens")}
                                             <input type="number" min="16" step="1"
+                                                attr:max=move || model_catalog_limits.get().map(|d| d.max_tokens.to_string())
                                                 on:input=move|ev| model_form.update(|o| if let Some(o)=o {
                                                     o.max_tokens = dom_value(&ev).parse().unwrap_or(0);
                                                 })
@@ -2469,11 +2478,20 @@ pub(super) fn SettingsView(
                                         </label>
                                         <label>{move || t(locale.get(), "settings.context_window")}
                                             <input type="number" min="4096" step="1024"
+                                                attr:max=move || model_catalog_limits.get().map(|d| d.context_window.to_string())
                                                 on:input=move|ev| model_form.update(|o| if let Some(o)=o {
                                                     o.context_window = dom_value(&ev).parse().unwrap_or(0);
                                                 })
                                                 prop:value=move || model_form.get().map(|f| f.context_window.to_string()).unwrap_or_else(|| "128000".into()) />
                                         </label>
+                                        {move || model_catalog_limits.get().map(|d| view! {
+                                            <span class="hint" data-testid="model-catalog-limits-hint">
+                                                {tf(locale.get(), "settings.catalog_limits_hint", &[
+                                                    ("context", &d.context_window.to_string()),
+                                                    ("output", &d.max_tokens.to_string()),
+                                                ])}
+                                            </span>
+                                        })}
                                         <label>{move || t(locale.get(), "settings.reasoning_effort")}
                                             {move || {
                                                 let form = model_form.get();
@@ -2620,11 +2638,8 @@ pub(super) fn SettingsView(
                                         view! {
                                             <button type="button" class="settings-add-btn" on:click=move |_| {
                                                 show_acp_agents.set(false);
-                                                model_form.set(Some({
-                                                    let mut form = new_model_form();
-                                                    apply_known_model_limits(&mut form);
-                                                    form
-                                                }));
+                                                model_form.set(Some(new_model_form()));
+                                                apply_catalog_limits(model_form, model_catalog_limits);
                                                 model_form_key.set(String::new());
                                                 model_form_msg.set(None);
                                             }>{move || t(locale.get(), "models.add")}</button>
@@ -2762,7 +2777,7 @@ pub(super) fn SettingsView(
                                             <button type="button" class="model-preset-btn"
                                                 on:click=move |_| {
                                                     show_acp_agents.set(false);
-                                                    let mut form = ModelForm {
+                                                    model_form.set(Some(ModelForm {
                                                         label: label.into(),
                                                         provider: "openai".into(),
                                                         api_url: api_url.into(),
@@ -2770,9 +2785,8 @@ pub(super) fn SettingsView(
                                                         max_tokens: 8192,
                                                         context_window: 128_000,
                                                         ..Default::default()
-                                                    };
-                                                    apply_known_model_limits(&mut form);
-                                                    model_form.set(Some(form));
+                                                    }));
+                                                    apply_catalog_limits(model_form, model_catalog_limits);
                                                     model_form_key.set(String::new());
                                                     model_form_msg.set(None);
                                                     focus_element_soon("model-form-api-key");
@@ -2850,6 +2864,7 @@ pub(super) fn SettingsView(
                                                             let form = profile_to_form(&edit);
                                                             show_acp_agents.set(false);
                                                             model_form.set(Some(form));
+                                                            apply_catalog_limits(model_form, model_catalog_limits);
                                                             model_form_key.set(String::new());
                                                             model_form_msg.set(None);
                                                         }>
@@ -5433,44 +5448,3 @@ pub(super) fn SettingsView(
     }
 }
 
-#[cfg(test)]
-mod model_limit_tests {
-    use super::*;
-
-    #[test]
-    fn known_models_fill_output_ceiling() {
-        let mut form = ModelForm {
-            model: "claude-sonnet-4-5".into(),
-            ..Default::default()
-        };
-        apply_known_model_limits(&mut form);
-        assert_eq!((form.max_tokens, form.context_window), (64_000, 200_000));
-
-        // Longer prefix must win over "claude-sonnet-4".
-        form.model = "claude-sonnet-4-6".into();
-        apply_known_model_limits(&mut form);
-        assert_eq!((form.max_tokens, form.context_window), (128_000, 1_000_000));
-
-        // Case/whitespace tolerant.
-        form.model = " GPT-5.5 ".into();
-        apply_known_model_limits(&mut form);
-        assert_eq!((form.max_tokens, form.context_window), (128_000, 1_000_000));
-
-        // Unknown models keep whatever the form already has.
-        form.max_tokens = 8_192;
-        form.model = "totally-unknown".into();
-        apply_known_model_limits(&mut form);
-        assert_eq!(form.max_tokens, 8_192);
-    }
-
-    #[test]
-    fn known_model_limits_reports_documented_ceiling() {
-        // Longer prefixes win: glm-5.2 must not resolve through glm-5.
-        assert_eq!(known_model_limits("GLM-5.2"), Some((131_072, 1_000_000)));
-        assert_eq!(
-            known_model_limits("deepseek-v4-pro"),
-            Some((384_000, 1_000_000))
-        );
-        assert_eq!(known_model_limits("totally-unknown"), None);
-    }
-}

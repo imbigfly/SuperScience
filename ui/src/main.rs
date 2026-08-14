@@ -342,6 +342,7 @@ fn App() -> impl IntoView {
     let plugins_list = create_rw_signal(Vec::<PluginRow>::new());
     let plugins_msg = create_rw_signal(None::<(bool, String)>);
     let model_form = create_rw_signal(None::<ModelForm>);
+    let model_catalog_limits = create_rw_signal(None::<CatalogEntryDto>);
     let model_form_key = create_rw_signal(String::new());
     let model_form_msg = create_rw_signal(None::<(bool, String)>);
     let specialists = create_rw_signal::<Vec<Specialist>>(vec![]);
@@ -4531,14 +4532,14 @@ fn App() -> impl IntoView {
             model_form_msg.set(Some((false, text)));
             return;
         }
-        // A recognized model family has a documented output ceiling; saving a
+        // A catalog-known model has a documented output ceiling; saving a
         // larger max_tokens only ever surfaces as a provider 400 mid-turn.
-        if let Some((ceiling, _)) = settings_view::known_model_limits(&form.model) {
-            if form.max_tokens > ceiling {
+        if let Some(dto) = model_catalog_limits.get() {
+            if form.max_tokens > dto.max_tokens {
                 let text = tf(
                     loc,
                     "err.max_tokens_ceiling",
-                    &[("model", form.model.trim()), ("max", &ceiling.to_string())],
+                    &[("model", form.model.trim()), ("max", &dto.max_tokens.to_string())],
                 );
                 model_form_msg.set(Some((false, text)));
                 return;
@@ -14028,7 +14029,7 @@ fn App() -> impl IntoView {
         })}
         <SettingsView
             state=SettingsViewState {
-                locale, theme_mode, light_palette, dark_palette, ui_font_size, code_font_size, ui_font_family, code_font_family, selection_popup_enabled, send_with_modifier, update_check_enabled, show_settings, settings_section, open_conn_key, channels_open, connectors, model_form,
+                locale, theme_mode, light_palette, dark_palette, ui_font_size, code_font_size, ui_font_family, code_font_family, selection_popup_enabled, send_with_modifier, update_check_enabled, show_settings, settings_section, open_conn_key, channels_open, connectors, model_form, model_catalog_limits,
                 conn_form, memory_selected, specialist_form, settings, bootstrap, settings_message,
                 settings_busy, model_form_open, model_form_key, models, model_form_msg, show_acp_agents,
                 acp_agents, active_acp_agent_id, acp_form, acp_form_msg, acp_infos, specialists,

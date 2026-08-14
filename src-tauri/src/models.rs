@@ -745,11 +745,28 @@ pub async fn active_llm_advanced(store: &wisp_store::Store) -> (u64, String) {
     (max_tokens, reasoning_effort)
 }
 
-fn effective_context_window(value: u64) -> u64 {
-    if value >= 4_096 {
-        value
+fn effective_context_window(profile: &ModelProfile) -> u64 {
+    let value = if profile.context_window >= 4_096 {
+        profile.context_window
     } else {
         DEFAULT_CONTEXT_WINDOW
+    };
+    // Catalog ceiling: an over-declared window defeats compaction, so clamp to
+    // the model's documented limit (exact id match; unknown models untouched).
+    match crate::model_catalog::lookup(&profile.provider, &profile.api_url, &profile.model) {
+        Some(entry) => value.min(entry.c),
+        None => value,
+    }
+}
+
+/// Clamp `context_window`/`max_tokens` to the model's catalog ceilings.
+/// `max_tokens = 0` means "unset" and is left alone.
+fn clamp_to_catalog(profile: &mut ModelProfile) {
+    if let Some(entry) =
+        crate::model_catalog::lookup(&profile.provider, &profile.api_url, &profile.model)
+    {
+        profile.context_window = profile.context_window.min(entry.c);
+        profile.max_tokens = profile.max_tokens.min(entry.o);
     }
 }
 
@@ -760,7 +777,7 @@ pub async fn active_context_window(store: &wisp_store::Store) -> u64 {
     profiles
         .iter()
         .find(|profile| profile.id == id)
-        .map(|profile| effective_context_window(profile.context_window))
+        .map(effective_context_window)
         .unwrap_or(DEFAULT_CONTEXT_WINDOW)
 }
 
@@ -770,7 +787,7 @@ pub async fn profile_context_window(store: &wisp_store::Store, id: &str) -> Opti
         .await
         .iter()
         .find(|profile| profile.id == id && is_chat_model(profile))
-        .map(|profile| effective_context_window(profile.context_window))
+        .map(effective_context_window)
 }
 
 /// Full LLM config for one profile id: (provider, api_url, model, api_key,
@@ -950,6 +967,7 @@ pub async fn save_model(
     if assign_image_generation && !can_generate_images(&profile) {
         return Err("Image generation currently supports only OpenAI gpt-image-2.".into());
     }
+    clamp_to_catalog(&mut profile);
     if profile.label.trim().is_empty() {
         profile.label = profile.model.clone();
     }
@@ -1382,6 +1400,52 @@ mod tests {
         let json = serde_json::to_string(&profile).unwrap();
         let restored: ModelProfile = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.context_window, 32_768);
+    }
+
+    fn kimi_coding_profile(model: &str) -> ModelProfile {
+        let mut profile = test_profile("m1", "kimi", model);
+        profile.api_url = "https://api.kimi.com/coding/v1".into();
+        profile
+    }
+
+    #[test]
+    fn clamp_to_catalog_caps_over_declared_limits() {
+        let mut profile = kimi_coding_profile("k3-256k");
+        profile.context_window = 1_000_000;
+        profile.max_tokens = 999_999;
+        clamp_to_catalog(&mut profile);
+        assert_eq!(profile.context_window, 262_144);
+        assert_eq!(profile.max_tokens, 131_072);
+    }
+
+    #[test]
+    fn clamp_to_catalog_keeps_unset_and_unknown_values() {
+        // max_tokens = 0 means "unset" and stays.
+        let mut profile = kimi_coding_profile("k3-256k");
+        profile.max_tokens = 0;
+        clamp_to_catalog(&mut profile);
+        assert_eq!(profile.max_tokens, 0);
+        // Unknown models are left alone.
+        let mut unknown = test_profile("m2", "x", "totally-unknown");
+        unknown.context_window = 500_000;
+        unknown.max_tokens = 90_000;
+        clamp_to_catalog(&mut unknown);
+        assert_eq!(unknown.context_window, 500_000);
+        assert_eq!(unknown.max_tokens, 90_000);
+    }
+
+    #[test]
+    fn effective_context_window_respects_catalog_ceiling() {
+        let mut over = kimi_coding_profile("k3-256k");
+        over.context_window = 1_000_000;
+        assert_eq!(effective_context_window(&over), 262_144);
+        // Unknown models keep their declared value.
+        let mut unknown = test_profile("m2", "x", "totally-unknown");
+        unknown.context_window = 500_000;
+        assert_eq!(effective_context_window(&unknown), 500_000);
+        // Degenerate values still fall back to the default window.
+        unknown.context_window = 100;
+        assert_eq!(effective_context_window(&unknown), DEFAULT_CONTEXT_WINDOW);
     }
 
     #[test]
