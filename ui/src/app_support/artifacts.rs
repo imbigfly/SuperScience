@@ -677,10 +677,7 @@ pub(crate) fn current_artifacts(
     }
     current.reverse();
     for info in registered {
-        let location = info
-            .location
-            .clone()
-            .unwrap_or_else(|| info.path.clone());
+        let location = info.location.clone().unwrap_or_else(|| info.path.clone());
         let visible_path = info
             .logical_path
             .as_deref()

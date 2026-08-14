@@ -458,10 +458,7 @@ pub(crate) const ALL_EFFORT_VALUES: &[&str] = &[
 /// per-model effort values from models.dev; swap this table for catalog
 /// lookups in a follow-up. Keep longer patterns above their shorter
 /// siblings ("claude-opus-4-5" before "claude-opus").
-pub(crate) fn known_effort_values(
-    _provider: &str,
-    model: &str,
-) -> Option<&'static [&'static str]> {
+pub(crate) fn known_effort_values(_provider: &str, model: &str) -> Option<&'static [&'static str]> {
     // Users write model names loosely ("opus-4.8", "claude-opus-4-8"), so
     // match on a normalized form and don't require the vendor prefix.
     let m = model.to_ascii_lowercase().replace(['.', '_'], "-");
@@ -490,10 +487,7 @@ pub(crate) fn known_effort_values(
     } else if m.contains("sonnet-4-5") || m.contains("haiku") {
         // These reject the effort parameter with a 400.
         Some(&[])
-    } else if m.contains("opus-4-6")
-        || m.contains("sonnet-4-6")
-        || m.contains("mythos-preview")
-    {
+    } else if m.contains("opus-4-6") || m.contains("sonnet-4-6") || m.contains("mythos-preview") {
         Some(&["low", "medium", "high", "max"])
     } else if m.contains("opus")
         || m.contains("sonnet")
@@ -5447,4 +5441,3 @@ pub(super) fn SettingsView(
 }.into_view())
     }
 }
-
