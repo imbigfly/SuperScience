@@ -3577,3 +3577,205 @@ async fn run_review_browse_and_delete_require_a_terminal_ssh_run() {
 
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+// --- retention sweep ---------------------------------------------------------
+
+async fn seed_retention_run(
+    store: &wisp_store::Store,
+    run_id: &str,
+    status: wisp_store::RunStatus,
+    ended_days_ago: i64,
+    specs_json: &str,
+    harvested: bool,
+) {
+    let mut run = wisp_store::RunRecord::new(run_id, "p", "ssh:gpu", "Remote", "ssh_direct");
+    run.frame_id = Some("f".into());
+    run.status = status;
+    run.command = Some("make outputs".into());
+    run.output_specs_json = specs_json.into();
+    run.ended_at = Some(chrono::Utc::now().timestamp() - ended_days_ago * 86_400);
+    let connection =
+        crate::ssh_hosts::SshConnection::from_execution_context(&harvest_test_context()).unwrap();
+    let handle = RemoteRunHandle::SshDirect {
+        connection,
+        workdir: format!(".wisp-science/runs/{run_id}"),
+        token: "retention-token".into(),
+        inputs_staged: true,
+        pgid: Some(4242),
+        start_time: Some(99),
+    };
+    run.remote_workdir = Some(handle.display_workdir());
+    run.remote_handle_json = Some(serde_json::to_string(&handle).unwrap());
+    store.create_run(&run).await.unwrap();
+    if harvested {
+        store.mark_run_harvested(run_id).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn retention_sweep_cleans_only_expired_eligible_runs() {
+    let tmp = std::env::temp_dir().join(format!("wisp_retention_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .upsert_execution_context(&harvest_test_context())
+        .await
+        .unwrap();
+    let specs = serde_json::json!([{
+        "glob": "results/*.tsv", "kind": "table", "residency": "auto"
+    }])
+    .to_string();
+
+    // Retention disabled: nothing is due even when old.
+    seed_retention_run(
+        &store,
+        "run-old",
+        wisp_store::RunStatus::Succeeded,
+        30,
+        "[]",
+        false,
+    )
+    .await;
+    assert!(store
+        .list_runs_due_for_retention(chrono::Utc::now().timestamp())
+        .await
+        .unwrap()
+        .is_empty());
+
+    store
+        .set_project_run_retention("p", Some(7), Some(14))
+        .await
+        .unwrap();
+    assert!(store
+        .set_project_run_retention("p", Some(0), None)
+        .await
+        .is_err());
+
+    // Eligible: succeeded+harvested past 7d; succeeded with no declared specs;
+    // failed past 14d. Not eligible: unharvested specs, recent, still running.
+    seed_retention_run(
+        &store,
+        "run-done",
+        wisp_store::RunStatus::Succeeded,
+        8,
+        &specs,
+        true,
+    )
+    .await;
+    seed_retention_run(
+        &store,
+        "run-unharvested",
+        wisp_store::RunStatus::Succeeded,
+        8,
+        &specs,
+        false,
+    )
+    .await;
+    seed_retention_run(
+        &store,
+        "run-recent",
+        wisp_store::RunStatus::Succeeded,
+        2,
+        "[]",
+        false,
+    )
+    .await;
+    seed_retention_run(
+        &store,
+        "run-failed-old",
+        wisp_store::RunStatus::Failed,
+        15,
+        &specs,
+        false,
+    )
+    .await;
+    seed_retention_run(
+        &store,
+        "run-failed-new",
+        wisp_store::RunStatus::Failed,
+        8,
+        &specs,
+        false,
+    )
+    .await;
+    seed_retention_run(
+        &store,
+        "run-active",
+        wisp_store::RunStatus::Running,
+        15,
+        "[]",
+        false,
+    )
+    .await;
+
+    let due: Vec<String> = store
+        .list_runs_due_for_retention(chrono::Utc::now().timestamp())
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|run| run.id)
+        .collect();
+    assert_eq!(due, vec!["run-old", "run-failed-old", "run-done"]);
+
+    // The first cleanup fails; the sweep continues and cleans the rest.
+    let runner = Arc::new(ScriptedRunRunner::new(vec![
+        Err("connection refused".into()),
+        ok_output("__WISP_CLEANUP__:done\n"),
+        ok_output("__WISP_CLEANUP__:done\n"),
+    ]));
+    let manager = RunManager::with_runner(runner.clone());
+    let cleaned = manager.run_retention_sweep(&store).await.unwrap();
+    assert_eq!(cleaned, 2);
+    assert!(store
+        .get_run("run-old")
+        .await
+        .unwrap()
+        .unwrap()
+        .cleaned_at
+        .is_none());
+    assert!(store
+        .get_run("run-done")
+        .await
+        .unwrap()
+        .unwrap()
+        .cleaned_at
+        .is_some());
+    assert!(store
+        .get_run("run-failed-old")
+        .await
+        .unwrap()
+        .unwrap()
+        .cleaned_at
+        .is_some());
+    assert!(store
+        .get_run("run-unharvested")
+        .await
+        .unwrap()
+        .unwrap()
+        .cleaned_at
+        .is_none());
+
+    // The failed run retries on the next sweep and drops out once cleaned.
+    let runner = Arc::new(ScriptedRunRunner::new(vec![ok_output(
+        "__WISP_CLEANUP__:done\n",
+    )]));
+    let manager = RunManager::with_runner(runner);
+    assert_eq!(manager.run_retention_sweep(&store).await.unwrap(), 1);
+    assert!(store
+        .get_run("run-old")
+        .await
+        .unwrap()
+        .unwrap()
+        .cleaned_at
+        .is_some());
+    assert_eq!(manager.run_retention_sweep(&store).await.unwrap(), 0);
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}

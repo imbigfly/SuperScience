@@ -7931,6 +7931,8 @@ pub fn run() {
             runtime_commands::list_remote_files,
             runtime_commands::remove_remote_files,
             runtime_commands::context_disposal_report,
+            project_commands::get_project_run_retention,
+            project_commands::set_project_run_retention,
             storage_prefs::get_context_storage_prefs,
             storage_prefs::set_context_storage_prefs,
             project_commands::get_research_graph,

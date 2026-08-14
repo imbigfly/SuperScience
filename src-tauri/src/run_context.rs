@@ -595,11 +595,13 @@ pub struct RunManager {
     active: Arc<Mutex<HashMap<String, ActiveRun>>>,
     owner_id: String,
     reconciler_started: Arc<AtomicBool>,
+    last_retention_sweep: Arc<Mutex<Option<Instant>>>,
 }
 
 const REMOTE_START_LEASE_SECS: i64 = 360;
 const ACTIVE_LEASE_SECS: i64 = 30;
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
+const RETENTION_SWEEP_INTERVAL: Duration = Duration::from_secs(10 * 60);
 const SSH_RETRY_STOPPED_MARKER: &str = "SSH automatic retry stopped";
 const LOCAL_RETRY_STOPPED_MARKER: &str = "Automatic Run retry stopped";
 
@@ -637,6 +639,7 @@ impl RunManager {
             active: Arc::new(Mutex::new(HashMap::new())),
             owner_id: uuid::Uuid::new_v4().to_string(),
             reconciler_started: Arc::new(AtomicBool::new(false)),
+            last_retention_sweep: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -978,7 +981,45 @@ impl RunManager {
         });
     }
 
+    /// Opt-in automatic reclamation of expired run workspaces. Every cleanup
+    /// goes through `cleanup_run_workspace`, so all of its preconditions and
+    /// path constraints apply; one failing run never blocks the sweep.
+    pub async fn run_retention_sweep(&self, store: &wisp_store::Store) -> Result<u64, String> {
+        let now = chrono::Utc::now().timestamp();
+        let due = store
+            .list_runs_due_for_retention(now)
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut cleaned = 0;
+        for run in due {
+            match self.cleanup_run_workspace(store, &run.id, false).await {
+                Ok(_) => cleaned += 1,
+                Err(error) => {
+                    tracing::warn!(run_id = %run.id, "retention cleanup failed: {error}");
+                }
+            }
+        }
+        Ok(cleaned)
+    }
+
+    async fn maybe_run_retention_sweep(&self, store: &wisp_store::Store) {
+        {
+            let mut last = self.last_retention_sweep.lock().await;
+            let due = last
+                .map(|at| at.elapsed() >= RETENTION_SWEEP_INTERVAL)
+                .unwrap_or(true);
+            if !due {
+                return;
+            }
+            *last = Some(Instant::now());
+        }
+        if let Err(error) = self.run_retention_sweep(store).await {
+            tracing::warn!("run retention sweep failed: {error}");
+        }
+    }
+
     async fn reconcile_once(&self, store: &wisp_store::Store) -> Result<u64, String> {
+        self.maybe_run_retention_sweep(store).await;
         let runs = store.list_active_runs().await.map_err(|e| e.to_string())?;
         let mut lost = 0;
         for run in runs {

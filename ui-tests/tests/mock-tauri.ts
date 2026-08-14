@@ -1186,6 +1186,10 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     },
   ];
   (window as any).__mockRemoteStaging = remoteStagingEntries;
+  let projectRunRetention: {
+    run_retention_days: number | null;
+    failed_run_retention_days: number | null;
+  } = { run_retention_days: null, failed_run_retention_days: null };
   const runWorkspaceFiles: Record<string, Record<string, any[]>> = {
     "run-kinase-001": {
       "": [
@@ -3342,6 +3346,16 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               "Expand the search for underrepresented species",
               "Generate a literature landscape visualization",
             ];
+          case "get_project_run_retention":
+            return projectRunRetention;
+          case "set_project_run_retention": {
+            projectRunRetention = {
+              run_retention_days: (arg("runRetentionDays") ?? null) as number | null,
+              failed_run_retention_days:
+                (arg("failedRunRetentionDays") ?? null) as number | null,
+            };
+            return projectRunRetention;
+          }
           case "get_project_settings":
             return { name: project.name, description: "", agent_context: projectAgentContext };
           case "update_project": {

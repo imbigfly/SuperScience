@@ -9,7 +9,9 @@ CREATE TABLE IF NOT EXISTS projects (
     description   TEXT,
     workspace_dir TEXT NOT NULL DEFAULT '',
     created_at    INTEGER NOT NULL,
-    updated_at    INTEGER NOT NULL
+    updated_at    INTEGER NOT NULL,
+    run_retention_days        INTEGER,
+    failed_run_retention_days INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS folders (

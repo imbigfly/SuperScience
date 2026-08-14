@@ -1,6 +1,8 @@
 use crate::app_support::{
-    compose_icon, FileEntryModal, FolderModal, SessionTransfer, SessionTransferMode,
+    compose_icon, js_error_text, show_toast, FileEntryModal, FolderModal, SessionTransfer,
+    SessionTransferMode,
 };
+use crate::i18n::localize_backend;
 use crate::bindings::invoke_checked;
 use crate::dto::*;
 use crate::i18n::{t, tf, Locale};
@@ -614,6 +616,50 @@ pub(crate) fn ProjSettingsOverlay(
         proj_settings,
         proj_settings_busy,
     } = state;
+    // Retention is stored per project and saved immediately on change; empty
+    // means the automatic sweep stays off.
+    let retention_succeeded = create_rw_signal(String::new());
+    let retention_failed = create_rw_signal(String::new());
+    create_effect(move |_| {
+        if !show_proj_settings.get() {
+            return;
+        }
+        spawn_local(async move {
+            if let Ok(value) =
+                invoke_checked("get_project_run_retention", wasm_bindgen::JsValue::UNDEFINED).await
+            {
+                if let Ok(retention) =
+                    serde_wasm_bindgen::from_value::<serde_json::Value>(value)
+                {
+                    let field = |key: &str| {
+                        retention
+                            .get(key)
+                            .and_then(|value| value.as_i64())
+                            .map(|days| days.to_string())
+                            .unwrap_or_default()
+                    };
+                    retention_succeeded.set(field("run_retention_days"));
+                    retention_failed.set(field("failed_run_retention_days"));
+                }
+            }
+        });
+    });
+    let save_retention = move || {
+        let parse = |value: &str| value.trim().parse::<i64>().ok();
+        let args = to_value(&serde_json::json!({
+            "runRetentionDays": parse(&retention_succeeded.get_untracked()),
+            "failedRunRetentionDays": parse(&retention_failed.get_untracked()),
+        }))
+        .unwrap();
+        spawn_local(async move {
+            if let Err(error) = invoke_checked("set_project_run_retention", args).await {
+                show_toast(&localize_backend(
+                    locale.get_untracked(),
+                    &js_error_text(error),
+                ));
+            }
+        });
+    };
     view! {
         {move || show_proj_settings.get().then(|| view! {
             <div class="overlay">
@@ -642,6 +688,25 @@ pub(crate) fn ProjSettingsOverlay(
                         <textarea class="ps-textarea ps-ctx" rows="8"
                             prop:value=move || proj_settings.get().agent_context
                             on:input=move |ev| { let v = event_target_value(&ev); proj_settings.update(|s| s.agent_context = v); }></textarea>
+                    </label>
+                    <label>
+                        {move || t(locale.get(), "proj_settings.retention")}
+                        <span class="ps-hint">{move || t(locale.get(), "proj_settings.retention_hint")}</span>
+                        <div class="ps-retention-row">
+                            <input type="number" min="1" max="3650" inputmode="numeric"
+                                class="ps-retention" data-testid="retention-succeeded"
+                                placeholder=move || t(locale.get(), "proj_settings.retention_off")
+                                prop:value=move || retention_succeeded.get()
+                                on:input=move |ev| retention_succeeded.set(event_target_value(&ev))
+                                on:change=move |_| save_retention() />
+                            <span>{move || t(locale.get(), "proj_settings.retention_failed")}</span>
+                            <input type="number" min="1" max="3650" inputmode="numeric"
+                                class="ps-retention" data-testid="retention-failed"
+                                placeholder=move || t(locale.get(), "proj_settings.retention_off")
+                                prop:value=move || retention_failed.get()
+                                on:input=move |ev| retention_failed.set(event_target_value(&ev))
+                                on:change=move |_| save_retention() />
+                        </div>
                     </label>
                     <div class="row">
                         <button type="button" disabled=move || proj_settings_busy.get()

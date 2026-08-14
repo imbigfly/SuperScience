@@ -4169,6 +4169,42 @@ test("text entries keep the native context menu", async ({ page }) => {
   }
 });
 
+test("project settings save opt-in run workspace retention windows", async ({ page }) => {
+  await enterApp(page);
+  await page.locator(".proj-switch").click();
+  await page.getByRole("button", { name: "Project settings" }).click();
+
+  const settings = page.locator(".proj-settings-modal");
+  const succeeded = settings.getByTestId("retention-succeeded");
+  const failed = settings.getByTestId("retention-failed");
+  // Off by default.
+  await expect(succeeded).toHaveValue("");
+  await expect(failed).toHaveValue("");
+
+  await succeeded.fill("7");
+  await succeeded.blur();
+  // An empty second field serializes as undefined (retention stays off).
+  await expect.poll(() => lastInvokeArgs(page, "set_project_run_retention")).toMatchObject({
+    runRetentionDays: 7,
+  });
+  expect(
+    (await lastInvokeArgs(page, "set_project_run_retention")).failedRunRetentionDays ?? null,
+  ).toBeNull();
+  await failed.fill("14");
+  await failed.blur();
+  await expect.poll(() => lastInvokeArgs(page, "set_project_run_retention")).toMatchObject({
+    runRetentionDays: 7,
+    failedRunRetentionDays: 14,
+  });
+
+  // Reopening reflects the stored windows.
+  await page.keyboard.press("Escape");
+  await page.locator(".proj-switch").click();
+  await page.getByRole("button", { name: "Project settings" }).click();
+  await expect(settings.getByTestId("retention-succeeded")).toHaveValue("7");
+  await expect(settings.getByTestId("retention-failed")).toHaveValue("14");
+});
+
 test("saving a changed agent context asks for confirmation", async ({ page }) => {
   await enterApp(page);
   await page.locator(".proj-switch").click();

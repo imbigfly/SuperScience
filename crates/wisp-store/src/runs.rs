@@ -636,6 +636,81 @@ impl Store {
         Ok(updated.rows_affected() == 1)
     }
 
+    /// Per-project retention windows (days) for automatic run-workspace
+    /// cleanup: succeeded+harvested runs, and failed/cancelled/timed-out runs.
+    /// NULL disables the respective sweep.
+    pub async fn project_run_retention(
+        &self,
+        project_id: &str,
+    ) -> Result<(Option<i64>, Option<i64>)> {
+        let row: Option<(Option<i64>, Option<i64>)> = sqlx::query_as(
+            "SELECT run_retention_days, failed_run_retention_days FROM projects WHERE id=?",
+        )
+        .bind(project_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.unwrap_or((None, None)))
+    }
+
+    pub async fn set_project_run_retention(
+        &self,
+        project_id: &str,
+        run_retention_days: Option<i64>,
+        failed_run_retention_days: Option<i64>,
+    ) -> Result<()> {
+        for value in [run_retention_days, failed_run_retention_days]
+            .into_iter()
+            .flatten()
+        {
+            if !(1..=3650).contains(&value) {
+                anyhow::bail!("Retention windows must be between 1 and 3650 days");
+            }
+        }
+        let updated = sqlx::query(
+            "UPDATE projects SET run_retention_days=?, failed_run_retention_days=?, updated_at=? \
+             WHERE id=?",
+        )
+        .bind(run_retention_days)
+        .bind(failed_run_retention_days)
+        .bind(chrono::Utc::now().timestamp())
+        .bind(project_id)
+        .execute(&self.pool)
+        .await?;
+        if updated.rows_affected() != 1 {
+            anyhow::bail!("Project not found");
+        }
+        Ok(())
+    }
+
+    /// Runs whose server workspaces are due for automatic retention cleanup:
+    /// succeeded runs only after their outputs were harvested (or none were
+    /// declared), failed/cancelled/timed-out/lost runs on their own window.
+    pub async fn list_runs_due_for_retention(&self, now: i64) -> Result<Vec<RunRecord>> {
+        let rows = sqlx::query(
+            "SELECT r.id,r.project_id,r.frame_id,r.context_id,r.title,r.kind,r.status,r.command,\
+                    r.script_path,r.input_refs_json,r.output_specs_json,r.created_at,r.started_at,\
+                    r.ended_at,r.exit_code,r.stdout_tail,r.stderr_tail,r.remote_workdir,\
+                    r.remote_handle_json,r.timeout_secs,r.last_polled_at,r.last_poll_error,\
+                    r.progress_json,r.env_snapshot_json,r.harvested_at,r.cleaned_at,r.cleanup_error \
+             FROM runs r JOIN projects p ON p.id=r.project_id \
+             WHERE r.cleaned_at IS NULL AND r.remote_handle_json IS NOT NULL \
+             AND r.ended_at IS NOT NULL \
+             AND r.kind IN ('ssh_direct','local_detached') \
+             AND ((r.status='succeeded' AND p.run_retention_days IS NOT NULL \
+                   AND (r.harvested_at IS NOT NULL OR r.output_specs_json='[]') \
+                   AND r.ended_at < ? - p.run_retention_days*86400) \
+               OR (r.status IN ('failed','cancelled','timed_out','lost') \
+                   AND p.failed_run_retention_days IS NOT NULL \
+                   AND r.ended_at < ? - p.failed_run_retention_days*86400)) \
+             ORDER BY r.ended_at, r.id",
+        )
+        .bind(now)
+        .bind(now)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(run_from_row).collect()
+    }
+
     /// Record that this Run's server-side workspace was deleted. Idempotent;
     /// clears any earlier cleanup error.
     pub async fn mark_run_cleaned(&self, id: &str) -> Result<bool> {

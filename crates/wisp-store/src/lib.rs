@@ -159,6 +159,7 @@ const RUN_HARVEST_STATE_MIGRATION: &str = "0043_run_harvest_state";
 const CONTEXT_STORAGE_PREFS_MIGRATION: &str = "0044_context_storage_prefs";
 const RUN_CLEANUP_STATE_MIGRATION: &str = "0045_run_cleanup_state";
 const REMOTE_STAGING_MIGRATION: &str = "0046_remote_staging";
+const RUN_RETENTION_MIGRATION: &str = "0047_run_retention";
 
 #[derive(Clone)]
 pub struct Store {
@@ -614,6 +615,18 @@ impl Store {
         if !Self::migration_applied(pool, REMOTE_STAGING_MIGRATION).await? {
             Self::apply_remote_staging(pool).await?;
             Self::record_migration(pool, REMOTE_STAGING_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, RUN_RETENTION_MIGRATION).await? {
+            Self::add_columns_if_missing(
+                pool,
+                "projects",
+                &[
+                    ("run_retention_days", "INTEGER"),
+                    ("failed_run_retention_days", "INTEGER"),
+                ],
+            )
+            .await?;
+            Self::record_migration(pool, RUN_RETENTION_MIGRATION).await?;
         }
         Ok(())
     }

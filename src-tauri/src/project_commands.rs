@@ -514,6 +514,50 @@ pub(super) async fn get_project_settings(
     })
 }
 
+#[derive(Serialize, Clone)]
+pub(super) struct ProjectRunRetention {
+    run_retention_days: Option<i64>,
+    failed_run_retention_days: Option<i64>,
+}
+
+/// Opt-in retention windows for automatic run-workspace cleanup on servers.
+#[tauri::command]
+pub(super) async fn get_project_run_retention(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+) -> Result<ProjectRunRetention, String> {
+    let ap = state.active(window.label());
+    let (run_retention_days, failed_run_retention_days) = state
+        .store
+        .project_run_retention(&ap.id)
+        .await
+        .map_err(|e| format!("{e}"))?;
+    Ok(ProjectRunRetention {
+        run_retention_days,
+        failed_run_retention_days,
+    })
+}
+
+#[tauri::command]
+pub(super) async fn set_project_run_retention(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    run_retention_days: Option<i64>,
+    failed_run_retention_days: Option<i64>,
+) -> Result<ProjectRunRetention, String> {
+    let ap = state.active(window.label());
+    let _project_activity = state.begin_project_activity(&ap.id)?;
+    state
+        .store
+        .set_project_run_retention(&ap.id, run_retention_days, failed_run_retention_days)
+        .await
+        .map_err(|e| format!("{e}"))?;
+    Ok(ProjectRunRetention {
+        run_retention_days,
+        failed_run_retention_days,
+    })
+}
+
 /// Save the active project's name/description (DB) and Agent Context (.wisp/WISP.md).
 /// An empty Agent Context removes WISP.md so the prompt falls back to "no rules".
 /// Takes effect on the next seeded session; already-running agents keep their prompt.
