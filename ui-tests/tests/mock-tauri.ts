@@ -4170,11 +4170,13 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             }
             if (String(msg).includes("SHARETHINK")) {
               // Fixture for /share: a turn with a visible thinking block, so
-              // the share dialog lists it (deselected by default).
+              // the share dialog lists it (deselected by default). The reply
+              // carries Markdown (heading, list, code fence) so the exported
+              // PNG exercises the rendered-Markdown path.
               setTimeout(() => {
                 emit("agent", { kind: "User", frame_id: fid, text: msg });
                 emit("agent", { kind: "Reasoning", frame_id: fid, delta: "Secret plan: verify with Alice first." });
-                emit("agent", { kind: "Text", frame_id: fid, delta: "Alice confirmed the spectrum is clean." });
+                emit("agent", { kind: "Text", frame_id: fid, delta: "Alice confirmed the **spectrum** is clean.\n\n## Fit summary\n- peak A at 530 nm\n- peak B at 612 nm\n\n```python\nfit(spectrum)\n```" });
                 emit("agent", { kind: "Done", frame_id: fid, stop_reason: "end_turn" });
               }, 30);
               return fid;

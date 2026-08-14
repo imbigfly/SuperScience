@@ -2017,7 +2017,8 @@ test("/share exports selected, keyword-redacted messages as a PNG", async ({ pag
   const composerInput = composer(page);
   const overlay = page.getByTestId("share-overlay");
 
-  // Empty session: /share is hidden from the picker and opens nothing.
+  // Empty session: /share is hidden from the picker and opens nothing, and
+  // the composer "+" menu entry is disabled.
   await composerInput.pressSequentially("/sha");
   await expect(page.locator(".mention-menu .mention-item").filter({ hasText: "/share" })).toHaveCount(0);
   await page.keyboard.press("Escape");
@@ -2025,6 +2026,11 @@ test("/share exports selected, keyword-redacted messages as a PNG", async ({ pag
   await composerInput.press("Enter");
   await expect(overlay).toHaveCount(0);
   expect(await lastInvokeArgs(page, "send_message")).toBeNull();
+  await page.locator(".composer-plus").click();
+  const shareItem = page.locator(".compose-item").filter({ hasText: "Share as image" });
+  await expect(shareItem).toBeDisabled();
+  await page.locator(".compose-backdrop").click();
+  await expect(shareItem).toHaveCount(0);
 
   // Seed one turn that streams a thinking block before the reply.
   await composerInput.fill("SHARETHINK check the spectrum");
@@ -2052,20 +2058,38 @@ test("/share exports selected, keyword-redacted messages as a PNG", async ({ pag
   await expect(rows.nth(1).locator("input")).not.toBeChecked();
   await expect(rows.nth(2).locator("input")).toBeChecked();
 
-  // Keywords mask the preview text case-insensitively.
+  // Each row shows a role badge; the counter tracks the selection.
+  await expect(rows.nth(0).locator(".share-role")).toHaveText("You");
+  await expect(rows.nth(1).locator(".share-role")).toHaveText("Thinking");
+  await expect(rows.nth(2).locator(".share-role")).toHaveText("Assistant");
+  await expect(overlay.locator(".share-count")).toHaveText("2/3 selected");
+
+  // Keywords mask the preview text case-insensitively (raw Markdown source).
   await overlay.locator("#share-redact-input").fill("alice，spectrum");
-  await expect(rows.nth(2)).toContainText("xxx confirmed the xxx is clean.");
+  await expect(rows.nth(2)).toContainText("xxx confirmed the **xxx** is clean.");
 
   // Deselect the user turn and export: the PNG bytes reach the save command
   // and the saved toast closes the dialog.
   await rows.nth(0).locator("input").click();
+  await expect(overlay.locator(".share-count")).toHaveText("1/3 selected");
   await overlay.getByTestId("share-export").click();
   await expect.poll(() => lastInvokeArgs(page, "save_share_image")).toMatchObject({
     defaultName: expect.stringMatching(/^wisp-share-\d{4}-\d{2}-\d{2}\.png$/),
   });
   const args = await lastInvokeArgs(page, "save_share_image");
-  expect(String(args.pngBase64).length).toBeGreaterThan(1000);
+  // The Markdown reply (heading/list/code fence) renders into a tall image.
+  expect(String(args.pngBase64).length).toBeGreaterThan(10000);
   await expect(overlay).toHaveCount(0);
+
+  // The composer "+" menu offers the same entry once the session has content.
+  await page.locator(".composer-plus").click();
+  await expect(shareItem).toBeEnabled();
+  await shareItem.click();
+  await expect(overlay).toBeVisible();
+  // One Escape closes only the dialog; the chat stays up.
+  await page.keyboard.press("Escape");
+  await expect(overlay).toHaveCount(0);
+  await expect(composerInput).toBeVisible();
 });
 
 test("composer / menu layers sections and gives each command its own icon", async ({ page }) => {

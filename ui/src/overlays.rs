@@ -1,6 +1,6 @@
 use crate::app_support::{
     compose_icon, js_error_text, parse_redact_keywords, redact_text, refresh_execution_contexts,
-    refresh_runtimes, show_toast, ShareMessage, ShareRole,
+    refresh_runtimes, share_markdown_blocks, show_toast, ShareMessage, ShareRole,
 };
 use crate::bindings::{invoke_checked, open_external_url, render_share_png};
 use crate::dto::*;
@@ -258,11 +258,18 @@ pub(super) fn ShareOverlay(
             .iter()
             .filter(|message| message.selected)
             .map(|message| {
-                serde_json::json!({
+                let text = redact_text(&message.text, &redact);
+                let mut row = serde_json::json!({
                     "kind": message.role.tag(),
                     "label": t(loc, share_role_key(message.role)),
-                    "text": redact_text(&message.text, &redact),
-                })
+                });
+                if message.role == ShareRole::Assistant {
+                    // Assistant replies render as Markdown in the image.
+                    row["blocks"] = serde_json::json!(share_markdown_blocks(&text));
+                } else {
+                    row["text"] = serde_json::json!(text);
+                }
+                row
             })
             .collect();
         if rows.is_empty() {
@@ -340,6 +347,11 @@ pub(super) fn ShareOverlay(
                             on:click=move |_| set_all(true)>{move || t(locale.get(), "share.select_all")}</button>
                         <button type="button" class="linklike"
                             on:click=move |_| set_all(false)>{move || t(locale.get(), "share.select_none")}</button>
+                        <span class="share-count">{move || {
+                            let total = draft.with(|value| value.as_ref().map_or(0, Vec::len));
+                            tf(locale.get(), "share.selected",
+                                &[("count", &format!("{}/{}", selected_count.get(), total))])
+                        }}</span>
                     </div>
                     <div class="share-list">
                         {move || {
@@ -358,8 +370,10 @@ pub(super) fn ShareOverlay(
                                                     }
                                                 }
                                             }) />
-                                        <span class="share-role">{t(loc, share_role_key(message.role))}</span>
-                                        <span class="share-text">{preview}</span>
+                                        <span class="share-row-body">
+                                            <span class="share-role">{t(loc, share_role_key(message.role))}</span>
+                                            <span class="share-text">{preview}</span>
+                                        </span>
                                     </label>
                                 }
                             }).collect_view()

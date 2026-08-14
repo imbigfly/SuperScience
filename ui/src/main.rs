@@ -11401,6 +11401,21 @@ fn App() -> impl IntoView {
                                             </span>
                                             <span class="compose-item-chevron">{compose_icon("chevron")}</span>
                                         </button>
+                                        <button type="button" class="compose-item" disabled=move || !session_has_items.get()
+                                            on:click=move |_| {
+                                                compose_menu_open.set(false);
+                                                let rows = items.with_untracked(|list| share_messages(list));
+                                                if !rows.is_empty() {
+                                                    share_draft.set(Some(rows));
+                                                }
+                                            }>
+                                            <span class="compose-item-icon">{compose_icon("share")}</span>
+                                            <span class="compose-item-text">
+                                                <span class="compose-item-label">{move || t(locale.get(), "share.title")}</span>
+                                                <span class="compose-item-sub">{move || t(locale.get(), "composer.share_sub")}</span>
+                                            </span>
+                                            <span class="compose-item-chevron">{compose_icon("chevron")}</span>
+                                        </button>
                                         <button type="button" class="compose-item"
                                             on:click=move |_| {
                                                 compose_menu_open.set(false);
