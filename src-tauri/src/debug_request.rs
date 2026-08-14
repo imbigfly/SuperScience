@@ -529,10 +529,10 @@ mod tests {
     #[test]
     fn snapshot_separates_tool_calls_from_runtime_schemas() {
         let mut assistant = Message::assistant("");
-        assistant.tool_calls.push(wisp_llm::ToolCall {
+        assistant.tool_calls.push(superscience_llm::ToolCall {
             id: "call-1".into(),
             kind: "function".into(),
-            function: wisp_llm::FunctionCall {
+            function: superscience_llm::FunctionCall {
                 name: "read".into(),
                 arguments: "{}".into(),
             },

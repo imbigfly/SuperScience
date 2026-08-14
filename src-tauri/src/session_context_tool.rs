@@ -197,14 +197,14 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-    async fn default_test_store() -> (wisp_store::Store, PathBuf) {
+    async fn default_test_store() -> (superscience_store::Store, PathBuf) {
         let path =
             std::env::temp_dir().join(format!("wisp_session_tool_{}.sqlite", uuid::Uuid::new_v4()));
-        let store = wisp_store::Store::open(&path).await.unwrap();
+        let store = superscience_store::Store::open(&path).await.unwrap();
         store.create_project("p", "Project", "").await.unwrap();
         store.create_frame("f", "p", "OPERON", "m").await.unwrap();
         store
-            .upsert_execution_context(&wisp_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap())
+            .upsert_execution_context(&superscience_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap())
             .await
             .unwrap();
         (store, path)

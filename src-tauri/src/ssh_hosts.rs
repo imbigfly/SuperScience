@@ -1065,7 +1065,7 @@ pub async fn set_default_execution_context(
     {
         Some(id) => {
             match state.store.get_execution_context(&id).await {
-                Ok(Some(ctx)) if ctx.kind != wisp_store::ExecutionContextKind::Local => {}
+                Ok(Some(ctx)) if ctx.kind != superscience_store::ExecutionContextKind::Local => {}
                 Ok(Some(_)) => {
                     return Err("Local compute is always available; no default needed".into())
                 }
@@ -1811,7 +1811,7 @@ Host -unsafe bad/name !negated
 
     #[test]
     fn render_contexts_announces_default_analysis_environment() {
-        let mut ctx = wisp_store::ExecutionContext::new("ssh:gpu", "GPU box").unwrap();
+        let mut ctx = superscience_store::ExecutionContext::new("ssh:gpu", "GPU box").unwrap();
         ctx.config_json = serde_json::json!({ "alias": "gpu" }).to_string();
         let s = render_contexts_section(&[], Some(&ctx)).unwrap();
         assert!(
@@ -1833,9 +1833,9 @@ Host -unsafe bad/name !negated
     async fn stored_default_execution_context_drops_stale_setting() {
         let path =
             std::env::temp_dir().join(format!("wisp_default_ctx_{}.sqlite", uuid::Uuid::new_v4()));
-        let store = wisp_store::Store::open(&path).await.unwrap();
+        let store = superscience_store::Store::open(&path).await.unwrap();
         store
-            .upsert_execution_context(&wisp_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap())
+            .upsert_execution_context(&superscience_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap())
             .await
             .unwrap();
 

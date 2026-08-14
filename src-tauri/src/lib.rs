@@ -6044,7 +6044,7 @@ async fn send_message_inner(
                 .mark_agent_workflow_deliveries_presented(&completion_delivery_ids)
                 .await;
         }
-        if matches!(result, Ok(wisp_core::AgentLoopOutcome::Completed)) {
+        if matches!(result, Ok(superscience_core::AgentLoopOutcome::Completed)) {
             let is_reviewer = specialist
                 .as_ref()
                 .is_some_and(|specialist| specialist.id == "reviewer");
