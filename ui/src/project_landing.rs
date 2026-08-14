@@ -21,6 +21,9 @@ pub(super) struct ProjectLandingState {
     pub(super) sync_actions_available: RwSignal<bool>,
     pub(super) command_palette_open: RwSignal<bool>,
     pub(super) project_transfer: RwSignal<Option<ProjectTransferProgress>>,
+    pub(super) privacy_mode_active: RwSignal<bool>,
+    pub(super) privacy_hidden_project_ids: RwSignal<HashSet<String>>,
+    pub(super) privacy_mode_modal_open: RwSignal<bool>,
 }
 #[component]
 pub(super) fn ProjectLanding(
@@ -46,6 +49,9 @@ pub(super) fn ProjectLanding(
         sync_actions_available,
         command_palette_open,
         project_transfer,
+        privacy_mode_active,
+        privacy_hidden_project_ids,
+        privacy_mode_modal_open,
     } = state;
 
     move || {
@@ -85,6 +91,9 @@ pub(super) fn ProjectLanding(
                     on_search=Callback::new(move |_| command_palette_open.set(true))
                     on_export_project=open_project_export
                     project_transfer=project_transfer
+                    privacy_mode_active=privacy_mode_active
+                    privacy_hidden_project_ids=privacy_hidden_project_ids
+                    on_open_privacy=Callback::new(move |_| privacy_mode_modal_open.set(true))
                 />
             }
         })

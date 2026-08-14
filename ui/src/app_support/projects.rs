@@ -17,6 +17,9 @@ pub(crate) fn ProjectsScreen(
     on_search: Callback<()>,
     on_export_project: Callback<(String, String)>,
     project_transfer: RwSignal<Option<ProjectTransferProgress>>,
+    privacy_mode_active: RwSignal<bool>,
+    privacy_hidden_project_ids: RwSignal<HashSet<String>>,
+    on_open_privacy: Callback<()>,
 ) -> impl IntoView {
     let projects = create_rw_signal(Vec::<ProjectSummary>::new());
     let recent = create_rw_signal(Vec::<RecentSession>::new());
@@ -24,6 +27,9 @@ pub(crate) fn ProjectsScreen(
     let search_open = create_rw_signal(false);
     let search_query = create_rw_signal(String::new());
     let search_active = create_rw_signal(0usize);
+    let project_is_hidden = move |id: &str| {
+        privacy_mode_active.get() && privacy_hidden_project_ids.with(|ids| ids.contains(id))
+    };
     let demo_count = create_rw_signal(0usize);
     let creating = create_rw_signal(false);
     let new_name = create_rw_signal(String::new());
@@ -139,18 +145,26 @@ pub(crate) fn ProjectsScreen(
         let projects_n = projects
             .get()
             .into_iter()
-            .filter(|p| contains_search(&q, &[&p.name, &p.description]))
+            .filter(|p| {
+                !project_is_hidden(&p.id) && contains_search(&q, &[&p.name, &p.description])
+            })
             .take(HOME_SEARCH_PROJECT_LIMIT)
             .count();
         let artifacts_n = artifact_hits
             .get()
             .into_iter()
+            .filter(|artifact| {
+                !artifact
+                    .project_id
+                    .as_deref()
+                    .is_some_and(project_is_hidden)
+            })
             .take(HOME_SEARCH_ARTIFACT_LIMIT)
             .count();
         let sessions_n = recent
             .get()
             .into_iter()
-            .filter(|s| contains_search(&q, &[&s.title]))
+            .filter(|s| !project_is_hidden(&s.project_id) && contains_search(&q, &[&s.title]))
             .take(HOME_SEARCH_SESSION_LIMIT)
             .count();
         projects_n + artifacts_n + sessions_n + 1
@@ -162,7 +176,9 @@ pub(crate) fn ProjectsScreen(
         for p in projects
             .get()
             .into_iter()
-            .filter(|p| contains_search(&q, &[&p.name, &p.description]))
+            .filter(|p| {
+                !project_is_hidden(&p.id) && contains_search(&q, &[&p.name, &p.description])
+            })
             .take(HOME_SEARCH_PROJECT_LIMIT)
         {
             if pos == idx {
@@ -175,6 +191,12 @@ pub(crate) fn ProjectsScreen(
         for a in artifact_hits
             .get()
             .into_iter()
+            .filter(|artifact| {
+                !artifact
+                    .project_id
+                    .as_deref()
+                    .is_some_and(project_is_hidden)
+            })
             .take(HOME_SEARCH_ARTIFACT_LIMIT)
         {
             if pos == idx {
@@ -202,7 +224,7 @@ pub(crate) fn ProjectsScreen(
         for s in recent
             .get()
             .into_iter()
-            .filter(|s| contains_search(&q, &[&s.title]))
+            .filter(|s| !project_is_hidden(&s.project_id) && contains_search(&q, &[&s.title]))
             .take(HOME_SEARCH_SESSION_LIMIT)
         {
             if pos == idx {
@@ -497,6 +519,17 @@ pub(crate) fn ProjectsScreen(
             {move || open_error.get().map(|message| view! {
                 <div class="project-open-error" role="alert">{message}</div>
             })}
+            {move || privacy_mode_active.get().then(|| {
+                let count = privacy_hidden_project_ids.with(|ids| ids.len());
+                view! {
+                    <button type="button" class="privacy-mode-banner"
+                        on:click=move |_| on_open_privacy.call(())>
+                        {compose_icon("eye-off")}
+                        <span>{tf(locale.get(), "privacy.banner", &[("n", &count.to_string())])}</span>
+                        <kbd>{if is_mac() { "⌘⇧H" } else { "Ctrl+Shift+H" }}</kbd>
+                    </button>
+                }
+            })}
             {move || search_open.get().then(|| view! {
                 <div class="project-search-overlay" on:click=move |_| search_open.set(false)>
                     <div class="project-search-dialog" role="dialog" aria-label=move || t(locale.get(), "projects.search")
@@ -543,7 +576,7 @@ pub(crate) fn ProjectsScreen(
                                 let project_rows = projects
                                     .get()
                                     .into_iter()
-                                    .filter(|p| contains_search(&q, &[&p.name, &p.description]))
+                                    .filter(|p| !project_is_hidden(&p.id) && contains_search(&q, &[&p.name, &p.description]))
                                     .take(HOME_SEARCH_PROJECT_LIMIT)
                                     .map(|p| {
                                         let row_idx = idx;
@@ -570,6 +603,7 @@ pub(crate) fn ProjectsScreen(
                                 let artifact_rows = artifact_hits
                                     .get()
                                     .into_iter()
+                                    .filter(|artifact| !artifact.project_id.as_deref().is_some_and(project_is_hidden))
                                     .take(HOME_SEARCH_ARTIFACT_LIMIT)
                                     .map(|a| {
                                         let row_idx = idx;
@@ -597,7 +631,7 @@ pub(crate) fn ProjectsScreen(
                                 let session_rows = recent
                                     .get()
                                     .into_iter()
-                                    .filter(|s| contains_search(&q, &[&s.title]))
+                                    .filter(|s| !project_is_hidden(&s.project_id) && contains_search(&q, &[&s.title]))
                                     .take(HOME_SEARCH_SESSION_LIMIT)
                                     .map(|s| {
                                         let row_idx = idx;
@@ -787,7 +821,11 @@ pub(crate) fn ProjectsScreen(
                     </button>
                     {move || {
                         let loc = locale.get();
-                        let list = projects.get();
+                        let list = projects
+                            .get()
+                            .into_iter()
+                            .filter(|project| !project_is_hidden(&project.id))
+                            .collect::<Vec<_>>();
                         let show_sync_actions = sync_actions_available.get();
                         if list.is_empty() && !creating.get() {
                             return view! {}.into_view();
@@ -963,7 +1001,9 @@ pub(crate) fn ProjectsScreen(
                 </div>
                 <div class="projects-col">
                     <h2>{move || t(locale.get(), "projects.recent")}</h2>
-                    {move || recent.get().into_iter().map(|s| {
+                    {move || recent.get().into_iter().filter(|session| {
+                        !project_is_hidden(&session.project_id)
+                    }).map(|s| {
                         let (pid, sid) = (s.project_id.clone(), s.id.clone());
                         let transfer_pid = s.project_id.clone();
                         let status = SessionStatusKind::from_str(&s.status);
