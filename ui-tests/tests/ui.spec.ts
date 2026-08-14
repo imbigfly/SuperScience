@@ -6528,7 +6528,7 @@ test("vision assignment keeps model fields and stored key placeholder untouched"
     useForVision: true,
     profile: {
       provider: "openai_responses",
-      // gpt-5.6-* matches the MODEL_LIMITS auto-fill (128K out / 1.05M ctx)
+      // gpt-5.6-luna is in the baked catalog (128K out / 1.05M ctx).
       context_window: 1050000,
       reasoning_effort: "medium",
       use_for_vision: true,
@@ -6545,7 +6545,7 @@ test("model settings rejects max output tokens above the known ceiling", async (
   await enterApp(page);
   await openModelsSettings(page);
 
-  // deepseek-v4-pro matches the MODEL_LIMITS family (384K output ceiling).
+  // deepseek-v4-pro is in the baked catalog (384K output ceiling).
   const maxTokens = page.getByLabel("Max output tokens");
   await maxTokens.fill("1000000");
   await page.getByRole("button", { name: "Save" }).click();
@@ -6558,6 +6558,37 @@ test("model settings rejects max output tokens above the known ceiling", async (
   await page.getByRole("button", { name: "Save" }).click();
   await expect.poll(() => lastInvokeArgs(page, "save_model"))
     .toMatchObject({ profile: { max_tokens: 384000 } });
+});
+
+test("model settings auto-fills catalog limits and save clamps to them", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Models");
+  await page.getByRole("button", { name: /Add model/i }).click();
+
+  // The lookup fires on model input and reads the current API URL, so the
+  // URL must be in place before the model id is typed.
+  await page.getByLabel("API URL").fill("https://api.kimi.com/coding/v1");
+  await page.getByLabel("Model").fill("k3-256k");
+  await page.getByLabel("API key (stored in OS keyring)").fill("sk-k3");
+
+  // kimi-for-coding/k3-256k is in the baked catalog (262144 ctx / 131072 out).
+  await expect(page.getByLabel("Max output tokens")).toHaveValue("131072");
+  await expect(page.getByLabel("Context window")).toHaveValue("262144");
+  await expect(page.getByTestId("model-catalog-limits-hint")).toContainText("262144");
+
+  // Overriding the context window past the catalog ceiling gets clamped by
+  // the backend on save.
+  await page.getByLabel("Context window").fill("1000000");
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "save_model"))
+    .toMatchObject({ profile: { model: "k3-256k" } });
+  // The invoke log records what the UI sent; the clamp happens inside the
+  // (mocked) backend, so assert on the stored profile via list_models.
+  const stored: any = await page.evaluate(async () => {
+    const models: any[] = await (window as any).__TAURI__.core.invoke("list_models");
+    return models.find((m: any) => m.model === "k3-256k") ?? null;
+  });
+  expect(stored).toMatchObject({ context_window: 262144, max_tokens: 131072 });
 });
 
 test("onboarding key setup lands on flash after adding pro", async ({ page }) => {

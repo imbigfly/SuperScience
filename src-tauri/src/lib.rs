@@ -50,6 +50,10 @@ mod mcp_oauth;
 mod memory_commands;
 mod method_search;
 mod method_search_coordinator;
+mod model_catalog;
+// The runtime only uses lookup()/types; build.rs uses distill() instead.
+#[allow(dead_code)]
+mod model_catalog_shared;
 mod models;
 mod native_delegation;
 mod pet_commands;
@@ -7964,6 +7968,7 @@ pub fn run() {
             models::reorder_models,
             models::set_active_model,
             models::set_session_reasoning_effort,
+            model_catalog::model_catalog_lookup,
             settings_commands::validate_settings,
             list_dir,
             create_file,

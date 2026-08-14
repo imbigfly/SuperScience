@@ -24,10 +24,13 @@ does not change model context, exports, artifacts, or the saved transcript.
 wisp-science calls remote LLM APIs through model profiles. Desktop users
 configure these in **Settings -> Models**. Each row is a model profile with its
 own display name, provider, API URL, model ID, advanced options, and API key.
-For recognized model families the form auto-fills **Max output tokens** and
-**Context window** to the vendor's documented ceilings, and saving a max-output
-value above the documented ceiling is rejected with an inline error instead of
-failing mid-turn with a provider 400.
+A models.dev catalog baked in at build time maps exact model IDs to the
+vendor's documented ceilings: for a catalog-known model the form auto-fills
+**Max output tokens** and **Context window** and shows the ceiling next to the
+inputs. Saving a max-output value above the documented ceiling is rejected with
+an inline error instead of failing mid-turn with a provider 400, and a context
+window above the ceiling is clamped down on save. Models absent from the
+catalog keep manually entered values.
 
 The composer model picker binds the selected HTTP model to the current
 conversation. Switching one populated conversation asks for confirmation and
