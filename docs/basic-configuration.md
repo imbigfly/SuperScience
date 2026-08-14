@@ -49,6 +49,8 @@
 
 如果在一轮任务运行时切换模型或修改 profile，当前 API 请求会继续使用启动该轮时的配置；新配置从下一轮开始生效。这个轮次边界避免在一个正在流式输出的请求中热切换提供商。
 
+达到“每轮最大 Agent 迭代次数”后，Wisp 会额外发起一次不提供任何工具的收尾请求，要求模型汇总已完成、未验证和剩余工作；该请求不计入配置的迭代次数。若收尾成功，本轮以 `max_iterations` 原因正常结束；若收尾本身失败，则保留工具结果并显示可恢复错误。调试请求导出会分别记录当前配置 `configured_max_iter`、本轮实际采用的 `effective_max_iter`、`termination_reason`、`tool_schema_count` 和历史 `tool_call_count`；旧版终止事件或非 Agent 回合无法证明实际采用的上限时，`effective_max_iter` 为 `null`。
+
 常见问题：
 
 - `401/403`：检查 API Key、账户权限和服务商区域。

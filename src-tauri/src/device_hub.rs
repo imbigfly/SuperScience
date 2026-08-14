@@ -339,6 +339,7 @@ mod tests {
             &AgentEvent::Done {
                 frame_id: "a".into(),
                 stop_reason: None,
+                effective_max_iter: None,
             },
             None,
         );
@@ -366,6 +367,7 @@ mod tests {
             &AgentEvent::Error {
                 frame_id: "a".into(),
                 message: "failed".into(),
+                effective_max_iter: None,
             },
             None,
         );
@@ -391,6 +393,7 @@ mod tests {
             &AgentEvent::Done {
                 frame_id: "done".into(),
                 stop_reason: None,
+                effective_max_iter: None,
             },
             None,
         );
@@ -407,6 +410,7 @@ mod tests {
             &AgentEvent::Error {
                 frame_id: "failed".into(),
                 message: "no".into(),
+                effective_max_iter: None,
             },
             None,
         );

@@ -726,7 +726,7 @@ async fn run_prompt(agent: &mut Agent, prompt: &str, output: &dyn Output) -> Res
     let result = agent.run(&stamped, output, None).await;
     agent.ctx.clear_runtime_injections();
     agent.save();
-    result
+    result.map(|_| ())
 }
 
 #[tokio::main]
