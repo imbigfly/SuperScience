@@ -15,7 +15,7 @@
 .fb-search:focus { outline: none; border-color: var(--clay); }
 .fb-up { background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius-xs); padding: 4px 8px; cursor: pointer; font: inherit; color: var(--text); }
 .fb-path { font-family: var(--font-mono); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fb-path-input { min-width: 0; flex: 1 1 auto; box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-xs); background: var(--bg-input); color: var(--text); }
+.fb-path-input { min-width: 0; flex: 1 1 auto; box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-xs); background: var(--bg-input); color: var(--text); font: inherit; }
 .fb-path-input:focus { outline: none; border-color: var(--clay); }
 .fb-list { display: flex; flex-direction: column; gap: 4px; max-height: 360px; overflow-y: auto; margin: 4px -2px; padding: 2px; }
 .fb-row { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; cursor: pointer; font: inherit; color: var(--text); transition: border-color .12s ease; }

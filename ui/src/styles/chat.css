@@ -1552,7 +1552,7 @@ button.stop:disabled { opacity: .6; cursor: default; }
   margin-left: auto; font-size: 11px; color: var(--text-faint);
   padding: 1px 7px; border-radius: 999px; background: var(--bg-sunken);
 }
-.tool-card pre { margin: 0; padding: 8px 10px; font-size: 12px; overflow: auto; max-height: 220px; }
+.tool-card pre { margin: 0; padding: 8px 10px; font-family: var(--font-mono); font-size: 12px; overflow: auto; max-height: 220px; }
 
 .run-monitor-wrap { align-self:stretch; }
 .run-monitor-wrap:empty { display:none; }

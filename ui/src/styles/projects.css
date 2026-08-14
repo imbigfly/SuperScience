@@ -249,7 +249,7 @@ body:has(.window-titlebar) .conversation-search-dialog { max-height: min(660px, 
 .action-palette-results { padding: 4px 6px 6px; }
 .action-palette-group { padding: 6px 8px 3px; color: var(--text-faint); font-size: 11px; font-weight: 600; }
 .action-palette-row { border-radius: var(--radius-xs); min-height: 34px; padding: 5px 10px; gap: 10px; }
-.action-shortcut { flex: 0 0 auto; margin-left: 12px; white-space: nowrap; font-size: 11px; color: var(--text-faint); }
+.action-shortcut { flex: 0 0 auto; margin-left: 12px; white-space: nowrap; font-size: 11px; font-family: inherit; color: var(--text-faint); }
 .project-window-shortcut { visibility: hidden; }
 .project-search-row.active .project-window-shortcut { visibility: visible; }
 .project-search-input { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
