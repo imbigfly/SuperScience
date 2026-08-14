@@ -62,7 +62,16 @@ struct DebugRequestSnapshot {
     system_prompt_est_tokens: usize,
     total_est_tokens: usize,
     message_count: usize,
-    tool_count: usize,
+    /// Number of tool definitions included with this exact request. This is
+    /// zero for the stored-message fallback because schemas are runtime-only.
+    tool_schema_count: usize,
+    /// Historical invocations visible in the exported message prefix.
+    tool_call_count: usize,
+    configured_max_iter: usize,
+    /// Exact value applied to the in-flight or most recent turn. `null` after
+    /// restart when no resident runtime can prove the historical value.
+    effective_max_iter: Option<usize>,
+    termination_reason: Option<String>,
     terminal_event_count: usize,
     /// Persisted Done/Error boundaries. Older sessions may legitimately have
     /// none because builds before this field did not store terminal events.
@@ -92,6 +101,9 @@ fn build_snapshot(
     model: Option<String>,
     source: &'static str,
     terminal_events: Vec<serde_json::Value>,
+    configured_max_iter: usize,
+    effective_max_iter: Option<usize>,
+    termination_reason: Option<String>,
 ) -> DebugRequestSnapshot {
     let mut sections = Vec::with_capacity(messages.len());
     let mut total = 0usize;
@@ -137,6 +149,10 @@ fn build_snapshot(
             }
         })
         .collect();
+    let tool_call_count = messages
+        .iter()
+        .map(|message| message.tool_calls.len())
+        .sum();
     DebugRequestSnapshot {
         session_id: session_id.to_string(),
         captured_at,
@@ -147,12 +163,46 @@ fn build_snapshot(
         system_prompt_est_tokens: sys_tokens,
         total_est_tokens: total,
         message_count: messages.len(),
-        tool_count: tool_schemas.len(),
+        tool_schema_count: tool_schemas.len(),
+        tool_call_count,
+        configured_max_iter,
+        effective_max_iter,
+        termination_reason,
         terminal_event_count: terminal_events.len(),
         terminal_events,
         tools: tool_schemas,
         messages: sections,
     }
+}
+
+fn latest_termination(events: &[serde_json::Value]) -> (Option<String>, Option<usize>) {
+    events
+        .iter()
+        .rev()
+        .find_map(|event| {
+            let effective_max_iter = event
+                .get("effective_max_iter")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok());
+            let reason = match event.get("kind").and_then(serde_json::Value::as_str) {
+                Some("Done") => Some(
+                    if event.get("stop_reason").and_then(serde_json::Value::as_str)
+                        == Some("max_iterations")
+                    {
+                        "max_iterations"
+                    } else {
+                        "completed"
+                    }
+                    .to_string(),
+                ),
+                Some("Error") => Some("error".to_string()),
+                _ => None,
+            }?;
+            Some((reason, effective_max_iter))
+        })
+        .map_or((None, None), |(reason, effective)| {
+            (Some(reason), effective)
+        })
 }
 
 fn sanitize_component(s: &str) -> String {
@@ -177,11 +227,37 @@ pub(super) async fn export_debug_request(
             .await
             .map_err(|e| format!("{e}"))?,
     );
+    let turn_running = state.running_turns.lock().await.contains(&session_id);
+    let (last_termination_reason, last_effective_max_iter) = latest_termination(&terminal_events);
+    let termination_reason = (!turn_running).then_some(last_termination_reason).flatten();
+    let configured_max_iter = state
+        .store
+        .get_setting("max_iter")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(super::DEFAULT_MAX_ITER);
 
     // Prefer the live agent (tools + provider + latest prepared request). Use a
     // non-blocking try_lock so an in-flight turn falls back to persisted
     // messages instead of stalling the export behind a long turn.
     let rt = { state.sessions.lock().await.get(&session_id).cloned() };
+    let effective_max_iter = if turn_running {
+        rt.as_ref()
+            .filter(|runtime| {
+                runtime
+                    .effective_max_iter_known
+                    .load(std::sync::atomic::Ordering::SeqCst)
+            })
+            .map(|runtime| {
+                runtime
+                    .effective_max_iter
+                    .load(std::sync::atomic::Ordering::SeqCst)
+            })
+    } else {
+        last_effective_max_iter
+    };
     let live = rt.as_ref().and_then(|rt| {
         rt.agent.try_lock().ok().and_then(|guard| {
             guard.as_ref().map(|agent| {
@@ -190,15 +266,23 @@ pub(super) async fn export_debug_request(
                     messages.extend(agent.ctx.runtime_injections.iter().cloned());
                     messages
                 });
+                let request_tools = if agent.ctx.last_request_tool_schema_count() == Some(0) {
+                    Vec::new()
+                } else {
+                    agent.tools.schemas()
+                };
                 build_snapshot(
                     &session_id,
                     captured_at.clone(),
                     &msgs,
-                    &agent.tools.schemas(),
+                    &request_tools,
                     Some(agent.provider.name().to_string()),
                     Some(agent.provider.model().to_string()),
                     "live-agent",
                     terminal_events.clone(),
+                    configured_max_iter,
+                    effective_max_iter,
+                    termination_reason.clone(),
                 )
             })
         })
@@ -221,6 +305,9 @@ pub(super) async fn export_debug_request(
                 None,
                 "stored-messages",
                 terminal_events,
+                configured_max_iter,
+                effective_max_iter,
+                termination_reason,
             )
         }
     };
@@ -295,6 +382,9 @@ mod tests {
             None,
             "stored-messages",
             vec![],
+            100,
+            Some(100),
+            None,
         );
 
         assert_eq!(snap.message_count, 3);
@@ -307,7 +397,18 @@ mod tests {
         // With no tools, the total is exactly the sum of per-section estimates.
         let sum: usize = snap.messages.iter().map(|m| m.est_tokens).sum();
         assert_eq!(snap.total_est_tokens, sum);
-        assert_eq!(snap.tool_count, 0);
+        assert_eq!(snap.tool_schema_count, 0);
+        assert_eq!(snap.tool_call_count, 0);
+        assert_eq!(snap.configured_max_iter, 100);
+        assert_eq!(snap.effective_max_iter, Some(100));
+        assert_eq!(snap.termination_reason, None);
+        let json = serde_json::to_value(&snap).unwrap();
+        assert_eq!(json["tool_schema_count"], 0);
+        assert_eq!(json["tool_call_count"], 0);
+        assert_eq!(json["configured_max_iter"], 100);
+        assert_eq!(json["effective_max_iter"], 100);
+        assert!(json["termination_reason"].is_null());
+        assert!(json.get("tool_count").is_none());
     }
 
     #[test]
@@ -327,6 +428,9 @@ mod tests {
             None,
             "stored-messages",
             vec![],
+            100,
+            None,
+            None,
         );
         assert!(snap.messages[1].text.contains("data.xls"));
         assert!(snap.messages[1].text.contains("col_a,col_b"));
@@ -349,8 +453,11 @@ mod tests {
             None,
             "live-agent",
             vec![],
+            100,
+            Some(100),
+            None,
         );
-        assert_eq!(snap.tool_count, 1);
+        assert_eq!(snap.tool_schema_count, 1);
         assert!(snap.tools[0].est_tokens > 0);
         let msg_sum: usize = snap.messages.iter().map(|m| m.est_tokens).sum();
         assert_eq!(snap.total_est_tokens, msg_sum + snap.tools[0].est_tokens);
@@ -372,8 +479,96 @@ mod tests {
             None,
             "stored-messages",
             vec![terminal.clone()],
+            100,
+            Some(20),
+            Some("error".into()),
         );
         assert_eq!(snap.terminal_event_count, 1);
         assert_eq!(snap.terminal_events, vec![terminal]);
+        assert_eq!(snap.termination_reason.as_deref(), Some("error"));
+        assert_eq!(snap.configured_max_iter, 100);
+        assert_eq!(snap.effective_max_iter, Some(20));
+    }
+
+    #[test]
+    fn snapshot_separates_tool_calls_from_runtime_schemas() {
+        let mut assistant = Message::assistant("");
+        assistant.tool_calls.push(wisp_llm::ToolCall {
+            id: "call-1".into(),
+            kind: "function".into(),
+            function: wisp_llm::FunctionCall {
+                name: "read".into(),
+                arguments: "{}".into(),
+            },
+        });
+        let terminal = serde_json::json!({
+            "kind": "Done",
+            "frame_id": "s1",
+            "stop_reason": "max_iterations"
+        });
+        let snap = build_snapshot(
+            "s1",
+            "t".into(),
+            &[Message::user("hi"), assistant],
+            &[],
+            None,
+            None,
+            "stored-messages",
+            vec![terminal],
+            100,
+            Some(20),
+            Some("max_iterations".into()),
+        );
+
+        assert_eq!(snap.tool_schema_count, 0);
+        assert_eq!(snap.tool_call_count, 1);
+        assert_eq!(snap.termination_reason.as_deref(), Some("max_iterations"));
+    }
+
+    #[test]
+    fn latest_termination_keeps_effective_limit_with_new_events() {
+        let events = vec![
+            serde_json::json!({
+                "kind": "Done",
+                "frame_id": "s1",
+                "effective_max_iter": 20
+            }),
+            serde_json::json!({
+                "kind": "Error",
+                "frame_id": "s1",
+                "message": "summary failed",
+                "effective_max_iter": 7
+            }),
+        ];
+
+        assert_eq!(latest_termination(&events), (Some("error".into()), Some(7)));
+    }
+
+    #[test]
+    fn latest_termination_leaves_legacy_effective_limit_unknown() {
+        let events = vec![serde_json::json!({
+            "kind": "Done",
+            "frame_id": "s1",
+            "stop_reason": "max_iterations"
+        })];
+
+        assert_eq!(
+            latest_termination(&events),
+            (Some("max_iterations".into()), None)
+        );
+    }
+
+    #[test]
+    fn latest_termination_normalizes_non_limit_done_reasons() {
+        let events = vec![serde_json::json!({
+            "kind": "Done",
+            "frame_id": "s1",
+            "stop_reason": "end_turn"
+        })];
+
+        assert_eq!(
+            latest_termination(&events),
+            (Some("completed".into()), None)
+        );
     }
 }

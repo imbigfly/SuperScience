@@ -24,6 +24,7 @@ const TRUNCATED_OUTPUT_MESSAGE: &str = "模型输出在达到 max_tokens 上限�
 const STREAM_CUT_MESSAGE: &str = "模型响应流在中途被断开（未收到结束标记），已生成的部分内容不完整、不会计入上下文。常见原因：网络不稳定、代理/中转站切断连接，或同一 API key 的并发请求达到上限（例如多个会话同时使用同一模型）。可重发消息重试；需要并行会话时建议错开请求或使用不同的 API key。(stream cut mid-response, #437)";
 const EMPTY_RESPONSE_MESSAGE: &str = "模型完成了本轮推理，但没有返回可显示的文本或工具调用。对话上下文和已完成的工具结果均已保留；请点击“继续执行”重新生成最终回复。若长对话中反复出现，请先发送 /compact 压缩上下文。(model returned no visible response)";
 const ABNORMAL_FINISH_MESSAGE: &str = "模型服务没有正常完成本轮响应，已生成的部分内容不会作为最终答案提交。已完成的工具结果均已保留；请点击“继续执行”重试。(provider returned an unsuccessful finish reason)";
+const ITERATION_LIMIT_SUMMARY_FAILURE: &str = "已达到本轮 Agent 最大迭代次数，但模型未能生成无工具收尾总结。已完成的工具结果均已保留；请点击“继续执行”接着做。(failed to summarize after reaching max agent iterations)";
 /// How many byte-identical tool-call batches within the recent window count as
 /// "stuck". Windowed (not consecutive) so alternating A/B/A/B loops also trip it.
 const STUCK_REPEAT_LIMIT: usize = 5;
@@ -106,6 +107,22 @@ fn budget_tool_result_with_limit(
 /// its message or it still has to run a normal turn (see `send_message_inner`).
 pub type GuidanceQueue = std::sync::Mutex<Vec<(u64, String)>>;
 
+/// Why an otherwise successful agent loop stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentLoopOutcome {
+    Completed,
+    MaxIterations,
+}
+
+impl AgentLoopOutcome {
+    pub fn stop_reason(self) -> Option<&'static str> {
+        match self {
+            Self::Completed => None,
+            Self::MaxIterations => Some("max_iterations"),
+        }
+    }
+}
+
 pub async fn agent_loop(
     ctx: &mut ContextManager,
     provider: &dyn Provider,
@@ -116,7 +133,7 @@ pub async fn agent_loop(
     user_input: &str,
     max_iter: usize,
     cancel: Option<&AtomicBool>,
-) -> Result<()> {
+) -> Result<AgentLoopOutcome> {
     agent_loop_with_images(
         ctx,
         provider,
@@ -148,7 +165,7 @@ pub async fn agent_loop_with_images(
     max_iter: usize,
     cancel: Option<&AtomicBool>,
     guidance: Option<&GuidanceQueue>,
-) -> Result<()> {
+) -> Result<AgentLoopOutcome> {
     let observations = if images.is_empty() || provider_supports_vision {
         None
     } else {
@@ -231,7 +248,7 @@ pub async fn agent_loop_continue(
     max_iter: usize,
     cancel: Option<&AtomicBool>,
     guidance: Option<&GuidanceQueue>,
-) -> Result<()> {
+) -> Result<AgentLoopOutcome> {
     agent_loop_inner(
         ctx,
         provider,
@@ -256,7 +273,7 @@ async fn agent_loop_inner(
     max_iter: usize,
     cancel: Option<&AtomicBool>,
     guidance: Option<&GuidanceQueue>,
-) -> Result<()> {
+) -> Result<AgentLoopOutcome> {
     let env = match cancel {
         Some(c) => ToolEnvAdapter::with_cancel(root.to_path_buf(), output, c),
         None => ToolEnvAdapter::new(root.to_path_buf(), output),
@@ -314,7 +331,7 @@ async fn agent_loop_inner(
         };
         let mut overflow_recovery_used = false;
         let comp = loop {
-            let messages = ctx.prepare_for_api_with_reserve(output, fixed_request_tokens);
+            let messages = ctx.prepare_for_api_with_tools(output, &schemas);
             match stream_with_retry(provider, &messages, &schemas, &mut sink, cancel).await {
                 Ok(comp) => break comp,
                 Err(LlmError::Incomplete) => anyhow::bail!(STREAM_CUT_MESSAGE),
@@ -407,7 +424,7 @@ async fn agent_loop_inner(
         );
 
         if comp.tool_calls.is_empty() {
-            break;
+            return Ok(AgentLoopOutcome::Completed);
         }
 
         // Stuck-loop guard: a degenerate model re-issues the exact same call
@@ -534,18 +551,25 @@ async fn agent_loop_inner(
             }
         }
         if batch_control == ToolControl::StopTurn {
-            break;
+            return Ok(AgentLoopOutcome::Completed);
         }
         if iteration_limit_reached(iteration, max_iter) {
-            // Fail resumably (like empty-response / max_tokens) so the UI shows
-            // a concrete reason instead of a quiet "Processed" end-of-turn.
-            anyhow::bail!(iteration_limit_message(max_iter));
+            summarize_at_iteration_limit(
+                ctx,
+                provider,
+                root,
+                output,
+                max_iter,
+                iteration + 1,
+                cancel,
+            )
+            .await?;
+            return Ok(AgentLoopOutcome::MaxIterations);
         }
         if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
             anyhow::bail!("stopped by user");
         }
     }
-    Ok(())
 }
 
 fn append_skipped_tool_results(
@@ -582,10 +606,107 @@ fn iteration_limit_reached(iteration: usize, max_iter: usize) -> bool {
     max_iter != 0 && iteration >= max_iter
 }
 
-fn iteration_limit_message(max_iter: usize) -> String {
+fn iteration_limit_summary_prompt(max_iter: usize) -> String {
     format!(
-        "已达到本轮 Agent 最大迭代次数（{max_iter}），任务可能尚未完成。已完成的工具结果均已保留；请点击“继续执行”接着做，或在设置中提高「每轮最大 Agent 迭代次数」（0 表示不限制）。(hit max agent iterations: {max_iter})"
+        "The agent has reached its maximum of {max_iter} model/tool iterations for this turn. No tools are available in this final response. Give the user a concise, self-contained status summary: state that the iteration limit was reached, distinguish completed work from unverified or remaining work, report important tool results already obtained, and name the safest next action. Do not claim the task is complete unless the existing evidence proves it."
     )
+}
+
+async fn summarize_at_iteration_limit(
+    ctx: &mut ContextManager,
+    provider: &dyn Provider,
+    root: &Path,
+    output: &dyn Output,
+    max_iter: usize,
+    usage_round: usize,
+    cancel: Option<&AtomicBool>,
+) -> Result<()> {
+    let original_injection_count = ctx.runtime_injections.len();
+    ctx.inject_user(iteration_limit_summary_prompt(max_iter));
+
+    let result = async {
+        if ctx.needs_auto_compact_with_reserve(0) {
+            let (archive, archive_reference) = context_archive(root);
+            output.compaction_started("auto");
+            match ctx
+                .compact_with_reserve_reference(provider, &archive, 0, &archive_reference)
+                .await
+            {
+                Ok((before, after)) => output.compaction(before, after, "auto"),
+                Err(error) => tracing::warn!(
+                    archive = %archive.display(),
+                    "automatic context compaction before iteration-limit summary failed: {error}"
+                ),
+            }
+        }
+
+        let mut sink = match cancel {
+            Some(cancel) => StreamSinkAdapter::with_cancel(output, cancel),
+            None => StreamSinkAdapter::new(output),
+        };
+        let mut overflow_recovery_used = false;
+        let comp = loop {
+            let messages = ctx.prepare_for_api_with_tools(output, &[]);
+            match stream_with_retry(provider, &messages, &[], &mut sink, cancel).await {
+                Ok(comp) => break comp,
+                Err(LlmError::Incomplete) => anyhow::bail!(STREAM_CUT_MESSAGE),
+                Err(error) if error.is_context_overflow() && !overflow_recovery_used => {
+                    overflow_recovery_used = true;
+                    let (archive, archive_reference) = context_archive(root);
+                    output.compaction_started("overflow");
+                    match ctx
+                        .compact_with_reserve_reference(provider, &archive, 0, &archive_reference)
+                        .await
+                    {
+                        Ok((before, after)) => output.compaction(before, after, "overflow"),
+                        Err(compact_error) => anyhow::bail!(
+                            "context overflow recovery failed: {compact_error} (original: {error})"
+                        ),
+                    }
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        };
+
+        if comp.usage.input_tokens > 0 {
+            ctx.calibrate(comp.usage.input_tokens, ctx.last_request_estimated_tokens());
+        }
+        if cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)) {
+            anyhow::bail!(STOPPED_BY_USER);
+        }
+        if is_truncated(comp.finish_reason.as_deref()) {
+            anyhow::bail!(TRUNCATED_OUTPUT_MESSAGE);
+        }
+        if is_unsuccessful_finish(comp.finish_reason.as_deref()) {
+            anyhow::bail!(ABNORMAL_FINISH_MESSAGE);
+        }
+        if comp.content.trim().is_empty() || !comp.tool_calls.is_empty() {
+            anyhow::bail!(ITERATION_LIMIT_SUMMARY_FAILURE);
+        }
+
+        ctx.append_assistant(comp.content, vec![], comp.reasoning);
+        if let Some(message) = ctx.messages.last() {
+            output.on_message(message);
+        }
+        let context_usage = ctx.context_usage(&[], &[]);
+        let context_tokens = context_usage.total();
+        output.usage(
+            usage_round,
+            comp.usage.input_tokens,
+            comp.usage.output_tokens,
+            comp.usage.reasoning_tokens,
+            comp.usage.cached_input_tokens,
+            context_tokens,
+            ctx.max_context,
+            context_usage,
+        );
+        Ok(())
+    }
+    .await;
+
+    ctx.runtime_injections.truncate(original_injection_count);
+    result
 }
 
 async fn describe_image(
@@ -780,11 +901,11 @@ mod tests {
     }
 
     #[test]
-    fn iteration_limit_message_names_the_cap() {
-        let msg = iteration_limit_message(100);
+    fn iteration_limit_summary_prompt_names_the_cap_and_forbids_tools() {
+        let msg = iteration_limit_summary_prompt(100);
         assert!(msg.contains("100"), "{msg}");
-        assert!(msg.contains("hit max agent iterations"), "{msg}");
-        assert!(msg.contains("继续执行"), "{msg}");
+        assert!(msg.contains("No tools are available"), "{msg}");
+        assert!(msg.contains("remaining work"), "{msg}");
     }
 
     #[test]
@@ -849,6 +970,7 @@ mod tests {
     struct SequenceProvider {
         completions: Mutex<VecDeque<Completion>>,
         stream_calls: AtomicUsize,
+        schema_counts: Mutex<Vec<usize>>,
     }
 
     struct FailingCompactProvider {
@@ -1061,6 +1183,7 @@ mod tests {
             Self {
                 completions: Mutex::new(completions.into_iter().collect()),
                 stream_calls: AtomicUsize::new(0),
+                schema_counts: Mutex::new(Vec::new()),
             }
         }
 
@@ -1151,10 +1274,11 @@ mod tests {
         async fn stream(
             &self,
             _messages: &[Message],
-            _tools: &[ToolSchema],
+            tools: &[ToolSchema],
             _sink: &mut dyn wisp_llm::StreamSink,
         ) -> wisp_llm::Result<Completion> {
             self.stream_calls.fetch_add(1, Ordering::SeqCst);
+            self.schema_counts.lock().unwrap().push(tools.len());
             self.next()
         }
     }
@@ -2001,11 +2125,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn max_iter_limit_fails_with_visible_message() {
-        // max_iter=2 is below STUCK_REPEAT_LIMIT, so the iteration cap fires
-        // first and must surface a resumable error (not silent Ok(())).
-        let provider = FixedProvider {
-            completion: Completion {
+    async fn max_iter_limit_forces_one_tool_free_summary() {
+        let provider = SequenceProvider::new([
+            Completion {
                 tool_calls: vec![ToolCall {
                     id: "call_1".into(),
                     kind: "function".into(),
@@ -2017,7 +2139,25 @@ mod tests {
                 finish_reason: Some("tool_calls".into()),
                 ..Completion::default()
             },
-        };
+            Completion {
+                tool_calls: vec![ToolCall {
+                    id: "call_2".into(),
+                    kind: "function".into(),
+                    function: FunctionCall {
+                        name: "ok_tool".into(),
+                        arguments: "{}".into(),
+                    },
+                }],
+                finish_reason: Some("tool_calls".into()),
+                ..Completion::default()
+            },
+            Completion {
+                content: "Iteration limit reached. Two checks completed; verification remains."
+                    .into(),
+                finish_reason: Some("stop".into()),
+                ..Completion::default()
+            },
+        ]);
         let mut tools = Registry::builtins();
         tools.add(Box::new(OkTool));
         let mut ctx = ContextManager::new(100_000);
@@ -2027,7 +2167,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&root).unwrap();
 
-        let err = agent_loop(
+        let outcome = agent_loop(
             &mut ctx,
             &provider,
             None,
@@ -2039,14 +2179,70 @@ mod tests {
             None,
         )
         .await
+        .unwrap();
+
+        assert_eq!(outcome, AgentLoopOutcome::MaxIterations);
+        assert_eq!(outcome.stop_reason(), Some("max_iterations"));
+        assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 3);
+        let schema_counts = provider.schema_counts.lock().unwrap().clone();
+        assert!(schema_counts[0] > 0 && schema_counts[1] > 0);
+        assert_eq!(schema_counts[2], 0, "summary request must expose no tools");
+        assert_eq!(ctx.last_request_tool_schema_count(), Some(0));
+        assert!(ctx.runtime_injections.is_empty());
+        let final_message = ctx.messages.last().unwrap();
+        assert_eq!(final_message.role, wisp_llm::Role::Assistant);
+        assert!(final_message.tool_calls.is_empty());
+        assert!(final_message
+            .content
+            .as_text()
+            .contains("verification remains"));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[tokio::test]
+    async fn max_iter_summary_rejects_a_tool_call_even_without_schemas() {
+        let tool_completion = || Completion {
+            tool_calls: vec![ToolCall {
+                id: uuid::Uuid::new_v4().to_string(),
+                kind: "function".into(),
+                function: FunctionCall {
+                    name: "ok_tool".into(),
+                    arguments: "{}".into(),
+                },
+            }],
+            finish_reason: Some("tool_calls".into()),
+            ..Completion::default()
+        };
+        let provider = SequenceProvider::new([tool_completion(), tool_completion()]);
+        let mut tools = Registry::builtins();
+        tools.add(Box::new(OkTool));
+        let mut ctx = ContextManager::new(100_000);
+        let root = std::env::temp_dir().join(format!(
+            "wisp-core-max-iter-invalid-summary-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let error = agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            &root,
+            &NullOutput,
+            "keep going",
+            1,
+            None,
+        )
+        .await
         .unwrap_err();
 
-        let text = err.to_string();
-        assert!(
-            text.contains("hit max agent iterations: 2"),
-            "unexpected error: {text}"
+        assert!(error.to_string().contains("failed to summarize"));
+        assert_eq!(
+            *provider.schema_counts.lock().unwrap(),
+            vec![tools.schemas().len(), 0]
         );
-        assert!(text.contains("继续执行"), "missing resume hint: {text}");
+        assert!(ctx.runtime_injections.is_empty());
         std::fs::remove_dir_all(root).ok();
     }
 

@@ -198,10 +198,14 @@ enum AgentEvent {
         frame_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         stop_reason: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        effective_max_iter: Option<usize>,
     },
     Error {
         frame_id: String,
         message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        effective_max_iter: Option<usize>,
     },
     /// A persisted background sub-Agent batch was appended to its owning
     /// conversation. Optional synthesis follows as a normal internal turn.
@@ -2025,6 +2029,11 @@ struct BootstrapStatus {
 /// concurrently on independent mutexes.
 struct SessionRuntime {
     agent: tokio::sync::Mutex<Option<Agent>>,
+    /// Exact iteration limit applied to the in-flight or most recent turn.
+    /// Kept outside the Agent lock so diagnostic export can read it while a
+    /// long turn owns that lock.
+    effective_max_iter: std::sync::atomic::AtomicUsize,
+    effective_max_iter_known: AtomicBool,
     /// A settings/model invalidation that raced a running turn. The current
     /// turn keeps its original provider; the next lock owner rebuilds from the
     /// newly persisted settings before dispatching another request.
@@ -2071,6 +2080,8 @@ impl SessionRuntime {
     fn new() -> Self {
         Self {
             agent: tokio::sync::Mutex::new(None),
+            effective_max_iter: std::sync::atomic::AtomicUsize::new(0),
+            effective_max_iter_known: AtomicBool::new(false),
             agent_config_generation: std::sync::atomic::AtomicU64::new(0),
             cached_agent_generation: std::sync::atomic::AtomicU64::new(0),
             workflow: Arc::new(tokio::sync::Mutex::new(())),
@@ -5228,6 +5239,7 @@ async fn send_message_inner(
                     AgentEvent::Done {
                         frame_id: frame_id.clone(),
                         stop_reason: Some(_stop_reason),
+                        effective_max_iter: None,
                     },
                 )
                 .await;
@@ -5243,6 +5255,7 @@ async fn send_message_inner(
                     AgentEvent::Error {
                         frame_id: frame_id.clone(),
                         message: error.clone(),
+                        effective_max_iter: None,
                     },
                 )
                 .await;
@@ -5703,6 +5716,7 @@ async fn send_message_inner(
                     AgentEvent::Done {
                         frame_id: frame_id.clone(),
                         stop_reason: Some("compact".into()),
+                        effective_max_iter: None,
                     },
                 )
                 .await;
@@ -5716,6 +5730,7 @@ async fn send_message_inner(
                     AgentEvent::Error {
                         frame_id: frame_id.clone(),
                         message: e.clone(),
+                        effective_max_iter: None,
                     },
                 )
                 .await;
@@ -5985,6 +6000,8 @@ async fn send_message_inner(
     // model since the last one, and images already in history must follow the
     // model that is about to receive them, not the one that accepted them.
     agent.ctx.supports_vision = primary_supports_vision;
+    rt.effective_max_iter.store(max_iter, Ordering::SeqCst);
+    rt.effective_max_iter_known.store(true, Ordering::SeqCst);
     state.running_turns.lock().await.insert(frame_id.clone());
     let mut result = if resume {
         agent
@@ -6013,21 +6030,23 @@ async fn send_message_inner(
                 .mark_agent_workflow_deliveries_presented(&completion_delivery_ids)
                 .await;
         }
-        let is_reviewer = specialist
-            .as_ref()
-            .is_some_and(|specialist| specialist.id == "reviewer");
-        if !resume && !is_reviewer && load_auto_review_enabled(&state.store).await {
-            automatic_review(
-                state,
-                &app,
-                &frame_id,
-                &model_label,
-                agent,
-                &output,
-                &rt.cancel,
-                turn_start,
-            )
-            .await;
+        if matches!(result, Ok(wisp_core::AgentLoopOutcome::Completed)) {
+            let is_reviewer = specialist
+                .as_ref()
+                .is_some_and(|specialist| specialist.id == "reviewer");
+            if !resume && !is_reviewer && load_auto_review_enabled(&state.store).await {
+                automatic_review(
+                    state,
+                    &app,
+                    &frame_id,
+                    &model_label,
+                    agent,
+                    &output,
+                    &rt.cancel,
+                    turn_start,
+                )
+                .await;
+            }
         }
     }
     // Keep the turn-start snapshot through a possible automatic correction;
@@ -6083,14 +6102,15 @@ async fn send_message_inner(
     mark_seen_if_viewed(state, &frame_id).await;
 
     match result {
-        Ok(_) => {
+        Ok(outcome) => {
             persist_and_emit_terminal_event(
                 state,
                 &app,
                 &frame_id,
                 AgentEvent::Done {
                     frame_id: frame_id.clone(),
-                    stop_reason: None,
+                    stop_reason: outcome.stop_reason().map(str::to_string),
+                    effective_max_iter: Some(max_iter),
                 },
             )
             .await;
@@ -6105,6 +6125,7 @@ async fn send_message_inner(
                 AgentEvent::Error {
                     frame_id: frame_id.clone(),
                     message: message.clone(),
+                    effective_max_iter: Some(max_iter),
                 },
             )
             .await;

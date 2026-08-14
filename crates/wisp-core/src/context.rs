@@ -233,6 +233,7 @@ pub struct ContextManager {
     last_request_message_count: Option<usize>,
     last_request_runtime_injections: Vec<Message>,
     last_request_runtime_prefix_len: usize,
+    last_request_tool_schema_count: Option<usize>,
     /// Session-level multiplier applied to heuristic token estimates after
     /// comparing them to provider-reported input usage.
     token_estimate_factor: f64,
@@ -254,6 +255,7 @@ impl ContextManager {
             last_request_message_count: None,
             last_request_runtime_injections: vec![],
             last_request_runtime_prefix_len: 0,
+            last_request_tool_schema_count: None,
             token_estimate_factor: 1.0,
             last_request_estimated_tokens: 0,
         }
@@ -301,6 +303,10 @@ impl ContextManager {
 
     pub fn last_request_estimated_tokens(&self) -> usize {
         self.last_request_estimated_tokens
+    }
+
+    pub fn last_request_tool_schema_count(&self) -> Option<usize> {
+        self.last_request_tool_schema_count
     }
 
     /// Blend provider-reported input usage into the session token estimator.
@@ -353,6 +359,7 @@ impl ContextManager {
         self.last_request_message_count = None;
         self.last_request_runtime_injections.clear();
         self.last_request_runtime_prefix_len = 0;
+        self.last_request_tool_schema_count = None;
     }
 
     fn combine_runtime_injections(
@@ -1494,9 +1501,30 @@ impl ContextManager {
         self.prepare_for_api_with_reserve(output, 0)
     }
 
+    /// Prepare a request and retain the exact number of tool schemas sent with
+    /// it for later diagnostic export.
+    pub fn prepare_for_api_with_tools(
+        &mut self,
+        output: &dyn Output,
+        tools: &[ToolSchema],
+    ) -> std::borrow::Cow<'_, [Message]> {
+        let fixed_tokens = Self::estimated_tool_tokens(tools);
+        self.last_request_tool_schema_count = Some(tools.len());
+        self.prepare_for_api_with_reserve_inner(output, fixed_tokens)
+    }
+
     /// Prepare a provider request while including fixed payload (tool schemas)
     /// in warning/accounting decisions.
     pub fn prepare_for_api_with_reserve(
+        &mut self,
+        output: &dyn Output,
+        fixed_tokens: usize,
+    ) -> std::borrow::Cow<'_, [Message]> {
+        self.last_request_tool_schema_count = None;
+        self.prepare_for_api_with_reserve_inner(output, fixed_tokens)
+    }
+
+    fn prepare_for_api_with_reserve_inner(
         &mut self,
         output: &dyn Output,
         fixed_tokens: usize,

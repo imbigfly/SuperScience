@@ -811,10 +811,12 @@ fn terminal_turn_events_are_persisted_for_diagnostics() {
     assert!(should_persist_ui_event(&AgentEvent::Done {
         frame_id: "f".into(),
         stop_reason: None,
+        effective_max_iter: None,
     }));
     assert!(should_persist_ui_event(&AgentEvent::Error {
         frame_id: "f".into(),
         message: "api: 524 gateway timeout".into(),
+        effective_max_iter: None,
     }));
 
     let raw = vec![
@@ -826,6 +828,7 @@ fn terminal_turn_events_are_persisted_for_diagnostics() {
         serde_json::to_string(&AgentEvent::Error {
             frame_id: "f".into(),
             message: "api: 524 gateway timeout".into(),
+            effective_max_iter: None,
         })
         .unwrap(),
     ];
@@ -834,9 +837,19 @@ fn terminal_turn_events_are_persisted_for_diagnostics() {
     assert_eq!(terminal[0]["kind"], "Error");
     assert_eq!(terminal[0]["message"], "api: 524 gateway timeout");
 
+    let terminal = super::terminal_ui_events(&[serde_json::to_string(&AgentEvent::Done {
+        frame_id: "f".into(),
+        stop_reason: Some("max_iterations".into()),
+        effective_max_iter: Some(20),
+    })
+    .unwrap()]);
+    assert_eq!(terminal[0]["stop_reason"], "max_iterations");
+    assert_eq!(terminal[0]["effective_max_iter"], 20);
+
     let events = vec![AgentEvent::Error {
         frame_id: "f".into(),
         message: "api: 524 gateway timeout".into(),
+        effective_max_iter: None,
     }];
     let (items, _) = events_to_items(&events);
     assert_eq!(items.len(), 1);
@@ -917,6 +930,7 @@ async fn live_agent_events_merge_deltas_and_preserve_order() {
     tx.send(AgentEvent::Done {
         frame_id,
         stop_reason: None,
+        effective_max_iter: None,
     })
     .unwrap();
     drop(tx);
