@@ -3473,6 +3473,45 @@ pub(crate) struct ExecutionContext {
     pub(crate) last_probe_error: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub(crate) struct ContextStoragePrefsView {
+    pub(crate) context_id: String,
+    pub(crate) remote_data_root: String,
+    pub(crate) remote_workdir_root: String,
+    pub(crate) local_results_dir: String,
+    pub(crate) confirmed: bool,
+}
+
+/// Editable state for the storage-locations dialog (first server enable in a
+/// project, or the Environment rail's storage action).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct StoragePrefsForm {
+    pub(crate) context_id: String,
+    pub(crate) context_label: String,
+    pub(crate) remote_data_root: String,
+    pub(crate) remote_workdir_root: String,
+    pub(crate) local_results_dir: String,
+    /// True when this dialog was auto-opened on first enable.
+    pub(crate) first_use: bool,
+}
+
+impl StoragePrefsForm {
+    pub(crate) fn from_view(
+        view: ContextStoragePrefsView,
+        context_label: String,
+        first_use: bool,
+    ) -> Self {
+        Self {
+            context_id: view.context_id,
+            context_label,
+            remote_data_root: view.remote_data_root,
+            remote_workdir_root: view.remote_workdir_root,
+            local_results_dir: view.local_results_dir,
+            first_use,
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct RuntimeInterpreterForm {
     pub(crate) context_id: String,

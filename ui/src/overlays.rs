@@ -341,6 +341,117 @@ pub(super) fn RuntimeInterpreterOverlay(
     }
 }
 
+/// Storage locations for one project × server: where uploads land, where run
+/// workdirs live, and where retrieved outputs are placed in the project.
+/// Auto-opens once when a server is first enabled without saved preferences.
+#[component]
+pub(super) fn StoragePrefsOverlay(
+    locale: RwSignal<Locale>,
+    form: RwSignal<Option<StoragePrefsForm>>,
+) -> impl IntoView {
+    let busy = create_rw_signal(false);
+    let error = create_rw_signal(None::<String>);
+    // Render from the open state only so typing does not rebuild the DOM.
+    let open = create_memo(move |_| form.with(|value| value.is_some()));
+    let save = move |_| {
+        let Some(current) = form.get_untracked() else {
+            return;
+        };
+        busy.set(true);
+        error.set(None);
+        let args = to_value(&serde_json::json!({
+            "contextId": current.context_id,
+            "remoteDataRoot": current.remote_data_root,
+            "remoteWorkdirRoot": current.remote_workdir_root,
+            "localResultsDir": current.local_results_dir,
+        }))
+        .unwrap();
+        spawn_local(async move {
+            match invoke_checked("set_context_storage_prefs", args).await {
+                Ok(_) => {
+                    form.set(None);
+                    show_toast(&t(locale.get_untracked(), "storage_prefs.saved"));
+                }
+                Err(value) => error.set(Some(localize_backend(
+                    locale.get_untracked(),
+                    &js_error_text(value),
+                ))),
+            }
+            busy.set(false);
+        });
+    };
+    let field = move |name: &'static str, event: &leptos::ev::Event| {
+        let value = event_target_value(event);
+        form.update(|current| {
+            if let Some(current) = current {
+                match name {
+                    "data" => current.remote_data_root = value,
+                    "workdir" => current.remote_workdir_root = value,
+                    _ => current.local_results_dir = value,
+                }
+            }
+        });
+    };
+
+    move || {
+        open.get().then(|| view! {
+            <div class="overlay">
+                <div class="modal runtime-config-modal storage-prefs-modal" data-testid="storage-prefs-modal">
+                    <div class="ps-head">
+                        <h2>{move || t(locale.get(), "storage_prefs.title")}</h2>
+                        <button type="button" class="ps-close"
+                            title=move || t(locale.get(), "settings.cancel")
+                            disabled=move || busy.get()
+                            on:click=move |_| form.set(None)>{compose_icon("close")}</button>
+                    </div>
+                    <p class="runtime-config-hint">{
+                        move || {
+                            let context = form.with(|value| value.as_ref()
+                                .map(|value| value.context_label.clone())
+                                .unwrap_or_default());
+                            tf(locale.get(), "storage_prefs.scope", &[("context", &context)])
+                        }
+                    }</p>
+                    <label>
+                        {move || t(locale.get(), "storage_prefs.data_root")}
+                        <input id="storage-prefs-data-root" autocomplete="off"
+                            prop:value=move || form.get().map(|value| value.remote_data_root).unwrap_or_default()
+                            on:input=move |event| field("data", &event) />
+                    </label>
+                    <label>
+                        {move || t(locale.get(), "storage_prefs.workdir_root")}
+                        <input id="storage-prefs-workdir-root" autocomplete="off"
+                            prop:value=move || form.get().map(|value| value.remote_workdir_root).unwrap_or_default()
+                            on:input=move |event| field("workdir", &event) />
+                    </label>
+                    <label>
+                        {move || t(locale.get(), "storage_prefs.results_dir")}
+                        <input id="storage-prefs-results-dir" autocomplete="off"
+                            prop:value=move || form.get().map(|value| value.local_results_dir).unwrap_or_default()
+                            on:input=move |event| field("results", &event) />
+                    </label>
+                    <p class="runtime-config-hint">{move || t(locale.get(), "storage_prefs.hint")}</p>
+                    {move || error.get().map(|message| view! {
+                        <div class="settings-status fail">{message}</div>
+                    })}
+                    <div class="row">
+                        <button type="button" disabled=move || busy.get()
+                            on:click=move |_| form.set(None)>{
+                                move || if form.with(|value| value.as_ref().map(|value| value.first_use).unwrap_or(false)) {
+                                    t(locale.get(), "storage_prefs.later")
+                                } else {
+                                    t(locale.get(), "settings.cancel")
+                                }
+                            }</button>
+                        <button type="button" class="primary" disabled=move || busy.get()
+                            on:click=save>{move || t(locale.get(), "settings.save")}</button>
+                    </div>
+                </div>
+            </div>
+        })
+    }
+}
+
 #[component]
 pub(super) fn CapabilitiesOverlay(
     locale: RwSignal<Locale>,

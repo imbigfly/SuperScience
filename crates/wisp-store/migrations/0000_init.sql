@@ -307,6 +307,17 @@ CREATE TABLE IF NOT EXISTS session_execution_contexts (
 CREATE INDEX IF NOT EXISTS ix_session_execution_contexts_context
     ON session_execution_contexts(context_id);
 
+CREATE TABLE IF NOT EXISTS context_storage_prefs (
+    project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    context_id          TEXT NOT NULL,
+    remote_data_root    TEXT NOT NULL,
+    remote_workdir_root TEXT NOT NULL,
+    local_results_dir   TEXT NOT NULL,
+    created_at          INTEGER NOT NULL,
+    updated_at          INTEGER NOT NULL,
+    PRIMARY KEY (project_id, context_id)
+);
+
 CREATE TABLE IF NOT EXISTS runs (
     id                 TEXT PRIMARY KEY,
     project_id         TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

@@ -3271,8 +3271,80 @@ async fn store_open_records_migrations_and_seeds_local_context() {
             SESSION_BRANCH_MERGE_MIGRATION.to_string(),
             EXPLORATION_PROMOTION_RECOVERY_MIGRATION.to_string(),
             RUN_HARVEST_STATE_MIGRATION.to_string(),
+            CONTEXT_STORAGE_PREFS_MIGRATION.to_string(),
         ]
     );
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn context_storage_prefs_validate_and_round_trip() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_storage_prefs_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+
+    assert!(store
+        .get_context_storage_prefs("p", "ssh:gpu")
+        .await
+        .unwrap()
+        .is_none());
+    let mut prefs = ContextStoragePrefs {
+        project_id: "p".into(),
+        context_id: "ssh:gpu".into(),
+        remote_data_root: "~/wisp/proj/data".into(),
+        remote_workdir_root: ".wisp-science/runs".into(),
+        local_results_dir: "remote/gpu".into(),
+        created_at: 0,
+        updated_at: 0,
+    };
+    store.upsert_context_storage_prefs(&prefs).await.unwrap();
+    let stored = store
+        .get_context_storage_prefs("p", "ssh:gpu")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.remote_data_root, "~/wisp/proj/data");
+
+    prefs.remote_data_root = "/data/wisp/proj".into();
+    prefs.local_results_dir = "results/from-gpu".into();
+    store.upsert_context_storage_prefs(&prefs).await.unwrap();
+    let updated = store
+        .get_context_storage_prefs("p", "ssh:gpu")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated.remote_data_root, "/data/wisp/proj");
+    assert_eq!(updated.local_results_dir, "results/from-gpu");
+    assert_eq!(updated.created_at, stored.created_at);
+
+    // Validation matrix: traversal, escapes, absolute local dirs all rejected.
+    for (field, value) in [
+        ("remote_data_root", "~/wisp/../etc"),
+        ("remote_data_root", "$HOME/data"),
+        ("remote_data_root", "a b"),
+        ("remote_data_root", ""),
+        ("remote_workdir_root", "/absolute/runs"),
+        ("remote_workdir_root", "~/runs"),
+        ("remote_workdir_root", "runs/.."),
+        ("local_results_dir", "/absolute"),
+        ("local_results_dir", "../outside"),
+        ("local_results_dir", "a;b"),
+    ] {
+        let mut bad = updated.clone();
+        match field {
+            "remote_data_root" => bad.remote_data_root = value.into(),
+            "remote_workdir_root" => bad.remote_workdir_root = value.into(),
+            _ => bad.local_results_dir = value.into(),
+        }
+        assert!(
+            store.upsert_context_storage_prefs(&bad).await.is_err(),
+            "{field}={value} should be rejected"
+        );
+    }
 
     let _ = std::fs::remove_file(&tmp);
 }

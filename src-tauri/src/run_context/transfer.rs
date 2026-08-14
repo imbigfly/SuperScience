@@ -41,7 +41,7 @@ struct TransferRequest {
     source_context_id: String,
     source_path: String,
     destination_context_id: String,
-    destination_path: String,
+    destination_path: Option<String>,
     #[serde(default = "default_auto")]
     route: String,
     #[serde(default = "default_auto")]
@@ -180,12 +180,12 @@ impl Tool for TransferBetweenContextsTool {
                     "source_context_id": { "type": "string", "description": "Selected SSH context id, or `local` for an upload" },
                     "source_path": { "type": "string", "description": "SSH: exact absolute or ~/ path. Local: exact absolute file/directory path. Globs are rejected." },
                     "destination_context_id": { "type": "string", "description": "Selected SSH context id, or `local` for a download" },
-                    "destination_path": { "type": "string", "description": "SSH: exact absolute or ~/ path. Local: exact new absolute file/directory path; do not guess it—ask the user when unspecified. Globs are rejected." },
+                    "destination_path": { "type": "string", "description": "SSH: exact absolute or ~/ path; omit to place the file under this project's configured remote data root for the destination server. Local: exact new absolute file/directory path; do not guess it—ask the user when unspecified. Globs are rejected." },
                     "route": { "type": "string", "enum": ["auto", "direct", "relay"], "default": "auto", "description": "direct/relay apply to SSH-to-SSH; transfers involving local accept auto or relay" },
                     "transport": { "type": "string", "enum": ["auto", "rsync", "scp"], "default": "auto", "description": "Transfers involving local currently accept auto or scp" },
                     "timeout_secs": { "type": "integer", "description": "Wall timeout, 1 second to 7 days" }
                 },
-                "required": ["source_context_id", "source_path", "destination_context_id", "destination_path"]
+                "required": ["source_context_id", "source_path", "destination_context_id"]
             }),
         )
     }
@@ -210,7 +210,7 @@ impl Tool for TransferBetweenContextsTool {
         let destination_path = args
             .get("destination_path")
             .and_then(|value| value.as_str())
-            .unwrap_or_default();
+            .unwrap_or("<remote data root>");
         format!("{source}:{source_path} → {destination}:{destination_path}")
     }
 
@@ -738,6 +738,30 @@ fn remote_item_name(path: &str) -> Result<&str, String> {
     Ok(name)
 }
 
+/// When the caller omits destination_path for an SSH destination, uploads land
+/// under this project's configured remote data root for that server.
+async fn default_remote_destination(
+    store: &wisp_store::Store,
+    project_id: &str,
+    context_id: &str,
+    source_path: &str,
+) -> Result<String, String> {
+    let (prefs, _) = crate::storage_prefs::effective_prefs(store, project_id, context_id).await?;
+    let root =
+        if prefs.remote_data_root.starts_with('/') || prefs.remote_data_root.starts_with("~/") {
+            prefs.remote_data_root
+        } else {
+            format!("~/{}", prefs.remote_data_root)
+        };
+    let normalized = source_path.replace('\\', "/");
+    let name = normalized
+        .rsplit('/')
+        .find(|part| !part.is_empty())
+        .filter(|name| !name.trim().is_empty())
+        .ok_or_else(|| "cannot derive a destination file name from source_path".to_string())?;
+    Ok(format!("{root}/{name}"))
+}
+
 async fn submit_transfer(
     store: &wisp_store::Store,
     manager: &RunManager,
@@ -756,6 +780,25 @@ async fn submit_transfer(
         .timeout_secs
         .unwrap_or(4 * 60 * 60)
         .clamp(1, 7 * 24 * 60 * 60);
+    let destination_path = match request.destination_path.clone() {
+        Some(path) => path,
+        None if request.destination_context_id == "local" => {
+            return Err(
+                "destination_path is required for downloads to local; ask the user where the \
+                 file should go"
+                    .into(),
+            )
+        }
+        None => {
+            default_remote_destination(
+                store,
+                project_id,
+                &request.destination_context_id,
+                &request.source_path,
+            )
+            .await?
+        }
+    };
 
     if request.source_context_id == "local" {
         if request.destination_context_id == "local" {
@@ -768,7 +811,7 @@ async fn submit_transfer(
             return Err("Local-to-SSH transfers use transport=auto or transport=scp".into());
         }
         let source_path = validate_local_source(&request.source_path)?;
-        validate_remote_path("destination_path", &request.destination_path)?;
+        validate_remote_path("destination_path", &destination_path)?;
         let destination =
             selected_ssh_context(store, frame_id, &request.destination_context_id).await?;
         let response = manager
@@ -778,7 +821,7 @@ async fn submit_transfer(
                 frame_id,
                 &source_path,
                 &destination,
-                &request.destination_path,
+                &destination_path,
                 Duration::from_secs(timeout_secs),
             )
             .await?;
@@ -788,6 +831,7 @@ async fn submit_transfer(
             "route": "local",
             "transport": "scp",
             "source_path": source_path,
+            "destination_path": destination_path,
             "next_action": "Call monitor_run exactly once to wait for completion."
         }));
     }
@@ -802,7 +846,7 @@ async fn submit_transfer(
         if request.transport == "rsync" {
             return Err("SSH-to-local transfers use transport=auto or transport=scp".into());
         }
-        let destination = validate_local_destination(&request.destination_path)?;
+        let destination = validate_local_destination(&destination_path)?;
         let response = manager
             .submit_ssh_download_to_local(
                 store.clone(),
@@ -827,7 +871,7 @@ async fn submit_transfer(
     if request.source_context_id == request.destination_context_id {
         return Err("Source and destination SSH contexts must be different".into());
     }
-    validate_remote_path("destination_path", &request.destination_path)?;
+    validate_remote_path("destination_path", &destination_path)?;
     let destination =
         selected_ssh_context(store, frame_id, &request.destination_context_id).await?;
     let destination_connection =
@@ -884,7 +928,7 @@ async fn submit_transfer(
         let edge = edge.expect("direct route requires edge");
         let command = direct_transfer_script(
             &request.source_path,
-            &request.destination_path,
+            &destination_path,
             &edge,
             &request.transport,
         )?;
@@ -916,7 +960,7 @@ async fn submit_transfer(
                 &source,
                 &request.source_path,
                 &destination,
-                &request.destination_path,
+                &destination_path,
                 Duration::from_secs(timeout_secs),
             )
             .await?
@@ -2194,7 +2238,7 @@ mod tests {
                 source_context_id: "ssh:a".into(),
                 source_path: "/data/result.txt".into(),
                 destination_context_id: "ssh:b".into(),
-                destination_path: "/results/".into(),
+                destination_path: Some("/results/".into()),
                 route: "auto".into(),
                 transport: "auto".into(),
                 timeout_secs: Some(30),
@@ -2253,7 +2297,7 @@ mod tests {
                 source_context_id: "local".into(),
                 source_path: source.to_string_lossy().into_owned(),
                 destination_context_id: "ssh:a".into(),
-                destination_path: "/results/sample data.bam".into(),
+                destination_path: Some("/results/sample data.bam".into()),
                 route: "auto".into(),
                 transport: "auto".into(),
                 timeout_secs: Some(30),
@@ -2293,6 +2337,131 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn upload_without_destination_defaults_to_the_remote_data_root() {
+        let (root, store) = test_store().await;
+        let source = root.join("sample data.bam");
+        std::fs::write(&source, b"bam bytes").unwrap();
+        let runner = Arc::new(RelayRunner {
+            commands: StdMutex::new(Vec::new()),
+        });
+        let manager = RunManager::with_runner(runner.clone());
+        let response = submit_transfer(
+            &store,
+            &manager,
+            "p",
+            Some("f"),
+            &root,
+            TransferRequest {
+                source_context_id: "local".into(),
+                source_path: source.to_string_lossy().into_owned(),
+                destination_context_id: "ssh:a".into(),
+                destination_path: None,
+                route: "auto".into(),
+                transport: "auto".into(),
+                timeout_secs: Some(30),
+            },
+        )
+        .await
+        .unwrap();
+        // Project "project" → default remote data root ~/wisp/project/data.
+        assert_eq!(
+            response["destination_path"].as_str().unwrap(),
+            "~/wisp/project/data/sample data.bam"
+        );
+        let run_id = response["run_id"].as_str().unwrap().to_string();
+        loop {
+            let run = store.get_run(&run_id).await.unwrap().unwrap();
+            if run.status.is_terminal() {
+                assert_eq!(run.status, wisp_store::RunStatus::Succeeded);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let commands = runner.commands.lock().unwrap();
+        assert!(commands.iter().any(|command| command
+            .args
+            .iter()
+            .any(|arg| arg == "alice@a.example:~/wisp/project/data/sample data.bam")));
+        drop(commands);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn upload_default_destination_honors_stored_prefs() {
+        let (root, store) = test_store().await;
+        store
+            .upsert_context_storage_prefs(&wisp_store::ContextStoragePrefs {
+                project_id: "p".into(),
+                context_id: "ssh:a".into(),
+                remote_data_root: "/scratch/proj".into(),
+                remote_workdir_root: ".wisp-science/runs".into(),
+                local_results_dir: "remote/a".into(),
+                created_at: 0,
+                updated_at: 0,
+            })
+            .await
+            .unwrap();
+        let source = root.join("input.fasta");
+        std::fs::write(&source, b">seq\nACGT\n").unwrap();
+        let runner = Arc::new(RelayRunner {
+            commands: StdMutex::new(Vec::new()),
+        });
+        let manager = RunManager::with_runner(runner.clone());
+        let response = submit_transfer(
+            &store,
+            &manager,
+            "p",
+            Some("f"),
+            &root,
+            TransferRequest {
+                source_context_id: "local".into(),
+                source_path: source.to_string_lossy().into_owned(),
+                destination_context_id: "ssh:a".into(),
+                destination_path: None,
+                route: "auto".into(),
+                transport: "auto".into(),
+                timeout_secs: Some(30),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            response["destination_path"].as_str().unwrap(),
+            "/scratch/proj/input.fasta"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn download_without_destination_still_requires_an_explicit_path() {
+        let (root, store) = test_store().await;
+        let runner = Arc::new(RelayRunner {
+            commands: StdMutex::new(Vec::new()),
+        });
+        let manager = RunManager::with_runner(runner.clone());
+        let error = submit_transfer(
+            &store,
+            &manager,
+            "p",
+            Some("f"),
+            &root,
+            TransferRequest {
+                source_context_id: "ssh:a".into(),
+                source_path: "/data/result.txt".into(),
+                destination_context_id: "local".into(),
+                destination_path: None,
+                route: "auto".into(),
+                transport: "auto".into(),
+                timeout_secs: Some(30),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("destination_path is required"), "{error}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn ssh_source_downloads_to_exact_new_local_path() {
         let (root, store) = test_store().await;
         let runner = Arc::new(RelayRunner {
@@ -2310,7 +2479,7 @@ mod tests {
                 source_context_id: "ssh:a".into(),
                 source_path: "/data/result.txt".into(),
                 destination_context_id: "local".into(),
-                destination_path: destination.to_string_lossy().into_owned(),
+                destination_path: Some(destination.to_string_lossy().into_owned()),
                 route: "auto".into(),
                 transport: "auto".into(),
                 timeout_secs: Some(30),
@@ -2375,7 +2544,7 @@ mod tests {
                 source_context_id: "ssh:a".into(),
                 source_path: "/missing".into(),
                 destination_context_id: "local".into(),
-                destination_path: destination.to_string_lossy().into_owned(),
+                destination_path: Some(destination.to_string_lossy().into_owned()),
                 route: "auto".into(),
                 transport: "scp".into(),
                 timeout_secs: Some(30),

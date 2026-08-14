@@ -1131,6 +1131,19 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   ];
   (window as any).__mockExecutionContexts = executionContexts;
   const sessionExecutionContexts: Record<string, string[]> = {};
+  const contextStoragePrefs: Record<
+    string,
+    { remote_data_root: string; remote_workdir_root: string; local_results_dir: string }
+  > = {
+    // Confirmed by default so unrelated attach flows do not open the
+    // first-use storage dialog; the storage-prefs spec deletes this entry.
+    "ssh:gpu-server": {
+      remote_data_root: "~/wisp/demo-project/data",
+      remote_workdir_root: ".wisp-science/runs",
+      local_results_dir: "remote/gpu-server",
+    },
+  };
+  (window as any).__mockStoragePrefs = contextStoragePrefs;
   let defaultExecutionContext: string | null = null;
   let runtimeInfos: any[] = [
     {
@@ -2851,6 +2864,35 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             else selected.delete(contextId);
             sessionExecutionContexts[sessionId] = [...selected].sort();
             return [...sessionExecutionContexts[sessionId]];
+          }
+          case "get_context_storage_prefs": {
+            const contextId = String(arg("contextId") ?? arg("context_id") ?? "");
+            const stored = contextStoragePrefs[contextId];
+            if (stored) return { ...stored, context_id: contextId, confirmed: true };
+            const context = executionContexts.find((item) => item.id === contextId);
+            const label = (context?.label ?? contextId).toLowerCase().replace(/[^a-z0-9]+/g, "-");
+            return {
+              context_id: contextId,
+              remote_data_root: "~/wisp/demo-project/data",
+              remote_workdir_root: ".wisp-science/runs",
+              local_results_dir: `remote/${label}`,
+              confirmed: false,
+            };
+          }
+          case "set_context_storage_prefs": {
+            const contextId = String(arg("contextId") ?? arg("context_id") ?? "");
+            const prefs = {
+              remote_data_root: String(arg("remoteDataRoot") ?? arg("remote_data_root") ?? ""),
+              remote_workdir_root: String(
+                arg("remoteWorkdirRoot") ?? arg("remote_workdir_root") ?? ""
+              ),
+              local_results_dir: String(arg("localResultsDir") ?? arg("local_results_dir") ?? ""),
+            };
+            if (!prefs.remote_data_root || !prefs.remote_workdir_root || !prefs.local_results_dir) {
+              throw new Error("storage locations are required");
+            }
+            contextStoragePrefs[contextId] = prefs;
+            return { ...prefs, context_id: contextId, confirmed: true };
           }
           case "get_default_execution_context":
             return defaultExecutionContext;

@@ -2483,10 +2483,8 @@ async fn ssh_harvest_downloads_verifies_and_registers_selected_outputs() {
         let payload = collect.stdin.as_deref().unwrap();
         assert!(payload.contains("harvest-token"));
         assert!(payload.contains("tar -czf"));
-        assert!(payload.contains(&format!(
-            "persist=\"$HOME/{}/run-h\"",
-            harvest_remote::REMOTE_PERSIST_ROOT
-        )));
+        // Default remote data root derives from the project name ("proj").
+        assert!(payload.contains("persist=\"$HOME/wisp/proj/data/artifacts/run-h\""));
     }
 
     // A retried harvest re-registers nothing: same versions, same lineage rows.
@@ -2661,6 +2659,136 @@ async fn ssh_submit_rejects_shell_unsafe_output_globs() {
     .unwrap_err();
 
     assert!(error.contains("unsupported character"), "{error}");
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+// --- storage preferences ---------------------------------------------------
+
+#[tokio::test]
+async fn ssh_run_workdir_honors_stored_workdir_root_pref() {
+    let tmp = std::env::temp_dir().join(format!("wisp_workdir_pref_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .upsert_execution_context(&harvest_test_context())
+        .await
+        .unwrap();
+    store
+        .set_session_execution_context_enabled("f", "ssh:gpu", true)
+        .await
+        .unwrap();
+    store
+        .upsert_context_storage_prefs(&wisp_store::ContextStoragePrefs {
+            project_id: "p".into(),
+            context_id: "ssh:gpu".into(),
+            remote_data_root: "~/wisp/proj/data".into(),
+            remote_workdir_root: "scratch/wisp-runs".into(),
+            local_results_dir: "remote/gpu".into(),
+            created_at: 0,
+            updated_at: 0,
+        })
+        .await
+        .unwrap();
+    let runner = FakeRunRunner {
+        output: Ok(RunCommandOutput {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+        }),
+    };
+
+    let result = submit_run_with_runner(
+        &store,
+        "p",
+        Some("f"),
+        SubmitRunRequest {
+            context_id: "ssh:gpu".into(),
+            command: "echo remote".into(),
+            title: None,
+            timeout_secs: Some(60),
+            input_paths: None,
+            output_specs: None,
+        },
+        &runner,
+        Some(tmp.clone()),
+    )
+    .await
+    .unwrap();
+
+    let run = store.get_run(&result.run_id).await.unwrap().unwrap();
+    assert_eq!(
+        run.remote_workdir.as_deref(),
+        Some(format!("~/scratch/wisp-runs/{}", result.run_id).as_str())
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn ssh_harvest_uses_stored_local_results_dir_and_data_root() {
+    let tmp = std::env::temp_dir().join(format!("wisp_harvest_prefs_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = seed_harvest_run(&tmp, "run-p").await;
+    store
+        .upsert_context_storage_prefs(&wisp_store::ContextStoragePrefs {
+            project_id: "p".into(),
+            context_id: "ssh:gpu".into(),
+            remote_data_root: "/scratch/proj".into(),
+            remote_workdir_root: ".wisp-science/runs".into(),
+            local_results_dir: "results/from-gpu".into(),
+            created_at: 0,
+            updated_at: 0,
+        })
+        .await
+        .unwrap();
+    let table = b"a\tb\n1\t2\n".to_vec();
+    let manifest = format!(
+        "__WISP_HARVEST__:file:0:{}:{}:results/out.tsv\n__WISP_HARVEST_DONE__\n",
+        table.len(),
+        sha256_hex_of(&table),
+    );
+    let runner = HarvestFakeRunner {
+        manifest,
+        files: vec![("files/results/out.tsv".into(), table.clone())],
+        commands: StdMutex::new(Vec::new()),
+    };
+    let remote = harvest_test_remote(
+        "run-p",
+        &tmp,
+        vec![crate::harvest::OutputSpec {
+            glob: "results/*.tsv".into(),
+            kind: "table".into(),
+            residency: crate::harvest::OutputResidency::Auto,
+            logical_key: None,
+            max_file_mb: Some(1),
+            max_total_mb: None,
+            bundle: false,
+        }],
+    );
+
+    harvest_remote::harvest_ssh_run(&store, &runner, "test-owner", &remote, false)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        std::fs::read(tmp.join("results/from-gpu/run-p/results/out.tsv")).unwrap(),
+        table
+    );
+    let commands = runner.commands.lock().unwrap();
+    let collect = commands.iter().find(|c| c.program == "ssh").unwrap();
+    assert!(collect
+        .stdin
+        .as_deref()
+        .unwrap()
+        .contains("persist=\"/scratch/proj/artifacts/run-p\""));
 
     let _ = std::fs::remove_dir_all(&tmp);
 }

@@ -19,10 +19,19 @@ pub(super) const HARVEST_MATCH_CAP: usize = 500;
 /// Total manifest entries across all specs are capped so massive-small-file
 /// runs can never flood SQLite or the UI.
 pub(super) const HARVEST_MANIFEST_CAP: usize = 2000;
-/// Remote persistent artifact area for oversized outputs that stay on the
-/// server. Lives outside the run workdir so workspace cleanup never dangles a
-/// registered `ssh://` reference.
-pub(super) const REMOTE_PERSIST_ROOT: &str = ".wisp-science/artifacts";
+
+/// Shell assignment for the remote persistent artifact area (under the
+/// project's remote data root, outside every run workdir, so workspace cleanup
+/// never dangles a registered `ssh://` reference).
+fn persist_assignment(remote_data_root: &str, run_id: &str) -> String {
+    match remote_data_root.strip_prefix("~/") {
+        Some(rest) => format!("persist=\"$HOME/{rest}/artifacts/{run_id}\""),
+        None if remote_data_root.starts_with('/') => {
+            format!("persist=\"{remote_data_root}/artifacts/{run_id}\"")
+        }
+        None => format!("persist=\"$HOME/{remote_data_root}/artifacts/{run_id}\""),
+    }
+}
 
 const COLLECT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const PULL_TIMEOUT: Duration = Duration::from_secs(4 * 60 * 60);
@@ -92,6 +101,7 @@ pub(super) fn collect_payload(
     workdir: &str,
     token: &str,
     run_id: &str,
+    remote_data_root: &str,
     specs: &[(usize, OutputSpec)],
 ) -> String {
     let mut script = format!(
@@ -106,7 +116,7 @@ base="$workdir/inputs"
 harvest="$workdir/harvest"
 rm -rf "$harvest"
 mkdir -p "$harvest/files" "$harvest/bundles"
-persist="$HOME/{persist_root}/{run_id}"
+{persist_assignment}
 cd "$base"
 emitted=0
 emit_guard() {{
@@ -117,7 +127,7 @@ emit_guard() {{
   fi
 }}
 "#,
-        persist_root = REMOTE_PERSIST_ROOT,
+        persist_assignment = persist_assignment(remote_data_root, run_id),
         manifest_cap = HARVEST_MANIFEST_CAP,
     );
     for (idx, spec) in specs {
@@ -328,12 +338,17 @@ fn sanitize_component(value: &str) -> String {
     }
 }
 
-/// Project-relative landing directory for one Run's pulled outputs.
-pub(super) fn landing_dir(harvest_root: &Path, alias: &str, run_id: &str) -> PathBuf {
-    harvest_root
-        .join("remote")
-        .join(sanitize_component(alias))
-        .join(sanitize_component(run_id))
+/// Project-relative landing directory for one Run's pulled outputs, rooted at
+/// the confirmed (or default) `local_results_dir` preference.
+pub(super) fn landing_dir(harvest_root: &Path, local_results_dir: &str, run_id: &str) -> PathBuf {
+    let mut dir = harvest_root.to_path_buf();
+    for part in local_results_dir
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != "." && *part != "..")
+    {
+        dir.push(part);
+    }
+    dir.join(sanitize_component(run_id))
 }
 
 fn sha256_file(path: &Path) -> Result<String, String> {
@@ -462,6 +477,12 @@ pub(super) async fn harvest_ssh_run(
     else {
         return Err("remote harvest requires an SSH-direct Run".into());
     };
+    let (prefs, _) = crate::storage_prefs::effective_prefs(
+        store,
+        &remote.project_id,
+        &format!("ssh:{}", connection.alias),
+    )
+    .await?;
 
     let collect = checked_output(
         "SSH harvest collection",
@@ -470,7 +491,13 @@ pub(super) async fn harvest_ssh_run(
                 ssh_script_command(
                     connection,
                     "collect SSH run outputs",
-                    collect_payload(workdir, token, &remote.run_id, &specs),
+                    collect_payload(
+                        workdir,
+                        token,
+                        &remote.run_id,
+                        &prefs.remote_data_root,
+                        &specs,
+                    ),
                 )?,
                 COLLECT_TIMEOUT,
             )
@@ -478,7 +505,7 @@ pub(super) async fn harvest_ssh_run(
     )?;
     let plan = plan_from_manifest(&specs, parse_collect_manifest(&collect.stdout)?)?;
 
-    let landing = landing_dir(harvest_root, &connection.alias, &remote.run_id);
+    let landing = landing_dir(harvest_root, &prefs.local_results_dir, &remote.run_id);
     if plan.download_files > 0 {
         pull_harvest_dir(
             store,
@@ -501,7 +528,7 @@ pub(super) async fn harvest_ssh_run(
             RemoteOutputKind::Remote => {
                 let relative = entry
                     .path
-                    .split_once(&format!("/{}/{}/", REMOTE_PERSIST_ROOT, remote.run_id))
+                    .split_once(&format!("/artifacts/{}/", remote.run_id))
                     .map(|(_, rel)| rel)
                     .unwrap_or(&entry.path);
                 let logical_key = spec
@@ -847,15 +874,37 @@ mod tests {
             (1, spec("parts/*", true, OutputResidency::Auto)),
             (2, spec("big/*.bam", false, OutputResidency::Remote)),
         ];
-        let payload = collect_payload(".wisp-science/runs/r1", "tok", "r1", &specs);
+        let payload = collect_payload(
+            ".wisp-science/runs/r1",
+            "tok",
+            "r1",
+            "~/wisp/proj/data",
+            &specs,
+        );
         assert!(payload.contains(&format!("\"$count\" -gt {HARVEST_MATCH_CAP}")));
         assert!(payload.contains("tar -czf"));
         assert!(payload.contains("bundle_1.tar.gz"));
         assert!(payload.contains("mv \"$f\" \"$dest\""));
-        assert!(payload.contains(&format!("persist=\"$HOME/{REMOTE_PERSIST_ROOT}/r1\"")));
+        assert!(payload.contains("persist=\"$HOME/wisp/proj/data/artifacts/r1\""));
         assert!(payload.contains("__WISP_HARVEST_DONE__"));
         // Remote residency always relocates: the test is constant-true.
         assert!(payload.contains("[ \"$size\" -gt 0 ]"));
+    }
+
+    #[test]
+    fn persist_assignment_supports_absolute_home_and_relative_roots() {
+        assert_eq!(
+            persist_assignment("/data/wisp", "r1"),
+            "persist=\"/data/wisp/artifacts/r1\""
+        );
+        assert_eq!(
+            persist_assignment("~/wisp/proj/data", "r1"),
+            "persist=\"$HOME/wisp/proj/data/artifacts/r1\""
+        );
+        assert_eq!(
+            persist_assignment("scratch/wisp", "r1"),
+            "persist=\"$HOME/scratch/wisp/artifacts/r1\""
+        );
     }
 
     #[test]
@@ -928,8 +977,10 @@ mod tests {
     }
 
     #[test]
-    fn landing_dir_sanitizes_alias_components() {
-        let dir = landing_dir(Path::new("/proj"), "gpu box/../x", "run-1");
-        assert_eq!(dir, Path::new("/proj/remote/gpu_box_.._x/run-1"));
+    fn landing_dir_stays_inside_the_project() {
+        let dir = landing_dir(Path::new("/proj"), "remote/gpu", "run-1");
+        assert_eq!(dir, Path::new("/proj/remote/gpu/run-1"));
+        let dir = landing_dir(Path::new("/proj"), "results/../../etc", "run 1");
+        assert_eq!(dir, Path::new("/proj/results/etc/run_1"));
     }
 }

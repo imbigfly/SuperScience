@@ -2159,9 +2159,11 @@ async fn create_run_record(
             {
                 harvest_remote::validate_remote_glob(&spec.glob)?;
             }
+            let (prefs, _) =
+                crate::storage_prefs::effective_prefs(store, project_id, &ctx.id).await?;
             RemoteRunHandle::SshDirect {
                 connection: crate::ssh_hosts::SshConnection::from_execution_context(&ctx)?,
-                workdir: format!(".wisp-science/runs/{run_id}"),
+                workdir: format!("{}/{run_id}", prefs.remote_workdir_root),
                 token: uuid::Uuid::new_v4().to_string(),
                 inputs_staged: false,
                 pgid: None,

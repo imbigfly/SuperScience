@@ -93,6 +93,7 @@ mod specialists;
 mod ssh_guard;
 mod ssh_hosts;
 mod ssh_master;
+mod storage_prefs;
 mod terminal_sessions;
 mod turn_memory;
 mod turn_undo;
@@ -7905,6 +7906,8 @@ pub fn run() {
             runtime_commands::get_run_detail,
             runtime_commands::cancel_run,
             runtime_commands::harvest_run,
+            storage_prefs::get_context_storage_prefs,
+            storage_prefs::set_context_storage_prefs,
             project_commands::get_research_graph,
             session_commands::delete_session,
             session_commands::rename_session,

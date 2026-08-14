@@ -4656,6 +4656,53 @@ test("environment panel attaches and detaches remote servers", async ({ page }) 
     .getByRole("button", { name: "Remove from session" })).toHaveCount(0);
 });
 
+test("first server enable asks for storage locations and the rail can edit them", async ({ page }) => {
+  await enterApp(page);
+  // No saved preferences for this project × server → first enable prompts.
+  await page.evaluate(() => {
+    delete (window as any).__mockStoragePrefs["ssh:gpu-server"];
+  });
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  await page.getByRole("button", { name: "Environment", exact: true }).click();
+
+  const attach = page.getByTestId("context-attach");
+  await attach.locator('.context-attach-row[data-context-id="ssh:gpu-server"]').click();
+  const dialog = page.getByTestId("storage-prefs-modal");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator("#storage-prefs-data-root")).toHaveValue("~/wisp/demo-project/data");
+  await expect(dialog.locator("#storage-prefs-workdir-root")).toHaveValue(".wisp-science/runs");
+  await expect(dialog.locator("#storage-prefs-results-dir")).toHaveValue("remote/gpu-server");
+
+  // Escape immediately: one press closes only the dialog; the Environment
+  // rail (its parent surface) stays open with the now-attached server.
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator(".context-card", { hasText: "ssh:gpu-server" })).toBeVisible();
+  expect(await lastInvokeArgs(page, "set_context_storage_prefs")).toBeNull();
+
+  // The rail's storage action reopens the dialog; saving persists the edits.
+  await page.locator(".context-card", { hasText: "ssh:gpu-server" })
+    .getByRole("button", { name: "Storage locations" }).click();
+  await expect(dialog).toBeVisible();
+  await dialog.locator("#storage-prefs-data-root").fill("/scratch/demo/data");
+  await dialog.locator("#storage-prefs-results-dir").fill("results/from-gpu");
+  await dialog.getByRole("button", { name: "Save" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect.poll(() => lastInvokeArgs(page, "set_context_storage_prefs")).toMatchObject({
+    contextId: "ssh:gpu-server",
+    remoteDataRoot: "/scratch/demo/data",
+    remoteWorkdirRoot: ".wisp-science/runs",
+    localResultsDir: "results/from-gpu",
+  });
+
+  // Saved preferences: re-enabling never prompts again.
+  await page.locator(".context-card", { hasText: "ssh:gpu-server" })
+    .getByRole("button", { name: "Remove from session" }).click();
+  await attach.locator('.context-attach-row[data-context-id="ssh:gpu-server"]').click();
+  await expect(page.locator(".context-card", { hasText: "ssh:gpu-server" })).toBeVisible();
+  await expect(dialog).toHaveCount(0);
+});
+
 test("settings manages servers and probes them with the default environment skill", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Environments");
