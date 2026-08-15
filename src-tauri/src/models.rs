@@ -1562,19 +1562,60 @@ mod tests {
 
     // The write-through cache must stay coherent: a set is readable without a
     // fresh keyring hit, and a delete reads back as absent (not the old value).
+    // `cargo test` builds with debug_assertions, so the secret backend is the
+    // dev secrets file in $HOME, never a real OS keyring; the UUID-scoped name
+    // keeps concurrent or leftover runs sharing $HOME from colliding.
     #[test]
     fn secret_cache_write_through() {
-        let name = "model_key:__cache_coherence_test__";
-        secret_set(name, "sk-abc").unwrap();
-        assert_eq!(secret_get(name), "sk-abc");
-        secret_del(name).unwrap();
-        assert_eq!(secret_get(name), "");
+        let name = format!(
+            "model_key:__cache_coherence_test_{}__",
+            uuid::Uuid::new_v4()
+        );
+        secret_set(&name, "sk-abc").unwrap();
+        assert_eq!(secret_get(&name), "sk-abc");
+        secret_del(&name).unwrap();
+        assert_eq!(secret_get(&name), "");
+    }
+
+    /// Restores each captured secret on drop (even when an assert panics), so
+    /// the test never clobbers values a developer keeps in the shared dev
+    /// secrets file.
+    struct RestoreSecrets(Vec<(String, String)>);
+
+    impl RestoreSecrets {
+        fn capture(ids: &[&str]) -> Self {
+            Self(
+                ids.iter()
+                    .map(|id| {
+                        let secret = credential(id).unwrap().secret.to_string();
+                        let prior = secret_get(&secret);
+                        (secret, prior)
+                    })
+                    .collect(),
+            )
+        }
+    }
+
+    impl Drop for RestoreSecrets {
+        fn drop(&mut self) {
+            for (secret, prior) in &self.0 {
+                if prior.is_empty() {
+                    let _ = secret_del(secret);
+                } else {
+                    let _ = secret_set(secret, prior);
+                }
+            }
+        }
     }
 
     // Storing a credential surfaces it in service_env under its env var;
-    // clearing removes it; an unknown id is rejected.
+    // clearing removes it; an unknown id is rejected. Registry ids are fixed
+    // production names, so prior values are captured and restored on exit.
     #[test]
     fn credential_registry_roundtrip() {
+        let _restore =
+            RestoreSecrets::capture(&["ncbi_email", "infinisynapse_api_key", "scimaster_api_key"]);
+
         store_credential("ncbi_email", "me@lab.org").unwrap();
         assert!(credential_status()
             .iter()

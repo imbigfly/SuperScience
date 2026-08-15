@@ -65,6 +65,24 @@ test("exploration sidebar, banners, diff tabs, and Escape stack remain distinct 
   await expect(page.getByTestId("exploration-banner")).toContainText("Exploration B");
 });
 
+test("Escape immediately after opening the diff overlay closes only that layer", async ({ page }) => {
+  await enterExplorationProject(page);
+  await page.getByTestId("exploration-message-card").nth(0).click();
+  const banner = page.getByTestId("exploration-banner");
+  await expect(banner).toContainText("Exploration A");
+
+  await banner.getByRole("button", { name: "View diff" }).click();
+  const diff = page.getByTestId("exploration-diff-overlay");
+  await expect(diff).toBeVisible();
+  // Escape stack rule: press Escape immediately, before any focus moves into
+  // the overlay. One press closes only the topmost layer; the exploration
+  // view underneath must stay open.
+  await page.keyboard.press("Escape");
+  await expect(diff).toBeHidden();
+  await expect(banner).toBeVisible();
+  await expect(page.getByText("Exploration A result")).toBeVisible();
+});
+
 test("an exploration round banner and checkpoint cards stay scoped to its source session", async ({ page }) => {
   await page.goto("/?mockExplorations=1&mockOtherExplorationSession=1");
   await page.locator(".proj-card-main").first().click();

@@ -447,10 +447,20 @@ pub fn diff(
 mod tests {
     use super::*;
 
+    /// Unique per-test directory so parallel test runs never collide.
+    fn unique_tmp(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "wisp_prov_{tag}_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     #[test]
     fn detects_written_and_read_and_skips_git() {
-        let tmp = std::env::temp_dir().join("wisp_prov_snap_test");
-        std::fs::remove_dir_all(&tmp).ok();
+        let tmp = unique_tmp("snap");
         std::fs::create_dir_all(tmp.join(".git")).unwrap();
         std::fs::write(tmp.join("data.csv"), b"x").unwrap();
         std::fs::write(tmp.join(".git/HEAD"), b"x").unwrap();
@@ -495,9 +505,7 @@ mod tests {
 
     #[test]
     fn snapshot_caps_entries_inside_a_wide_directory() {
-        let tmp = std::env::temp_dir().join("wisp_prov_wide_test");
-        std::fs::remove_dir_all(&tmp).ok();
-        std::fs::create_dir_all(&tmp).unwrap();
+        let tmp = unique_tmp("wide");
         for name in ["a", "b", "c"] {
             std::fs::write(tmp.join(name), b"x").unwrap();
         }
@@ -508,9 +516,7 @@ mod tests {
 
     #[test]
     fn undo_captures_existing_and_new_markdown_but_not_word() {
-        let tmp = std::env::temp_dir().join("wisp_prov_undo_text_test");
-        std::fs::remove_dir_all(&tmp).ok();
-        std::fs::create_dir_all(&tmp).unwrap();
+        let tmp = unique_tmp("undo_text");
         std::fs::write(tmp.join("notes.md"), "before\n").unwrap();
         let before = snapshot(&tmp);
         let preimages = capture_text_preimages(&before, &tmp, "edit notes.md");
@@ -532,9 +538,7 @@ mod tests {
 
     #[test]
     fn existing_text_with_a_dynamic_destination_is_not_guessed() {
-        let tmp = std::env::temp_dir().join("wisp_prov_undo_dynamic_test");
-        std::fs::remove_dir_all(&tmp).ok();
-        std::fs::create_dir_all(&tmp).unwrap();
+        let tmp = unique_tmp("undo_dynamic");
         std::fs::write(tmp.join("notes.md"), "before\n").unwrap();
         let before = snapshot(&tmp);
         let preimages = capture_text_preimages(&before, &tmp, "run generated destination");
@@ -552,9 +556,7 @@ mod tests {
 
     #[test]
     fn changed_preimages_do_not_depend_on_mtime_resolution() {
-        let tmp = std::env::temp_dir().join("wisp_prov_undo_timestamp_test");
-        std::fs::remove_dir_all(&tmp).ok();
-        std::fs::create_dir_all(&tmp).unwrap();
+        let tmp = unique_tmp("undo_timestamp");
         std::fs::write(tmp.join("notes.md"), "before\n").unwrap();
         let before = snapshot(&tmp);
         let preimages = capture_text_preimages(&before, &tmp, "notes.md");

@@ -9,9 +9,9 @@ use tauri::{AppHandle, Emitter, Manager};
 #[cfg(target_os = "windows")]
 pub(crate) const PET_WINDOW_LABEL: &str = "pet";
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(target_os = "windows")]
 pub(crate) const PET_WINDOW_WIDTH: u32 = 128;
-#[cfg(any(target_os = "windows", test))]
+#[cfg(target_os = "windows")]
 pub(crate) const PET_WINDOW_HEIGHT: u32 = 176;
 
 #[cfg(target_os = "windows")]

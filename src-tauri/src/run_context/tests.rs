@@ -266,13 +266,11 @@ async fn run_in_context_preflight_blocks_missing_packages_before_creating_a_run(
         .create_project("p", "project", &tmp.to_string_lossy())
         .await
         .unwrap();
-    let manager = RunManager::with_runner(Arc::new(FakeRunRunner {
-        output: Ok(RunCommandOutput {
-            exit_code: 9,
-            stdout: "3.12.4\n".into(),
-            stderr: "missing modules: decoupler".into(),
-        }),
-    }));
+    let manager = RunManager::with_runner(Arc::new(FakeRunRunner::new(Ok(RunCommandOutput {
+        exit_code: 9,
+        stdout: "3.12.4\n".into(),
+        stderr: "missing modules: decoupler".into(),
+    }))));
     let tool = RunInContextTool::new(store.clone(), manager, "p".into(), None);
 
     let result = tool
@@ -380,11 +378,10 @@ async fn run_in_context_rejects_nested_ssh_transfer_commands() {
         .upsert_execution_context(&wisp_store::ExecutionContext::new("local", "Local").unwrap())
         .await
         .unwrap();
+    let runner = Arc::new(FakeRunRunner::new(ok_output("should not run")));
     let tool = RunInContextTool::new(
         store.clone(),
-        RunManager::with_runner(Arc::new(FakeRunRunner {
-            output: ok_output("should not run"),
-        })),
+        RunManager::with_runner(runner.clone()),
         "p".into(),
         None,
     );
@@ -401,6 +398,10 @@ async fn run_in_context_rejects_nested_ssh_transfer_commands() {
     assert!(!result.success);
     assert!(result.content.contains("transfer_between_contexts"));
     assert!(store.list_runs_by_project("p").await.unwrap().is_empty());
+    assert!(
+        runner.commands.lock().unwrap().is_empty(),
+        "the guard must reject before anything reaches the runner"
+    );
     let _ = std::fs::remove_dir_all(tmp);
 }
 
@@ -498,13 +499,11 @@ async fn submit_run_records_success() {
         .upsert_execution_context(&wisp_store::ExecutionContext::new("local", "Local").unwrap())
         .await
         .unwrap();
-    let runner = FakeRunRunner {
-        output: Ok(RunCommandOutput {
-            exit_code: 0,
-            stdout: "hello\n".into(),
-            stderr: String::new(),
-        }),
-    };
+    let runner = FakeRunRunner::new(Ok(RunCommandOutput {
+        exit_code: 0,
+        stdout: "hello\n".into(),
+        stderr: String::new(),
+    }));
 
     let res = submit_run_with_runner(
         &store,
@@ -532,6 +531,17 @@ async fn submit_run_records_success() {
     assert_eq!(run.command.as_deref(), Some("echo hello"));
     assert_eq!(run.title, "Hello");
     assert_eq!(run.status, wisp_store::RunStatus::Succeeded);
+    // The success must come from executing the submitted command, not a
+    // preloaded result short-circuiting the runner.
+    let commands = runner.commands.lock().unwrap();
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0].context_id, "local");
+    assert!(
+        commands[0].script.contains("echo hello"),
+        "unexpected script: {}",
+        commands[0].script
+    );
+    drop(commands);
 
     let _ = std::fs::remove_file(&tmp);
 }
@@ -549,13 +559,11 @@ async fn local_run_binds_inputs_before_execution_and_snapshots_environment() {
         .await
         .unwrap();
     store.create_frame("f", "p", "OPERON", "m").await.unwrap();
-    let runner = FakeRunRunner {
-        output: Ok(RunCommandOutput {
-            exit_code: 0,
-            stdout: "ok".into(),
-            stderr: String::new(),
-        }),
-    };
+    let runner = FakeRunRunner::new(Ok(RunCommandOutput {
+        exit_code: 0,
+        stdout: "ok".into(),
+        stderr: String::new(),
+    }));
 
     let result = submit_run_with_runner(
         &store,
@@ -616,9 +624,7 @@ async fn submit_run_records_failure() {
         .upsert_execution_context(&wisp_store::ExecutionContext::new("local", "Local").unwrap())
         .await
         .unwrap();
-    let runner = FakeRunRunner {
-        output: Err("timed out".into()),
-    };
+    let runner = FakeRunRunner::new(Err("timed out".into()));
 
     let res = submit_run_with_runner(
         &store,
@@ -663,13 +669,11 @@ async fn submit_run_harvests_output_specs_on_success() {
         .upsert_execution_context(&wisp_store::ExecutionContext::new("local", "Local").unwrap())
         .await
         .unwrap();
-    let runner = FakeRunRunner {
-        output: Ok(RunCommandOutput {
-            exit_code: 0,
-            stdout: "done".into(),
-            stderr: String::new(),
-        }),
-    };
+    let runner = FakeRunRunner::new(Ok(RunCommandOutput {
+        exit_code: 0,
+        stdout: "done".into(),
+        stderr: String::new(),
+    }));
 
     let res = submit_run_with_runner(
         &store,
@@ -804,13 +808,11 @@ async fn remote_run_is_rejected_when_not_selected_for_its_session() {
         input_paths: None,
         output_specs: None,
     };
-    let runner = FakeRunRunner {
-        output: Ok(RunCommandOutput {
-            exit_code: 0,
-            stdout: String::new(),
-            stderr: String::new(),
-        }),
-    };
+    let runner = FakeRunRunner::new(Ok(RunCommandOutput {
+        exit_code: 0,
+        stdout: String::new(),
+        stderr: String::new(),
+    }));
 
     let error = submit_run_with_runner(&store, "p", Some("f"), request.clone(), &runner, None)
         .await
@@ -1382,11 +1384,30 @@ fn remote_compute_skill_uses_the_real_wisp_run_contract() {
     assert!(skill.contains("Scheduler lifecycle is not implemented yet"));
 }
 
+/// Single-response fake that records every command it receives, so tests can
+/// assert what actually reached the runner (or that nothing did).
 struct FakeRunRunner {
     output: Result<RunCommandOutput, String>,
+    commands: StdMutex<Vec<RunCommand>>,
 }
 
-struct StreamingRunRunner;
+impl FakeRunRunner {
+    fn new(output: Result<RunCommandOutput, String>) -> Self {
+        Self {
+            output,
+            commands: StdMutex::new(Vec::new()),
+        }
+    }
+}
+
+/// Streaming fake with explicit synchronization instead of wall-clock sleeps:
+/// it signals `first_chunk_sent` after emitting the stdout chunk, then blocks
+/// until the test grants a `finish` permit, so the test can assert the
+/// persisted mid-run state without racing the lifecycle task.
+struct StreamingRunRunner {
+    first_chunk_sent: Arc<tokio::sync::Notify>,
+    finish: Arc<tokio::sync::Semaphore>,
+}
 
 #[async_trait::async_trait]
 impl RunCommandRunner for StreamingRunRunner {
@@ -1410,14 +1431,14 @@ impl RunCommandRunner for StreamingRunRunner {
                 chunk: b"phase 1 complete\n".to_vec(),
             })
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(1_300)).await;
+        self.first_chunk_sent.notify_one();
+        let _permit = self.finish.acquire().await.unwrap();
         updates
             .send(RunOutputUpdate {
                 stream: RunOutputStream::Stderr,
                 chunk: b"warning: slow API\n".to_vec(),
             })
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
         Ok(RunCommandOutput {
             exit_code: 0,
             stdout: "phase 1 complete\n".into(),
@@ -1449,13 +1470,19 @@ async fn local_run_streams_bounded_output_and_heartbeat_before_completion() {
         .await
         .unwrap());
 
+    let first_chunk_sent = Arc::new(tokio::sync::Notify::new());
+    let finish = Arc::new(tokio::sync::Semaphore::new(0));
+    let runner = StreamingRunRunner {
+        first_chunk_sent: first_chunk_sent.clone(),
+        finish: finish.clone(),
+    };
     let task_store = store.clone();
     let task = tokio::spawn(async move {
         run_with_lifecycle_lease(
             &task_store,
             "streaming",
             "stream-owner",
-            &StreamingRunRunner,
+            &runner,
             RunCommand {
                 context_id: "local".into(),
                 program: "unused".into(),
@@ -1470,12 +1497,27 @@ async fn local_run_streams_bounded_output_and_heartbeat_before_completion() {
         .await
     });
 
-    tokio::time::sleep(Duration::from_millis(1_100)).await;
-    let live = store.get_run("streaming").await.unwrap().unwrap();
+    // The runner holds mid-run until the test releases it, so waiting for the
+    // lifecycle task to flush the first chunk is bounded, not a race.
+    tokio::time::timeout(Duration::from_secs(5), first_chunk_sent.notified())
+        .await
+        .expect("runner never emitted its first chunk");
+    let live = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let run = store.get_run("streaming").await.unwrap().unwrap();
+            if run.stdout_tail.is_some() && run.last_polled_at.is_some() {
+                return run;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("first chunk was never flushed to the store");
     assert_eq!(live.status, wisp_store::RunStatus::Running);
     assert_eq!(live.stdout_tail.as_deref(), Some("phase 1 complete\n"));
     assert!(live.last_polled_at.is_some(), "heartbeat was not recorded");
 
+    finish.add_permits(1);
     let output = task.await.unwrap().unwrap();
     assert_eq!(output.exit_code, 0);
     let _ = std::fs::remove_dir_all(tmp);
@@ -1485,9 +1527,10 @@ async fn local_run_streams_bounded_output_and_heartbeat_before_completion() {
 impl RunCommandRunner for FakeRunRunner {
     async fn run(
         &self,
-        _command: RunCommand,
+        command: RunCommand,
         _timeout: Duration,
     ) -> Result<RunCommandOutput, String> {
+        self.commands.lock().unwrap().push(command);
         self.output.clone()
     }
 }
@@ -1610,7 +1653,7 @@ async fn ssh_download_uses_context_connection_options() {
     })
     .to_string();
     context.last_probe_status = Some("ok".into());
-    let destination = std::env::temp_dir().join("results.tar.gz");
+    let destination = tmp.join("results.tar.gz");
 
     manager
         .download_ssh_file(
@@ -2648,13 +2691,11 @@ async fn ssh_submit_rejects_shell_unsafe_output_globs() {
         .set_session_execution_context_enabled("f", "ssh:gpu", true)
         .await
         .unwrap();
-    let runner = FakeRunRunner {
-        output: Ok(RunCommandOutput {
-            exit_code: 0,
-            stdout: String::new(),
-            stderr: String::new(),
-        }),
-    };
+    let runner = FakeRunRunner::new(Ok(RunCommandOutput {
+        exit_code: 0,
+        stdout: String::new(),
+        stderr: String::new(),
+    }));
 
     let error = submit_run_with_runner(
         &store,
@@ -2721,13 +2762,11 @@ async fn ssh_run_workdir_honors_stored_workdir_root_pref() {
         })
         .await
         .unwrap();
-    let runner = FakeRunRunner {
-        output: Ok(RunCommandOutput {
-            exit_code: 0,
-            stdout: String::new(),
-            stderr: String::new(),
-        }),
-    };
+    let runner = FakeRunRunner::new(Ok(RunCommandOutput {
+        exit_code: 0,
+        stdout: String::new(),
+        stderr: String::new(),
+    }));
 
     let result = submit_run_with_runner(
         &store,

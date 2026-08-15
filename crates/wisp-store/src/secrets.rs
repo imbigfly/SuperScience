@@ -94,12 +94,15 @@ mod backend {
 mod tests {
     use super::Secret;
 
+    // Exercises only the debug file backend (cargo test builds with
+    // debug_assertions), so no OS keyring daemon is ever required. The entry
+    // name is UUID-scoped so parallel test runs sharing $HOME never collide.
     #[test]
     fn set_get_delete_roundtrip() {
-        let name = "test:roundtrip";
-        Secret::set(name, "abc123").unwrap();
-        assert_eq!(Secret::get(name).unwrap(), "abc123");
-        Secret::delete(name).unwrap();
-        assert!(Secret::get(name).is_err());
+        let name = format!("test:roundtrip:{}", uuid::Uuid::new_v4());
+        Secret::set(&name, "abc123").unwrap();
+        assert_eq!(Secret::get(&name).unwrap(), "abc123");
+        Secret::delete(&name).unwrap();
+        assert!(Secret::get(&name).is_err());
     }
 }

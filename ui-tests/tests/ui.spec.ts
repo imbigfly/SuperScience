@@ -1,7 +1,7 @@
 import { test, expect, type Locator, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { tauriMock, parallelMock } from "./mock-tauri";
+import { tauriMock, parallelMock, parallelReplyTailText } from "./mock-tauri";
 
 const officeFixtures = {
   xlsxBase64: readFileSync(resolve(__dirname, "../fixtures/office-preview.xlsx")).toString("base64"),
@@ -86,6 +86,35 @@ function composer(page: Page) {
   return page.locator("#composer-input");
 }
 
+// Transcript-scoped locators for parallelMock conversations. The mock replies
+// to each user turn with a single assistant bubble quoting the message text,
+// so specs assert on the user's own text landing in the right session's rows
+// instead of depending on the mock's internal reply format.
+function userTurn(page: Page, text: string) {
+  return page.locator(".msg.user .body", { hasText: text });
+}
+
+function assistantReplyQuoting(page: Page, text: string) {
+  return page.locator(".msg.assistant .body", { hasText: text });
+}
+
+// Shortcut labels come from the UI's platform detection (`is_mac` in
+// ui/src/api.js reads navigator.userAgent/platform), so any test asserting
+// literal "Ctrl+…" text must pin a non-mac platform first or it renders
+// "⌘…" on macOS hosts. Call before the first page.goto().
+async function pinNonMacPlatform(page: Page) {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "userAgent", {
+      configurable: true,
+      value: "wisp-science/Tauri",
+    });
+    Object.defineProperty(navigator, "platform", {
+      configurable: true,
+      value: "Linux x86_64",
+    });
+  });
+}
+
 async function selectAssistantReplyText(
   page: Page,
   eventType: "mouseup" | "contextmenu" = "mouseup",
@@ -168,6 +197,15 @@ async function lastInvokeArgs(page: Page, cmd: string) {
     const calls = ((window as any).__skillInvokeLog ?? []).filter((c: any) => c.cmd === name);
     return plain(calls.at(-1)?.args ?? null);
   }, cmd);
+}
+
+// How many run-list refreshes the UI has performed. The app polls `list_runs`
+// on a ticker (every second while a turn is busy or a transfer is active),
+// so "wait until N more polls happened" replaces fixed sleeps in tests that
+// assert the UI survives a poll-driven rebuild.
+async function runListPollCount(page: Page) {
+  return page.evaluate(() =>
+    ((window as any).__skillInvokeLog ?? []).filter((c: any) => c.cmd === "list_runs").length);
 }
 
 async function invokeArgsList(page: Page, cmd: string) {
@@ -489,16 +527,7 @@ test("undo returns the latest prompt and keeps unsupported Word files", async ({
 });
 
 test("general settings can use Ctrl+Enter to send and Enter for newline", async ({ page }) => {
-  await page.addInitScript(() => {
-    Object.defineProperty(navigator, "userAgent", {
-      configurable: true,
-      value: "wisp-science/Tauri",
-    });
-    Object.defineProperty(navigator, "platform", {
-      configurable: true,
-      value: "Linux x86_64",
-    });
-  });
+  await pinNonMacPlatform(page);
   await enterApp(page);
   await openSettingsSection(page, "General");
   const shortcut = page.getByTestId("send-shortcut");
@@ -2288,16 +2317,7 @@ test("Ctrl+K opens the unified command palette and Shift+Enter attaches", async 
 });
 
 test("Ctrl+K opens in place and Ctrl+Enter opens a project window", async ({ page }) => {
-  await page.addInitScript(() => {
-    Object.defineProperty(navigator, "userAgent", {
-      configurable: true,
-      value: "wisp-science/Tauri",
-    });
-    Object.defineProperty(navigator, "platform", {
-      configurable: true,
-      value: "Linux x86_64",
-    });
-  });
+  await pinNonMacPlatform(page);
   await enterApp(page);
   await page.keyboard.press("Control+k");
   const search = commandPalette(page);
@@ -2789,6 +2809,7 @@ test("Cmd+Enter sends when the modifier shortcut is selected on macOS", async ({
 });
 
 test("Ctrl+P command palette runs commands and switches themes", async ({ page }) => {
+  await pinNonMacPlatform(page);
   await enterApp(page);
   await page.keyboard.press("Control+p");
   const palette = page.getByRole("dialog", { name: "Command Palette" });
@@ -2879,6 +2900,7 @@ test("Ctrl+P command palette runs commands and switches themes", async ({ page }
 });
 
 test("privacy mode hides selected projects and recent sessions, then restores them", async ({ page }) => {
+  await pinNonMacPlatform(page);
   await page.goto("/");
   const privateProject = page.locator(".proj-card", { hasText: "wisp-science" });
   const otherProject = page.locator(".proj-card", { hasText: "Other project" });
@@ -3031,7 +3053,7 @@ test("rename session modal autofocuses so Ctrl+A selects the title", async ({ pa
 
   await composer(page).fill("rename-me");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("echo:rename-me")).toBeVisible({ timeout: 10_000 });
+  await expect(assistantReplyQuoting(page, "rename-me")).toBeVisible({ timeout: 10_000 });
 
   await page.locator(".side-item.ses", { hasText: "rename-me" }).dblclick();
   const input = page.locator("#rename-session-input");
@@ -3063,7 +3085,7 @@ test("conversation action button renames, transfers, and deletes sessions (#557)
 
   await composer(page).fill("actions-manage-me");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("echo:actions-manage-me")).toBeVisible({ timeout: 10_000 });
+  await expect(assistantReplyQuoting(page, "actions-manage-me")).toBeVisible({ timeout: 10_000 });
   let session = page.locator(".side-item.ses", { hasText: "actions-manage-me" });
   await expect(session).toBeVisible({ timeout: 10_000 });
 
@@ -3143,7 +3165,7 @@ test("conversation action button renames, transfers, and deletes sessions (#557)
   await newSessionButton(page).click();
   await composer(page).fill("actions-delete-me");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("echo:actions-delete-me")).toBeVisible({ timeout: 10_000 });
+  await expect(assistantReplyQuoting(page, "actions-delete-me")).toBeVisible({ timeout: 10_000 });
   session = page.locator(".side-item.ses", { hasText: "actions-delete-me" });
   await expect(session).toBeVisible({ timeout: 10_000 });
   await openActions();
@@ -3167,7 +3189,7 @@ test("stale project rules can be reloaded from the session context menu", async 
   await newSessionButton(page).click();
   await composer(page).fill("fresh rules chat");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("echo:fresh rules chat")).toBeVisible({ timeout: 10_000 });
+  await expect(assistantReplyQuoting(page, "fresh rules chat")).toBeVisible({ timeout: 10_000 });
   const fresh = page.locator(".side-item.ses", { hasText: "fresh rules chat" });
   await expect(fresh).toBeVisible({ timeout: 10_000 });
   await fresh.click({ button: "right" });
@@ -5988,10 +6010,15 @@ test("monitor_run renders a live Run card from summary polls and on-demand detai
   // Starting another turn remounts settled transcript rows. A manual
   // dismissal must survive that remount instead of flashing back until the
   // next run-list refresh.
+  const pollsBeforeRemount = await runListPollCount(page);
   await composer(page).fill("continue after dismiss");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(card).toHaveCount(0);
-  await page.waitForTimeout(1_500);
+  // The flash-back regression appeared on the run-list refresh after the
+  // remount, so wait for that refresh to actually happen before re-checking.
+  await expect
+    .poll(() => runListPollCount(page), { timeout: 15_000 })
+    .toBeGreaterThan(pollsBeforeRemount);
   await expect(card).toHaveCount(0);
 });
 
@@ -6041,9 +6068,14 @@ test("run monitor output stays pinned to the tail across poll rebuilds (#654)", 
   await output.evaluate((el) => {
     el.scrollTop = 0;
   });
+  const pollsBeforeBatch3 = await runListPollCount(page);
   await setOutput("batch-3");
   await expect(output).toContainText("batch-3");
-  await page.waitForTimeout(1_500);
+  // The yank would happen on a poll rebuild after the content update, so wait
+  // for another refresh to complete before asserting the scroll position held.
+  await expect
+    .poll(() => runListPollCount(page), { timeout: 10_000 })
+    .toBeGreaterThan(pollsBeforeBatch3 + 1);
   expect(await output.evaluate((el) => el.scrollTop)).toBeLessThanOrEqual(2);
 
   // Scrolling back to the bottom re-engages follow.
@@ -6097,10 +6129,15 @@ test("a settled run card stops rebuilding itself on every poll (#654)", async ({
 
   // Tag the live node. Identical poll results must leave it in place: replacing
   // it is what reset the panel to its top edge for a frame, once per second.
+  const pollsBeforeProbe = await runListPollCount(page);
   await output.evaluate((el) => {
     (el as any).__stableProbe = true;
   });
-  await page.waitForTimeout(3_000);
+  // Wait for several identical poll results to come back, then verify none of
+  // them replaced the tagged node.
+  await expect
+    .poll(() => runListPollCount(page), { timeout: 15_000 })
+    .toBeGreaterThanOrEqual(pollsBeforeProbe + 3);
   expect(await output.evaluate((el) => (el as any).__stableProbe === true)).toBe(true);
   expect(await bottomGap()).toBeLessThanOrEqual(2);
 });
@@ -6439,13 +6476,16 @@ test("runtime inspector lists object metadata without loading object contents", 
     clientY: startY,
   });
   await expect(rEnvironment).toHaveClass(/is-dragging/);
-  await dragHandle.dispatchEvent("pointermove", {
-    buttons: 1,
-    pointerId: 7,
-    clientX: startX - 120,
-    clientY: startY + 48,
-  });
+  // Re-dispatch the move inside the poll: a single pointermove right after the
+  // drag state flips can still be batched away by Leptos on a busy CI worker,
+  // leaving the panel unmoved even though is-dragging is set.
   await expect.poll(async () => {
+    await dragHandle.dispatchEvent("pointermove", {
+      buttons: 1,
+      pointerId: 7,
+      clientX: startX - 120,
+      clientY: startY + 48,
+    });
     const afterDrag = await rEnvironment.boundingBox();
     return beforeDrag && afterDrag ? Math.round(beforeDrag.x - afterDrag.x) : 0;
   }).toBeGreaterThan(100);
@@ -8791,6 +8831,7 @@ test("session history loads older pages with a stable cursor", async ({ page }) 
 });
 
 test("sidebar search opens the Ctrl+K palette and finds sessions beyond loaded history", async ({ page }) => {
+  await pinNonMacPlatform(page);
   await page.goto("/?mockManySessions=1");
   await page.locator(".proj-card-main").first().click();
 
@@ -10308,11 +10349,12 @@ test("a second conversation can run in parallel without interleaving transcripts
   await page.locator(".proj-card-main").first().click();
   await expect(newSessionButton(page)).toBeVisible();
 
-  // Start conversation A. The mock streams "echo:alpha" at once but delays Done,
+  // Start conversation A. The mock streams A's reply at once but delays Done,
   // so A stays "running".
   await composer(page).fill("alpha");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("echo:alpha")).toBeVisible({ timeout: 10_000 });
+  await expect(userTurn(page, "alpha")).toBeVisible({ timeout: 10_000 });
+  await expect(assistantReplyQuoting(page, "alpha")).toBeVisible({ timeout: 10_000 });
 
   // While A is still running, open a fresh session. The composer must be usable
   // (per-session busy: A running does NOT block B).
@@ -10320,18 +10362,22 @@ test("a second conversation can run in parallel without interleaving transcripts
   await expect(composer(page)).toBeEmpty();
   await composer(page).fill("beta");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("echo:beta")).toBeVisible({ timeout: 10_000 });
+  await expect(userTurn(page, "beta")).toBeVisible({ timeout: 10_000 });
+  await expect(assistantReplyQuoting(page, "beta")).toBeVisible({ timeout: 10_000 });
 
   // A's transcript must not leak into B's view.
-  await expect(page.getByText("echo:alpha")).toHaveCount(0);
+  await expect(userTurn(page, "alpha")).toHaveCount(0);
+  await expect(assistantReplyQuoting(page, "alpha")).toHaveCount(0);
 
   // A is still running → its sidebar entry shows the running indicator.
   await expect(page.locator(".side-item.ses.running", { hasText: "alpha" })).toBeVisible();
 
   // Switch back to A: the cached (live) transcript renders, B's does not.
   await page.locator(".side-item.ses", { hasText: "alpha" }).click();
-  await expect(page.getByText("echo:alpha")).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByText("echo:beta")).toHaveCount(0);
+  await expect(userTurn(page, "alpha")).toBeVisible({ timeout: 10_000 });
+  await expect(assistantReplyQuoting(page, "alpha")).toBeVisible({ timeout: 10_000 });
+  await expect(userTurn(page, "beta")).toHaveCount(0);
+  await expect(assistantReplyQuoting(page, "beta")).toHaveCount(0);
 });
 
 test("delayed session loads cannot expose or overwrite another live transcript (#595)", async ({ page }) => {
@@ -10344,35 +10390,41 @@ test("delayed session loads cannot expose or overwrite another live transcript (
   // takes the asynchronous idle-session load path.
   await composer(page).fill("alpha");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("echo:alpha")).toBeVisible({ timeout: 10_000 });
+  await expect(assistantReplyQuoting(page, "alpha")).toBeVisible({ timeout: 10_000 });
   await newSessionButton(page).click();
   await composer(page).fill("actions-beta");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("echo:actions-beta")).toBeVisible();
+  await expect(assistantReplyQuoting(page, "actions-beta")).toBeVisible();
   await expect(page.locator(".side-item.ses", { hasText: "actions-beta" })).toBeVisible();
 
   await page.locator(".side-item.ses", { hasText: "alpha" }).click();
-  await expect(page.getByText("echo:alpha")).toBeVisible();
+  await expect(assistantReplyQuoting(page, "alpha")).toBeVisible();
   await page.evaluate(() => { (window as any).__parallelLoadDelayMs = 800; });
 
   // The target cache must be installed before active_session changes. Under the
   // old ordering, A remained visible here until B's delayed load completed.
+  const loadsBeforeSwitch = await page.evaluate(() =>
+    Number((window as any).__parallelLoadsResolved ?? 0));
   await page.locator(".side-item.ses", { hasText: "actions-beta" }).click();
-  await expect(page.getByText("echo:alpha")).toHaveCount(0);
-  await expect(page.getByText("echo:actions-beta")).toBeVisible();
+  await expect(assistantReplyQuoting(page, "alpha")).toHaveCount(0);
+  await expect(assistantReplyQuoting(page, "actions-beta")).toBeVisible();
 
   // Start a live B turn while its old DB page is still loading. The late empty
   // snapshot must not erase the streamed result.
   await composer(page).fill("gamma");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("echo:gamma")).toBeVisible();
-  await page.waitForTimeout(1_000);
-  await expect(page.getByText("echo:gamma")).toBeVisible();
-  await expect(page.getByText("echo:alpha")).toHaveCount(0);
+  await expect(assistantReplyQuoting(page, "gamma")).toBeVisible();
+  // Wait for the delayed snapshot to actually arrive before asserting it did
+  // not erase the live turn (not a fixed sleep hoping it has landed).
+  await expect
+    .poll(() => page.evaluate(() => Number((window as any).__parallelLoadsResolved ?? 0)))
+    .toBeGreaterThan(loadsBeforeSwitch);
+  await expect(assistantReplyQuoting(page, "gamma")).toBeVisible();
+  await expect(assistantReplyQuoting(page, "alpha")).toHaveCount(0);
 
   await page.locator(".side-item.ses", { hasText: "alpha" }).click();
-  await expect(page.getByText("echo:alpha")).toBeVisible();
-  await expect(page.getByText("echo:gamma")).toHaveCount(0);
+  await expect(assistantReplyQuoting(page, "alpha")).toBeVisible();
+  await expect(assistantReplyQuoting(page, "gamma")).toHaveCount(0);
 });
 
 test("a running conversation accepts another message for queueing", async ({ page }) => {
@@ -10383,7 +10435,7 @@ test("a running conversation accepts another message for queueing", async ({ pag
 
   await composer(page).fill("alpha");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("echo:alpha")).toBeVisible({ timeout: 10_000 });
+  await expect(assistantReplyQuoting(page, "alpha")).toBeVisible({ timeout: 10_000 });
 
   await composer(page).fill("queued");
   // Queue (#433): sending into a busy session queues directly — no dialog. The
@@ -10408,9 +10460,10 @@ test("a running conversation accepts another message for queueing", async ({ pag
   // The first turn keeps streaming after the second is queued. Its tail must
   // stay attached to the first assistant row instead of leaking into a hidden
   // placeholder after the queued user message (#143). "queued" must NOT run yet.
-  await expect(page.getByText("echo:alpha:tail", { exact: true })).toBeVisible({ timeout: 3_000 });
+  await expect(page.getByText(parallelReplyTailText("alpha"), { exact: true }))
+    .toBeVisible({ timeout: 3_000 });
   await expect(queued).toBeVisible();
-  await expect(page.getByText("echo:queued")).toHaveCount(0);
+  await expect(assistantReplyQuoting(page, "queued")).toHaveCount(0);
 
   // Only "alpha" ran as a live turn; the queue waits behind it.
   await expect.poll(async () => page.evaluate(() =>
@@ -10421,7 +10474,7 @@ test("a running conversation accepts another message for queueing", async ({ pag
 
   // Once alpha finishes, the driver drains the queue: "queued" now runs and its
   // optimistic bubble promotes to a live turn (#433).
-  await expect(page.getByText("echo:queued")).toBeVisible({ timeout: 10_000 });
+  await expect(assistantReplyQuoting(page, "queued")).toBeVisible({ timeout: 10_000 });
 });
 
 test("queued follow-ups can be reordered up and down (#433)", async ({ page }) => {
@@ -10433,7 +10486,7 @@ test("queued follow-ups can be reordered up and down (#433)", async ({ page }) =
   // alpha stays running ~5s, keeping the session busy while we queue two more.
   await composer(page).fill("alpha");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("echo:alpha")).toBeVisible({ timeout: 10_000 });
+  await expect(assistantReplyQuoting(page, "alpha")).toBeVisible({ timeout: 10_000 });
 
   for (const msg of ["bravo", "charlie"]) {
     await composer(page).fill(msg);
@@ -10470,7 +10523,7 @@ test("editing a queued follow-up restores it to the composer", async ({ page }) 
 
   await composer(page).fill("alpha");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("echo:alpha")).toBeVisible({ timeout: 10_000 });
+  await expect(assistantReplyQuoting(page, "alpha")).toBeVisible({ timeout: 10_000 });
 
   await composer(page).fill("what is QC?");
   await page.getByRole("button", { name: "Queue…" }).click();

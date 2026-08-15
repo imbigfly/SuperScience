@@ -2652,6 +2652,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn relay_transfer_fails_when_the_scp_step_exits_nonzero() {
+        let (root, store) = test_store().await;
+        let runner = Arc::new(RecordingRunner {
+            outputs: StdMutex::new(
+                vec![Ok(RunCommandOutput {
+                    exit_code: 1,
+                    stdout: String::new(),
+                    stderr: "scp: /data/result.txt: No such file or directory".into(),
+                })]
+                .into(),
+            ),
+            commands: StdMutex::new(Vec::new()),
+        });
+        let manager = RunManager::with_runner(runner.clone());
+        let response = submit_transfer(
+            &store,
+            &manager,
+            "p",
+            Some("f"),
+            &root,
+            TransferRequest {
+                source_context_id: "ssh:a".into(),
+                source_path: "/data/result.txt".into(),
+                destination_context_id: "ssh:b".into(),
+                destination_path: Some("/results/".into()),
+                route: "auto".into(),
+                transport: "auto".into(),
+                resume: false,
+                timeout_secs: Some(30),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(response["route"], "relay");
+        let run_id = response["run_id"].as_str().unwrap();
+        let run = loop {
+            let run = store.get_run(run_id).await.unwrap().unwrap();
+            if run.status.is_terminal() {
+                break run;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        assert_eq!(run.status, wisp_store::RunStatus::Failed);
+        assert_eq!(run.kind, "file_transfer");
+        assert_eq!(run.exit_code, Some(-1));
+        let progress: wisp_store::RunProgress = serde_json::from_str(&run.progress_json).unwrap();
+        assert_eq!(progress.phase, "failed");
+        let stderr = run.stderr_tail.as_deref().unwrap();
+        assert!(
+            stderr.contains("SSH download failed with exit 1"),
+            "{stderr}"
+        );
+        assert!(stderr.contains("No such file or directory"), "{stderr}");
+        let commands = runner.commands.lock().unwrap();
+        assert_eq!(
+            commands.len(),
+            1,
+            "a failed download must stop before the upload step"
+        );
+        assert_eq!(commands[0].script, "relay download");
+        drop(commands);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn local_source_uploads_to_selected_ssh_without_shell_transfer() {
         let (root, store) = test_store().await;
         let source = root.join("sample data.bam");

@@ -26,8 +26,13 @@ test("PPTX preview width stays pinned in a narrow modal", async ({ page }) => {
     const m = (content?.style.transform || "").match(/scale\(([\d.]+)\)/);
     return { cw: c.clientWidth, figW: fig.offsetWidth, scale: m ? parseFloat(m[1]) : null };
   });
-  await page.waitForTimeout(500);
+  // Wait for the slide content to actually render (its scale transform is set
+  // by the sizing pass) instead of sleeping and hoping it has.
+  await expect.poll(async () => (await measure(page)).scale).not.toBeNull();
   const a = await measure(page);
+  // Deliberate observation window: the regression is a feedback loop that
+  // drifts the width over time, so hold still and re-measure — there is no
+  // condition to await for "nothing changed".
   await page.waitForTimeout(700);
   const b = await measure(page);
 

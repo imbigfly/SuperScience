@@ -3827,6 +3827,15 @@ fn specialist_prompt_section(spec: &specialists::Specialist) -> String {
     format!("\n\n## Specialist: {}\n{}", spec.name, spec.instructions)
 }
 
+/// Append the specialist section unless the prompt already carries one.
+/// Idempotent: a reloaded seeded session already carries the section
+/// (runtime rebuilt after restart/eviction).
+fn append_specialist_section_once(prompt: &mut String, section: &str) {
+    if !prompt.contains("\n\n## Specialist: ") {
+        prompt.push_str(section);
+    }
+}
+
 /// Idempotently add or remove a delimited system-prompt section. The prompt is
 /// persisted as message 0 and reloaded on every runtime rebuild, so a toggled-off
 /// capability has to strip whatever an earlier turn appended (including a
@@ -5700,11 +5709,7 @@ async fn send_message_inner(
                 let section = specialist_prompt_section(spec);
                 if let Some(m) = agent.ctx.messages.first_mut() {
                     if let wisp_llm::Content::Text(t) = &mut m.content {
-                        // Idempotent: a reloaded seeded session already carries
-                        // the section (runtime rebuilt after restart/eviction).
-                        if !t.contains("\n\n## Specialist: ") {
-                            t.push_str(&section);
-                        }
+                        append_specialist_section_once(t, &section);
                     }
                 }
             }
@@ -6363,6 +6368,22 @@ fn begin_queued_cutin(rt: &SessionRuntime, id: u64) -> Option<(u64, QueuedItem)>
     Some((guidance_id, item))
 }
 
+/// Reorder within the queue (#433): swap the item with its neighbour (`up`
+/// toward the front), clamped at both ends. FIFO order is the Vec order,
+/// which the driver drains front-first.
+fn swap_queued_toward(q: &mut Vec<QueuedItem>, id: u64, up: bool) {
+    if let Some(i) = q.iter().position(|it| it.id == id) {
+        let target = if up {
+            i.checked_sub(1)
+        } else {
+            (i + 1 < q.len()).then_some(i + 1)
+        };
+        if let Some(j) = target {
+            q.swap(i, j);
+        }
+    }
+}
+
 fn reclaim_unconsumed_cutin(rt: &SessionRuntime, guidance_id: u64, item: QueuedItem) -> bool {
     let mut pending = rt.pending_guidance.lock().unwrap();
     let before = pending.len();
@@ -6433,16 +6454,7 @@ async fn queued_turn_action(
         // the ends. FIFO order is the Vec order, which the driver drains front-first.
         "move_up" | "move_down" => {
             let mut q = rt.queued.lock().unwrap();
-            if let Some(i) = q.iter().position(|it| it.id == id) {
-                let target = if action == "move_up" {
-                    i.checked_sub(1)
-                } else {
-                    (i + 1 < q.len()).then_some(i + 1)
-                };
-                if let Some(j) = target {
-                    q.swap(i, j);
-                }
-            }
+            swap_queued_toward(&mut q, id, action == "move_up");
         }
         other => return Err(format!("unknown queued action: {other}")),
     }

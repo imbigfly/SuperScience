@@ -5088,10 +5088,24 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   };
 }
 
-// Variant for parallel-session tests: each `send_message` streams an `echo:<msg>`
-// reply immediately but delays `Done` so the session stays "running" while the
-// test starts a second conversation. `list_sessions` reports every session that
-// received a user turn so the sidebar can list them.
+// Expected assistant reply text for a message sent under `parallelMock`.
+// Specs that must pin exact reply content derive it from these helpers so the
+// `echo:` convention stays an internal detail of this mock. (`parallelMock`
+// itself is serialized into the page by addInitScript, so it cannot call
+// these; its inline template below must stay in sync.)
+export function parallelReplyText(message: string): string {
+  return `echo:${message}`;
+}
+
+export function parallelReplyTailText(message: string): string {
+  return `${parallelReplyText(message)}:tail`;
+}
+
+// Variant for parallel-session tests: each `send_message` streams a reply
+// quoting the message (see `parallelReplyText`) immediately but delays `Done`
+// so the session stays "running" while the test starts a second conversation.
+// `list_sessions` reports every session that received a user turn so the
+// sidebar can list them.
 export function parallelMock(): void {
   const params = new URLSearchParams(window.location.search);
   const listeners: Record<string, ((e: { payload: unknown }) => void) | undefined> = {};
@@ -5123,6 +5137,10 @@ export function parallelMock(): void {
           case "load_session": {
             const delay = Number((window as any).__parallelLoadDelayMs ?? 0);
             if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+            // Counts loads whose (possibly delayed) snapshot has been handed to
+            // the UI, so tests can wait for the late snapshot instead of sleeping.
+            (window as any).__parallelLoadsResolved =
+              ((window as any).__parallelLoadsResolved ?? 0) + 1;
             return { items: [], next_before_seq: null, user_offset: 0 };
           }
           case "list_sessions_page": return {
