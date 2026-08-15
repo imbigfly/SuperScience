@@ -78,6 +78,7 @@ mod run_context;
 mod runtime_commands;
 mod runtime_config_tool;
 mod runtime_launcher;
+mod scheduler;
 mod scratch_commands;
 mod seed;
 mod session_commands;
@@ -7820,6 +7821,7 @@ pub fn run() {
             app.manage(terminal_sessions::TerminalManager::new());
             app.manage(channels::ChannelManager::new());
             delegation_completion::start_dispatcher(app.handle());
+            scheduler::start_scheduler(app.handle());
             {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
@@ -7911,6 +7913,12 @@ pub fn run() {
             plan_mode::set_session_plan_mode,
             delegation_completion::get_session_agent_completion,
             delegation_completion::set_session_agent_completion,
+            scheduler::create_schedule,
+            scheduler::list_schedules,
+            scheduler::list_schedule_runs,
+            scheduler::set_schedule_enabled,
+            scheduler::delete_schedule,
+            scheduler::run_schedule_now,
             delegation_runtime::get_dynamic_agent_options,
             delegation_runtime::get_agent_workflow_result,
             delegation_runtime::approve_agent_workflow,
