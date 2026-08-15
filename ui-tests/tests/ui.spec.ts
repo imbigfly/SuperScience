@@ -1608,6 +1608,15 @@ test("post-start API errors keep the user bubble when an Error event lands first
   await expect(page.getByRole("button", { name: /Resume|继续执行/ })).toBeVisible();
 });
 
+test("truncated output auto-continue is shown as progress", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("AUTOCONTINUE long task");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByTestId("auto-continue-flag")).toContainText("automatically continued (1/10)");
+  await expect(page.locator(".msg.assistant")).toContainText("Final segment");
+  await expect(page.locator(".finding.err")).toHaveCount(0);
+});
+
 test("automatic reviewer resolves its finding and jumps past UI-only rows (#550)", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("REVIEWBASE");
@@ -9985,6 +9994,19 @@ test("general settings enable automatic context compaction by default", async ({
   await page.locator(".settings-footer").getByRole("button", { name: "Save" }).click();
   await expect.poll(() => lastInvokeArgs(page, "set_settings")).toMatchObject({
     settings: { auto_compact: false },
+  });
+});
+
+test("general settings configure truncated-output auto-continue", async ({ page }) => {
+  await page.goto("/");
+  await openSettingsSection(page, "General");
+  const toggle = page.getByTestId("auto-continue-enabled");
+  await expect(toggle).not.toBeChecked();
+  await toggle.locator("..").click();
+  await page.getByTestId("auto-continue-limit").fill("4");
+  await page.locator(".settings-footer").getByRole("button", { name: "Save" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "set_settings")).toMatchObject({
+    settings: { auto_continue: true, auto_continue_limit: 4 },
   });
 });
 

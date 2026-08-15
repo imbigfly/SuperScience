@@ -1558,26 +1558,41 @@ pub(crate) fn render_item(
             after,
             strategy,
         } => {
-            let automatic = strategy == "auto";
-            let counts = format!(
-                "{} → {}",
-                fmt_tokens(*before as u64),
-                fmt_tokens(*after as u64)
-            );
-            view! {
-                <div class="context-compaction-flag" class:auto=automatic data-testid="context-compaction-flag">
-                    {compose_icon("doc")}
-                    <span>{move || t(
-                        locale.get(),
-                        if automatic {
-                            "chat.context_auto_compacted"
-                        } else {
-                            "chat.context_compacted"
-                        },
-                    )}</span>
-                    <span class="context-compaction-count">{counts}</span>
-                </div>
-            }.into_view()
+            if strategy == "auto_continue" {
+                let count = before.to_string();
+                let limit = after.to_string();
+                view! {
+                    <div class="context-compaction-flag auto" data-testid="auto-continue-flag">
+                        {compose_icon("sync")}
+                        <span>{move || tf(
+                            locale.get(),
+                            "chat.auto_continued",
+                            &[("count", count.as_str()), ("limit", limit.as_str())],
+                        )}</span>
+                    </div>
+                }.into_view()
+            } else {
+                let automatic = strategy == "auto";
+                let counts = format!(
+                    "{} → {}",
+                    fmt_tokens(*before as u64),
+                    fmt_tokens(*after as u64)
+                );
+                view! {
+                    <div class="context-compaction-flag" class:auto=automatic data-testid="context-compaction-flag">
+                        {compose_icon("doc")}
+                        <span>{move || t(
+                            locale.get(),
+                            if automatic {
+                                "chat.context_auto_compacted"
+                            } else {
+                                "chat.context_compacted"
+                            },
+                        )}</span>
+                        <span class="context-compaction-count">{counts}</span>
+                    </div>
+                }.into_view()
+            }
         }
         ChatItem::AcpTool { title, status, content, locations, .. } => view! {
             <article class="tool-card" data-testid="acp-tool" data-status=status.clone()>

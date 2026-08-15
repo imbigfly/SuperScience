@@ -1433,6 +1433,28 @@ pub(super) fn SettingsView(
                         </div>
                         <div class="span-2 appearance-config-row">
                             <div>
+                                <strong>{move || t(locale.get(), "settings.auto_continue")}</strong>
+                                <span>{move || t(locale.get(), "settings.auto_continue_hint")}</span>
+                            </div>
+                            <label class="toggle">
+                                <input type="checkbox" data-testid="auto-continue-enabled"
+                                    prop:checked=move || settings.get().auto_continue
+                                    on:change=move |ev| settings.update(|current| current.auto_continue = event_target_checked(&ev)) />
+                                <span class="toggle-track" aria-hidden="true"></span>
+                            </label>
+                        </div>
+                        <label class="span-2">{move || t(locale.get(), "settings.auto_continue_limit")}
+                            <input data-testid="auto-continue-limit" type="number" min="1" step="1"
+                                on:input=move |ev| settings.update(|current| {
+                                    if let Ok(value) = event_target_input(&ev).value().parse() {
+                                        current.auto_continue_limit = value;
+                                    }
+                                })
+                                prop:value=move || settings.get().auto_continue_limit.to_string() />
+                            <span class="settings-field-hint">{move || t(locale.get(), "settings.auto_continue_limit_hint")}</span>
+                        </label>
+                        <div class="span-2 appearance-config-row">
+                            <div>
                                 <strong>{move || t(locale.get(), "settings.follow_up_questions")}</strong>
                                 <span>{move || t(locale.get(), "settings.follow_up_questions_hint")}</span>
                             </div>
