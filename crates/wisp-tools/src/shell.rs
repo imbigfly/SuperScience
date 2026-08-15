@@ -77,6 +77,9 @@ async fn run_shell(args: &serde_json::Value, env: &dyn ToolEnv, timeout: Duratio
         Ok(c) => c,
         Err(e) => return ToolResult::fail(e),
     };
+    if let Err(error) = env.preflight_local_execution(&cmd).await {
+        return ToolResult::fail(error).stop_batch();
+    }
     if let Err(error) = env.preflight_shell(&cmd).await {
         return ToolResult::fail(error);
     }
@@ -315,6 +318,8 @@ mod tests {
 
     struct DenyEnv(PathBuf);
 
+    struct RejectLocalExecutionEnv(PathBuf);
+
     #[async_trait::async_trait]
     impl ToolEnv for DenyEnv {
         fn project_root(&self) -> &Path {
@@ -323,6 +328,23 @@ mod tests {
 
         async fn confirm(&self, _message: &str) -> bool {
             false
+        }
+
+        async fn emit(&self, _event: ToolEvent) {}
+    }
+
+    #[async_trait::async_trait]
+    impl ToolEnv for RejectLocalExecutionEnv {
+        fn project_root(&self) -> &Path {
+            &self.0
+        }
+
+        async fn confirm(&self, _message: &str) -> bool {
+            true
+        }
+
+        async fn preflight_local_execution(&self, _source: &str) -> Result<(), String> {
+            Err("exploration_scope_violation: mainline path".into())
         }
 
         async fn emit(&self, _event: ToolEvent) {}
@@ -369,6 +391,21 @@ mod tests {
         .await;
 
         assert!(!result.success);
+        assert_eq!(result.control, ToolControl::StopBatch);
+    }
+
+    #[tokio::test]
+    async fn hard_local_execution_boundary_stops_before_spawning() {
+        let env = RejectLocalExecutionEnv(std::env::current_dir().unwrap());
+        let result = run_shell(
+            &json!({ "cmd": "echo should-not-run" }),
+            &env,
+            Duration::from_secs(1),
+        )
+        .await;
+
+        assert!(!result.success);
+        assert!(result.content.contains("exploration_scope_violation"));
         assert_eq!(result.control, ToolControl::StopBatch);
     }
 

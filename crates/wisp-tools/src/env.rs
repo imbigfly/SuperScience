@@ -204,6 +204,12 @@ pub trait ToolEnv: Send + Sync {
     fn cancel_flag(&self) -> Option<&std::sync::atomic::AtomicBool> {
         None
     }
+    /// Optional hard boundary before locally executing free-form source. Hosts
+    /// use this for constraints that approval policies must never bypass, such
+    /// as keeping an exploration away from its live mainline workspace.
+    async fn preflight_local_execution(&self, _source: &str) -> Result<(), String> {
+        Ok(())
+    }
     /// Optional pre-check before spawning a shell command (e.g. block free-form
     /// SSH against a host the app already failed to reach). Default allows all.
     async fn preflight_shell(&self, _cmd: &str) -> Result<(), String> {

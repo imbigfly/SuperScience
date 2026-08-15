@@ -125,6 +125,11 @@ async fn run_runtime(
     language: &'static str,
     env: &dyn ToolEnv,
 ) -> ToolResult {
+    if key.context_id == LOCAL_CONTEXT_ID || key.context_id.starts_with("wsl:") {
+        if let Err(error) = env.preflight_local_execution(&code).await {
+            return ToolResult::fail(error).stop_batch();
+        }
+    }
     let mut execution = match manager.execute(&key, env.project_root(), code).await {
         Ok(execution) => execution,
         Err(error) => return ToolResult::fail(format!("{language} error: {error}")),

@@ -96,6 +96,13 @@ pub(super) async fn execute_runtime(
         exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
     let _project_activity = state.begin_project_activity(&project.id)?;
     exploration_commands::require_writable_scope(&state.store, &scope).await?;
+    if exploration_isolation::is_host_local_context(&context_id) {
+        if let Some(boundary) =
+            exploration_isolation::boundary_for_scope(&state.store, &scope).await?
+        {
+            boundary.check_local_source(&code)?;
+        }
+    }
     let key = wisp_runtime::RuntimeKey {
         project_id: project.id.clone(),
         scope_key: scope.scope_key().to_string(),
