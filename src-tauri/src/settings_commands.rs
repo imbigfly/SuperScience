@@ -859,7 +859,7 @@ fn dir_size(path: &Path) -> u64 {
         .sum()
 }
 
-fn collect_storage_usage(
+pub(crate) fn collect_storage_usage(
     app_data: PathBuf,
     projects: Vec<(String, String, PathBuf)>,
 ) -> serde_json::Value {

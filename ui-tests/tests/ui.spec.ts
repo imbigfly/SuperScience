@@ -7367,6 +7367,20 @@ test("UI font size setting scales chat message body text", async ({ page }) => {
   await expect.poll(composerFontSize).toBe("18px");
 });
 
+test("configure presentation applies font size and theme without opening Settings", async ({ page }) => {
+  await enterApp(page);
+  await emitTauriEvent(page, "agent", {
+    kind: "ToolPresentation",
+    frame_id: "any-session",
+    presentation_kind: "app_prefs",
+    payload: { ui_font_size: 18, theme: "dark" },
+  });
+  await expect.poll(() => page.evaluate(() =>
+    document.documentElement.getAttribute("style") ?? ""
+  )).toContain("--ui-font-size:18px");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+});
+
 test("UI font size setting scales Chinese chat markdown and composer", async ({ page }) => {
   await page.goto("/?mockLocale=zh");
   await page.locator(".proj-card-main").first().click();

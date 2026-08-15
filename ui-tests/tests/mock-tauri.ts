@@ -2360,6 +2360,35 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               workspace: project.root,
               errors: [],
             };
+          case "get_appearance_prefs":
+            return (window as any).__mockAppearancePrefs ?? {
+              saved: false,
+              theme: "system",
+              light_palette: "paper",
+              dark_palette: "charcoal",
+              ui_font_size: 14,
+              code_font_size: 12,
+              ui_font_family: "",
+              code_font_family: "",
+              selection_popup_enabled: true,
+              send_with_modifier: false,
+            };
+          case "set_appearance_prefs": {
+            const next = plain(arg("prefs") ?? args ?? {});
+            (window as any).__mockAppearancePrefs = {
+              saved: true,
+              theme: String(next.theme ?? "system"),
+              light_palette: String(next.light_palette ?? "paper"),
+              dark_palette: String(next.dark_palette ?? "charcoal"),
+              ui_font_size: Number(next.ui_font_size ?? 14),
+              code_font_size: Number(next.code_font_size ?? 12),
+              ui_font_family: String(next.ui_font_family ?? ""),
+              code_font_family: String(next.code_font_family ?? ""),
+              selection_popup_enabled: next.selection_popup_enabled !== false,
+              send_with_modifier: Boolean(next.send_with_modifier),
+            };
+            return (window as any).__mockAppearancePrefs;
+          }
           case "get_settings":
             return {
               provider: "",
@@ -5150,6 +5179,21 @@ export function parallelMock(): void {
             workspace: project.root,
             errors: [],
           };
+          case "get_appearance_prefs":
+            return {
+              saved: false,
+              theme: "system",
+              light_palette: "paper",
+              dark_palette: "charcoal",
+              ui_font_size: 14,
+              code_font_size: 12,
+              ui_font_family: "",
+              code_font_family: "",
+              selection_popup_enabled: true,
+              send_with_modifier: false,
+            };
+          case "set_appearance_prefs":
+            return arg("prefs") ?? null;
           case "get_settings": return {
             provider: "openai",
             api_url: "https://api.deepseek.com",

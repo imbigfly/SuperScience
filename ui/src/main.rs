@@ -408,6 +408,7 @@ fn App() -> impl IntoView {
     let code_font_size = create_rw_signal(load_code_font_size());
     let ui_font_family = create_rw_signal(load_ui_font_family());
     let code_font_family = create_rw_signal(load_code_font_family());
+    let appearance_hydrated = create_rw_signal(false);
     create_effect(move |_| {
         apply_font_prefs(
             ui_font_size.get(),
@@ -420,6 +421,29 @@ fn App() -> impl IntoView {
     create_effect(move |_| save_selection_popup_enabled(selection_popup_enabled.get()));
     let send_with_modifier = create_rw_signal(load_send_with_modifier());
     create_effect(move |_| save_send_with_modifier(send_with_modifier.get()));
+    create_effect(move |_| {
+        if !appearance_hydrated.get() {
+            return;
+        }
+        let prefs = AppearancePrefs {
+            theme: theme_mode.get(),
+            light_palette: light_palette.get(),
+            dark_palette: dark_palette.get(),
+            ui_font_size: ui_font_size.get(),
+            code_font_size: code_font_size.get(),
+            ui_font_family: ui_font_family.get(),
+            code_font_family: code_font_family.get(),
+            selection_popup_enabled: selection_popup_enabled.get(),
+            send_with_modifier: send_with_modifier.get(),
+        };
+        spawn_local(async move {
+            let _ = invoke_checked(
+                "set_appearance_prefs",
+                to_value(&serde_json::json!({ "prefs": prefs })).unwrap(),
+            )
+            .await;
+        });
+    });
 
     let items = create_rw_signal::<Vec<ChatItem>>(vec![]);
     // Expensive transcript projections do not need token-by-token freshness.
@@ -2129,7 +2153,23 @@ fn App() -> impl IntoView {
             let loc = Locale::from_code(&cfg.locale);
             locale.set(loc);
             set_document_lang(loc);
+            settings.set(cfg);
         }
+        let appearance = invoke("get_appearance_prefs", JsValue::UNDEFINED).await;
+        if let Ok(view) = serde_wasm_bindgen::from_value::<AppearancePrefsView>(appearance) {
+            if view.saved {
+                theme_mode.set(view.prefs.theme);
+                light_palette.set(view.prefs.light_palette);
+                dark_palette.set(view.prefs.dark_palette);
+                ui_font_size.set(view.prefs.ui_font_size);
+                code_font_size.set(view.prefs.code_font_size);
+                ui_font_family.set(view.prefs.ui_font_family);
+                code_font_family.set(view.prefs.code_font_family);
+                selection_popup_enabled.set(view.prefs.selection_popup_enabled);
+                send_with_modifier.set(view.prefs.send_with_modifier);
+            }
+        }
+        appearance_hydrated.set(true);
         let v = invoke("get_onboarding_state", JsValue::UNDEFINED).await;
         if let Ok(s) = serde_wasm_bindgen::from_value::<OnboardingState>(v) {
             if s.show {
@@ -2587,7 +2627,22 @@ fn App() -> impl IntoView {
                 presentation_kind,
                 payload,
             } => {
-                if presentation_kind == "mcp_app"
+                if presentation_kind == "app_prefs" {
+                    apply_prefs_patch(
+                        &parse_app_prefs_payload(&payload),
+                        theme_mode,
+                        light_palette,
+                        dark_palette,
+                        ui_font_size,
+                        code_font_size,
+                        ui_font_family,
+                        code_font_family,
+                        selection_popup_enabled,
+                        send_with_modifier,
+                        locale,
+                        settings,
+                    );
+                } else if presentation_kind == "mcp_app"
                     && active_cb.get_untracked().as_deref() == Some(frame_id.as_str())
                 {
                     show_mcp_app.call((frame_id, presentation_id, payload, true));

@@ -26,6 +26,7 @@ mod browser_bridge;
 mod browser_url_filters;
 mod channels;
 mod codex_import;
+mod configure;
 mod connector_commands;
 mod context_probe;
 mod debug_request;
@@ -5643,6 +5644,11 @@ async fn send_message_inner(
         agent.add_tool(Box::new(specialist_tool::SaveSpecialistTool {
             store: state.store.clone(),
         }));
+        agent.add_tool(Box::new(configure::ConfigureTool::new(
+            state.store.clone(),
+            state.app_data.clone(),
+            ap.id.clone(),
+        )));
         // Always registered, not just in plan mode: a fork during execution
         // deserves a question as much as one during planning.
         agent.add_tool(Box::new(wisp_tools::ask_user::AskUserTool));
@@ -8082,6 +8088,8 @@ pub fn run() {
             browser_url_filters::set_browser_url_filters,
             settings_commands::get_settings,
             settings_commands::set_settings,
+            configure::get_appearance_prefs,
+            configure::set_appearance_prefs,
             settings_commands::get_storage_usage,
             settings_commands::get_token_usage,
             settings_commands::get_session_token_usage,
