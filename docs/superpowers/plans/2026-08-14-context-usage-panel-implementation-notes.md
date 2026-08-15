@@ -1,6 +1,6 @@
 # Context usage panel — implementation notes
 
-Shipped the dock / float / resize behavior from `docs/feature-context-usage-panel-plan.html` in this worktree. Panel content and the Rust backend are unchanged.
+Shipped the dock / float / resize behavior from `docs/superpowers/plans/2026-08-14-context-usage-panel.html` in this worktree. Panel content and the Rust backend are unchanged.
 
 ## What landed
 
