@@ -185,7 +185,46 @@ pub(crate) fn md_to_html(src: &str) -> String {
     let parser = Parser::new_ext(src.as_ref(), opts);
     let mut out = String::new();
     html::push_html(&mut out, parser);
+    mark_lead_strong_paragraphs(out)
+}
+
+/// Tag paragraphs whose first *content* is `<strong>` so chat CSS can draw the
+/// section-lead bar. `:first-child` ignores text nodes, so
+/// `该你了，接一个「<strong>点</strong>」` would otherwise match and pick up a
+/// mid-sentence green bar.
+fn mark_lead_strong_paragraphs(html: String) -> String {
+    const OPEN: &str = "<p>";
+    const MARKED: &str = r#"<p class="md-lead-strong">"#;
+    if !html.contains(OPEN) || !html.contains("<strong") {
+        return html;
+    }
+    let mut out = String::with_capacity(html.len() + MARKED.len());
+    let mut rest = html.as_str();
+    let mut changed = false;
+    while let Some(idx) = rest.find(OPEN) {
+        out.push_str(&rest[..idx]);
+        let after = &rest[idx + OPEN.len()..];
+        if after.trim_start().starts_with("<strong") {
+            out.push_str(MARKED);
+            changed = true;
+        } else {
+            out.push_str(OPEN);
+        }
+        rest = after;
+    }
+    if !changed {
+        return html;
+    }
+    out.push_str(rest);
     out
+}
+
+fn unwrap_single_paragraph(html: &str) -> Option<&str> {
+    let rest = html.strip_prefix("<p>").or_else(|| {
+        html.strip_prefix("<p ")
+            .and_then(|after| after.find('>').map(|i| &after[i + 1..]))
+    })?;
+    rest.strip_suffix("</p>")
 }
 
 /// Render a standalone Markdown document, hiding leading YAML front matter.
@@ -638,10 +677,7 @@ pub(crate) fn md_inline_to_html(src: &str) -> String {
     }
     let html = md_to_html(src);
     let s = html.trim();
-    if let Some(inner) = s
-        .strip_prefix("<p>")
-        .and_then(|rest| rest.strip_suffix("</p>"))
-    {
+    if let Some(inner) = unwrap_single_paragraph(s) {
         if !inner.contains("<p>") {
             return inner.to_string();
         }
@@ -1386,9 +1422,9 @@ pub(crate) fn fasta_seq_count(text: &str) -> usize {
 mod md_catalog_tests {
     use super::{
         code_lang, decode_href, fence_identifier_line_runs, file_kind, format_bytes,
-        md_document_to_html, md_to_html, parent_path, parse_notebook, pretty_json, push_nb_output,
-        runtime_language, strip_ansi, tool_card_label, user_message_presentation, NbOutput,
-        MAX_NB_OUTPUT_BYTES, MAX_NB_TOTAL_OUTPUT_BYTES,
+        md_document_to_html, md_inline_to_html, md_to_html, parent_path, parse_notebook,
+        pretty_json, push_nb_output, runtime_language, strip_ansi, tool_card_label,
+        user_message_presentation, NbOutput, MAX_NB_OUTPUT_BYTES, MAX_NB_TOTAL_OUTPUT_BYTES,
     };
 
     #[test]
@@ -1419,6 +1455,44 @@ mod md_catalog_tests {
         // and a separate paragraph.
         let html = md_to_html("- QC passed\n-\n\n\nSeparate paragraph\n");
         assert!(html.contains("<li></li>"), "{html}");
+    }
+
+    #[test]
+    fn marks_only_paragraphs_that_begin_with_strong() {
+        // Chat CSS draws a lead bar on standalone/section-lead bold. `:first-child`
+        // would also match mid-sentence `「**点**」` because text nodes do not count.
+        let html = md_to_html(
+            "哈哈，这个接得妙！\n\n**可圈可点**\n\n该你了，接一个「**点**」字开头的成语！\n\n你接一个以**上一个成语最后一个字**开头的成语。",
+        );
+        assert!(
+            html.contains(r#"<p class="md-lead-strong"><strong>可圈可点</strong></p>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains("<p>该你了，接一个「<strong>点</strong>」字开头的成语！</p>"),
+            "{html}"
+        );
+        assert!(
+            html.contains("<p>你接一个以<strong>上一个成语最后一个字</strong>开头的成语。</p>"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn marks_lead_strong_with_following_prose() {
+        let html = md_to_html("**Module results** (Seurat 5):\n");
+        assert!(
+            html.contains(
+                r#"<p class="md-lead-strong"><strong>Module results</strong> (Seurat 5):</p>"#
+            ),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn unwraps_lead_strong_paragraphs_for_inline_html() {
+        assert_eq!(md_inline_to_html("**bold**"), "<strong>bold</strong>");
+        assert_eq!(md_inline_to_html("plain"), "plain");
     }
 
     #[test]

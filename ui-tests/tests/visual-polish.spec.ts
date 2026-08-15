@@ -253,6 +253,7 @@ test("assistant markdown rejoins bare list markers and wraps at word boundaries"
   await expect(sectionLead.locator("strong")).toBeVisible();
   expect(await sectionLead.locator("strong").evaluate((el) => getComputedStyle(el).borderLeftWidth))
     .toBe("3px");
+  await expect(sectionLead).toHaveClass(/md-lead-strong/);
 
   const links = body.locator('a[href="plots/pca.png"], a[href="plots/elbow.png"]');
   await expect(links).toHaveCount(2);
@@ -281,4 +282,42 @@ test("assistant markdown rejoins bare list markers and wraps at word boundaries"
   });
   expect(wrap.overflowWrap).toBe("break-word");
   expect(wrap.wordBreak).toBe("normal");
+});
+
+test("inline mid-paragraph strong does not get the section-lead bar", async ({ page }) => {
+  await page.addInitScript(parallelMock);
+  await enterApp(page);
+  // `:first-child` ignores text nodes, so `「**点**」` used to pick up the same
+  // green bar as a standalone `**可圈可点**` term.
+  const payload = [
+    "哈哈，这个接得妙，原样奉还了！",
+    "",
+    "「可」字开头",
+    "",
+    "**可圈可点**",
+    "",
+    "该你了，接一个「**点**」字开头的成语！",
+    "",
+    "规则：你接一个以**上一个成语最后一个字**开头的成语。",
+  ].join("\n");
+  await page.locator(".composer-inner textarea").first().fill(payload);
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const body = page.locator(".msg.assistant .body.md").last();
+  await expect(body).toContainText("可圈可点", { timeout: 10_000 });
+
+  const term = body.locator("p", { hasText: /^可圈可点$/ });
+  await expect(term).toHaveClass(/md-lead-strong/);
+  expect(await term.locator("strong").evaluate((el) => getComputedStyle(el).borderLeftWidth))
+    .toBe("3px");
+
+  const inlinePoint = body.locator("p", { hasText: "该你了" });
+  await expect(inlinePoint).not.toHaveClass(/md-lead-strong/);
+  expect(await inlinePoint.locator("strong").evaluate((el) => getComputedStyle(el).borderLeftWidth))
+    .toBe("0px");
+
+  const inlineMid = body.locator("p", { hasText: "上一个成语最后一个字" });
+  await expect(inlineMid).not.toHaveClass(/md-lead-strong/);
+  expect(await inlineMid.locator("strong").evaluate((el) => getComputedStyle(el).borderLeftWidth))
+    .toBe("0px");
 });
