@@ -2069,7 +2069,7 @@ fn desktop_app_icon_is_full_bleed_with_an_inset_mark() {
         "desktop icon must be full-bleed; macOS applies the squircle mask"
     );
     assert!(
-        svg.contains("scale(0.75)"),
+        svg.contains("scale(0.60)"),
         "keep the DNA mark inset so Dock/Launchpad does not fill the tile"
     );
     assert!(

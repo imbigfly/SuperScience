@@ -224,6 +224,7 @@ pub(crate) struct AppPrefsPatch {
     pub code_font_family: Option<String>,
     pub selection_popup_enabled: Option<bool>,
     pub send_with_modifier: Option<bool>,
+    pub custom_css: Option<String>,
     pub locale: Option<String>,
     pub max_iter: Option<i64>,
     pub auto_compact: Option<bool>,
@@ -286,6 +287,10 @@ pub(crate) fn parse_app_prefs_payload(payload: &serde_json::Value) -> AppPrefsPa
                     })
             })
         }),
+        custom_css: payload
+            .get("custom_css")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
         locale: payload
             .get("locale")
             .and_then(|value| value.as_str())
@@ -321,6 +326,7 @@ pub(crate) fn apply_prefs_patch(
     code_font_family: RwSignal<String>,
     selection_popup_enabled: RwSignal<bool>,
     send_with_modifier: RwSignal<bool>,
+    custom_css: RwSignal<String>,
     locale: RwSignal<Locale>,
     settings: RwSignal<Settings>,
 ) {
@@ -352,6 +358,9 @@ pub(crate) fn apply_prefs_patch(
     }
     if let Some(enabled) = patch.send_with_modifier {
         send_with_modifier.set(enabled);
+    }
+    if let Some(css) = &patch.custom_css {
+        custom_css.set(sanitize_custom_css(css));
     }
     if let Some(code) = &patch.locale {
         let loc = Locale::from_code(code);
@@ -413,6 +422,156 @@ pub(crate) fn apply_font_prefs(ui_size: u16, code_size: u16, ui_family: &str, co
             };
         }
     }
+}
+
+const CUSTOM_CSS_STYLE_ID: &str = "wisp-custom-theme";
+const CUSTOM_CSS_STORAGE_KEY: &str = "wisp-custom-css";
+const CUSTOM_CSS_MAX_BYTES: usize = 64_000;
+
+pub(crate) fn load_custom_css() -> String {
+    web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .and_then(|s| s.get_item(CUSTOM_CSS_STORAGE_KEY).ok().flatten())
+        .map(|value| sanitize_custom_css(&value))
+        .unwrap_or_default()
+}
+
+pub(crate) fn apply_custom_css(css: &str) {
+    let css = sanitize_custom_css(css);
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Some(document) = window.document() else {
+        return;
+    };
+    let style_el = match document.get_element_by_id(CUSTOM_CSS_STYLE_ID) {
+        Some(el) => el,
+        None => {
+            let Ok(el) = document.create_element("style") else {
+                return;
+            };
+            el.set_id(CUSTOM_CSS_STYLE_ID);
+            if let Ok(Some(head)) = document.query_selector("head") {
+                let _ = head.append_child(&el);
+            } else if let Some(root) = document.document_element() {
+                let _ = root.append_child(&el);
+            }
+            el
+        }
+    };
+    style_el.set_text_content(Some(&css));
+    if let Ok(Some(storage)) = window.local_storage() {
+        let _ = if css.is_empty() {
+            storage.remove_item(CUSTOM_CSS_STORAGE_KEY)
+        } else {
+            storage.set_item(CUSTOM_CSS_STORAGE_KEY, &css)
+        };
+    }
+}
+
+pub(crate) fn import_custom_css_from_input(ev: &web_sys::Event, custom_css: RwSignal<String>) {
+    let Some(input) = ev
+        .target()
+        .and_then(|target| target.dyn_into::<web_sys::HtmlInputElement>().ok())
+    else {
+        return;
+    };
+    let Some(file) = input.files().and_then(|files| files.get(0)) else {
+        return;
+    };
+    let blob: web_sys::Blob = file.unchecked_into();
+    let promise = blob.text();
+    let _ = input.set_value("");
+    spawn_local(async move {
+        if let Ok(value) = wasm_bindgen_futures::JsFuture::from(promise).await {
+            if let Some(text) = value.as_string() {
+                custom_css.set(sanitize_custom_css(&text));
+            }
+        }
+    });
+}
+
+/// Keep in sync with `src-tauri/src/configure.rs`.
+pub(crate) fn sanitize_custom_css(input: &str) -> String {
+    let mut css = String::with_capacity(input.len().min(CUSTOM_CSS_MAX_BYTES));
+    for ch in input.chars() {
+        if ch == '\0' {
+            continue;
+        }
+        if css.len() + ch.len_utf8() > CUSTOM_CSS_MAX_BYTES {
+            break;
+        }
+        css.push(ch);
+    }
+    let css = strip_ascii_ci(&css, "javascript:");
+    let css = strip_ascii_ci(&css, "expression(");
+    let css = strip_ascii_ci(&css, "behavior:");
+    let css = strip_ascii_ci(&css, "-moz-binding");
+    let css = strip_ascii_ci(&css, "</style");
+    let css = strip_ascii_ci(&css, "<script");
+    let css = strip_at_keyword(&css, "@import");
+    let css = strip_at_keyword(&css, "@namespace");
+    strip_url_functions(&css)
+}
+
+fn strip_ascii_ci(input: &str, needle: &str) -> String {
+    let needle_l = needle.to_ascii_lowercase();
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while !rest.is_empty() {
+        let lower = rest.to_ascii_lowercase();
+        if let Some(idx) = lower.find(&needle_l) {
+            out.push_str(&rest[..idx]);
+            rest = &rest[idx + needle.len()..];
+        } else {
+            out.push_str(rest);
+            break;
+        }
+    }
+    out
+}
+
+fn strip_at_keyword(input: &str, keyword: &str) -> String {
+    let needle = keyword.to_ascii_lowercase();
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while !rest.is_empty() {
+        let lower = rest.to_ascii_lowercase();
+        if let Some(idx) = lower.find(&needle) {
+            out.push_str(&rest[..idx]);
+            let after = &rest[idx + keyword.len()..];
+            if let Some(end) = after.find([';', '\n']) {
+                rest = &after[end + 1..];
+            } else {
+                rest = "";
+            }
+        } else {
+            out.push_str(rest);
+            break;
+        }
+    }
+    out
+}
+
+fn strip_url_functions(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while !rest.is_empty() {
+        let lower = rest.to_ascii_lowercase();
+        if let Some(idx) = lower.find("url(") {
+            out.push_str(&rest[..idx]);
+            let after = &rest[idx + 4..];
+            if let Some(end) = after.find(')') {
+                rest = &after[end + 1..];
+            } else {
+                rest = "";
+            }
+        } else {
+            out.push_str(rest);
+            break;
+        }
+    }
+    out
 }
 
 pub(crate) const COMPOSER_H_DEFAULT: f64 = 220.0;
@@ -639,5 +798,18 @@ mod app_prefs_payload_tests {
         assert_eq!(patch.locale.as_deref(), Some("zh"));
         assert_eq!(patch.auto_compact, Some(false));
         assert_eq!(patch.code_font_size, None);
+        assert_eq!(patch.custom_css, None);
+    }
+
+    #[test]
+    fn parses_custom_css_from_configure_payload() {
+        let payload = serde_json::json!({
+            "custom_css": ":root { --md-lead-bar-width: 0; }"
+        });
+        let patch = parse_app_prefs_payload(&payload);
+        assert_eq!(
+            patch.custom_css.as_deref(),
+            Some(":root { --md-lead-bar-width: 0; }")
+        );
     }
 }

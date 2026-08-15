@@ -421,6 +421,8 @@ fn App() -> impl IntoView {
     create_effect(move |_| save_selection_popup_enabled(selection_popup_enabled.get()));
     let send_with_modifier = create_rw_signal(load_send_with_modifier());
     create_effect(move |_| save_send_with_modifier(send_with_modifier.get()));
+    let custom_css = create_rw_signal(load_custom_css());
+    create_effect(move |_| apply_custom_css(&custom_css.get()));
     create_effect(move |_| {
         if !appearance_hydrated.get() {
             return;
@@ -435,6 +437,7 @@ fn App() -> impl IntoView {
             code_font_family: code_font_family.get(),
             selection_popup_enabled: selection_popup_enabled.get(),
             send_with_modifier: send_with_modifier.get(),
+            custom_css: custom_css.get(),
         };
         spawn_local(async move {
             let _ = invoke_checked(
@@ -2167,6 +2170,7 @@ fn App() -> impl IntoView {
                 code_font_family.set(view.prefs.code_font_family);
                 selection_popup_enabled.set(view.prefs.selection_popup_enabled);
                 send_with_modifier.set(view.prefs.send_with_modifier);
+                custom_css.set(view.prefs.custom_css);
             }
         }
         appearance_hydrated.set(true);
@@ -2639,6 +2643,7 @@ fn App() -> impl IntoView {
                         code_font_family,
                         selection_popup_enabled,
                         send_with_modifier,
+                        custom_css,
                         locale,
                         settings,
                     );
@@ -15079,7 +15084,7 @@ fn App() -> impl IntoView {
         })}
         <SettingsView
             state=SettingsViewState {
-                locale, theme_mode, light_palette, dark_palette, ui_font_size, code_font_size, ui_font_family, code_font_family, selection_popup_enabled, send_with_modifier, update_check_enabled, show_settings, settings_section, open_conn_key, channels_open, connectors, model_form, model_catalog_limits,
+                locale, theme_mode, light_palette, dark_palette, ui_font_size, code_font_size, ui_font_family, code_font_family, selection_popup_enabled, send_with_modifier, custom_css, update_check_enabled, show_settings, settings_section, open_conn_key, channels_open, connectors, model_form, model_catalog_limits,
                 conn_form, memory_selected, specialist_form, settings, bootstrap, settings_message,
                 settings_busy, model_form_open, model_form_key, models, model_form_msg, show_acp_agents,
                 acp_agents, active_acp_agent_id, acp_form, acp_form_msg, acp_infos, specialists,

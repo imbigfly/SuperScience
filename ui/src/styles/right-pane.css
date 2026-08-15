@@ -42,7 +42,7 @@
 .rp-empty-clickable:hover { background: var(--bg-sunken); }
 .rp-empty-clickable:focus-visible { outline: 2px solid var(--clay); outline-offset: -2px; }
 .rp-empty-action { font-size: var(--text-sm); font-weight: 600; color: var(--clay-strong); text-decoration: underline; text-underline-offset: 2px; }
-.rp-empty-icon { width: 40px; height: 40px; border-radius: var(--radius-xs); border: 1.5px dashed var(--border-strong); background: var(--bg-sunken); }
+.rp-empty-icon { width: 28px; height: 28px; border-radius: var(--radius-xs); border: 1.5px dashed var(--border-strong); background: var(--bg-sunken); }
 .rp-empty-icon.brand {
   border: none; background: center / contain no-repeat url("logo.svg");
   box-shadow: 0 8px 22px color-mix(in srgb, var(--clay) 18%, transparent);

@@ -101,6 +101,11 @@
 
   --font-sans: var(--font-ui);
 
+  /* Chat Markdown tokens. Custom themes override these instead of hunting selectors. */
+  --md-table-font-size: calc(var(--ui-font-size, 14px) - 1px);
+  --md-lead-bar-width: 3px;
+  --md-lead-bar-pad: 0.55em;
+
   font-family: var(--font-ui);
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   font-variant-numeric: normal;
@@ -354,7 +359,7 @@ body { display: flex; flex-direction: column; overflow: hidden; }
   border-bottom: 1px solid var(--border); user-select: none;
 }
 .window-brand { display: flex; align-items: center; gap: 7px; padding: 0 12px; font-size: 12px; color: var(--text); }
-.window-brand-icon { width: 18px; height: 18px; border-radius: 5px; background: center / contain no-repeat url("logo.svg"); }
+.window-brand-icon { width: 16px; height: 16px; border-radius: 4px; background: center / contain no-repeat url("logo.svg"); }
 .window-brand-version { color: var(--text-faint); font-size: 11px; }
 .window-menu { display: flex; align-items: stretch; height: 100%; font-size: 13px; }
 .window-menu-group { position: relative; display: flex; align-items: stretch; }

@@ -1,5 +1,5 @@
 import { test, expect, type Locator, type Page } from "@playwright/test";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { tauriMock, parallelMock, parallelReplyTailText } from "./mock-tauri";
 
@@ -7438,6 +7438,81 @@ test("configure presentation applies font size and theme without opening Setting
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
 });
 
+test("markdown table font follows UI font size", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("MDTABLE");
+  await page.getByRole("button", { name: "Send" }).click();
+  const table = page.locator(".msg.assistant .md table").first();
+  await expect(table).toBeVisible();
+  const tableFont = () => table.evaluate((el) => getComputedStyle(el).fontSize);
+  expect(await tableFont()).toBe("13px");
+
+  await openSettingsSection(page, "Appearance");
+  await page.getByRole("slider", { name: "UI font size" }).fill("18");
+  await page.getByRole("button", { name: "Back to app" }).click();
+  await expect.poll(tableFont).toBe("17px");
+});
+
+test("appearance custom CSS can be pasted, imported, and cleared", async ({ page }, testInfo) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Appearance");
+
+  const css = ":root { --md-lead-bar-width: 0; --md-lead-bar-pad: 0; }";
+  await page.getByTestId("appearance-custom-css").fill(css);
+  await expect.poll(() => page.evaluate(() =>
+    document.getElementById("wisp-custom-theme")?.textContent ?? ""
+  )).toContain("--md-lead-bar-width: 0");
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("wisp-custom-css")))
+    .toContain("--md-lead-bar-width: 0");
+
+  const imported = ":root { --md-table-font-size: 16px; }";
+  mkdirSync(testInfo.outputDir, { recursive: true });
+  const file = resolve(testInfo.outputDir, "theme.css");
+  writeFileSync(file, imported);
+  await page.getByTestId("appearance-custom-css-file").setInputFiles(file);
+  await expect.poll(() => page.getByTestId("appearance-custom-css").inputValue())
+    .toContain("--md-table-font-size: 16px");
+  await expect.poll(() => page.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue("--md-table-font-size").trim()
+  )).toBe("16px");
+
+  await page.getByTestId("appearance-custom-css-clear").click();
+  await expect.poll(() => page.evaluate(() =>
+    document.getElementById("wisp-custom-theme")?.textContent ?? ""
+  )).toBe("");
+});
+
+test("custom CSS sanitizes remote url and import", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Appearance");
+  await page.getByTestId("appearance-custom-css").fill([
+    ":root { --clay: #111111; }",
+    '@import url("https://evil.example/x.css");',
+    "body { background: url(https://evil.example/p.png); }",
+  ].join("\n"));
+  await expect.poll(() => page.evaluate(() =>
+    document.getElementById("wisp-custom-theme")?.textContent ?? ""
+  )).toContain("--clay: #111111");
+  const injected = () => page.evaluate(() =>
+    (document.getElementById("wisp-custom-theme")?.textContent ?? "").toLowerCase()
+  );
+  await expect.poll(injected).not.toContain("@import");
+  await expect.poll(injected).not.toContain("url(");
+});
+
+test("configure presentation applies custom CSS", async ({ page }) => {
+  await enterApp(page);
+  await emitTauriEvent(page, "agent", {
+    kind: "ToolPresentation",
+    frame_id: "any-session",
+    presentation_kind: "app_prefs",
+    payload: { custom_css: ":root { --md-lead-bar-width: 0; }" },
+  });
+  await expect.poll(() => page.evaluate(() =>
+    document.getElementById("wisp-custom-theme")?.textContent ?? ""
+  )).toContain("--md-lead-bar-width: 0");
+});
+
 test("UI font size setting scales Chinese chat markdown and composer", async ({ page }) => {
   await page.goto("/?mockLocale=zh");
   await page.locator(".proj-card-main").first().click();
@@ -9559,6 +9634,9 @@ test("empty session shows the branded chat empty state", async ({ page }) => {
   const empty = page.locator(".empty");
   await expect(empty).toBeVisible();
   await expect(empty.locator(".empty-logo")).toBeVisible();
+  await expect.poll(() => empty.locator(".empty-logo").evaluate((el) =>
+    Math.round(el.getBoundingClientRect().width)
+  )).toBe(32);
   await expect(empty.locator("h1")).not.toBeEmpty();
   await expect(empty.locator("h1")).toHaveCSS("font-family", /Source Serif/);
 });

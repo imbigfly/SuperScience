@@ -2,7 +2,7 @@ use crate::agent_workflows::{workflow_studio as workflow_studio_view, AgentPanel
 use crate::app_support::{
     allow_drop, build_conn_json, close_details_ancestor, compose_icon, conn_form_from_row,
     context_capability_summary, drag_session_id, focus_element_soon, format_relative_time,
-    join_tags, js_error_text, new_acp_form, new_model_form, profile_to_form, quick_action_label,
+    import_custom_css_from_input, join_tags, js_error_text, new_acp_form, new_model_form, profile_to_form, quick_action_label,
     reviewer_backend_key, reviewer_backend_label, reviewer_missing_acp_profile_id,
     set_reviewer_backend, settings_section_label, settings_subpage_label, skill_matches_filter,
     start_session_drag, CRED_GROUPS,
@@ -719,6 +719,7 @@ pub(super) struct SettingsViewState {
     pub(super) code_font_family: RwSignal<String>,
     pub(super) selection_popup_enabled: RwSignal<bool>,
     pub(super) send_with_modifier: RwSignal<bool>,
+    pub(super) custom_css: RwSignal<String>,
     pub(super) update_check_enabled: RwSignal<bool>,
     pub(super) show_settings: RwSignal<bool>,
     pub(super) settings_section: RwSignal<String>,
@@ -826,6 +827,7 @@ pub(super) fn SettingsView(
         code_font_family,
         selection_popup_enabled,
         send_with_modifier,
+        custom_css,
         update_check_enabled,
         show_settings,
         settings_section,
@@ -2436,7 +2438,7 @@ pub(super) fn SettingsView(
                                             <strong>{t(locale.get(), "appearance.code_font_family")}</strong>
                                             <span>{t(locale.get(), "appearance.code_font_family_hint")}</span>
                                         </div>
-                                        <input type="text" class="appearance-font-input" data-testid="appearance-code-font"
+                                            <input type="text" class="appearance-font-input" data-testid="appearance-code-font"
                                             aria-label=t(locale.get(), "appearance.code_font_family")
                                             placeholder="JetBrains Mono"
                                             prop:value=move || code_font_family.get()
@@ -2445,6 +2447,36 @@ pub(super) fn SettingsView(
                                 </section>
                             }
                         }}
+                        <section class="appearance-custom-css-section">
+                            <h3>{move || t(locale.get(), "appearance.custom_css")}</h3>
+                            <p class="hint">{move || t(locale.get(), "appearance.custom_css_hint")}</p>
+                            <textarea
+                                data-testid="appearance-custom-css"
+                                spellcheck="false"
+                                aria-label=move || t(locale.get(), "appearance.custom_css")
+                                prop:value=move || custom_css.get()
+                                on:input=move |ev| custom_css.set(event_target_value(&ev))>
+                            </textarea>
+                            <div class="appearance-custom-css-actions">
+                                <label class="appearance-custom-css-import">
+                                    <input
+                                        type="file"
+                                        accept=".css,text/css"
+                                        data-testid="appearance-custom-css-file"
+                                        on:change=move |ev| import_custom_css_from_input(&ev, custom_css)
+                                    />
+                                    {compose_icon("upload")}
+                                    {move || t(locale.get(), "appearance.custom_css_import")}
+                                </label>
+                                <button type="button" data-testid="appearance-custom-css-clear"
+                                    on:click=move |_| custom_css.set(String::new())>
+                                    {move || t(locale.get(), "appearance.custom_css_clear")}
+                                </button>
+                                <span data-testid="appearance-custom-css-status">
+                                    {move || tf(locale.get(), "appearance.custom_css_bytes", &[("n", &custom_css.get().len().to_string())])}
+                                </span>
+                            </div>
+                        </section>
                     </div>
                 }.into_view())}
                 {move || (settings_section.get() == "models").then(|| {
