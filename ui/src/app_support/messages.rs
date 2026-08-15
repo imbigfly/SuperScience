@@ -226,6 +226,7 @@ pub(crate) fn compose_icon(kind: &str) -> impl IntoView {
         "split" => view! { <rect x="3" y="4" width="18" height="16" rx="2"/><path d="M14 4v16"/> }.into_view(),
         "runtime-panel" => view! { <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M14 3v18"/><path d="M3 15h11"/><circle cx="17.5" cy="7" r="1" fill="currentColor" stroke="none"/><circle cx="17.5" cy="11" r="1" fill="currentColor" stroke="none"/> }.into_view(),
         "play" => view! { <path d="M6 4.5v15l13-7.5Z"/> }.into_view(),
+        "bolt" => view! { <path d="M13 2 3 14h8l-1 8 10-12h-8l1-8z"/> }.into_view(),
         "up" => view! { <path d="m18 15-6-6-6 6"/> }.into_view(),
         "copy" => view! { <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/> }.into_view(),
         "star" => view! { <path d="m12 2.7 2.85 5.77 6.37.93-4.61 4.49 1.09 6.34L12 17.23l-5.7 3 1.09-6.34L2.78 9.4l6.37-.93Z"/> }.into_view(),
@@ -461,51 +462,109 @@ pub(crate) enum QueueOp {
     MoveDown(u64),
 }
 
-/// Queue (#433): a queued user turn bubble with edit / cancel / cut-in.
-/// `id == 0` marks a transient cut-in bubble (no controls). `can_cut_in` is
-/// false for ACP sessions, which cannot fold a message into a running turn.
+/// Queue (#433): one parked follow-up in the composer card. `id == 0` is a
+/// transient cut-in (no controls). `can_cut_in` is false for ACP sessions.
+/// Reorder controls stay hidden when the queue has only one item.
 #[component]
 pub(crate) fn QueuedMessage(
     id: u64,
     text: String,
+    user_index: usize,
     can_cut_in: bool,
+    can_reorder: bool,
     on_queue: Callback<QueueOp>,
 ) -> impl IntoView {
     let locale = use_locale();
     let show_controls = id != 0;
+    let preview = text.clone();
     view! {
-        <div class="role">{move || t(locale.get(), "composer.queued")}</div>
-        <div class="user-bubble queued-bubble">
-            <div class="body">{text}</div>
-            {show_controls.then(|| view! {
-                <div class="queue-actions">
-                    <button type="button" class="tool-btn queue-move"
-                        title=move || t(locale.get(), "queue.move_up")
-                        on:click=move |_| on_queue.call(QueueOp::MoveUp(id))>
-                        {compose_icon("up")}
-                    </button>
-                    <button type="button" class="tool-btn queue-move"
-                        title=move || t(locale.get(), "queue.move_down")
-                        on:click=move |_| on_queue.call(QueueOp::MoveDown(id))>
-                        {compose_icon("chevron-down")}
-                    </button>
-                    {can_cut_in.then(|| view! {
-                        <button type="button" class="tool-btn"
-                            on:click=move |_| on_queue.call(QueueOp::CutIn(id))>
-                            {move || t(locale.get(), "queue.cut_in")}
+        <div class="msg user queued" data-user-index=user_index.to_string()>
+            <div class="queued-card">
+                <div class="body" title=preview>{text}</div>
+                {show_controls.then(move || view! {
+                    <div class="queue-actions">
+                        {can_cut_in.then(|| view! {
+                            <button type="button" class="queue-cut-in"
+                                on:click=move |_| on_queue.call(QueueOp::CutIn(id))>
+                                {compose_icon("bolt")}
+                                <span>{move || t(locale.get(), "queue.cut_in")}</span>
+                            </button>
+                        })}
+                        {can_reorder.then(|| view! {
+                            <button type="button" class="msg-icon-btn"
+                                title=move || t(locale.get(), "queue.move_up")
+                                aria-label=move || t(locale.get(), "queue.move_up")
+                                on:click=move |_| on_queue.call(QueueOp::MoveUp(id))>
+                                {compose_icon("up")}
+                            </button>
+                            <button type="button" class="msg-icon-btn"
+                                title=move || t(locale.get(), "queue.move_down")
+                                aria-label=move || t(locale.get(), "queue.move_down")
+                                on:click=move |_| on_queue.call(QueueOp::MoveDown(id))>
+                                {compose_icon("chevron-down")}
+                            </button>
+                        })}
+                        <button type="button" class="msg-icon-btn"
+                            title=move || t(locale.get(), "queue.edit")
+                            aria-label=move || t(locale.get(), "queue.edit")
+                            on:click=move |_| on_queue.call(QueueOp::Edit(id))>
+                            {compose_icon("edit")}
                         </button>
-                    })}
-                    <button type="button" class="tool-btn"
-                        on:click=move |_| on_queue.call(QueueOp::Edit(id))>
-                        {move || t(locale.get(), "queue.edit")}
-                    </button>
-                    <button type="button" class="tool-btn"
-                        on:click=move |_| on_queue.call(QueueOp::Cancel(id))>
-                        {move || t(locale.get(), "settings.cancel")}
-                    </button>
-                </div>
-            })}
+                        <button type="button" class="msg-icon-btn queue-remove"
+                            title=move || t(locale.get(), "queue.remove")
+                            aria-label=move || t(locale.get(), "queue.remove")
+                            on:click=move |_| on_queue.call(QueueOp::Cancel(id))>
+                            {compose_icon("trash")}
+                        </button>
+                    </div>
+                })}
+            </div>
         </div>
+    }
+}
+
+/// Compact card above the composer: parked follow-ups sit with the input
+/// instead of as dashed transcript bubbles.
+#[component]
+pub(crate) fn ComposerQueue(
+    items: RwSignal<Vec<ChatItem>>,
+    user_offset: Signal<usize>,
+    can_cut_in: Signal<bool>,
+    on_queue: Callback<QueueOp>,
+) -> impl IntoView {
+    let locale = use_locale();
+    view! {
+        {move || {
+            let rows = queued_turn_rows(&items.get(), user_offset.get());
+            let len = rows.len();
+            let can_cut_in = can_cut_in.get();
+            let can_reorder = len > 1;
+            let loc = locale.get();
+            (!rows.is_empty()).then(move || view! {
+                <div class="composer-queue" data-testid="composer-queue"
+                    role="region"
+                    aria-label=t(loc, "queue.region")>
+                    <div class="composer-queue-head">
+                        <span class="composer-queue-dot" aria-hidden="true"></span>
+                        <span>{tf(loc, "queue.header", &[("n", &len.to_string())])}</span>
+                    </div>
+                    <div class="composer-queue-list">
+                        {rows.into_iter().map(|row| {
+                            view! {
+                                <QueuedMessage
+                                    id=row.id
+                                    text=row.text
+                                    user_index=row.user_index
+                                    can_cut_in=can_cut_in
+                                    can_reorder=can_reorder
+                                    on_queue=on_queue
+                                />
+                            }
+                        }).collect_view()}
+                    </div>
+                </div>
+            })
+        }}
     }
 }
 

@@ -292,8 +292,11 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "composer.interrupt_replace") => Some("Interrupt & replace"),
         (Locale::En, "queue.cut_in") => Some("Guide now"),
         (Locale::En, "queue.edit") => Some("Edit"),
+        (Locale::En, "queue.remove") => Some("Remove"),
         (Locale::En, "queue.move_up") => Some("Move up"),
         (Locale::En, "queue.move_down") => Some("Move down"),
+        (Locale::En, "queue.header") => Some("{n} queued"),
+        (Locale::En, "queue.region") => Some("Queued messages"),
         (Locale::En, "composer.send_options") => Some("Message options"),
         (Locale::En, "composer.plan_first") => Some("Plan first"),
         (Locale::En, "composer.full_permission") => Some("Full Permission"),
@@ -2539,8 +2542,11 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "composer.interrupt_replace") => Some("中断并替换"),
         (Locale::Zh, "queue.cut_in") => Some("立刻引导"),
         (Locale::Zh, "queue.edit") => Some("编辑"),
+        (Locale::Zh, "queue.remove") => Some("移除"),
         (Locale::Zh, "queue.move_up") => Some("上移"),
         (Locale::Zh, "queue.move_down") => Some("下移"),
+        (Locale::Zh, "queue.header") => Some("{n} 条排队"),
+        (Locale::Zh, "queue.region") => Some("排队消息"),
         (Locale::Zh, "composer.send_options") => Some("消息选项"),
         (Locale::Zh, "composer.plan_first") => Some("先计划"),
         (Locale::Zh, "composer.full_permission") => Some("完全权限"),
@@ -5021,6 +5027,12 @@ mod queue_label_tests {
         assert_eq!(t(Locale::En, "queue.cut_in"), "Guide now");
         assert_eq!(t(Locale::Zh, "queue.edit"), "编辑");
         assert_eq!(t(Locale::En, "queue.edit"), "Edit");
+        assert_eq!(t(Locale::Zh, "queue.remove"), "移除");
+        assert_eq!(t(Locale::En, "queue.remove"), "Remove");
+        assert_eq!(tf(Locale::En, "queue.header", &[("n", "1")]), "1 queued");
+        assert_eq!(tf(Locale::Zh, "queue.header", &[("n", "2")]), "2 条排队");
+        assert_eq!(t(Locale::En, "queue.region"), "Queued messages");
+        assert_eq!(t(Locale::Zh, "queue.region"), "排队消息");
         // Sent-message rewind keeps its own label.
         assert_eq!(t(Locale::Zh, "msg.edit"), "回溯");
         assert_eq!(t(Locale::En, "msg.edit"), "Rewind");

@@ -217,6 +217,35 @@ pub(crate) fn user_message_index(items: &[ChatItem], ui_index: usize) -> Option<
     )
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct QueuedTurnRow {
+    pub id: u64,
+    pub text: String,
+    pub user_index: usize,
+}
+
+/// Parked follow-ups for the composer card, with outline `data-user-index`
+/// values that stay aligned with `user_turn_index`.
+pub(crate) fn queued_turn_rows(items: &[ChatItem], user_offset: usize) -> Vec<QueuedTurnRow> {
+    let mut n = 0;
+    let mut rows = Vec::new();
+    for item in items {
+        match item {
+            ChatItem::User(_) => n += 1,
+            ChatItem::QueuedUser { id, text } => {
+                rows.push(QueuedTurnRow {
+                    id: *id,
+                    text: text.clone(),
+                    user_index: user_offset + n,
+                });
+                n += 1;
+            }
+            _ => {}
+        }
+    }
+    rows
+}
+
 pub(crate) fn user_turn_index(items: &[ChatItem], ui_index: usize) -> Option<usize> {
     if !matches!(
         items.get(ui_index),
@@ -468,7 +497,8 @@ mod transcript_render_window_tests {
 mod conversation_outline_tests {
     use super::{
         conversation_outline_target_is_loaded, merge_conversation_outline, owning_user_turn_index,
-        transcript_item_timestamp, turn_duration_ms, user_turn_index,
+        queued_turn_rows, transcript_item_timestamp, turn_duration_ms, user_turn_index,
+        QueuedTurnRow,
     };
     use crate::dto::{ChatItem, SessionOutlineItem};
 
@@ -536,6 +566,50 @@ mod conversation_outline_tests {
         assert_eq!(owning_user_turn_index(&items, 2), Some(1));
         assert!(conversation_outline_target_is_loaded(&items, 1, 2));
         assert!(!conversation_outline_target_is_loaded(&items, 1, 0));
+        assert_eq!(
+            queued_turn_rows(&items, 1),
+            vec![QueuedTurnRow {
+                id: 7,
+                text: "third".into(),
+                user_index: 2,
+            }]
+        );
+    }
+
+    #[test]
+    fn composer_queue_rows_skip_sent_turns_and_keep_fifo_order() {
+        let items = vec![
+            ChatItem::User("already sent".into()),
+            ChatItem::Assistant {
+                text: "working".into(),
+                model: None,
+                resources: Vec::new(),
+            },
+            ChatItem::QueuedUser {
+                id: 2,
+                text: "first".into(),
+            },
+            ChatItem::QueuedUser {
+                id: 3,
+                text: "second".into(),
+            },
+        ];
+        assert_eq!(
+            queued_turn_rows(&items, 4),
+            vec![
+                QueuedTurnRow {
+                    id: 2,
+                    text: "first".into(),
+                    user_index: 5,
+                },
+                QueuedTurnRow {
+                    id: 3,
+                    text: "second".into(),
+                    user_index: 6,
+                },
+            ]
+        );
+        assert!(queued_turn_rows(&[ChatItem::User("only sent".into())], 0).is_empty());
     }
 
     #[test]

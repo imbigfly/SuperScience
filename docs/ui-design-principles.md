@@ -26,6 +26,12 @@
 - Chat empty and research-graph empty reuse the logo treatment (`.empty-logo` / `.rp-empty-icon.brand`) instead of dashed placeholders.
 - Research graph headings use Source Serif at `--text-lg`; list/canvas stay utilitarian.
 
+## Queued follow-ups
+
+- Follow-ups typed while a turn is running sit in a compact card above the composer, not as dashed transcript bubbles.
+- The card shows a count, the parked text, and icon actions. Reorder controls appear only when two or more items are waiting. Cut-in stays a labeled clay pill because it is the distinctive action.
+- Icon-only queue controls keep both `title` and `aria-label`.
+
 ## Composer attachments and references
 
 - The composer keeps its top-edge resize affordance invisible at rest while preserving the full-width drag target and persisted custom height.

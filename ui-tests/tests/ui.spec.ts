@@ -10347,12 +10347,16 @@ test("a running conversation accepts another message for queueing", async ({ pag
 
   await composer(page).fill("queued");
   // Queue (#433): sending into a busy session queues directly — no dialog. The
-  // busy send button reads "Queue…" and the message parks as an editable bubble.
+  // busy send button reads "Queue…" and the message parks in the composer queue.
   const send = page.getByRole("button", { name: "Queue…" });
   await expect(send).toBeEnabled({ timeout: 500 });
   await send.click();
   const queued = page.locator(".msg.user.queued .body", { hasText: /^queued$/ });
   await expect(queued).toBeVisible({ timeout: 500 });
+  await expect(page.getByTestId("composer-queue")).toBeVisible();
+  await expect(page.locator(".thread .msg.user.queued")).toHaveCount(0);
+  await expect(page.getByTestId("composer-queue")).toContainText("1 queued");
+  await expect(page.locator(".msg.user.queued").getByTitle("Move up")).toHaveCount(0);
 
   // The parked turn goes through enqueue_turn, not send_message.
   await expect.poll(async () => page.evaluate(() =>
@@ -10401,6 +10405,7 @@ test("queued follow-ups can be reordered up and down (#433)", async ({ page }) =
 
   const queuedTexts = () => page.locator(".msg.user.queued .body").allInnerTexts();
   expect(await queuedTexts()).toEqual(["bravo", "charlie"]);
+  await expect(page.getByTestId("composer-queue")).toContainText("2 queued");
 
   // Move charlie up → [charlie, bravo]; then back down → [bravo, charlie].
   const charlieRow = page.locator(".msg.user.queued", { hasText: "charlie" });

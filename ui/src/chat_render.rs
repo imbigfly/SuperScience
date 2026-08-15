@@ -17,6 +17,7 @@ pub(crate) fn renders_nothing(item: &ChatItem) -> bool {
     matches!(item, ChatItem::Assistant { text, .. } if text.trim().is_empty())
         || matches!(item, ChatItem::Tool { name, .. } if name == "attempt_completion")
         || matches!(item, ChatItem::FileChanged(_))
+        || matches!(item, ChatItem::QueuedUser { .. })
 }
 
 pub(crate) fn class_for(item: &ChatItem) -> &'static str {
@@ -158,6 +159,7 @@ pub(crate) fn context_usage_detail_text(details: &ContextUsageDetails, color: &s
 mod token_format_tests {
     use super::{
         context_percent, context_usage_rows, fmt_context_limit, fmt_context_tokens, fmt_tokens,
+        renders_nothing,
     };
     use crate::dto::{ContextUsage, ContextUsageSnapshot};
     use crate::i18n::Locale;
@@ -166,6 +168,16 @@ mod token_format_tests {
     fn small_counts_are_not_rounded_to_zero() {
         assert_eq!(fmt_tokens(81), "81");
         assert_eq!(fmt_tokens(136_286), "136.3k");
+    }
+
+    #[test]
+    fn queued_turns_do_not_occupy_a_transcript_row() {
+        use crate::dto::ChatItem;
+        assert!(renders_nothing(&ChatItem::QueuedUser {
+            id: 1,
+            text: "later".into(),
+        }));
+        assert!(!renders_nothing(&ChatItem::User("sent".into())));
     }
 
     #[test]
@@ -1355,7 +1367,6 @@ pub(crate) fn render_item(
     on_review: Callback<String>,
     on_approval: Callback<(String, bool, Option<String>, String)>,
     on_resume: Callback<usize>,
-    on_queue: Callback<QueueOp>,
     disclosure_state: RwSignal<HashMap<String, bool>>,
     plan_mode_active: Signal<bool>,
     plan_compat: Signal<bool>,
@@ -1381,14 +1392,7 @@ pub(crate) fn render_item(
                 on_file=on_file
             />
         }.into_view(),
-        ChatItem::QueuedUser { id, text } => view! {
-            <QueuedMessage
-                id=*id
-                text=text.clone()
-                can_cut_in=can_modify
-                on_queue=on_queue
-            />
-        }.into_view(),
+        ChatItem::QueuedUser { .. } => view! {}.into_view(),
         ChatItem::Assistant { text, .. } if text.trim().is_empty() => view! {}.into_view(),
         ChatItem::Assistant { text, .. } if text.starts_with("Error: ") => {
             let msg = text.strip_prefix("Error: ").unwrap_or(text.as_str()).to_string();

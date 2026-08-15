@@ -900,7 +900,7 @@ fn App() -> impl IntoView {
         });
     });
     let send_mode_menu_open = create_rw_signal(false);
-    // Queue (#433): monotonic key for optimistic queued bubbles, shared with the
+    // Queue (#433): monotonic key for optimistic queued follow-ups, shared with the
     // backend queue item so edit/cancel/cut-in target the same row.
     let queue_seq = create_rw_signal(0u64);
     let side_chat_input = create_rw_signal(String::new());
@@ -4106,7 +4106,7 @@ fn App() -> impl IntoView {
         }
     };
 
-    // Queue (#433): edit / cancel / cut-in a parked follow-up from its bubble.
+    // Queue (#433): edit / cancel / cut-in a parked follow-up from the composer card.
     let on_queue = Callback::new(move |op: QueueOp| {
         let sid = active_session.get_untracked().unwrap_or_default();
         if sid.is_empty() {
@@ -4177,6 +4177,19 @@ fn App() -> impl IntoView {
             .unwrap();
             let _ = invoke("queued_turn_action", args).await;
         });
+    });
+    let composer_queue_offset = Signal::derive(move || {
+        active_session
+            .get()
+            .and_then(|id| transcript_pages.with(|pages| pages.get(&id).copied()))
+            .map_or(0, |page| page.user_offset)
+    });
+    let composer_queue_can_cut_in = Signal::derive(move || {
+        active_acp_agent_id.get().is_none()
+            && !matches!(
+                active_branch_state.get().as_deref(),
+                Some("merged" | "orphaned")
+            )
     });
 
     let resume_turn = {
@@ -11152,7 +11165,7 @@ fn App() -> impl IntoView {
                                                     active_acp_agent_id.get().is_none()
                                                         && !matches!(active_branch_state.get_untracked().as_deref(), Some("merged" | "orphaned")),
                                                     can_branch, show_actions, can_undo, show_explore, can_explore, edit_message, branch_message, undo_message, explore_turn_index.unwrap_or_default(), start_exploration_from_head, session_id,
-                                                    request_turn_memory, request_session_review, respond_confirm, on_resume, on_queue,
+                                                    request_turn_memory, request_session_review, respond_confirm, on_resume,
                                                     step_disclosure_state,
                                                     plan_mode_active, plan_compat, on_plan_decision,
                                                     on_question_answer, jump_to_review_message,
@@ -11578,6 +11591,14 @@ fn App() -> impl IntoView {
                             }
                         })
                 }}
+                {move || (!demo_mode.get()).then(|| view! {
+                    <ComposerQueue
+                        items=items
+                        user_offset=composer_queue_offset
+                        can_cut_in=composer_queue_can_cut_in
+                        on_queue=on_queue
+                    />
+                })}
                 <div class="composer-inner"
                     class:composer-dragover=move || drag_over.get()
                     on:dragover=on_drag_over

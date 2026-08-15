@@ -480,8 +480,6 @@
 /* 长消息默认截断（截断在 Rust 侧做，避免 line-clamp 在 padding 区漏出半行） */
 .msg.user .body-toggle { align-self: flex-end; margin-top: -4px; opacity: 1; }
 .msg.user .user-message-time { align-self: flex-end; margin: -2px 4px -3px 0; }
-.msg.user.queued .role { color: var(--clay); }
-.msg.user.queued .body { border-style: dashed; color: var(--text-muted); background: color-mix(in srgb, var(--bg-panel) 70%, var(--clay) 6%); }
 .msg.user.outline-target .body { box-shadow: inset 0 0 0 1px var(--clay), 0 0 0 3px var(--clay-soft); }
 .msg .msg-actions { display: flex; gap: 2px; margin-top: 4px; opacity: 0; transition: opacity .15s ease; }
 .msg.user .msg-actions { justify-content: flex-end; }
@@ -612,9 +610,54 @@ button.msg-icon-btn svg { width: 14px; height: 14px; }
 button.tool-btn { background: var(--bg-app); color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--radius-xs); padding: 4px 10px; font: inherit; font-size: 11.5px; cursor: pointer; }
 button.tool-btn:hover { color: var(--text); border-color: var(--border-strong); }
 button.tool-btn.card-copy { margin-left: auto; flex: 0 0 auto; padding: 2px 8px; font-size: 11px; }
-/* Queue (#433): actions on a parked follow-up bubble. */
-.queued-bubble .queue-actions { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; align-items: center; }
-.queued-bubble .queue-move { padding: 4px 6px; display: inline-flex; align-items: center; }
+/* Queue (#433): parked follow-ups sit in a card above the composer. */
+.composer-queue {
+  max-width: var(--chat-col-max); width: 100%; box-sizing: border-box; margin: 0 auto 8px;
+  padding: 8px; border: 1px solid color-mix(in srgb, var(--clay) 20%, var(--border));
+  border-radius: var(--radius); background: color-mix(in srgb, var(--bg-elev) 82%, var(--clay-soft));
+  box-shadow: var(--shadow-sm);
+}
+.composer.demo-read-only .composer-queue { display: none; }
+.composer-queue-head {
+  display: flex; align-items: center; gap: 7px; padding: 2px 6px 7px;
+  color: var(--clay-strong); font-size: 11px; font-weight: 600;
+}
+.composer-queue-dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--clay);
+  box-shadow: 0 0 0 3px var(--clay-soft);
+  animation: queue-dot-pulse 1.8s ease-in-out infinite;
+}
+@keyframes queue-dot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .4; transform: scale(.82); }
+}
+.composer-queue-list { display: flex; flex-direction: column; gap: 6px; }
+.composer-queue .msg.user.queued { align-self: stretch; width: 100%; max-width: none; }
+.queued-card {
+  display: flex; align-items: flex-start; gap: 10px; min-width: 0;
+  padding: 8px 8px 8px 10px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: var(--bg-elev);
+}
+.composer-queue .msg.user .body {
+  flex: 1 1 auto; min-width: 0; padding: 2px 0; border: 0; border-radius: 0;
+  background: transparent; box-shadow: none; color: var(--text); text-align: left;
+  display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
+  font-size: calc(var(--ui-font-size, 14px) - 0.5px); line-height: 1.45;
+}
+.composer-queue .queue-actions {
+  display: flex; align-items: center; gap: 2px; flex: 0 0 auto; margin: 0;
+}
+.composer-queue .queue-actions .msg-icon-btn { width: 28px; height: 28px; opacity: .72; }
+.composer-queue .queue-actions .msg-icon-btn:hover { opacity: 1; }
+.composer-queue .queue-actions svg { width: 15px; height: 15px; }
+.composer-queue .queue-cut-in {
+  display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 10px;
+  margin-right: 2px; border: 0; border-radius: 999px; background: var(--clay-soft);
+  color: var(--clay-strong); font: inherit; font-size: 11.5px; font-weight: 600; cursor: pointer;
+}
+.composer-queue .queue-cut-in:hover { background: var(--clay); color: var(--on-clay); }
+.composer-queue .queue-cut-in svg { width: 14px; height: 14px; }
+.composer-queue .queue-remove:hover { color: var(--err); }
 .tool-input, .tool-output { color: var(--text-muted); white-space: pre-wrap; max-height: 260px; overflow: auto; font-family: var(--font-mono); font-size: 12px; line-height: 1.5; margin: 0 0 8px; padding: 8px 10px; background: var(--bg-app); border: 1px solid var(--border); border-radius: var(--radius-xs); }
 .tool-output { margin-bottom: 0; }
 .tool .content { color: var(--text-muted); margin-top: 8px; white-space: pre-wrap; max-height: 260px; overflow: auto; font-family: var(--font-mono); font-size: 12px; line-height: 1.5; }
@@ -1672,7 +1715,8 @@ button.stop:disabled { opacity: .6; cursor: default; }
   .topbar { padding-left: 10px; padding-right: 10px; }
   .thread { padding: 18px 12px 26px; gap: 16px; }
   .composer { padding-bottom: 8px; }
-  .composer-inner { border-radius: var(--radius-sm); padding-left: 12px; padding-right: 10px; }
+  .composer-inner, .composer-queue { border-radius: var(--radius-sm); }
+  .composer-inner { padding-left: 12px; padding-right: 10px; }
   .composer-actions { gap: 8px; }
   .model-picker-btn { max-width: 126px; }
   .composer-hint { display: none; }
@@ -1682,6 +1726,7 @@ button.stop:disabled { opacity: .6; cursor: default; }
 
 @media (prefers-reduced-motion: reduce) {
   .context-usage-panel { animation: none; }
+  .composer-queue-dot { animation: none; }
 }
 
 /* Saved-excerpt marks (CSS Custom Highlight API). Literal teal so it reads in
