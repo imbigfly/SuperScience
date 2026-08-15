@@ -1937,7 +1937,7 @@ fn RemoteFilesPane(context_id: String, locale: RwSignal<Locale>) -> impl IntoVie
                                     <code class="remote-file-path">{file.remote_path.clone()}</code>
                                     <div class="remote-file-meta">
                                         <span class=state_class>{state_label}</span>
-                                        <span>{file.source.clone()}</span>
+                                        <span>{t(locale.get(), &format!("remote_files.source_{}", file.source))}</span>
                                         {file.run_status.map(|status| view! { <span>{status}</span> })}
                                     </div>
                                 </div>

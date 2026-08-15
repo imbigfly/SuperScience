@@ -889,6 +889,7 @@ mod upload_attachment_tests {
                 size_bytes: None,
                 origin: None,
                 logical_path: None,
+                source_discarded: false,
             }),
             filename: Some(name),
             error: None,

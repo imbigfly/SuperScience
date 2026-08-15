@@ -13285,6 +13285,7 @@ fn App() -> impl IntoView {
                                     let tiles = indices.into_iter().map(|i| {
                                         let a = &arts[i];
                                         let name = a.name.clone();
+                                        let discarded = a.source_discarded;
                                         let kind = a.kind.to_string();
                                         let meta = artifact_meta(a, loc);
                                         let file = if let PreviewData::File { path, kind } = &a.data {
@@ -13422,6 +13423,9 @@ fn App() -> impl IntoView {
                                                     <span class="rp-tile-name">{name}</span>
                                                     <span class="rp-tile-meta">{meta}</span>
                                                 </span>
+                                                {discarded.then(|| view! {
+                                                    <span class="rp-badge discarded">{t(loc, "artifact.source_discarded")}</span>
+                                                })}
                                                 <span class=format!("rp-badge {}", kind)>{kind.clone()}</span>
                                             </button>
                                             {tools}

@@ -33,7 +33,10 @@ Uploads use the same managed `scp` `file_transfer` Run as
 never overwrite an existing remote path, and appear in the composer transfer
 tray. Creating, renaming, or deleting arbitrary remote files from Files remains
 out of scope. Ledgered project files can still be removed from the Environment
-panel's Remote files list. Downloads are explicit user actions and do not
+panel's Remote files list, including harvest-persisted outputs that were
+too large to pull back. Dropping the SSH host from Settings marks those
+remote artifact references as source-discarded and blocks later download
+or preview of the abandoned URIs. Downloads are explicit user actions and do not
 otherwise synchronize large remote data into the project.
 
 Remote PDF, DOCX, XLSX, and PPTX previews use the same raw-byte IPC and bounded

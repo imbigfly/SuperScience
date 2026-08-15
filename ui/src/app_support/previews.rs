@@ -1305,7 +1305,12 @@ pub(crate) fn download_artifact(path: String) {
     if let Some(id) = artifact_id_path(&path).map(str::to_owned) {
         spawn_local(async move {
             let arg = to_value(&serde_json::json!({ "id": id })).unwrap();
-            let _ = invoke("download_artifact", arg).await;
+            if let Err(error) = invoke_checked("download_artifact", arg).await {
+                show_toast(&localize_backend(
+                    Locale::detect_browser(),
+                    &js_error_text(error),
+                ));
+            }
         });
         return;
     }
@@ -1320,7 +1325,12 @@ pub(crate) fn download_artifact(path: String) {
     };
     spawn_local(async move {
         let arg = to_value(&serde_json::json!({ "path": path })).unwrap();
-        let _ = invoke("download_file", arg).await;
+        if let Err(error) = invoke_checked("download_file", arg).await {
+            show_toast(&localize_backend(
+                Locale::detect_browser(),
+                &js_error_text(error),
+            ));
+        }
     });
 }
 

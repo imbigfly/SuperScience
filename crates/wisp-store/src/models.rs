@@ -910,6 +910,9 @@ pub struct ArtifactSearchResult {
     /// User-facing path derived from a `path:` logical key. Storage paths may
     /// point into Wisp's private content-addressed snapshot tree instead.
     pub logical_path: Option<String>,
+    /// Latest version's remote source was abandoned (server discarded or the
+    /// persisted remote file was deleted after confirmation).
+    pub source_discarded: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

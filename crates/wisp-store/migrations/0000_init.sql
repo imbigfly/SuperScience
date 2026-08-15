@@ -124,6 +124,7 @@ CREATE TABLE IF NOT EXISTS artifact_versions (
     materialization     TEXT NOT NULL DEFAULT 'reference',
     capture_timing      TEXT NOT NULL DEFAULT 'unknown',
     created_at          INTEGER NOT NULL,
+    source_discarded_at INTEGER,
     UNIQUE(artifact_id, version_number)
 );
 CREATE INDEX IF NOT EXISTS ix_artifact_versions_artifact

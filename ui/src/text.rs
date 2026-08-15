@@ -769,6 +769,7 @@ mod artifact_group_tests {
             location: None,
             source_item: 0,
             superseded: false,
+            source_discarded: false,
         }
     }
 
@@ -808,6 +809,7 @@ mod artifact_group_tests {
             location: Some("results/report.md".into()),
             source_item: 0,
             superseded: false,
+            source_discarded: false,
         };
         assert_eq!(artifact_group_key(&snapshot, r"D:\project"), "results/");
     }

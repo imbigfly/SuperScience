@@ -508,6 +508,8 @@ struct ArtifactInfo {
     origin: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     logical_path: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    source_discarded: bool,
 }
 
 #[derive(Serialize, Clone)]

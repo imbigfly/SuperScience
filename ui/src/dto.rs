@@ -1251,6 +1251,8 @@ pub(crate) struct ArtifactInfo {
     pub(crate) origin: Option<String>,
     #[serde(default)]
     pub(crate) logical_path: Option<String>,
+    #[serde(default)]
+    pub(crate) source_discarded: bool,
 }
 
 /// Immutable item in the app-global library database. Source names are
@@ -2375,6 +2377,7 @@ pub(crate) struct Artifact {
     /// Transcript item that most recently produced or mentioned this artifact.
     pub(crate) source_item: usize,
     pub(crate) superseded: bool,
+    pub(crate) source_discarded: bool,
 }
 
 #[derive(Deserialize)]

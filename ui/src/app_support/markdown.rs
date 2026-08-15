@@ -677,6 +677,7 @@ mod art_ref_marker_tests {
                 location: None,
                 source_item: 0,
                 superseded: false,
+                source_discarded: false,
             },
             Artifact {
                 id: "bbb".into(),
@@ -689,6 +690,7 @@ mod art_ref_marker_tests {
                 location: None,
                 source_item: 0,
                 superseded: false,
+                source_discarded: false,
             },
         ];
         let html = r#"<ul><li><code>denovo_design_worklist.csv</code></li></ul>"#;

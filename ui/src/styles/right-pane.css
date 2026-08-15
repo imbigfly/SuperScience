@@ -417,6 +417,7 @@ button.run-status:hover { filter:brightness(0.96); }
   background: var(--bg-elev); color: var(--text-faint); border: 1px solid var(--border);
 }
 .rp-badge.table { color: var(--clay-strong); background: var(--clay-soft); border-color: transparent; }
+.rp-badge.discarded { color: var(--text); background: var(--clay-soft); border-color: transparent; text-transform: none; letter-spacing: 0; }
 
 .rp-fasta-bar, .rp-msa-bar {
   font-size: 11px; color: var(--text-faint); padding: 6px 10px;

@@ -875,6 +875,7 @@ impl RunManager {
         if remote_path.is_empty() || remote_path.contains(['\0', '\n', '\r']) {
             return Err("Invalid remote file path".into());
         }
+        remote_files::refuse_if_context_path_discarded(store, &context.id, remote_path).await?;
         crate::ssh_hosts::require_managed_ssh_ready(context)?;
         let connection = crate::ssh_hosts::SshConnection::from_execution_context(context)?;
         let size = remote_file_size(self.runner.as_ref(), &connection, remote_path).await?;

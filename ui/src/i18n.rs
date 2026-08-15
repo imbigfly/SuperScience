@@ -1042,6 +1042,11 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "remote_files.state_active") => Some("active"),
         (Locale::En, "remote_files.state_replaced") => Some("replaced"),
         (Locale::En, "remote_files.state_orphan") => Some("orphan"),
+        (Locale::En, "remote_files.source_run_input") => Some("run input"),
+        (Locale::En, "remote_files.source_transfer") => Some("upload"),
+        (Locale::En, "remote_files.source_harvest_persist") => Some("kept on server"),
+        (Locale::En, "artifact.source_discarded") => Some("Source discarded"),
+        (Locale::En, "artifact.source_discarded_detail") => Some("This artifact's source server was discarded. The remote file is no longer available through Wisp."),
         (Locale::En, "runs.cleanup") => Some("Clean up server workspace"),
         (Locale::En, "runs.cleaned") => Some("workspace cleaned"),
         (Locale::En, "runs.cleanup_done") => Some("Server workspace cleaned."),
@@ -3283,6 +3288,11 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "remote_files.state_active") => Some("使用中"),
         (Locale::Zh, "remote_files.state_replaced") => Some("已被替换"),
         (Locale::Zh, "remote_files.state_orphan") => Some("孤儿文件"),
+        (Locale::Zh, "remote_files.source_run_input") => Some("任务输入"),
+        (Locale::Zh, "remote_files.source_transfer") => Some("上传"),
+        (Locale::Zh, "remote_files.source_harvest_persist") => Some("留在服务器"),
+        (Locale::Zh, "artifact.source_discarded") => Some("来源已丢弃"),
+        (Locale::Zh, "artifact.source_discarded_detail") => Some("该产物的来源服务器已被丢弃，无法再通过 Wisp 从远端取回这个文件。"),
         (Locale::Zh, "runs.cleanup") => Some("清理服务器文件"),
         (Locale::Zh, "runs.cleaned") => Some("工作目录已清理"),
         (Locale::Zh, "runs.cleanup_done") => Some("服务器工作目录已清理。"),
@@ -4598,6 +4608,7 @@ pub fn localize_backend(locale: Locale, msg: &str) -> String {
                 "Mainline is frozen. Select an exploration, or abandon the complete round from mainline's context menu.".to_string()
             }
         }
+        m if m.starts_with("source_discarded:") => t(locale, "artifact.source_discarded_detail"),
         m if m.starts_with("session_has_branches:") => {
             if locale == Locale::Zh {
                 "该 main 仍有对话分支；请先删除分支。".to_string()

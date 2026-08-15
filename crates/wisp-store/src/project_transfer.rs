@@ -245,6 +245,17 @@ async fn copy_project_children(tx: &mut Transaction<'_, Sqlite>, project_id: &st
         .execute(&mut **tx)
         .await?;
     }
+    if artifact_version_columns.contains("source_discarded_at") {
+        sqlx::query(
+            "UPDATE artifact_versions SET \
+               source_discarded_at=(SELECT source.source_discarded_at \
+                 FROM transfer.artifact_versions source WHERE source.id=artifact_versions.id) \
+             WHERE artifact_id IN (SELECT id FROM artifacts WHERE project_id=?)",
+        )
+        .bind(project_id)
+        .execute(&mut **tx)
+        .await?;
+    }
     let dependency_columns = attached_table_columns(tx, "artifact_dependencies").await?;
     if dependency_columns.contains("basis") && dependency_columns.contains("confidence") {
         sqlx::query(
