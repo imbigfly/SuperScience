@@ -266,24 +266,20 @@ pub(crate) fn parse_app_prefs_payload(payload: &serde_json::Value) -> AppPrefsPa
             .map(str::to_string),
         selection_popup_enabled: payload.get("selection_popup_enabled").and_then(|value| {
             value.as_bool().or_else(|| {
-                value
-                    .as_str()
-                    .and_then(|text| match text {
-                        "true" => Some(true),
-                        "false" => Some(false),
-                        _ => None,
-                    })
+                value.as_str().and_then(|text| match text {
+                    "true" => Some(true),
+                    "false" => Some(false),
+                    _ => None,
+                })
             })
         }),
         send_with_modifier: payload.get("send_with_modifier").and_then(|value| {
             value.as_bool().or_else(|| {
-                value
-                    .as_str()
-                    .and_then(|text| match text {
-                        "true" => Some(true),
-                        "false" => Some(false),
-                        _ => None,
-                    })
+                value.as_str().and_then(|text| match text {
+                    "true" => Some(true),
+                    "false" => Some(false),
+                    _ => None,
+                })
             })
         }),
         locale: payload
@@ -291,7 +287,9 @@ pub(crate) fn parse_app_prefs_payload(payload: &serde_json::Value) -> AppPrefsPa
             .and_then(|value| value.as_str())
             .map(str::to_string),
         max_iter: payload.get("max_iter").and_then(|value| value.as_i64()),
-        auto_compact: payload.get("auto_compact").and_then(|value| value.as_bool()),
+        auto_compact: payload
+            .get("auto_compact")
+            .and_then(|value| value.as_bool()),
         auto_continue: payload
             .get("auto_continue")
             .and_then(|value| value.as_bool()),
