@@ -14568,9 +14568,7 @@ fn App() -> impl IntoView {
         })}
 
         {move || context_usage_dragging.get().then(|| view! {
-            <div class="drag-overlay context-usage-move"
-                on:mousemove=on_context_usage_drag_move
-                on:mouseup=on_context_usage_drag_end></div>
+            <div class="drag-overlay context-usage-move" aria-hidden="true"></div>
         })}
 
         {move || context_usage_resizing.get().then(|| view! {
