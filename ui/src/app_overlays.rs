@@ -319,6 +319,43 @@ pub(crate) fn ProjectExportPrompt(
     }
 }
 
+/// Confirm before handing a link from agent output to the system browser: the
+/// destination is model-authored, so the user sees the full URL and decides.
+#[component]
+pub(crate) fn ExternalLinkConfirm(
+    locale: RwSignal<Locale>,
+    pending: RwSignal<Option<String>>,
+) -> impl IntoView {
+    view! {
+        {move || pending.get().map(|url| {
+            let target = url.clone();
+            view! {
+                <div class="overlay" data-testid="external-link-confirm">
+                    <div class="modal confirm-modal external-link-modal"
+                        role="dialog" aria-modal="true"
+                        aria-label=move || t(locale.get(), "link.confirm_title")>
+                        <h2>{move || t(locale.get(), "link.confirm_title")}</h2>
+                        <div class="hint">{move || t(locale.get(), "link.confirm_hint")}</div>
+                        <code class="external-link-url" data-testid="external-link-url">{url}</code>
+                        <div class="row">
+                            <button type="button" on:click=move |_| pending.set(None)>
+                                {move || t(locale.get(), "settings.cancel")}
+                            </button>
+                            <button type="button" class="primary" data-testid="external-link-open"
+                                on:click=move |_| {
+                                    pending.set(None);
+                                    open_external_url(target.clone());
+                                }>
+                                {move || t(locale.get(), "link.confirm_open")}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            }
+        })}
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct UpdateCheckOverlayState {
     pub(crate) locale: RwSignal<Locale>,

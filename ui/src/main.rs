@@ -26,7 +26,7 @@ use agent_workflows::{
     agent_workflows_panel, refresh_agent_resources, refresh_agent_workflows, AgentPanelState,
 };
 use app_overlays::{
-    ContextRecoveryOverlay, ContextRecoveryOverlayState, ProjectExportPrompt,
+    ContextRecoveryOverlay, ContextRecoveryOverlayState, ExternalLinkConfirm, ProjectExportPrompt,
     ProjectExportPromptState, ProjectTransferOverlay, ProjectTransferOverlayState,
     SshConnectivityOverlay, SshConnectivityOverlayState, TurnMemoryOverlay, TurnMemoryOverlayState,
     UpdateCheckOverlay, UpdateCheckOverlayState,
@@ -808,6 +808,9 @@ fn App() -> impl IntoView {
     let project_open_error = create_rw_signal(None::<String>);
     let project_transfer = create_rw_signal(None::<ProjectTransferProgress>);
     let project_export_prompt = create_rw_signal(None::<(String, String)>);
+    // Destination of a link click waiting for the user's confirmation before
+    // it reaches the system browser.
+    let external_link_confirm = create_rw_signal(None::<String>);
     let app_shell_entering = create_rw_signal(false);
     let project_transition_epoch = Rc::new(Cell::new(0u64));
     let project_transition_target = Rc::new(RefCell::new(None::<String>));
@@ -8190,6 +8193,12 @@ fn App() -> impl IntoView {
         if ev.key() != "Escape" || ev.default_prevented() || ime_composing(ev) {
             return;
         }
+        // Topmost: the link confirmation can be raised from any surface.
+        if external_link_confirm.get().is_some() {
+            ev.prevent_default();
+            external_link_confirm.set(None);
+            return;
+        }
         if turn_memory_proposal.get().is_some() {
             ev.prevent_default();
             if !turn_memory_busy.get() {
@@ -8562,10 +8571,9 @@ fn App() -> impl IntoView {
 
     // External links (http/https/mailto/tel) must open in the system browser,
     // never navigate the app's own webview away from the UI (no way back —
-    // issue #97). Chat markdown routes clicks through `handle_md_click`, which
-    // stop_propagation's before the event reaches here; markdown rendered
-    // elsewhere (file preview, right pane, review) has no per-element handler,
-    // so this window-level catch covers every render path.
+    // issue #97). Every render path (chat markdown, file preview, right pane,
+    // review) lands here, so this is also where the destination — usually
+    // model-authored — is confirmed before the OS handler sees it.
     window_event_listener(ev::click, move |ev| {
         use wasm_bindgen::JsCast;
         if ev.default_prevented() {
@@ -8579,7 +8587,7 @@ fn App() -> impl IntoView {
                 if let Some(href) = n.get_attribute("href") {
                     if opens_in_system_browser(&href) {
                         ev.prevent_default();
-                        open_external_url(href);
+                        external_link_confirm.set(Some(href));
                     }
                 }
                 return;
@@ -9820,6 +9828,7 @@ fn App() -> impl IntoView {
             })
         />
         <ProjectTransferOverlay state=ProjectTransferOverlayState { locale, project_transfer } />
+        <ExternalLinkConfirm locale=locale pending=external_link_confirm />
         <TurnMemoryOverlay
             state=TurnMemoryOverlayState {
                 locale,

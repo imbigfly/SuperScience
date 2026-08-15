@@ -10527,15 +10527,61 @@ test("external links open in the system browser, not the app webview (#97)", asy
     document.body.appendChild(a);
   });
   await page.click("#ext-link-probe");
-  await expect.poll(async () => page.evaluate(() =>
-    ((window as any).__skillInvokeLog ?? [])
-      .filter((c: any) => c.cmd === "open_external_url")
-      // serde_wasm_bindgen passes args as a JS Map, not a plain object.
-      .map((c: any) => (c.args instanceof Map ? c.args.get("url") : c.args?.url)),
-  )).toContain("https://example.com/paper.pdf");
+  await page.getByTestId("external-link-open").click();
+  // serde_wasm_bindgen passes args as a JS Map, not a plain object.
+  await expect.poll(() => openedExternalUrls(page)).toContain("https://example.com/paper.pdf");
   // The app itself must still be on screen — the click was intercepted, not
   // followed as a top-level navigation.
   await expect(newSessionButton(page)).toBeVisible();
+});
+
+async function openedExternalUrls(page: Page) {
+  return page.evaluate(() =>
+    ((window as any).__skillInvokeLog ?? [])
+      .filter((c: any) => c.cmd === "open_external_url")
+      .map((c: any) => (c.args instanceof Map ? c.args.get("url") : c.args?.url)),
+  );
+}
+
+test("a bare URL in a reply is clickable and opens only after confirmation", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("MDURL");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  // The model typed the URL as prose, with no markdown link syntax and CJK
+  // punctuation right after it — it still has to be a link, and only the URL.
+  const link = page.locator(".msg.assistant .body.md a", { hasText: "https://www.baidu.com" });
+  await expect(link).toBeVisible({ timeout: 10_000 });
+  await expect(link).toHaveText("https://www.baidu.com");
+  await expect(link).toHaveAttribute("href", "https://www.baidu.com");
+
+  await link.click();
+  const confirm = page.getByTestId("external-link-confirm");
+  await expect(confirm).toBeVisible();
+  await expect(page.getByTestId("external-link-url")).toHaveText("https://www.baidu.com");
+  expect(await openedExternalUrls(page)).toEqual([]);
+
+  await page.getByTestId("external-link-open").click();
+  await expect(confirm).toHaveCount(0);
+  await expect.poll(() => openedExternalUrls(page)).toContain("https://www.baidu.com");
+  await expect(newSessionButton(page)).toBeVisible();
+});
+
+test("Escape dismisses the link confirmation without opening the browser", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("MDURL");
+  await page.getByRole("button", { name: "Send" }).click();
+  const link = page.locator(".msg.assistant .body.md a", { hasText: "https://www.baidu.com" });
+  await expect(link).toBeVisible({ timeout: 10_000 });
+
+  await link.click();
+  const confirm = page.getByTestId("external-link-confirm");
+  await expect(confirm).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(confirm).toHaveCount(0);
+  expect(await openedExternalUrls(page)).toEqual([]);
+  // Only the confirmation closed: the transcript is untouched.
+  await expect(link).toBeVisible();
 });
 
 test("assistant markdown uses normal whitespace (no phantom blank lines)", async ({ page }) => {
