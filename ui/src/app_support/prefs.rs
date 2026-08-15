@@ -213,6 +213,179 @@ pub(crate) fn load_code_font_family() -> String {
     load_font_family("wisp-font-mono")
 }
 
+#[derive(Clone, Debug, Default)]
+pub(crate) struct AppPrefsPatch {
+    pub theme: Option<String>,
+    pub light_palette: Option<String>,
+    pub dark_palette: Option<String>,
+    pub ui_font_size: Option<u16>,
+    pub code_font_size: Option<u16>,
+    pub ui_font_family: Option<String>,
+    pub code_font_family: Option<String>,
+    pub selection_popup_enabled: Option<bool>,
+    pub send_with_modifier: Option<bool>,
+    pub locale: Option<String>,
+    pub max_iter: Option<i64>,
+    pub auto_compact: Option<bool>,
+    pub auto_continue: Option<bool>,
+    pub auto_continue_limit: Option<u64>,
+    pub follow_up_questions: Option<bool>,
+    pub resume_last_session: Option<bool>,
+    pub notifications_enabled: Option<bool>,
+}
+
+pub(crate) fn parse_app_prefs_payload(payload: &serde_json::Value) -> AppPrefsPatch {
+    AppPrefsPatch {
+        theme: payload
+            .get("theme")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        light_palette: payload
+            .get("light_palette")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        dark_palette: payload
+            .get("dark_palette")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        ui_font_size: payload
+            .get("ui_font_size")
+            .and_then(|value| value.as_u64())
+            .map(|value| value.min(30) as u16),
+        code_font_size: payload
+            .get("code_font_size")
+            .and_then(|value| value.as_u64())
+            .map(|value| value.min(30) as u16),
+        ui_font_family: payload
+            .get("ui_font_family")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        code_font_family: payload
+            .get("code_font_family")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        selection_popup_enabled: payload.get("selection_popup_enabled").and_then(|value| {
+            value.as_bool().or_else(|| {
+                value
+                    .as_str()
+                    .and_then(|text| match text {
+                        "true" => Some(true),
+                        "false" => Some(false),
+                        _ => None,
+                    })
+            })
+        }),
+        send_with_modifier: payload.get("send_with_modifier").and_then(|value| {
+            value.as_bool().or_else(|| {
+                value
+                    .as_str()
+                    .and_then(|text| match text {
+                        "true" => Some(true),
+                        "false" => Some(false),
+                        _ => None,
+                    })
+            })
+        }),
+        locale: payload
+            .get("locale")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        max_iter: payload.get("max_iter").and_then(|value| value.as_i64()),
+        auto_compact: payload.get("auto_compact").and_then(|value| value.as_bool()),
+        auto_continue: payload
+            .get("auto_continue")
+            .and_then(|value| value.as_bool()),
+        auto_continue_limit: payload
+            .get("auto_continue_limit")
+            .and_then(|value| value.as_u64()),
+        follow_up_questions: payload
+            .get("follow_up_questions")
+            .and_then(|value| value.as_bool()),
+        resume_last_session: payload
+            .get("resume_last_session")
+            .and_then(|value| value.as_bool()),
+        notifications_enabled: payload
+            .get("notifications_enabled")
+            .and_then(|value| value.as_bool()),
+    }
+}
+
+pub(crate) fn apply_prefs_patch(
+    patch: &AppPrefsPatch,
+    theme_mode: RwSignal<String>,
+    light_palette: RwSignal<String>,
+    dark_palette: RwSignal<String>,
+    ui_font_size: RwSignal<u16>,
+    code_font_size: RwSignal<u16>,
+    ui_font_family: RwSignal<String>,
+    code_font_family: RwSignal<String>,
+    selection_popup_enabled: RwSignal<bool>,
+    send_with_modifier: RwSignal<bool>,
+    locale: RwSignal<Locale>,
+    settings: RwSignal<Settings>,
+) {
+    if let Some(theme) = &patch.theme {
+        if matches!(theme.as_str(), "light" | "dark" | "system") {
+            theme_mode.set(theme.clone());
+        }
+    }
+    if let Some(palette) = &patch.light_palette {
+        light_palette.set(palette.clone());
+    }
+    if let Some(palette) = &patch.dark_palette {
+        dark_palette.set(palette.clone());
+    }
+    if let Some(size) = patch.ui_font_size {
+        ui_font_size.set(size);
+    }
+    if let Some(size) = patch.code_font_size {
+        code_font_size.set(size);
+    }
+    if let Some(family) = &patch.ui_font_family {
+        ui_font_family.set(family.clone());
+    }
+    if let Some(family) = &patch.code_font_family {
+        code_font_family.set(family.clone());
+    }
+    if let Some(enabled) = patch.selection_popup_enabled {
+        selection_popup_enabled.set(enabled);
+    }
+    if let Some(enabled) = patch.send_with_modifier {
+        send_with_modifier.set(enabled);
+    }
+    if let Some(code) = &patch.locale {
+        let loc = Locale::from_code(code);
+        locale.set(loc);
+        crate::i18n::set_document_lang(loc);
+    }
+    settings.update(|cfg| {
+        if let Some(code) = &patch.locale {
+            cfg.locale = Locale::from_code(code).code().into();
+        }
+        if let Some(value) = patch.max_iter {
+            cfg.max_iter = value;
+        }
+        if let Some(value) = patch.auto_compact {
+            cfg.auto_compact = value;
+        }
+        if let Some(value) = patch.auto_continue {
+            cfg.auto_continue = value;
+        }
+        if let Some(value) = patch.auto_continue_limit {
+            cfg.auto_continue_limit = value;
+        }
+        if let Some(value) = patch.follow_up_questions {
+            cfg.follow_up_questions = value;
+        }
+        if let Some(value) = patch.resume_last_session {
+            cfg.resume_last_session = value;
+        }
+        if let Some(value) = patch.notifications_enabled {
+            cfg.notifications_enabled = value;
+        }
+    });
+}
+
 pub(crate) fn apply_font_prefs(ui_size: u16, code_size: u16, ui_family: &str, code_family: &str) {
     let ui_family = sanitize_font_family(ui_family);
     let code_family = sanitize_font_family(code_family);
@@ -445,5 +618,26 @@ mod context_usage_geom_tests {
         assert_eq!(geom.h, max_h);
         assert_eq!(geom.x, 0.0);
         assert_eq!(geom.y, 0.0);
+    }
+}
+
+#[cfg(test)]
+mod app_prefs_payload_tests {
+    use super::parse_app_prefs_payload;
+
+    #[test]
+    fn parses_font_and_theme_from_configure_payload() {
+        let payload = serde_json::json!({
+            "ui_font_size": 18,
+            "theme": "dark",
+            "locale": "zh",
+            "auto_compact": false
+        });
+        let patch = parse_app_prefs_payload(&payload);
+        assert_eq!(patch.ui_font_size, Some(18));
+        assert_eq!(patch.theme.as_deref(), Some("dark"));
+        assert_eq!(patch.locale.as_deref(), Some("zh"));
+        assert_eq!(patch.auto_compact, Some(false));
+        assert_eq!(patch.code_font_size, None);
     }
 }

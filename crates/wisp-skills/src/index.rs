@@ -599,6 +599,7 @@ mod tests {
             "monitor_run",
             "cancel_run",
             "research_graph",
+            "configure",
             "save_specialist",
         ] {
             assert!(

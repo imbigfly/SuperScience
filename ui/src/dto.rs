@@ -1424,6 +1424,56 @@ pub(crate) struct ProjectStorageUsage {
     pub(crate) bytes: u64,
 }
 
+/// Mirrors `configure::AppearancePrefsView` in src-tauri/src/configure.rs.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub(crate) struct AppearancePrefs {
+    #[serde(default = "default_theme_mode")]
+    pub(crate) theme: String,
+    #[serde(default = "default_light_palette")]
+    pub(crate) light_palette: String,
+    #[serde(default = "default_dark_palette")]
+    pub(crate) dark_palette: String,
+    #[serde(default = "default_ui_font_size")]
+    pub(crate) ui_font_size: u16,
+    #[serde(default = "default_code_font_size")]
+    pub(crate) code_font_size: u16,
+    #[serde(default)]
+    pub(crate) ui_font_family: String,
+    #[serde(default)]
+    pub(crate) code_font_family: String,
+    #[serde(default = "default_true")]
+    pub(crate) selection_popup_enabled: bool,
+    #[serde(default)]
+    pub(crate) send_with_modifier: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub(crate) struct AppearancePrefsView {
+    #[serde(default)]
+    pub(crate) saved: bool,
+    #[serde(flatten)]
+    pub(crate) prefs: AppearancePrefs,
+}
+
+fn default_theme_mode() -> String {
+    "system".into()
+}
+fn default_light_palette() -> String {
+    "paper".into()
+}
+fn default_dark_palette() -> String {
+    "charcoal".into()
+}
+fn default_ui_font_size() -> u16 {
+    14
+}
+fn default_code_font_size() -> u16 {
+    12
+}
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub(crate) struct StorageUsage {
     pub(crate) data_dir: String,
