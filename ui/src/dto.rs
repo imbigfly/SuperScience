@@ -2396,6 +2396,7 @@ pub(crate) struct DirectoryListing {
 
 #[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub(crate) struct UploadToContextItem {
     #[serde(default)]
     pub(crate) source_path: String,

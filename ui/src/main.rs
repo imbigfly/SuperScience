@@ -13456,6 +13456,8 @@ fn App() -> impl IntoView {
                                         };
                                         let source_for_up = source.clone();
                                         let source_for_path = source.clone();
+                                        let source_for_upload = source.clone();
+                                        let source_for_refresh = source.clone();
                                         view! {
                                             <div class="fb-crumb remote">
                                                 {parent.map(|path| {
@@ -13499,7 +13501,7 @@ fn App() -> impl IntoView {
                                                     disabled=move || remote_file_uploading.get()
                                                     on:click=move |_| {
                                                         upload_to_remote_context(
-                                                            source.clone(),
+                                                            source_for_upload.clone(),
                                                             remote_file_cwd.get_untracked(),
                                                             None,
                                                             remote_file_uploading,
@@ -13515,7 +13517,7 @@ fn App() -> impl IntoView {
                                                 </button>
                                                 <button type="button" on:click=move |_| {
                                                     refresh_remote_dir(
-                                                        source.clone(),
+                                                        source_for_refresh.clone(),
                                                         remote_file_cwd,
                                                         remote_file_entries,
                                                         remote_file_loading,
