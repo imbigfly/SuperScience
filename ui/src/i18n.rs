@@ -4613,6 +4613,20 @@ pub fn tab_count(locale: Locale, base: &str, n: usize) -> String {
     }
 }
 
+/// Format a send/session-start failure. Callers that used `t("status.send_failed")`
+/// left the `{msg}` placeholder on screen; this always interpolates a detail.
+pub fn send_failed(locale: Locale, msg: &str) -> String {
+    let detail = {
+        let trimmed = msg.trim();
+        if trimmed.is_empty() {
+            t(locale, "err.unknown")
+        } else {
+            localize_backend(locale, trimmed)
+        }
+    };
+    tf(locale, "status.send_failed", &[("msg", &detail)])
+}
+
 pub fn localize_backend(locale: Locale, msg: &str) -> String {
     match msg {
         "API URL is required." => t(locale, "err.api_url_required"),
@@ -5044,6 +5058,36 @@ mod api_error_hint_tests {
         let out = localize_backend(Locale::Zh, msg);
         assert!(out.starts_with(msg), "raw error must stay visible");
         assert!(out.contains(&t(Locale::Zh, "err.hint.balance")));
+    }
+
+    #[test]
+    fn send_failed_interpolates_backend_error() {
+        assert_eq!(
+            send_failed(Locale::Zh, "Project not found"),
+            "发送失败：Project not found"
+        );
+        assert_eq!(
+            send_failed(Locale::En, "Project not found"),
+            "Send failed: Project not found"
+        );
+    }
+
+    #[test]
+    fn send_failed_never_leaves_placeholder() {
+        assert_eq!(
+            send_failed(Locale::Zh, ""),
+            format!("发送失败：{}", t(Locale::Zh, "err.unknown"))
+        );
+        assert_eq!(
+            send_failed(Locale::En, "   "),
+            format!("Send failed: {}", t(Locale::En, "err.unknown"))
+        );
+        assert!(!send_failed(Locale::Zh, "").contains("{msg}"));
+        assert_eq!(
+            t(Locale::Zh, "status.send_failed"),
+            "发送失败：{msg}",
+            "raw t() still has a placeholder; send_failed must be used"
+        );
     }
 }
 

@@ -340,6 +340,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   let nextSessionImportDelayMs = 0;
   const nextProjectTransferDelayMs: Record<string, number> = {};
   let failNextProjectOpenId: string | null = null;
+  let failNextNewSession: string | null = null;
   (window as any).__delayNextProjectOpen = (projectId: string, milliseconds: number) => {
     nextProjectOpenDelayMs[String(projectId)] = Math.max(0, Number(milliseconds) || 0);
   };
@@ -354,6 +355,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   };
   (window as any).__failNextProjectOpen = (projectId: string) => {
     failNextProjectOpenId = String(projectId);
+  };
+  (window as any).__failNextNewSession = (message?: string) => {
+    failNextNewSession = String(message || "Project not found");
   };
   (window as any).__setMockUpdateCheck = (value: Record<string, unknown>) => {
     mockUpdateCheck = { ...mockUpdateCheck, ...(value ?? {}) };
@@ -4164,6 +4168,11 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return memoryFilesFor(resolveMemoryProjectId(args, arg))
               .find((file) => file.name === arg("name"))?.preview ?? "";
           case "new_session": {
+            if (failNextNewSession) {
+              const message = failNextNewSession;
+              failNextNewSession = null;
+              throw new Error(message);
+            }
             const id = `s-${Math.random().toString(36).slice(2)}`;
             sessionModels[id] = activeHttpModelId();
             return id;

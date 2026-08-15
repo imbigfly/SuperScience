@@ -1,5 +1,19 @@
 use super::*;
 
+pub(crate) async fn invoke_string_id(cmd: &str, args: JsValue) -> Result<String, String> {
+    match invoke_checked(cmd, args).await {
+        Ok(value) => value
+            .as_string()
+            .filter(|id| !id.is_empty())
+            .ok_or_else(String::new),
+        Err(error) => Err(js_error_text(error)),
+    }
+}
+
+pub(crate) async fn invoke_new_session() -> Result<String, String> {
+    invoke_string_id("new_session", JsValue::UNDEFINED).await
+}
+
 pub(crate) fn refresh_sessions(
     sessions: RwSignal<Vec<SessionInfo>>,
     pending: RwSignal<HashMap<String, usize>>,

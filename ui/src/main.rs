@@ -42,8 +42,8 @@ use bindings::{
 use context_menu::{ContextMenuPortal, CtxMenu};
 use dto::*;
 use i18n::{
-    empty_subtitle, empty_title, localize_backend, set_document_lang, t, tab_count, tf, Locale,
-    EMPTY_SUBTITLE_COUNT, EMPTY_TITLE_COUNT,
+    empty_subtitle, empty_title, localize_backend, send_failed, set_document_lang, t, tab_count,
+    tf, Locale, EMPTY_SUBTITLE_COUNT, EMPTY_TITLE_COUNT,
 };
 use leptos::{ev, window_event_listener, *};
 use library::{refresh_library, refresh_session_library, HighlightsPane, LibraryScreen};
@@ -1637,7 +1637,7 @@ fn App() -> impl IntoView {
         spawn_local(async move {
             let v = invoke("start_scratch_chat", JsValue::UNDEFINED).await;
             let Ok(info) = serde_wasm_bindgen::from_value::<ScratchChatInfo>(v) else {
-                status.set(t(locale.get(), "status.send_failed").into());
+                status.set(send_failed(locale.get(), ""));
                 return;
             };
             scratch_open.set(true);
@@ -3609,14 +3609,14 @@ fn App() -> impl IntoView {
                     references: reference_args,
                 })
                 .unwrap();
-                if invoke_checked("enqueue_turn", args).await.is_err() {
+                if let Err(error) = invoke_checked("enqueue_turn", args).await {
                     route_items(active_session, items, transcripts, &session, |rows| {
                         remove_optimistic_send_rows(rows, &enqueue_msg);
                     });
                     transcript_projection_epoch.update(|revision| {
                         *revision = revision.wrapping_add(1);
                     });
-                    status.set(t(locale.get(), "status.send_failed").into());
+                    status.set(send_failed(locale.get(), &js_error_text(error)));
                 }
             });
             return;
@@ -3647,30 +3647,30 @@ fn App() -> impl IntoView {
                     Some("after_response"),
                 ))
                 .unwrap();
-                match invoke("branch_session", args).await.as_string() {
-                    Some(id) => id,
-                    None => {
+                match invoke_string_id("branch_session", args).await {
+                    Ok(id) => id,
+                    Err(error) => {
                         input.set(message);
                         attachments.set(saved_attachments);
                         composer_references.set(refs);
                         composer_quotes.set(quotes);
                         feedback_context.set(attached_feedback.clone());
-                        status.set(t(locale.get(), "status.send_failed").into());
+                        status.set(send_failed(locale.get(), &error));
                         return;
                     }
                 }
             } else if let Some(id) = active {
                 id
             } else {
-                match invoke("new_session", JsValue::UNDEFINED).await.as_string() {
-                    Some(id) => id,
-                    None => {
+                match invoke_new_session().await {
+                    Ok(id) => id,
+                    Err(error) => {
                         input.set(message);
                         attachments.set(saved_attachments);
                         composer_references.set(refs);
                         composer_quotes.set(quotes);
                         feedback_context.set(attached_feedback.clone());
-                        status.set(t(locale.get(), "status.send_failed").into());
+                        status.set(send_failed(locale.get(), &error));
                         return;
                     }
                 }
@@ -4129,10 +4129,12 @@ fn App() -> impl IntoView {
                     Some(checkpoint_kind),
                 ))
                 .unwrap();
-                let Some(id) = invoke("branch_session", arg).await.as_string() else {
-                    let loc = locale.get();
-                    status.set(t(loc, "status.send_failed").into());
-                    return;
+                let id = match invoke_string_id("branch_session", arg).await {
+                    Ok(id) => id,
+                    Err(error) => {
+                        status.set(send_failed(locale.get(), &error));
+                        return;
+                    }
                 };
                 if let Some(source_id) = sid.clone() {
                     conversation_branches.update(|branches| {
@@ -4494,10 +4496,13 @@ fn App() -> impl IntoView {
         context_recovery_busy.set(true);
         context_recovery_error.set(None);
         spawn_local(async move {
-            let Some(id) = invoke("new_session", JsValue::UNDEFINED).await.as_string() else {
-                context_recovery_error.set(Some(t(locale.get_untracked(), "status.send_failed")));
-                context_recovery_busy.set(false);
-                return;
+            let id = match invoke_new_session().await {
+                Ok(id) => id,
+                Err(error) => {
+                    context_recovery_error.set(Some(send_failed(locale.get_untracked(), &error)));
+                    context_recovery_busy.set(false);
+                    return;
+                }
             };
 
             let prompt = t(locale.get_untracked(), "context_recovery.new_prompt");
@@ -5389,12 +5394,14 @@ fn App() -> impl IntoView {
         sel_artifact.set(0);
         right_tab.set(RightTab::Artifacts);
         spawn_local(async move {
-            let v = invoke("new_session", JsValue::UNDEFINED).await;
             // Guard the malformed-response case before moving the visible
             // transcript, so failure leaves the current session untouched (#15).
-            let Some(id) = v.as_string() else {
-                status.set(t(locale.get(), "status.send_failed").into());
-                return;
+            let id = match invoke_new_session().await {
+                Ok(id) => id,
+                Err(error) => {
+                    status.set(send_failed(locale.get(), &error));
+                    return;
+                }
             };
             restore_chat_session_scroll(&id);
             replace_visible_transcript(
@@ -5442,13 +5449,13 @@ fn App() -> impl IntoView {
             force_chat_bottom();
             spawn_local(async move {
                 // Fresh frame for the setup turn; route events to it.
-                let v = invoke("new_session", JsValue::UNDEFINED).await;
-                let id = v.as_string().unwrap_or_default();
-                if id.is_empty() {
-                    let loc = locale.get();
-                    status.set(t(loc, "status.send_failed").into());
-                    return;
-                }
+                let id = match invoke_new_session().await {
+                    Ok(id) => id,
+                    Err(error) => {
+                        status.set(send_failed(locale.get(), &error));
+                        return;
+                    }
+                };
                 active_session.set(Some(id.clone()));
                 running.update(|r| {
                     r.insert(id.clone());
@@ -5581,10 +5588,12 @@ fn App() -> impl IntoView {
                     refresh_skills();
                 }
 
-                let Some(session_id) = invoke("new_session", JsValue::UNDEFINED).await.as_string()
-                else {
-                    status.set(t(locale.get(), "status.send_failed").into());
-                    return;
+                let session_id = match invoke_new_session().await {
+                    Ok(session_id) => session_id,
+                    Err(error) => {
+                        status.set(send_failed(locale.get(), &error));
+                        return;
+                    }
                 };
                 let initial = vec![
                     ChatItem::User(prompt.clone()),
@@ -6812,10 +6821,12 @@ fn App() -> impl IntoView {
         let loc = locale.get();
         let prompt = t(loc, "specialists.chat_prompt").to_string();
         spawn_local(async move {
-            let v = invoke("new_session", JsValue::UNDEFINED).await;
-            let Some(id) = v.as_string() else {
-                status.set(t(loc, "status.send_failed").into());
-                return;
+            let id = match invoke_new_session().await {
+                Ok(id) => id,
+                Err(error) => {
+                    status.set(send_failed(loc, &error));
+                    return;
+                }
             };
             active_session.set(Some(id.clone()));
             items.set(vec![]);
@@ -7413,14 +7424,10 @@ fn App() -> impl IntoView {
                 let prefs_context_id = context_id.clone();
                 let (session_id, created) = match active_session.get_untracked() {
                     Some(session_id) => (session_id, false),
-                    None => match invoke_checked("new_session", JsValue::UNDEFINED)
-                        .await
-                        .ok()
-                        .and_then(|value| value.as_string())
-                    {
-                        Some(session_id) => (session_id, true),
-                        None => {
-                            show_toast(&t(locale.get_untracked(), "status.send_failed"));
+                    None => match invoke_new_session().await {
+                        Ok(session_id) => (session_id, true),
+                        Err(error) => {
+                            show_toast(&send_failed(locale.get_untracked(), &error));
                             return;
                         }
                     },
@@ -9424,9 +9431,12 @@ fn App() -> impl IntoView {
         sel_artifact.set(0);
         right_tab.set(RightTab::Artifacts);
         spawn_local(async move {
-            let Some(id) = invoke("new_session", JsValue::UNDEFINED).await.as_string() else {
-                status.set(t(locale.get(), "status.send_failed").into());
-                return;
+            let id = match invoke_new_session().await {
+                Ok(id) => id,
+                Err(error) => {
+                    status.set(send_failed(locale.get(), &error));
+                    return;
+                }
             };
             replace_visible_transcript(
                 active_session.get_untracked(),
@@ -12871,9 +12881,12 @@ fn App() -> impl IntoView {
                                                                     sel_artifact.set(0);
                                                                     right_tab.set(RightTab::Artifacts);
                                                                     spawn_local(async move {
-                                                                        let Some(frame_id) = invoke("new_session", JsValue::UNDEFINED).await.as_string() else {
-                                                                            status.set(t(locale.get(), "status.send_failed").into());
-                                                                            return;
+                                                                        let frame_id = match invoke_new_session().await {
+                                                                            Ok(frame_id) => frame_id,
+                                                                            Err(error) => {
+                                                                                status.set(send_failed(locale.get(), &error));
+                                                                                return;
+                                                                            }
                                                                         };
                                                                         replace_visible_transcript(
                                                                             active_session.get_untracked(),
