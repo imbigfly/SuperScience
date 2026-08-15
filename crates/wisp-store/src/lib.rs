@@ -30,6 +30,7 @@ mod remote_staging;
 mod research;
 mod resources;
 mod runs;
+mod schedules;
 pub mod secrets;
 mod session_imports;
 mod sessions;
@@ -71,6 +72,7 @@ pub use project_transfer::ProjectTransferStats;
 pub use projects::{is_scratch_project_id, SCRATCH_PROJECT_PREFIX};
 pub use provenance::{canonical_json, canonical_json_sha256};
 pub use remote_staging::RemoteStagingEntry;
+pub use schedules::{next_slot_after, ScheduleRecord, ScheduleRunRecord};
 pub use sessions::{
     ModelTokenUsage, ProjectTokenUsage, SessionBranchDeltaMessage, SessionBranchLink,
     SessionBranchMerge, SessionBranchMergeCard, SessionBranchMergePreview, SessionTokenUsage,
@@ -160,6 +162,7 @@ const CONTEXT_STORAGE_PREFS_MIGRATION: &str = "0044_context_storage_prefs";
 const RUN_CLEANUP_STATE_MIGRATION: &str = "0045_run_cleanup_state";
 const REMOTE_STAGING_MIGRATION: &str = "0046_remote_staging";
 const RUN_RETENTION_MIGRATION: &str = "0047_run_retention";
+const SCHEDULES_MIGRATION: &str = "0048_schedules";
 
 #[derive(Clone)]
 pub struct Store {
@@ -627,6 +630,45 @@ impl Store {
             )
             .await?;
             Self::record_migration(pool, RUN_RETENTION_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, SCHEDULES_MIGRATION).await? {
+            // frame_id stays a plain column on purpose: a schedule must
+            // survive its target session being deleted so it can keep firing
+            // into fresh sessions or be re-pointed by the user.
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS schedules(\
+                 id TEXT PRIMARY KEY, \
+                 project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, \
+                 frame_id TEXT, \
+                 name TEXT NOT NULL, prompt TEXT NOT NULL, skill TEXT, \
+                 interval_secs INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, \
+                 next_run_at INTEGER NOT NULL, last_run_at INTEGER, \
+                 created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
+            )
+            .execute(pool)
+            .await?;
+            sqlx::query(
+                "CREATE INDEX IF NOT EXISTS ix_schedules_due \
+                 ON schedules(enabled, next_run_at)",
+            )
+            .execute(pool)
+            .await?;
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS schedule_runs(\
+                 id TEXT PRIMARY KEY, \
+                 schedule_id TEXT NOT NULL REFERENCES schedules(id) ON DELETE CASCADE, \
+                 frame_id TEXT, status TEXT NOT NULL, error TEXT, \
+                 fired_at INTEGER NOT NULL)",
+            )
+            .execute(pool)
+            .await?;
+            sqlx::query(
+                "CREATE INDEX IF NOT EXISTS ix_schedule_runs_schedule \
+                 ON schedule_runs(schedule_id, fired_at DESC)",
+            )
+            .execute(pool)
+            .await?;
+            Self::record_migration(pool, SCHEDULES_MIGRATION).await?;
         }
         Ok(())
     }
