@@ -6459,13 +6459,16 @@ test("runtime inspector lists object metadata without loading object contents", 
     clientY: startY,
   });
   await expect(rEnvironment).toHaveClass(/is-dragging/);
-  await dragHandle.dispatchEvent("pointermove", {
-    buttons: 1,
-    pointerId: 7,
-    clientX: startX - 120,
-    clientY: startY + 48,
-  });
+  // Re-dispatch the move inside the poll: a single pointermove right after the
+  // drag state flips can still be batched away by Leptos on a busy CI worker,
+  // leaving the panel unmoved even though is-dragging is set.
   await expect.poll(async () => {
+    await dragHandle.dispatchEvent("pointermove", {
+      buttons: 1,
+      pointerId: 7,
+      clientX: startX - 120,
+      clientY: startY + 48,
+    });
     const afterDrag = await rEnvironment.boundingBox();
     return beforeDrag && afterDrag ? Math.round(beforeDrag.x - afterDrag.x) : 0;
   }).toBeGreaterThan(100);
