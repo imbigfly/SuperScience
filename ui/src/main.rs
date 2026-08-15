@@ -2626,6 +2626,7 @@ fn App() -> impl IntoView {
                 strategy,
             } => {
                 finish_compaction(&frame_id);
+                let auto_continue = strategy == "auto_continue";
                 route_items(active_cb, items_cb, transcripts_cb, &frame_id, |items| {
                     items.push(ChatItem::Compaction {
                         before,
@@ -2634,14 +2635,21 @@ fn App() -> impl IntoView {
                     });
                 });
                 if active_cb.get().as_deref() == Some(&frame_id) {
-                    status_cb.set(tf(
-                        locale_cb.get(),
-                        "status.compact",
-                        &[
-                            ("before", &before.to_string()),
-                            ("after", &after.to_string()),
-                        ],
-                    ));
+                    let before = before.to_string();
+                    let after = after.to_string();
+                    status_cb.set(if auto_continue {
+                        tf(
+                            locale_cb.get(),
+                            "chat.auto_continued",
+                            &[("count", before.as_str()), ("limit", after.as_str())],
+                        )
+                    } else {
+                        tf(
+                            locale_cb.get(),
+                            "status.compact",
+                            &[("before", before.as_str()), ("after", after.as_str())],
+                        )
+                    });
                 }
             }
             AgentEvent::ContextWarning {

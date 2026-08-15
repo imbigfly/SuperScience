@@ -1857,6 +1857,11 @@ struct Settings {
     /// configured context budget. ACP agents own their remote context.
     #[serde(default = "default_auto_compact")]
     auto_compact: bool,
+    /// Retry native-model responses that stop at their output-token ceiling.
+    #[serde(default)]
+    auto_continue: bool,
+    #[serde(default = "default_auto_continue_limit")]
+    auto_continue_limit: u64,
     /// Generate three suggested next questions after a completed turn.
     #[serde(default = "default_follow_up_questions")]
     follow_up_questions: bool,
@@ -1907,6 +1912,10 @@ const fn default_max_iter_setting() -> i64 {
 
 const fn default_auto_compact() -> bool {
     true
+}
+
+const fn default_auto_continue_limit() -> u64 {
+    10
 }
 
 const fn default_follow_up_questions() -> bool {
@@ -1992,9 +2001,16 @@ fn log_dev_llm_dispatch(
 /// (especially `max_iter`) are re-read from Settings before every turn so a
 /// mid-session change — e.g. 100 → 0 for unlimited monitoring — takes effect
 /// without waiting for an unrelated agent rebuild.
-fn apply_live_agent_settings(agent: &mut wisp_core::Agent, max_iter: usize, auto_compact: bool) {
+fn apply_live_agent_settings(
+    agent: &mut wisp_core::Agent,
+    max_iter: usize,
+    auto_compact: bool,
+    auto_continue: bool,
+    auto_continue_limit: usize,
+) {
     agent.max_iter = max_iter;
     agent.set_auto_compact(auto_compact);
+    agent.set_auto_continue(auto_continue, auto_continue_limit);
 }
 
 fn default_locale() -> String {
@@ -4005,6 +4021,24 @@ async fn load_auto_compact_enabled(store: &Store) -> bool {
         .unwrap_or(true)
 }
 
+async fn load_auto_continue_settings(store: &Store) -> (bool, usize) {
+    let enabled = store
+        .get_setting("auto_continue")
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|value| value == "true");
+    let limit = store
+        .get_setting("auto_continue_limit")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default_auto_continue_limit() as usize)
+        .max(1);
+    (enabled, limit)
+}
+
 /// Labels of app windows currently holding OS focus. A set (not a bool) so the
 /// unordered Focused(false)/Focused(true) pair fired when focus moves between
 /// two app windows cannot leave us wrongly marked unfocused.
@@ -5699,10 +5733,13 @@ async fn send_message_inner(
         *guard = Some(agent);
     }
     let agent = guard.as_mut().unwrap();
+    let (auto_continue, auto_continue_limit) = load_auto_continue_settings(&state.store).await;
     apply_live_agent_settings(
         agent,
         max_iter,
         load_auto_compact_enabled(&state.store).await,
+        auto_continue,
+        auto_continue_limit,
     );
     // InterruptReplace (#410): the user stopped the previous turn because it
     // went the wrong way — drop that turn (its user message included) from the

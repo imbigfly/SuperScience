@@ -244,10 +244,10 @@ fn live_agent_settings_refresh_max_iter_on_reused_agent() {
     );
     assert_eq!(agent.max_iter, 100);
 
-    super::apply_live_agent_settings(&mut agent, 0, true);
+    super::apply_live_agent_settings(&mut agent, 0, true, true, 7);
     assert_eq!(agent.max_iter, 0);
 
-    super::apply_live_agent_settings(&mut agent, 50, false);
+    super::apply_live_agent_settings(&mut agent, 50, false, false, 10);
     assert_eq!(agent.max_iter, 50);
 
     let _ = std::fs::remove_dir_all(root);

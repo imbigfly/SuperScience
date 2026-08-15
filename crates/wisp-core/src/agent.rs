@@ -21,6 +21,8 @@ const RETRY_DELAYS: [u64; 5] = [2_000, 10_000, 30_000, 60_000, 120_000];
 const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const STOPPED_BY_USER: &str = "stopped by user";
 const TRUNCATED_OUTPUT_MESSAGE: &str = "模型输出在达到 max_tokens 上限时被截断，任务可能尚未完成——请在设置中调高该模型的 max_tokens，或直接继续对话让我接着做。(output truncated at max_tokens)";
+const AUTO_CONTINUE_PROMPT: &str =
+    "Continue from where the previous response was truncated. Do not repeat completed work. The partial response already shown to the user was:\n\n";
 const STREAM_CUT_MESSAGE: &str = "模型响应流在中途被断开（未收到结束标记），已生成的部分内容不完整、不会计入上下文。常见原因：网络不稳定、代理/中转站切断连接，或同一 API key 的并发请求达到上限（例如多个会话同时使用同一模型）。可重发消息重试；需要并行会话时建议错开请求或使用不同的 API key。(stream cut mid-response, #437)";
 const EMPTY_RESPONSE_MESSAGE: &str = "模型完成了本轮推理，但没有返回可显示的文本或工具调用。对话上下文和已完成的工具结果均已保留；请点击“继续执行”重新生成最终回复。若长对话中反复出现，请先发送 /compact 压缩上下文。(model returned no visible response)";
 const ABNORMAL_FINISH_MESSAGE: &str = "模型服务没有正常完成本轮响应，已生成的部分内容不会作为最终答案提交。已完成的工具结果均已保留；请点击“继续执行”重试。(provider returned an unsuccessful finish reason)";
@@ -279,6 +281,7 @@ async fn agent_loop_inner(
         None => ToolEnvAdapter::new(root.to_path_buf(), output),
     };
     let mut iteration = 0usize;
+    let mut auto_continues = 0usize;
     let mut recent_sigs: VecDeque<String> = VecDeque::with_capacity(STUCK_WINDOW);
     loop {
         if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
@@ -371,6 +374,26 @@ async fn agent_loop_inner(
             anyhow::bail!("stopped by user");
         }
         if is_truncated(comp.finish_reason.as_deref()) {
+            if let Some(limit) = ctx
+                .auto_continue_limit()
+                .filter(|limit| auto_continues < *limit)
+            {
+                auto_continues += 1;
+                let context_usage = ctx.context_usage(&schemas, &schema_origins);
+                output.usage(
+                    iteration,
+                    comp.usage.input_tokens,
+                    comp.usage.output_tokens,
+                    comp.usage.reasoning_tokens,
+                    comp.usage.cached_input_tokens,
+                    context_usage.total(),
+                    ctx.max_context,
+                    context_usage,
+                );
+                output.compaction(auto_continues, limit, "auto_continue");
+                ctx.inject_user(format!("{AUTO_CONTINUE_PROMPT}{}", comp.content));
+                continue;
+            }
             anyhow::bail!(TRUNCATED_OUTPUT_MESSAGE);
         }
         if is_unsuccessful_finish(comp.finish_reason.as_deref()) {
@@ -1351,6 +1374,16 @@ mod tests {
 
     struct CompactionCounter(AtomicUsize);
 
+    struct AutoContinueCounter(AtomicUsize);
+
+    impl Output for AutoContinueCounter {
+        fn compaction(&self, count: usize, limit: usize, strategy: &str) {
+            assert_eq!(strategy, "auto_continue");
+            assert!(count <= limit);
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
     impl Output for CompactionCounter {
         fn compaction(&self, _before: usize, _after: usize, strategy: &str) {
             assert_eq!(strategy, "auto");
@@ -2136,6 +2169,77 @@ mod tests {
         assert!(!SPY_RAN.load(Ordering::SeqCst), "truncated tool ran");
         assert_eq!(ctx.messages.len(), 1, "only the user message is persisted");
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[tokio::test]
+    async fn truncated_output_auto_continues_until_completion() {
+        let provider = SequenceProvider::new([
+            Completion {
+                content: "partial".into(),
+                finish_reason: Some("length".into()),
+                ..Completion::default()
+            },
+            Completion {
+                content: "done".into(),
+                finish_reason: Some("stop".into()),
+                ..Completion::default()
+            },
+        ]);
+        let output = AutoContinueCounter(AtomicUsize::new(0));
+        let mut ctx = ContextManager::new(100_000);
+        ctx.set_auto_continue(true, 10);
+
+        let outcome = agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &Registry::builtins().filtered(&[]),
+            Path::new("."),
+            &output,
+            "finish the task",
+            0,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome, AgentLoopOutcome::Completed);
+        assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(output.0.load(Ordering::SeqCst), 1);
+        assert!(ctx
+            .runtime_injections
+            .iter()
+            .any(|message| message.content.as_text().contains("partial")));
+    }
+
+    #[tokio::test]
+    async fn truncated_output_stops_at_auto_continue_limit() {
+        let provider = SequenceProvider::new((0..3).map(|_| Completion {
+            content: "partial".into(),
+            finish_reason: Some("length".into()),
+            ..Completion::default()
+        }));
+        let output = AutoContinueCounter(AtomicUsize::new(0));
+        let mut ctx = ContextManager::new(100_000);
+        ctx.set_auto_continue(true, 2);
+
+        let error = agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &Registry::builtins().filtered(&[]),
+            Path::new("."),
+            &output,
+            "finish the task",
+            0,
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("output truncated at max_tokens"));
+        assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 3);
+        assert_eq!(output.0.load(Ordering::SeqCst), 2);
     }
 
     struct OkTool;
