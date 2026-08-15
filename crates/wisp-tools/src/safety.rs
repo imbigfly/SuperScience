@@ -224,11 +224,156 @@ pub const FILTERED_DIRS: &[&str] = &[
 mod tests {
     use super::*;
 
+    /// Unique per-test sandbox so parallel tests never share a directory.
+    fn unique_dir(tag: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "wisp_safety_{tag}_{}_{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     #[test]
     fn delegated_glob_patterns_cannot_escape_the_project() {
         assert!(validate_relative_pattern("src/**/*.rs").is_ok());
         assert!(validate_relative_pattern("../**/*").is_err());
         assert!(validate_relative_pattern(&std::env::temp_dir().to_string_lossy()).is_err());
+    }
+
+    #[test]
+    fn validate_file_path_enforces_the_sandbox_boundary() {
+        let root = unique_dir("vfp");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("inside.txt"), "in").unwrap();
+        std::fs::write(root.join("sub/nested.txt"), "in").unwrap();
+        let outside = unique_dir("vfp_outside");
+        std::fs::write(outside.join("secret.txt"), "out").unwrap();
+        let root_real = dunce::canonicalize(&root).unwrap();
+
+        struct Case {
+            name: &'static str,
+            path: String,
+            expect_ok: bool,
+        }
+        let cases = vec![
+            Case {
+                name: "relative path inside root accepted",
+                path: "inside.txt".into(),
+                expect_ok: true,
+            },
+            Case {
+                name: "absolute path inside root accepted",
+                path: root.join("sub/nested.txt").to_string_lossy().into_owned(),
+                expect_ok: true,
+            },
+            Case {
+                name: "../ traversal escape rejected",
+                path: format!(
+                    "../{}/secret.txt",
+                    outside.file_name().unwrap().to_string_lossy()
+                ),
+                expect_ok: false,
+            },
+            Case {
+                name: "absolute path outside root rejected",
+                path: outside.join("secret.txt").to_string_lossy().into_owned(),
+                expect_ok: false,
+            },
+            Case {
+                name: "new file with an existing parent accepted (write target)",
+                path: "sub/not_yet_written.txt".into(),
+                expect_ok: true,
+            },
+            Case {
+                name: "new file whose parent does not exist rejected",
+                path: "missing_dir/new.txt".into(),
+                expect_ok: false,
+            },
+            Case {
+                name: "directory target rejected (write/edit are file-only)",
+                path: "sub".into(),
+                expect_ok: false,
+            },
+        ];
+        for case in cases {
+            let got = validate_file_path(&root, &case.path);
+            assert_eq!(got.is_ok(), case.expect_ok, "{}: {:?}", case.name, got);
+            if let Ok(resolved) = got {
+                assert!(
+                    resolved.starts_with(&root_real),
+                    "{}: resolved path {resolved:?} must stay under root",
+                    case.name
+                );
+            }
+        }
+
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&outside).ok();
+    }
+
+    #[test]
+    fn resolve_under_root_allows_directories_but_not_escapes() {
+        let root = unique_dir("rur");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("inside.txt"), "in").unwrap();
+        let outside = unique_dir("rur_outside");
+        std::fs::write(outside.join("secret.txt"), "out").unwrap();
+
+        assert!(resolve_under_root(&root, "inside.txt").is_ok());
+        assert!(resolve_under_root(&root, "sub").is_ok(), "dirs are allowed");
+        assert!(
+            resolve_under_root(&root, &root.join("sub").to_string_lossy()).is_ok(),
+            "absolute path inside root accepted"
+        );
+        assert!(
+            resolve_under_root(&root, &outside.join("secret.txt").to_string_lossy()).is_err(),
+            "absolute path outside root rejected"
+        );
+        assert!(
+            resolve_under_root(
+                &root,
+                &format!(
+                    "../{}/secret.txt",
+                    outside.file_name().unwrap().to_string_lossy()
+                )
+            )
+            .is_err(),
+            "../ traversal escape rejected"
+        );
+        assert!(
+            resolve_under_root(&root, "does_not_exist.txt").is_err(),
+            "nonexistent paths are rejected (list/read need an existing target)"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&outside).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_pointing_outside_the_root_is_rejected() {
+        let root = unique_dir("symlink");
+        let outside = unique_dir("symlink_outside");
+        std::fs::write(outside.join("secret.txt"), "out").unwrap();
+        std::os::unix::fs::symlink(outside.join("secret.txt"), root.join("sneaky.txt")).unwrap();
+
+        let via_validate = validate_file_path(&root, "sneaky.txt");
+        assert!(
+            via_validate.is_err(),
+            "validate_file_path must resolve symlinks: {via_validate:?}"
+        );
+        let via_resolve = resolve_under_root(&root, "sneaky.txt");
+        assert!(
+            via_resolve.is_err(),
+            "resolve_under_root must resolve symlinks: {via_resolve:?}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&outside).ok();
     }
 }
 

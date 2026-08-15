@@ -111,6 +111,16 @@ async fn roundtrip() {
         [0, 1]
     );
     assert_eq!(sequenced[1].1.content.as_text(), "hello");
+
+    // Durability: close every connection and reopen the same file — the
+    // writes must come back from disk, not from the live pool's cache.
+    store.pool.close().await;
+    let store = Store::open(&tmp).await.unwrap();
+    let msgs = store.load_messages("f1").await.unwrap();
+    assert_eq!(msgs.len(), 2, "messages must survive close + reopen");
+    assert_eq!(msgs[0].content.as_text(), "hi");
+    assert_eq!(msgs[1].content.as_text(), "hello");
+
     // list_sessions derives a title from the first user message and skips
     // frames with no user turn.
     store.create_frame("f2", "p1", "OPERON", "m").await.unwrap();
@@ -130,6 +140,96 @@ async fn roundtrip() {
     assert_eq!(sessions[0].1, "Renamed chat");
     store.delete_session("f1", "p1").await.unwrap();
     assert!(store.list_sessions("p1").await.unwrap().is_empty());
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn duplicate_seq_in_a_frame_is_rejected_and_leaves_rows_unchanged() {
+    let tmp =
+        std::env::temp_dir().join(format!("wisp_store_dupseq_{}.sqlite", uuid::Uuid::new_v4()));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p1", "proj", "").await.unwrap();
+    store.create_frame("f1", "p1", "OPERON", "m").await.unwrap();
+    store
+        .append_message("f1", 0, &Message::user("first"))
+        .await
+        .unwrap();
+
+    // The schema enforces UNIQUE(frame_id, seq): a second append with the
+    // same explicit seq must error instead of silently replacing the row.
+    let err = store
+        .append_message("f1", 0, &Message::user("imposter"))
+        .await
+        .expect_err("duplicate (frame_id, seq) must be rejected");
+    assert!(
+        err.to_string().to_ascii_lowercase().contains("unique"),
+        "unexpected error: {err}"
+    );
+
+    let msgs = store.load_messages_with_seq("f1").await.unwrap();
+    assert_eq!(msgs.len(), 1, "the failed insert must not add a row");
+    assert_eq!(msgs[0].0, 0);
+    assert_eq!(msgs[0].1.content.as_text(), "first");
+
+    // The same seq in a different frame is fine — uniqueness is per frame.
+    store.create_frame("f2", "p1", "OPERON", "m").await.unwrap();
+    store
+        .append_message("f2", 0, &Message::user("other frame"))
+        .await
+        .unwrap();
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn concurrent_writers_on_two_pools_all_land() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_store_concurrent_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store_a = Store::open(&tmp).await.unwrap();
+    let store_b = Store::open(&tmp).await.unwrap();
+    store_a.create_project("p1", "proj", "").await.unwrap();
+    store_a
+        .create_frame("fa", "p1", "OPERON", "m")
+        .await
+        .unwrap();
+    store_a
+        .create_frame("fb", "p1", "OPERON", "m")
+        .await
+        .unwrap();
+
+    // Two independent pools on the same file, interleaving writes to
+    // different frames — exercises WAL + busy_timeout instead of failing
+    // with SQLITE_BUSY.
+    const PER_WRITER: i64 = 20;
+    let writer = |store: Store, frame: &'static str| async move {
+        for seq in 0..PER_WRITER {
+            store
+                .append_message(frame, seq, &Message::user(format!("{frame} {seq}")))
+                .await?;
+            tokio::task::yield_now().await;
+        }
+        anyhow::Ok(())
+    };
+    let task_a = tokio::spawn(writer(store_a.clone(), "fa"));
+    let task_b = tokio::spawn(writer(store_b.clone(), "fb"));
+    task_a.await.unwrap().unwrap();
+    task_b.await.unwrap().unwrap();
+
+    for (store, frame) in [(&store_a, "fb"), (&store_b, "fa")] {
+        let msgs = store.load_messages_with_seq(frame).await.unwrap();
+        assert_eq!(
+            msgs.len(),
+            PER_WRITER as usize,
+            "every {frame} append must land"
+        );
+        assert_eq!(
+            msgs.iter().map(|(seq, _)| *seq).collect::<Vec<_>>(),
+            (0..PER_WRITER).collect::<Vec<_>>()
+        );
+    }
+
     let _ = std::fs::remove_file(&tmp);
 }
 
@@ -3281,6 +3381,25 @@ async fn store_open_records_migrations_and_seeds_local_context() {
             ORPHAN_FILE_RETENTION_MIGRATION.to_string(),
         ]
     );
+    let first_open_migrations = store.schema_migrations().await.unwrap();
+
+    // Idempotency: opening the same file again must neither re-run migrations
+    // nor seed a second `local` execution context.
+    store.pool.close().await;
+    let store = Store::open(&tmp).await.unwrap();
+    assert_eq!(
+        store.schema_migrations().await.unwrap(),
+        first_open_migrations,
+        "a second open must leave the recorded migration set unchanged"
+    );
+    let locals = store
+        .list_execution_contexts()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|ctx| ctx.id == "local")
+        .count();
+    assert_eq!(locals, 1, "the seeded local context must not be duplicated");
 
     let _ = std::fs::remove_file(&tmp);
 }

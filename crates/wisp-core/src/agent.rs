@@ -2097,9 +2097,9 @@ mod tests {
         assert!(primary.stream_messages.lock().unwrap().is_empty());
     }
 
-    static SPY_RAN: AtomicBool = AtomicBool::new(false);
-
-    struct SpyTool;
+    struct SpyTool {
+        ran: Arc<AtomicBool>,
+    }
 
     #[async_trait]
     impl Tool for SpyTool {
@@ -2116,14 +2116,14 @@ mod tests {
         }
 
         async fn run(&self, _args: &serde_json::Value, _env: &dyn ToolEnv) -> ToolResult {
-            SPY_RAN.store(true, Ordering::SeqCst);
+            self.ran.store(true, Ordering::SeqCst);
             ToolResult::ok("ran")
         }
     }
 
     #[tokio::test]
     async fn truncated_tool_call_is_not_executed() {
-        SPY_RAN.store(false, Ordering::SeqCst);
+        let spy_ran = Arc::new(AtomicBool::new(false));
         let provider = FixedProvider {
             completion: Completion {
                 tool_calls: vec![ToolCall {
@@ -2140,7 +2140,9 @@ mod tests {
             },
         };
         let mut tools = Registry::builtins();
-        tools.add(Box::new(SpyTool));
+        tools.add(Box::new(SpyTool {
+            ran: spy_ran.clone(),
+        }));
         let mut ctx = ContextManager::new(100_000);
         let root = std::env::temp_dir().join(format!(
             "wisp-core-truncated-tool-test-{}",
@@ -2166,7 +2168,7 @@ mod tests {
             err.to_string().contains("output truncated at max_tokens"),
             "unexpected error: {err}"
         );
-        assert!(!SPY_RAN.load(Ordering::SeqCst), "truncated tool ran");
+        assert!(!spy_ran.load(Ordering::SeqCst), "truncated tool ran");
         assert_eq!(ctx.messages.len(), 1, "only the user message is persisted");
         std::fs::remove_dir_all(root).ok();
     }
@@ -2486,8 +2488,7 @@ mod tests {
     async fn identical_successful_tool_call_repeated_breaks_the_loop() {
         // Provider that returns the SAME successful tool call forever. With
         // max_iter=0 the iteration cap is disabled, so only the stuck-loop guard
-        // can stop it. Uses a side-effect-free tool (not SpyTool) to avoid the
-        // shared SPY_RAN static, keeping the test hermetic under parallel runs.
+        // can stop it. Uses a side-effect-free tool.
         let provider = FixedProvider {
             completion: Completion {
                 tool_calls: vec![ToolCall {
@@ -2623,5 +2624,231 @@ mod tests {
             "unexpected error: {err}"
         );
         std::fs::remove_dir_all(root).ok();
+    }
+
+    /// Streams like a real provider: each turn's content is pushed into the
+    /// sink as small text deltas and tool-call argument fragments *before* the
+    /// assembled completion is returned, exercising the streaming path the
+    /// other fakes skip.
+    struct StreamingSequenceProvider {
+        completions: Mutex<VecDeque<Completion>>,
+        stream_calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Provider for StreamingSequenceProvider {
+        fn name(&self) -> &str {
+            "streaming-sequence"
+        }
+
+        fn model(&self) -> &str {
+            "streaming-sequence"
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+        ) -> wisp_llm::Result<Completion> {
+            Err(LlmError::Config("complete is not used".into()))
+        }
+
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+            sink: &mut dyn wisp_llm::StreamSink,
+        ) -> wisp_llm::Result<Completion> {
+            self.stream_calls.fetch_add(1, Ordering::SeqCst);
+            let completion = self
+                .completions
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or(LlmError::Incomplete)?;
+            // Text arrives in small multi-character deltas, like SSE chunks.
+            let mut rest = completion.content.as_str();
+            while !rest.is_empty() {
+                let cut = rest
+                    .char_indices()
+                    .nth(3)
+                    .map(|(i, c)| i + c.len_utf8())
+                    .unwrap_or(rest.len());
+                let (chunk, tail) = rest.split_at(cut);
+                sink.on_text(chunk);
+                rest = tail;
+            }
+            // Tool-call arguments accumulate across fragments.
+            for (index, tool_call) in completion.tool_calls.iter().enumerate() {
+                let arguments = &tool_call.function.arguments;
+                let mid = arguments.len() / 2;
+                sink.on_tool_call(index, &tool_call.function.name, &arguments[..mid]);
+                sink.on_tool_call(index, &tool_call.function.name, arguments);
+            }
+            sink.on_usage(completion.usage.clone());
+            Ok(completion)
+        }
+    }
+
+    /// Records the text deltas the agent loop forwards through its sink.
+    struct RecordingDeltaOutput {
+        text: Mutex<String>,
+    }
+
+    impl Output for RecordingDeltaOutput {
+        fn assistant_text(&self, delta: &str) {
+            self.text.lock().unwrap().push_str(delta);
+        }
+    }
+
+    #[tokio::test]
+    async fn streamed_deltas_reach_the_sink_and_the_tool_still_executes() {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let provider = StreamingSequenceProvider {
+            completions: Mutex::new(VecDeque::from([
+                Completion {
+                    content: "Running the counter now.".into(),
+                    tool_calls: vec![call("count-1", "counter", serde_json::json!({}))],
+                    finish_reason: Some("tool_calls".into()),
+                    ..Completion::default()
+                },
+                Completion {
+                    content: "计数完成 — the tool ran.".into(),
+                    finish_reason: Some("stop".into()),
+                    ..Completion::default()
+                },
+            ])),
+            stream_calls: AtomicUsize::new(0),
+        };
+        let mut tools = Registry::builtins();
+        tools.add(Box::new(CountingTool {
+            name: "counter",
+            runs: runs.clone(),
+        }));
+        let output = RecordingDeltaOutput {
+            text: Mutex::new(String::new()),
+        };
+        let mut ctx = ContextManager::new(100_000);
+
+        let outcome = agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            Path::new("."),
+            &output,
+            "count once",
+            0,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome, AgentLoopOutcome::Completed);
+        assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            1,
+            "the streamed tool call must execute exactly once"
+        );
+        assert_eq!(
+            *output.text.lock().unwrap(),
+            "Running the counter now.计数完成 — the tool ran.",
+            "every text delta must reach the sink in order, multi-byte intact"
+        );
+        let last = ctx.messages.last().unwrap();
+        assert_eq!(last.role, wisp_llm::Role::Assistant);
+        assert_eq!(last.content.as_text(), "计数完成 — the tool ran.");
+    }
+
+    /// Fails with a retriable 503 `fail_times` times (the same error shape as
+    /// `RetriableStreamProvider`), then plays the queued completions.
+    struct FlakyThenOkProvider {
+        fail_times: usize,
+        stream_calls: AtomicUsize,
+        completions: Mutex<VecDeque<Completion>>,
+    }
+
+    #[async_trait]
+    impl Provider for FlakyThenOkProvider {
+        fn name(&self) -> &str {
+            "flaky-then-ok"
+        }
+
+        fn model(&self) -> &str {
+            "flaky-then-ok"
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+        ) -> wisp_llm::Result<Completion> {
+            Err(LlmError::Config("complete is not used".into()))
+        }
+
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+            _sink: &mut dyn wisp_llm::StreamSink,
+        ) -> wisp_llm::Result<Completion> {
+            let attempt = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+            if attempt < self.fail_times {
+                return Err(LlmError::Api {
+                    status: 503,
+                    body: "overloaded".into(),
+                });
+            }
+            self.completions
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or(LlmError::Incomplete)
+        }
+    }
+
+    // start_paused: retry backoff sleeps (2s + 10s here) auto-advance instead
+    // of stalling the test in real time.
+    #[tokio::test(start_paused = true)]
+    async fn transient_provider_overload_is_retried_until_recovery() {
+        let provider = FlakyThenOkProvider {
+            fail_times: 2,
+            stream_calls: AtomicUsize::new(0),
+            completions: Mutex::new(VecDeque::from([Completion {
+                content: "recovered after overload".into(),
+                finish_reason: Some("stop".into()),
+                ..Completion::default()
+            }])),
+        };
+        let mut ctx = ContextManager::new(100_000);
+
+        let outcome = agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &Registry::builtins().filtered(&[]),
+            Path::new("."),
+            &NullOutput,
+            "keep going through the blip",
+            0,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome, AgentLoopOutcome::Completed);
+        assert_eq!(
+            provider.stream_calls.load(Ordering::SeqCst),
+            3,
+            "two retriable 503s, then the successful attempt"
+        );
+        let last = ctx.messages.last().unwrap();
+        assert_eq!(last.role, wisp_llm::Role::Assistant);
+        assert_eq!(
+            last.content.as_text(),
+            "recovered after overload",
+            "the recovered turn's content must land in context intact"
+        );
     }
 }

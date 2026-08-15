@@ -287,6 +287,15 @@ mod tests {
             .await
             .unwrap());
 
+        // Close and reopen: the disabled state and slot must be durable,
+        // not an artifact of the still-open connection pool.
+        store.pool.close().await;
+        let store = Store::open(&root.join("store.sqlite")).await.unwrap();
+        let reloaded = store.get_schedule("s1").await.unwrap().unwrap();
+        assert!(!reloaded.enabled, "enabled=false must survive reopen");
+        assert_eq!(reloaded.next_run_at, 500, "next_run_at must survive reopen");
+        assert_eq!(reloaded, disabled);
+
         store.delete_schedule("s1").await.unwrap();
         assert_eq!(store.get_schedule("s1").await.unwrap(), None);
 
