@@ -1,9 +1,6 @@
 use super::app_commands::parse_ssh_artifact_uri;
 use super::app_updates::{update_check_from_release, GithubRelease};
-use super::desktop_lifecycle::{
-    should_activate_workspace_window, should_hide_workspace_on_close, PET_WINDOW_HEIGHT,
-    PET_WINDOW_WIDTH,
-};
+use super::desktop_lifecycle::{should_activate_workspace_window, should_hide_workspace_on_close};
 use super::session_commands::transcript_page_items;
 use super::{
     begin_queued_cutin, branch_title, client_turn_error, coalesce_live_agent_events,
@@ -1491,7 +1488,7 @@ fn resolve_workspace_prefers_env_then_setting_then_default() {
     );
     assert!(!default.exists());
 
-    let base = std::env::temp_dir().join(format!("wisp_ws_test_{}", std::process::id()));
+    let base = std::env::temp_dir().join(format!("wisp_ws_test_{}", uuid::Uuid::new_v4()));
     let env_dir = base.join("env");
     let set_dir = base.join("set");
     // A creatable env path wins over the setting, and gets created.
@@ -1632,13 +1629,10 @@ fn specialist_section_marker_detects_prior_append() {
     let mut prompt = String::from("base prompt");
     let section = crate::specialist_prompt_section(&spec);
     // First append happens; a second pass sees the marker and skips.
-    if !prompt.contains("\n\n## Specialist: ") {
-        prompt.push_str(&section);
-    }
-    if !prompt.contains("\n\n## Specialist: ") {
-        prompt.push_str(&section);
-    }
+    crate::append_specialist_section_once(&mut prompt, &section);
+    crate::append_specialist_section_once(&mut prompt, &section);
     assert_eq!(prompt.matches("## Specialist: Paper hunter").count(), 1);
+    assert!(prompt.starts_with("base prompt"));
 }
 
 #[test]
@@ -1709,11 +1703,6 @@ fn windows_close_to_tray_applies_only_to_the_main_window() {
     assert!(should_hide_workspace_on_close("main"));
     assert!(!should_hide_workspace_on_close("proj-default"));
     assert!(!should_hide_workspace_on_close("pet"));
-}
-
-#[test]
-fn windows_pet_window_uses_the_label_safe_viewport() {
-    assert_eq!((PET_WINDOW_WIDTH, PET_WINDOW_HEIGHT), (128, 176));
 }
 
 #[test]
@@ -1998,28 +1987,18 @@ fn queue_reorder_swaps_and_clamps() {
         attachments: vec![],
         references: vec![],
     };
-    let swap_toward = |q: &mut Vec<QueuedItem>, id: u64, up: bool| {
-        if let Some(i) = q.iter().position(|it| it.id == id) {
-            let target = if up {
-                i.checked_sub(1)
-            } else {
-                (i + 1 < q.len()).then_some(i + 1)
-            };
-            if let Some(j) = target {
-                q.swap(i, j);
-            }
-        }
-    };
     let ids = |q: &[QueuedItem]| q.iter().map(|it| it.id).collect::<Vec<_>>();
 
     let mut q = vec![item(1), item(2), item(3)]; // A, B, C
-    swap_toward(&mut q, 3, true); // C up → A, C, B
+    super::swap_queued_toward(&mut q, 3, true); // C up → A, C, B
     assert_eq!(ids(&q), [1, 3, 2]);
-    swap_toward(&mut q, 1, false); // A down → C, A, B
+    super::swap_queued_toward(&mut q, 1, false); // A down → C, A, B
     assert_eq!(ids(&q), [3, 1, 2]);
-    swap_toward(&mut q, 3, true); // C already first → no-op
+    super::swap_queued_toward(&mut q, 3, true); // C already first → no-op
     assert_eq!(ids(&q), [3, 1, 2]);
-    swap_toward(&mut q, 2, false); // B already last → no-op
+    super::swap_queued_toward(&mut q, 2, false); // B already last → no-op
+    assert_eq!(ids(&q), [3, 1, 2]);
+    super::swap_queued_toward(&mut q, 99, true); // unknown id → no-op
     assert_eq!(ids(&q), [3, 1, 2]);
 }
 
@@ -2036,22 +2015,24 @@ fn follow_up_questions_parse_exactly_three_distinct_options() {
 fn startup_timeline_returns_phase_results_and_names_the_slowest_phase() {
     let mut timeline = StartupTimeline::default();
     let fast = timeline.record("fast", || 1_u32);
-    let slow = timeline.record("slow", || {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        "store"
-    });
-
+    let slow = timeline.record("slow", || "store");
     assert_eq!(fast, 1);
     assert_eq!(slow, "store");
+
+    // Pin the measured durations instead of racing wall-clock sleeps, so the
+    // ordering assertions below are deterministic.
+    timeline.phases[0].1 = std::time::Duration::from_millis(1);
+    timeline.phases[1].1 = std::time::Duration::from_millis(20);
+
     let summary = timeline.summary();
-    assert!(summary.starts_with("total="), "{summary}");
-    let slow_at = summary.find("slow=").expect("slow phase reported");
-    let fast_at = summary.find("fast=").expect("fast phase reported");
+    assert!(summary.starts_with("total=21ms"), "{summary}");
+    let slow_at = summary.find("slow=20ms").expect("slow phase reported");
+    let fast_at = summary.find("fast=1ms").expect("fast phase reported");
     assert!(
         slow_at < fast_at,
         "slowest phase must come first: {summary}"
     );
-    assert!(timeline.total() >= std::time::Duration::from_millis(20));
+    assert_eq!(timeline.total(), std::time::Duration::from_millis(21));
 }
 
 #[test]

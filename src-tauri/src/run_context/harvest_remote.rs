@@ -1252,8 +1252,20 @@ mod tests {
         assert!(payload.contains("mv \"$f\" \"$dest\""));
         assert!(payload.contains("persist=\"$HOME/wisp/proj/data/artifacts/r1\""));
         assert!(payload.contains("__WISP_HARVEST_DONE__"));
-        // Remote residency always relocates: the test is constant-true.
-        assert!(payload.contains("[ \"$size\" -gt 0 ]"));
+        // Residency picks the relocation predicate: Remote relocates every
+        // non-empty file (threshold 0), while Auto relocates only files above
+        // the default snapshot limit. Exactly one spec (idx 2, Remote) may
+        // carry the always-move threshold.
+        assert_eq!(payload.matches("[ \"$size\" -gt 0 ]").count(), 1);
+        assert_eq!(
+            payload
+                .matches(&format!(
+                    "[ \"$size\" -gt {} ]",
+                    crate::snapshot_store::DEFAULT_SNAPSHOT_LIMIT
+                ))
+                .count(),
+            1
+        );
     }
 
     #[test]
