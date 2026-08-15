@@ -26,6 +26,12 @@ cargo tauri dev      # hot-reload: Trunk serves the UI, Tauri opens the window
 cargo tauri build    # installers under target/release/bundle
 ```
 
+Desktop icons come from `src-tauri/icons/app-icon.svg` via
+`src-tauri/gen-icons.ps1` (`cargo tauri icon`). That master is full-bleed with
+the DNA mark inset. Do not regenerate from `ui/logo.svg`: the in-app mark bakes
+a rounded clip and fills the canvas, which macOS Dock/Launchpad then masks
+again so the logo looks oversized compared with Linux/Docker.
+
 Universal macOS binary (Apple Silicon + Intel):
 
 ```bash

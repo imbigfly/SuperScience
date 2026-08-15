@@ -2078,3 +2078,30 @@ fn startup_report_grows_as_the_launch_progresses() {
         "total=120ms store=90ms window_ready=600000ms deferred=4200ms"
     );
 }
+
+#[test]
+fn desktop_app_icon_is_full_bleed_with_an_inset_mark() {
+    let svg = include_str!("../icons/app-icon.svg");
+    let script = include_str!("../gen-icons.ps1");
+    assert!(
+        !svg.contains("<clipPath"),
+        "desktop icon must be full-bleed; macOS applies the squircle mask"
+    );
+    assert!(
+        svg.contains("scale(0.75)"),
+        "keep the DNA mark inset so Dock/Launchpad does not fill the tile"
+    );
+    assert!(
+        script
+            .lines()
+            .any(|line| line.contains("Resolve-Path") && line.contains("icons/app-icon.svg")),
+        "icon generation must use the desktop master, not the in-app logo"
+    );
+    assert!(
+        !script.lines().any(|line| {
+            let trimmed = line.trim_start();
+            !trimmed.starts_with('#') && line.contains("ui/logo.svg")
+        }),
+        "do not pass the in-app logo (baked rounded clip) to cargo tauri icon"
+    );
+}
