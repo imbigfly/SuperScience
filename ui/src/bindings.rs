@@ -90,6 +90,7 @@ extern "C" {
     fn attach_chat_scroll(scroller_id: &str, content_id: &str);
     fn notify_chat_scroll(scroller_id: &str);
     fn force_chat_scroll_bottom(scroller_id: &str);
+    fn switch_chat_scroll(scroller_id: &str, session_id: &str);
     fn preserve_chat_scroll_on_prepend(scroller_id: &str, content_id: &str);
     fn jump_chat_scroll(scroller_id: &str, selector: &str);
     fn jump_chat_scroll_last_user(scroller_id: &str);
@@ -129,6 +130,11 @@ pub(crate) fn schedule_chat_follow() {
 /// Force the chat view to jump to the bottom (e.g. after switching sessions).
 pub(crate) fn force_chat_bottom() {
     force_chat_scroll_bottom(CHAT_SCROLLER_ID);
+}
+
+/// Save the previous conversation's position and restore this conversation.
+pub(crate) fn restore_chat_session_scroll(session_id: &str) {
+    switch_chat_scroll(CHAT_SCROLLER_ID, session_id);
 }
 
 /// Re-pin every run output panel to the bottom after a run-list refresh

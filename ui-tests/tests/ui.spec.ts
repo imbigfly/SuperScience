@@ -8642,6 +8642,28 @@ test("opening a long conversation lands at the latest message and stays stable o
     .toBeGreaterThan(readingPosition + 400);
 });
 
+test("switching conversations restores each reading position (#849)", async ({ page }) => {
+  await page.goto("/?mockLongPages=8");
+  await page.locator(".proj-card-main").first().click();
+
+  const scroller = page.locator("#chat-scroller");
+  await expect(page.getByText(/Window page 0 row 19/)).toBeVisible();
+  await scroller.evaluate((element) => {
+    element.scrollTop = Math.max(120, element.scrollHeight / 3);
+    element.dispatchEvent(new WheelEvent("wheel", { deltaY: -80, bubbles: true }));
+  });
+  const readingTop = await scroller.evaluate((element) => element.scrollTop);
+
+  await newSessionButton(page).click();
+  await expect(page.locator(".empty")).toBeVisible();
+  await page.locator(".side-item.ses", { hasText: "Long transcript" }).click();
+  await expect(page.getByText(/Window page 0 row 19/)).toBeVisible();
+  await expect.poll(() => scroller.evaluate((element) => element.scrollTop))
+    .toBeGreaterThan(readingTop - 40);
+  await expect.poll(() => scroller.evaluate((element) => element.scrollTop))
+    .toBeLessThan(readingTop + 40);
+});
+
 test("conversation outline loads and jumps to an older user question", async ({ page }) => {
   await page.goto("/?mockLongSession=1");
   await page.locator(".proj-card-main").first().click();

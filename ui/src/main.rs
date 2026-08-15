@@ -36,8 +36,8 @@ use bindings::{
     force_chat_bottom, invoke, invoke_checked, invoke_timeout, is_mac, is_windows,
     jump_chat_to_item, jump_chat_to_last_user, jump_chat_to_user, listen, listen_current_window,
     listen_native_file_drop, native_drop_in_composer, open_external_url, pasted_image_count,
-    preserve_chat_prepend_position, preview_selection, schedule_chat_follow, set_saved_marks,
-    CHAT_SCROLLER_ID, CHAT_THREAD_ID,
+    preserve_chat_prepend_position, preview_selection, restore_chat_session_scroll,
+    schedule_chat_follow, set_saved_marks, CHAT_SCROLLER_ID, CHAT_THREAD_ID,
 };
 use context_menu::{ContextMenuPortal, CtxMenu};
 use dto::*;
@@ -5049,6 +5049,7 @@ fn App() -> impl IntoView {
                 status.set(t(locale.get(), "status.send_failed").into());
                 return;
             };
+            restore_chat_session_scroll(&id);
             replace_visible_transcript(
                 active_session.get_untracked(),
                 None,
@@ -5308,6 +5309,7 @@ fn App() -> impl IntoView {
         attachments.set(vec![]);
         sel_artifact.set(0);
         right_tab.set(RightTab::Artifacts);
+        restore_chat_session_scroll(&id);
         // Swap the visible transcript before changing the active id. Agent
         // events are app-wide and route by `active_session`; publishing the new
         // id while `items` still belongs to the old frame creates a transition
@@ -5337,7 +5339,7 @@ fn App() -> impl IntoView {
             transcript_pages.update(|pages| {
                 pages.entry(id.clone()).or_default().window_user_start = usize::MAX;
             });
-            force_chat_bottom();
+            restore_chat_session_scroll(&id);
             // Still retarget the backend's viewed-session marker so uploads
             // attach here (#194). Not `load_session`: that would overwrite the
             // running turn's persisted seq with the DB snapshot.
@@ -5401,7 +5403,7 @@ fn App() -> impl IntoView {
                             ));
                         }
                     }
-                    force_chat_bottom();
+                    restore_chat_session_scroll(&id);
                 } else {
                     transcripts.update(|m| {
                         m.insert(id.clone(), chats);

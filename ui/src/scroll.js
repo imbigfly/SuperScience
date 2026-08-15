@@ -1,6 +1,7 @@
 // Chat scroll follow (mirrors web-dist ConversationView pinned-at-bottom behavior).
 
 const hooks = new Map();
+const chatPositions = new Map();
 
 // ponytail: single chat scroller, so the jump pill id is a constant.
 const JUMP_PILL_ID = "chat-jump-pill";
@@ -32,6 +33,8 @@ export function attach_chat_scroll(scrollerId, contentId) {
   let follow = true;
   let lastHeight = content.scrollHeight;
   let readingTop = scroller.scrollTop;
+  let activeSession = null;
+  let restoreGeneration = 0;
   let hidden = false;
   const setFollow = (value) => {
     follow = value;
@@ -162,10 +165,48 @@ export function attach_chat_scroll(scrollerId, contentId) {
         });
       });
     },
+    switchSession: (sessionId) => {
+      if (activeSession !== sessionId) {
+        if (activeSession) {
+          chatPositions.set(activeSession, {
+            top: scroller.scrollTop,
+            follow,
+          });
+        }
+        activeSession = sessionId;
+      }
+
+      const generation = ++restoreGeneration;
+      const saved = chatPositions.get(sessionId);
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (generation !== restoreGeneration || activeSession !== sessionId) return;
+          if (!saved || saved.follow) {
+            setFollow(true);
+            snapBottom(scroller);
+          } else {
+            setFollow(false);
+            const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+            readingTop = Math.min(saved.top, max);
+            scroller.scrollTop = readingTop;
+          }
+          lastHeight = content.scrollHeight;
+          syncPill();
+        });
+      });
+    },
   });
 
   setFollow(true);
   snapBottom(scroller);
+}
+
+/** Save the previous conversation and restore this conversation after render.
+ * Calling this again for the same session reapplies its saved position after an
+ * asynchronous transcript load without overwriting the saved state.
+ * @param {string} scrollerId @param {string} sessionId */
+export function switch_chat_scroll(scrollerId, sessionId) {
+  hooks.get(scrollerId)?.switchSession(sessionId);
 }
 
 /** @param {string} scrollerId */
