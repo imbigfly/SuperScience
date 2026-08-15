@@ -2364,6 +2364,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               locale: mockLocale,
               max_iter: 100,
               auto_compact: true,
+              auto_continue: false,
+              auto_continue_limit: 10,
               follow_up_questions: true,
               resume_last_session: true,
               max_tokens: 4096,
@@ -4369,6 +4371,16 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             }
             if (String(msg).includes("POSTSTARTFAIL")) {
               throw new Error("[turn-started] execution failed after turn/start");
+            }
+            if (String(msg).includes("AUTOCONTINUE")) {
+              setTimeout(() => {
+                emit("agent", { kind: "User", frame_id: fid, text: msg });
+                emit("agent", { kind: "Text", frame_id: fid, delta: "First segment. " });
+                emit("agent", { kind: "Compaction", frame_id: fid, before: 1, after: 10, strategy: "auto_continue" });
+                emit("agent", { kind: "Text", frame_id: fid, delta: "Final segment." });
+                emit("agent", { kind: "Done", frame_id: fid });
+              }, 30);
+              return fid;
             }
             if (String(msg).includes("SHARETHINK")) {
               // Fixture for /share: a turn with a visible thinking block, so

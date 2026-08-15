@@ -1562,6 +1562,10 @@ pub(crate) struct Settings {
     pub(crate) max_iter: i64,
     #[serde(default = "default_auto_compact")]
     pub(crate) auto_compact: bool,
+    #[serde(default)]
+    pub(crate) auto_continue: bool,
+    #[serde(default = "default_auto_continue_limit")]
+    pub(crate) auto_continue_limit: u64,
     #[serde(default = "default_follow_up_questions")]
     pub(crate) follow_up_questions: bool,
     #[serde(default = "default_resume_last_session")]
@@ -1618,6 +1622,10 @@ fn default_notifications_enabled() -> bool {
 
 fn default_auto_compact() -> bool {
     true
+}
+
+fn default_auto_continue_limit() -> u64 {
+    10
 }
 
 fn default_follow_up_questions() -> bool {
@@ -1740,6 +1748,8 @@ impl Default for Settings {
             workspace_dir: String::new(),
             max_iter: default_max_iter(),
             auto_compact: true,
+            auto_continue: false,
+            auto_continue_limit: default_auto_continue_limit(),
             follow_up_questions: true,
             resume_last_session: true,
             max_tokens: 8192,

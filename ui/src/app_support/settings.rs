@@ -11,6 +11,7 @@ pub(crate) fn normalize_settings_mut(cfg: &mut Settings) {
     };
     cfg.sync_relay_url = cfg.sync_relay_url.trim().into();
     cfg.sync_folder = cfg.sync_folder.trim().into();
+    cfg.auto_continue_limit = cfg.auto_continue_limit.max(1);
 }
 
 pub(crate) fn normalized_settings(mut cfg: Settings) -> Settings {

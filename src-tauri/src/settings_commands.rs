@@ -123,6 +123,8 @@ pub(super) async fn get_settings(state: State<'_, AppState>) -> Result<Settings,
         .unwrap_or_default();
     let notifications_enabled = super::load_notifications_enabled(&state.store).await;
     let auto_compact = super::load_auto_compact_enabled(&state.store).await;
+    let (auto_continue, auto_continue_limit) =
+        super::load_auto_continue_settings(&state.store).await;
     let follow_up_questions = state
         .store
         .get_setting("follow_up_questions")
@@ -156,6 +158,8 @@ pub(super) async fn get_settings(state: State<'_, AppState>) -> Result<Settings,
         workspace_dir,
         max_iter,
         auto_compact,
+        auto_continue,
+        auto_continue_limit: auto_continue_limit as u64,
         follow_up_questions,
         resume_last_session,
         max_tokens,
@@ -320,6 +324,19 @@ pub(super) async fn set_settings(
     state
         .store
         .set_setting("auto_compact", &settings.auto_compact.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    state
+        .store
+        .set_setting("auto_continue", &settings.auto_continue.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    state
+        .store
+        .set_setting(
+            "auto_continue_limit",
+            &settings.auto_continue_limit.max(1).to_string(),
+        )
         .await
         .map_err(|e| e.to_string())?;
     state

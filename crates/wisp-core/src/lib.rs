@@ -279,6 +279,10 @@ impl Agent {
         self.ctx.set_auto_compact(enabled);
     }
 
+    pub fn set_auto_continue(&mut self, enabled: bool, limit: usize) {
+        self.ctx.set_auto_continue(enabled, limit);
+    }
+
     /// Register an extra tool (e.g. the Python `repl` tool or MCP tools).
     pub fn add_tool(&mut self, tool: Box<dyn wisp_tools::Tool>) {
         self.tools.add(tool);
