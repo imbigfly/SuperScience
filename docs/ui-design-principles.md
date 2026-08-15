@@ -30,6 +30,7 @@
 
 - The composer keeps its top-edge resize affordance invisible at rest while preserving the full-width drag target and persisted custom height.
 - Context usage sits immediately left of the model picker as a number-free gauge; its needle sweeps from upper-left to upper-right as the active conversation fills its context window.
+- The context-usage panel opens docked in the composer column, pushing the transcript up instead of covering it. Dragging the header undocks it into a floating window that stays open while typing; a dock button or double-click returns it. There is no full-screen click-swallowing backdrop.
 - Context-usage category rows use semantic elevated, sunken, hover, and accent tokens rather than native button fills, so every light and dark palette keeps the panel visually consistent.
 - Files, images, skills, artifacts, conversations, execution environments, and runtime references must remain visually distinguishable before and after send.
 - Image attachments use a real thumbnail when the project file is readable. Other files use a document card with a filename and type label.

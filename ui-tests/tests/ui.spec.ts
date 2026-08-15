@@ -2499,6 +2499,220 @@ test("context usage keeps the running agent window until a model switch boundary
     getComputedStyle(el).getPropertyValue("--context-gauge-angle").trim())).toBe("-54.0deg");
 });
 
+async function openContextUsagePanel(page: Page) {
+  await page.locator("#composer-input").fill("CONTEXTUSAGE");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  const trigger = page.getByTestId("context-usage-trigger");
+  await expect.poll(() => trigger.evaluate((el) =>
+    getComputedStyle(el).getPropertyValue("--context-gauge-angle").trim())).toBe("-34.2deg");
+  await trigger.click();
+  const panel = page.getByTestId("context-usage-panel");
+  await expect(panel).toBeVisible();
+  await expect.poll(() => panel.evaluate((el) => (el as HTMLElement).offsetHeight)).toBeGreaterThan(80);
+  return { trigger, panel };
+}
+
+test("context usage docks above the composer without covering the latest reply", async ({ page }) => {
+  await page.setViewportSize({ width: 1516, height: 900 });
+  await enterApp(page);
+  const { trigger, panel } = await openContextUsagePanel(page);
+
+  await expect(panel).toHaveAttribute("data-mode", "docked");
+  await expect(page.locator(".context-usage-backdrop")).toHaveCount(0);
+  await expect.poll(async () => page.evaluate(() => {
+    const chat = document.getElementById("chat-scroller")?.getBoundingClientRect();
+    const card = document.querySelector("[data-testid='context-usage-panel']")?.getBoundingClientRect();
+    if (!chat || !card) return false;
+    const stacked = card.top >= chat.bottom - 2;
+    const chatStillOpen = chat.height > 40;
+    return stacked && chatStillOpen;
+  })).toBe(true);
+  const lastBox = await page.getByText("Context usage is ready.").boundingBox();
+  const panelBox = await panel.boundingBox();
+  expect(lastBox).not.toBeNull();
+  expect(panelBox).not.toBeNull();
+  const covered = lastBox!.y + lastBox!.height > panelBox!.y + 2
+    && lastBox!.y < panelBox!.y + panelBox!.height - 2;
+  expect(covered).toBe(false);
+  expect(panelBox!.height).toBeLessThanOrEqual(page.viewportSize()!.height * 0.46 + 4);
+
+  const widths = await page.evaluate(() => {
+    const panelEl = document.querySelector(
+      "[data-testid='context-usage-panel']",
+    ) as HTMLElement | null;
+    const composerEl = document.querySelector(".composer-inner") as HTMLElement | null;
+    return {
+      panel: panelEl?.offsetWidth ?? 0,
+      composerClient: composerEl?.clientWidth ?? 0,
+    };
+  });
+  expect(Math.abs(widths.panel - widths.composerClient)).toBeLessThan(4);
+
+  await page.keyboard.press("Escape");
+  await expect(panel).toHaveCount(0);
+  await expect(page.getByText("Context usage is ready.")).toBeInViewport();
+  await expect(trigger).toBeVisible();
+});
+
+test("docked context usage lets the first outside click land", async ({ page }) => {
+  await enterApp(page);
+  const { panel } = await openContextUsagePanel(page);
+
+  const input = page.locator("#composer-input");
+  await input.click();
+  await expect(panel).toHaveCount(0);
+  await expect(input).toBeFocused();
+
+  await page.getByTestId("context-usage-trigger").click();
+  await expect(page.getByTestId("context-usage-panel")).toBeVisible();
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  await expect(page.getByTestId("context-usage-panel")).toHaveCount(0);
+  await expect(page.locator(".rightpane")).toBeVisible();
+});
+
+test("context usage can float, stay open while typing, and remember geometry", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await enterApp(page);
+  const { trigger, panel } = await openContextUsagePanel(page);
+
+  const head = page.getByTestId("context-usage-head");
+  const start = await head.boundingBox();
+  expect(start).not.toBeNull();
+  await page.mouse.move(start!.x + 48, start!.y + start!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(start!.x + 220, start!.y - 120, { steps: 10 });
+  await page.mouse.up();
+
+  await expect.poll(() => panel.getAttribute("data-mode")).toBe("floating");
+  await expect(page.getByTestId("context-usage-dock")).toBeVisible();
+  await expect(page.getByTestId("context-usage-resize")).toBeVisible();
+  const floated = await panel.boundingBox();
+  expect(floated).not.toBeNull();
+  expect(floated!.x).toBeGreaterThanOrEqual(0);
+  expect(floated!.y).toBeGreaterThanOrEqual(0);
+  expect(floated!.x + floated!.width).toBeLessThanOrEqual(1280);
+  expect(floated!.y + floated!.height).toBeLessThanOrEqual(800);
+
+  const input = page.locator("#composer-input");
+  await input.click();
+  await expect(panel).toBeVisible();
+  await input.fill("still here");
+  await expect(input).toHaveValue("still here");
+  await expect(panel).toBeVisible();
+
+  await page.locator(".inbox-wrap .icon-btn").click();
+  await expect(page.locator(".inbox-drop")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".inbox-drop")).toHaveCount(0);
+  await expect(panel).toBeVisible();
+
+  const parked = await panel.boundingBox();
+  await page.keyboard.press("Escape");
+  await expect(panel).toHaveCount(0);
+  await trigger.click();
+  await expect(panel).toBeVisible();
+  await expect(panel).toHaveAttribute("data-mode", "floating");
+  await expect.poll(async () => {
+    const restored = await panel.boundingBox();
+    return restored && Math.abs(restored.x - parked!.x) < 3 && Math.abs(restored.y - parked!.y) < 3;
+  }).toBe(true);
+
+  await page.getByTestId("context-usage-dock").click();
+  await expect.poll(() => panel.getAttribute("data-mode")).toBe("docked");
+  await expect(page.getByTestId("context-usage-resize")).toHaveCount(0);
+
+  await page.mouse.move(start!.x + 48, start!.y + start!.height / 2);
+  const headAgain = await head.boundingBox();
+  await page.mouse.move(headAgain!.x + 48, headAgain!.y + headAgain!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(headAgain!.x + 180, headAgain!.y - 90, { steps: 8 });
+  await page.mouse.up();
+  await expect.poll(() => panel.getAttribute("data-mode")).toBe("floating");
+  await head.dblclick();
+  await expect.poll(() => panel.getAttribute("data-mode")).toBe("docked");
+});
+
+test("floating context usage resizes and reflows the bar and details", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await enterApp(page);
+  const { panel } = await openContextUsagePanel(page);
+  const head = page.getByTestId("context-usage-head");
+  const start = await head.boundingBox();
+  await page.mouse.move(start!.x + 40, start!.y + start!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(start!.x + 80, start!.y - 40, { steps: 6 });
+  await page.mouse.up();
+  await expect.poll(() => panel.getAttribute("data-mode")).toBe("floating");
+
+  await panel.getByText("System prompt", { exact: true }).click();
+  const detail = panel.locator(".context-usage-detail");
+  await expect(detail).toBeVisible();
+
+  // Park the floating card toward the top-left so the corner grip has room
+  // to grow before hitting the window clamp.
+  await page.evaluate(() => {
+    const el = document.querySelector("[data-testid='context-usage-panel']") as HTMLElement;
+    el.style.left = "24px";
+    el.style.top = "24px";
+    el.style.width = "360px";
+    el.style.height = "280px";
+    el.style.setProperty("--context-usage-h", "280px");
+  });
+  const before = await panel.boundingBox();
+  const detailBefore = await detail.boundingBox();
+  expect(before).not.toBeNull();
+  expect(detailBefore).not.toBeNull();
+
+  const grip = page.getByTestId("context-usage-resize");
+  const gripBox = await grip.boundingBox();
+  expect(gripBox).not.toBeNull();
+  await page.mouse.move(gripBox!.x + gripBox!.width / 2, gripBox!.y + gripBox!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(gripBox!.x + 160, gripBox!.y + 120, { steps: 8 });
+  await page.mouse.up();
+
+  await expect.poll(async () => (await panel.boundingBox())!.width).toBeGreaterThan(before!.width + 40);
+  await expect.poll(async () => (await panel.boundingBox())!.height).toBeGreaterThan(before!.height + 40);
+  const after = await panel.boundingBox();
+  const barAfter = await panel.locator(".context-usage-bar").boundingBox();
+  const detailAfter = await detail.boundingBox();
+  expect(after).not.toBeNull();
+  expect(barAfter).not.toBeNull();
+  expect(detailAfter).not.toBeNull();
+  expect(Math.abs(after!.width - barAfter!.width)).toBeLessThan(56);
+  expect(detailAfter!.height).toBeGreaterThan(detailBefore!.height);
+
+  await page.mouse.move(gripBox!.x + 140, gripBox!.y + 110);
+  await page.mouse.down();
+  await page.mouse.move(after!.x + 10, after!.y + 10, { steps: 8 });
+  await page.mouse.up();
+  const clamped = await panel.boundingBox();
+  expect(clamped!.width).toBeGreaterThanOrEqual(320);
+  expect(clamped!.height).toBeGreaterThanOrEqual(220);
+});
+
+test("context usage stays docked and clamped in a narrow window", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 640 });
+  await enterApp(page);
+  const { panel } = await openContextUsagePanel(page);
+  await expect(panel).toHaveAttribute("data-mode", "docked");
+  const docked = await panel.boundingBox();
+  expect(docked!.height).toBeLessThanOrEqual(640 * 0.46 + 4);
+
+  const head = page.getByTestId("context-usage-head");
+  const start = await head.boundingBox();
+  await page.mouse.move(start!.x + 30, start!.y + start!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(20, 20, { steps: 8 });
+  await page.mouse.up();
+  await expect.poll(() => panel.getAttribute("data-mode")).toBe("floating");
+  const floated = await panel.boundingBox();
+  expect(floated!.x).toBeGreaterThanOrEqual(0);
+  expect(floated!.y).toBeGreaterThanOrEqual(0);
+  expect(floated!.x + floated!.width).toBeLessThanOrEqual(900);
+  expect(floated!.y + floated!.height).toBeLessThanOrEqual(640);
+});
+
 test("artifact type badges stay neutral instead of rainbow pills", async ({ page }) => {
   await enterApp(page);
   await page
