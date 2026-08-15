@@ -179,6 +179,48 @@ pub(super) async fn pick_executable_file(app: AppHandle) -> Result<Option<String
     Ok(picked.map(|fp| fp.to_string()))
 }
 
+/// Upload local files or directories into the remote directory shown in Files.
+/// When `source_paths` is omitted, opens the native multi-file picker.
+#[tauri::command]
+pub(super) async fn upload_to_context(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    context_id: String,
+    destination_dir: String,
+    source_paths: Option<Vec<String>>,
+) -> Result<Vec<crate::run_context::UploadToContextItem>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let paths = match source_paths {
+        Some(paths) if !paths.is_empty() => paths,
+        Some(_) => return Ok(Vec::new()),
+        None => {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            app.dialog().file().pick_files(move |picked| {
+                let _ = tx.send(picked);
+            });
+            match rx.await.map_err(|e| format!("{e}"))? {
+                Some(files) if !files.is_empty() => {
+                    files.into_iter().map(|path| path.to_string()).collect()
+                }
+                _ => return Ok(Vec::new()),
+            }
+        }
+    };
+    let ap = state.active(window.label());
+    let frame_id = state.active_frame(window.label());
+    crate::run_context::submit_local_uploads_to_context(
+        &state.store,
+        &state.run_manager,
+        &ap.id,
+        frame_id.as_deref(),
+        &context_id,
+        &destination_dir,
+        &paths,
+    )
+    .await
+}
+
 /// Copy a workspace file to a user-chosen location via the native save dialog.
 /// Returns the saved path, or `None` if the user cancelled.
 pub(super) fn parse_ssh_artifact_uri(uri: &str) -> Option<(String, String)> {

@@ -41,10 +41,14 @@ conversation.
 
 ## Upload from the local machine
 
-Set `source_context_id` to `local`, provide an exact existing absolute local
-path, and select an SSH destination. Local uploads accept `route=auto|relay`
-and `transport=auto|scp`. Globs, roots, missing paths, symbolic links, and
-special files are rejected.
+From the Files panel, select an SSH context, open the destination folder, and
+use **Upload** or drop local files onto the panel. That path does not require
+the agent: it submits the same `file_transfer` Run used by the tool.
+
+The agent can still call `transfer_between_contexts`. Set `source_context_id`
+to `local`, provide an exact existing absolute local path, and select an SSH
+destination. Local uploads accept `route=auto|relay` and `transport=auto|scp`.
+Globs, roots, missing paths, symbolic links, and special files are rejected.
 
 Before uploading, Wisp checks through the configured SSH connection that the
 exact remote destination does not exist. It then uploads with scp as a

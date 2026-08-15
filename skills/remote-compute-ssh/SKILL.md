@@ -129,8 +129,13 @@ Use `transfer_between_contexts` for one exact remote file or directory. The
 destination may be another selected SSH context or `local`. Never compose
 nested `ssh`, `scp`, or `rsync -e ssh` inside `run_in_context`.
 
-For a local upload, set `source_context_id` to `local`, provide the exact
-existing absolute local file or directory, and select an SSH destination.
+Users can also upload from the Files panel: select the SSH context, open the
+destination folder, then use **Upload** or drop local files. That UI path
+submits the same `file_transfer` Run and does not require this tool.
+
+For a local upload via the agent, set `source_context_id` to `local`, provide
+the exact existing absolute local file or directory, and select an SSH
+destination.
 Omit `destination_path` to place the file under the project's configured
 remote data directory for that server. Wisp rejects globs, symlinks, special
 files, and existing remote destinations, and ledgers every successful upload

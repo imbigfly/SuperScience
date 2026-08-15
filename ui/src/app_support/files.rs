@@ -1,5 +1,60 @@
 use super::*;
 
+pub(crate) fn native_drop_remote_target_value(payload: JsValue) -> Option<(String, String)> {
+    let value = native_drop_remote_target(payload);
+    let parsed = serde_wasm_bindgen::from_value::<serde_json::Value>(value).ok()?;
+    let context_id = parsed.get("contextId")?.as_str()?.to_string();
+    let destination_dir = parsed.get("destinationDir")?.as_str()?.to_string();
+    if context_id.is_empty() || context_id == "local" {
+        None
+    } else {
+        Some((context_id, destination_dir))
+    }
+}
+
+pub(crate) fn upload_to_remote_context(
+    context_id: String,
+    destination_dir: String,
+    source_paths: Option<Vec<String>>,
+    uploading: RwSignal<bool>,
+    refresh_tick: RwSignal<u32>,
+) {
+    if uploading.get_untracked() {
+        return;
+    }
+    uploading.set(true);
+    spawn_local(async move {
+        let mut payload = serde_json::json!({
+            "contextId": context_id,
+            "destinationDir": destination_dir,
+        });
+        if let Some(paths) = source_paths {
+            payload["sourcePaths"] = serde_json::json!(paths);
+        }
+        let result = invoke_checked("upload_to_context", to_value(&payload).unwrap()).await;
+        uploading.set(false);
+        match result {
+            Ok(value) => match serde_wasm_bindgen::from_value::<Vec<UploadToContextItem>>(value) {
+                Ok(items) if items.is_empty() => {}
+                Ok(items) => {
+                    let loc = use_locale().get_untracked();
+                    show_toast(&tf(
+                        loc,
+                        "files.upload_started",
+                        &[("n", &items.len().to_string())],
+                    ));
+                    refresh_tick.update(|tick| *tick = tick.saturating_add(1));
+                }
+                Err(error) => show_toast(&error.to_string()),
+            },
+            Err(error) => {
+                let loc = use_locale().get_untracked();
+                show_toast(&localize_backend(loc, &js_error_text(error)));
+            }
+        }
+    });
+}
+
 pub(crate) fn refresh_dir(cwd: RwSignal<String>, entries: RwSignal<Vec<DirEntry>>) {
     spawn_local(async move {
         let path = cwd.get();

@@ -3620,6 +3620,17 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             workspaceEntries = workspaceEntries.filter((entry) => entry.path !== path && !entry.path.startsWith(`${path}/`));
             return null;
           }
+          case "upload_to_context": {
+            const dest = String(arg("destinationDir") ?? "/home/research");
+            const paths = Array.isArray(arg("sourcePaths")) ? arg("sourcePaths") : ["/mock/local/counts.csv"];
+            const name = String(paths[0] ?? "counts.csv").split(/[\\/]/).pop() || "counts.csv";
+            return [{
+              sourcePath: String(paths[0] ?? "/mock/local/counts.csv"),
+              destinationPath: `${dest.replace(/\/$/, "")}/${name}`,
+              runId: "run-upload-1",
+              status: "running",
+            }];
+          }
           case "list_remote_dir": {
             const path = String(arg("path") ?? "~");
             if (path === "/home/research/projects") {
@@ -5152,6 +5163,12 @@ export function parallelMock(): void {
             message_count: 3, artifact_count: 0, missing_artifacts: [],
           };
           case "upload_file": return { id: "a", name: "x", kind: "text/csv", path: "x", ts: 1 };
+          case "upload_to_context": return [{
+            sourcePath: "/mock/local/counts.csv",
+            destinationPath: "/home/research/counts.csv",
+            runId: "run-upload-1",
+            status: "running",
+          }];
           case "new_session": return `s-${Math.random().toString(36).slice(2)}`;
           case "start_scratch_chat": {
             scratchOpen = true;
