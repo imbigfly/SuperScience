@@ -2626,7 +2626,7 @@ fn App() -> impl IntoView {
                 if browser_retrieval_blocked(&name, ok, &content) {
                     let retry_text = if active_cb.get_untracked().as_deref() == Some(frame_id.as_str())
                     {
-                        items_cb.with_untracked(last_user_composer_text)
+                        items_cb.with_untracked(|rows| last_user_composer_text(rows))
                     } else {
                         transcripts_cb.with_untracked(|cache| {
                             cache
@@ -2676,7 +2676,7 @@ fn App() -> impl IntoView {
                 } else if presentation_kind == BROWSER_DISCONNECTED_KIND {
                     let retry_text = if active_cb.get_untracked().as_deref() == Some(frame_id.as_str())
                     {
-                        items_cb.with_untracked(last_user_composer_text)
+                        items_cb.with_untracked(|rows| last_user_composer_text(rows))
                     } else {
                         transcripts_cb.with_untracked(|cache| {
                             cache
