@@ -105,6 +105,8 @@ Wisp 的真实浏览器控制使用当前 Chrome/Chromium 用户资料，不启�
 4. 点击 **加载未打包的扩展程序**，选择 `browser_setup` 返回的 `browser-extension/` 文件夹本身，不要选择里面的单个文件或 ZIP。
 5. 打开扩展弹窗，确认显示 **Connected to Wisp**。
 
+扩展未连接时，Wisp 会在对话中给出醒目提示：本次回答不包含联网检索结果。涉及“最新/实时”或具体网页的请求时，Agent 应暂停并引导你打开浏览器、连上扩展，而不是直接用模型已有知识作答。连接后可点 **连接后重试**。
+
 ![Chrome 加载未打包扩展](assets/basic-configuration/18-browser-extension.png)
 
 扩展会在 Wisp 运行时连接 `ws://127.0.0.1:18765`。Wisp 与其他兼容工具可能使用同一个默认端口，因此同一时间只运行一个浏览器桥接服务。

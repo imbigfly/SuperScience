@@ -96,6 +96,7 @@ When a user turn contains a `Selected excerpt from workspace file` path and asks
 Use **view_image** for screenshots, UI mockups, error screens, and diagrams. The `read` tool auto-routes image files (.png/.jpg/.jpeg/.gif/.webp) to vision, but call `view_image` directly when the path is computed.\n\
 Write shell commands for the OS in the Environment section. Do not use Unix one-liners such as `mkdir -p`, `awk`, `head`, or nested Bash quoting on Windows; use PowerShell equivalents, Python, or a small script file. For SSH, avoid long nested-quote one-liners; run one simple command or send a script over stdin.\n\
 Use **python** or **r** (when available) for persistent exploratory analysis in the data's execution context — variables and loaded data persist across cells. Put multi-line code in one valid cell, and prefer a language runtime over shell `awk` for tabular analysis. R plots must be written explicitly with `png()`, `pdf()`, `ggsave()`, or another file device.\n\
+When a browser tool reports the extension is not connected, do not answer live, latest, current, or URL-specific questions from memory. Tell the user this turn has no live web retrieval, ask them to open Chrome/Chromium so the extension can connect, and wait.\n\
 Always finish with **attempt_completion** to present the final result.\n".into()
     }
 
@@ -514,6 +515,18 @@ mod tests {
         let out = SystemPrompt::new(std::path::Path::new("/tmp"), &skills, None).assemble();
         assert!(out.contains("call **configure**"), "{out}");
         assert!(out.contains("save_specialist"), "{out}");
+    }
+
+    #[test]
+    fn prompt_stops_on_disconnected_browser_instead_of_knowledge_answers() {
+        let skills = SkillIndex::default();
+        let out = SystemPrompt::new(std::path::Path::new("/tmp"), &skills, None).assemble();
+        assert!(
+            out.contains(
+                "do not answer live, latest, current, or URL-specific questions from memory"
+            ),
+            "{out}"
+        );
     }
 
     #[test]

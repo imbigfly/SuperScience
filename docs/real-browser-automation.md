@@ -30,6 +30,13 @@ exact extension directory on that installation, and the following steps.
    never translates it between Windows, WSL, macOS, or Linux path formats.
 5. Open the extension popup and confirm that it says **Connected to Wisp**.
 
+If the extension is not connected, live page retrieval fails closed. Wisp
+shows a chat banner that the current answer includes no live web results,
+and the Agent must stop on live, latest, current, or URL-specific requests
+instead of answering from memory. After Chrome is open and the popup shows
+**Connected to Wisp**, use **Retry after connecting** to run the same
+request again.
+
 The unpacked extension remains installed in that browser profile across Wisp
 and browser restarts. It reconnects to `ws://127.0.0.1:18765` when Wisp is
 running. Only loopback connections whose WebSocket origin is a Chrome extension

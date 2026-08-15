@@ -947,6 +947,9 @@ fn App() -> impl IntoView {
     let update_check_modal = create_rw_signal::<Option<UpdateCheckModal>>(None);
     // Newer release found by the silent auto-check → sidebar prompt card.
     let update_banner = create_rw_signal::<Option<AvailableUpdate>>(None);
+    // Live web retrieval failed because the Chrome extension is disconnected.
+    // Root-owned so Escape can dismiss it without first focusing the banner.
+    let browser_offline_notice = create_rw_signal::<Option<BrowserOfflineNotice>>(None);
     // "不再提醒更新" opt-out; loaded on startup, mirrored by the settings toggle.
     let update_check_enabled = create_rw_signal(true);
     // Set when a send fails because no API key is configured, so the status bar
@@ -2237,6 +2240,7 @@ fn App() -> impl IntoView {
     let items_cb = items;
     let active_cb = active_session;
     let transcripts_cb = transcripts;
+    let browser_offline_cb = browser_offline_notice;
     let running_cb = running;
     let pending_cb = pending_turns;
     let approval_cb = approval_pending;
@@ -2619,6 +2623,29 @@ fn App() -> impl IntoView {
                         promote_assistant_text(v, &content);
                     }
                 });
+                if browser_retrieval_blocked(&name, ok, &content) {
+                    let retry_text = if active_cb.get_untracked().as_deref() == Some(frame_id.as_str())
+                    {
+                        items_cb.with_untracked(|rows| last_user_composer_text(rows))
+                    } else {
+                        transcripts_cb.with_untracked(|cache| {
+                            cache
+                                .get(&frame_id)
+                                .map(|rows| last_user_composer_text(rows))
+                                .unwrap_or_default()
+                        })
+                    };
+                    browser_offline_cb.set(Some(BrowserOfflineNotice {
+                        frame_id: frame_id.clone(),
+                        retry_text,
+                    }));
+                } else if browser_retrieval_restored(&name, ok) {
+                    browser_offline_cb.update(|notice| {
+                        if notice.as_ref().is_some_and(|row| row.frame_id == frame_id) {
+                            *notice = None;
+                        }
+                    });
+                }
                 refresh_transcript_projections(&frame_id);
             }
             AgentEvent::ToolPresentation {
@@ -2646,6 +2673,22 @@ fn App() -> impl IntoView {
                     && active_cb.get_untracked().as_deref() == Some(frame_id.as_str())
                 {
                     show_mcp_app.call((frame_id, presentation_id, payload, true));
+                } else if presentation_kind == BROWSER_DISCONNECTED_KIND {
+                    let retry_text = if active_cb.get_untracked().as_deref() == Some(frame_id.as_str())
+                    {
+                        items_cb.with_untracked(|rows| last_user_composer_text(rows))
+                    } else {
+                        transcripts_cb.with_untracked(|cache| {
+                            cache
+                                .get(&frame_id)
+                                .map(|rows| last_user_composer_text(rows))
+                                .unwrap_or_default()
+                        })
+                    };
+                    browser_offline_cb.set(Some(BrowserOfflineNotice {
+                        frame_id,
+                        retry_text,
+                    }));
                 }
             }
             AgentEvent::Usage {
@@ -5696,7 +5739,17 @@ fn App() -> impl IntoView {
                 // switch could have moved on while the load was in flight, and an
                 // unguarded set would clobber the newer view with stale rows (#53).
                 if active_session.get().as_deref() == Some(&id) {
-                    items.set(chats);
+                    items.set(chats.clone());
+                    if let Some(notice) = browser_offline_notice_from_items(&id, &chats) {
+                        browser_offline_notice.set(Some(notice));
+                    } else if presentations.iter().any(|presentation| {
+                        presentation.presentation_kind == BROWSER_DISCONNECTED_KIND
+                    }) {
+                        browser_offline_notice.set(Some(BrowserOfflineNotice {
+                            frame_id: id.clone(),
+                            retry_text: last_user_composer_text(&chats),
+                        }));
+                    }
                     for presentation in presentations {
                         if presentation.presentation_kind == "mcp_app" {
                             show_mcp_app.call((
@@ -8607,6 +8660,12 @@ fn App() -> impl IntoView {
         {
             ev.prevent_default();
             project_transfer.set(None);
+            return;
+        }
+
+        if browser_offline_notice.get().is_some() {
+            ev.prevent_default();
+            browser_offline_notice.set(None);
             return;
         }
 
@@ -11614,6 +11673,38 @@ fn App() -> impl IntoView {
             <div class="composer"
                 class:center-hidden=move || center_file_open.get() && !center_split.get()
                 class:demo-read-only=move || demo_mode.get()>
+                {move || {
+                    let Some(notice) = browser_offline_notice.get() else {
+                        return None;
+                    };
+                    (active_session.get().as_deref() == Some(notice.frame_id.as_str())).then(|| {
+                        let retry_text = notice.retry_text.clone();
+                        let can_retry = !retry_text.trim().is_empty();
+                        view! {
+                            <section class="exploration-banner browser-offline" data-testid="browser-offline-banner" role="status">
+                                <div class="exploration-banner-copy">
+                                    <span class="exploration-banner-eyebrow">{t(locale.get(), "browser.offline.eyebrow")}</span>
+                                    <strong>{t(locale.get(), "browser.offline.title")}</strong>
+                                    <span>{t(locale.get(), "browser.offline.body")}</span>
+                                </div>
+                                <div class="exploration-banner-actions">
+                                    <button type="button" class="primary"
+                                        disabled=!can_retry
+                                        on:click=move |_| {
+                                            if retry_text.trim().is_empty() {
+                                                return;
+                                            }
+                                            input.set(retry_text.clone());
+                                            browser_offline_notice.set(None);
+                                            send.call(ComposerSendAction::Normal);
+                                        }>{t(locale.get(), "browser.offline.retry")}</button>
+                                    <button type="button"
+                                        on:click=move |_| browser_offline_notice.set(None)>{t(locale.get(), "browser.offline.dismiss")}</button>
+                                </div>
+                            </section>
+                        }
+                    })
+                }}
                 {move || demo_mode.get().then(|| view! {
                     <div class="demo-read-only-notice" data-testid="demo-read-only" role="status">
                         {t(locale.get(), "projects.example_read_only")}
