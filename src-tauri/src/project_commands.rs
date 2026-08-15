@@ -559,16 +559,18 @@ pub(super) async fn get_project_settings(
 pub(super) struct ProjectRunRetention {
     run_retention_days: Option<i64>,
     failed_run_retention_days: Option<i64>,
+    orphan_file_retention_days: Option<i64>,
 }
 
-/// Opt-in retention windows for automatic run-workspace cleanup on servers.
+/// Opt-in retention windows for automatic run-workspace cleanup and orphaned
+/// remote-file reclamation on servers.
 #[tauri::command]
 pub(super) async fn get_project_run_retention(
     state: State<'_, AppState>,
     window: tauri::WebviewWindow,
 ) -> Result<ProjectRunRetention, String> {
     let ap = state.active(window.label());
-    let (run_retention_days, failed_run_retention_days) = state
+    let (run_retention_days, failed_run_retention_days, orphan_file_retention_days) = state
         .store
         .project_run_retention(&ap.id)
         .await
@@ -576,6 +578,7 @@ pub(super) async fn get_project_run_retention(
     Ok(ProjectRunRetention {
         run_retention_days,
         failed_run_retention_days,
+        orphan_file_retention_days,
     })
 }
 
@@ -585,17 +588,24 @@ pub(super) async fn set_project_run_retention(
     window: tauri::WebviewWindow,
     run_retention_days: Option<i64>,
     failed_run_retention_days: Option<i64>,
+    orphan_file_retention_days: Option<i64>,
 ) -> Result<ProjectRunRetention, String> {
     let ap = state.active(window.label());
     let _project_activity = state.begin_project_activity(&ap.id)?;
     state
         .store
-        .set_project_run_retention(&ap.id, run_retention_days, failed_run_retention_days)
+        .set_project_run_retention(
+            &ap.id,
+            run_retention_days,
+            failed_run_retention_days,
+            orphan_file_retention_days,
+        )
         .await
         .map_err(|e| format!("{e}"))?;
     Ok(ProjectRunRetention {
         run_retention_days,
         failed_run_retention_days,
+        orphan_file_retention_days,
     })
 }
 

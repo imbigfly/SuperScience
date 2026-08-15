@@ -1189,7 +1189,12 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   let projectRunRetention: {
     run_retention_days: number | null;
     failed_run_retention_days: number | null;
-  } = { run_retention_days: null, failed_run_retention_days: null };
+    orphan_file_retention_days: number | null;
+  } = {
+    run_retention_days: null,
+    failed_run_retention_days: null,
+    orphan_file_retention_days: null,
+  };
   const runWorkspaceFiles: Record<string, Record<string, any[]>> = {
     "run-kinase-001": {
       "": [
@@ -3355,6 +3360,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               run_retention_days: (arg("runRetentionDays") ?? null) as number | null,
               failed_run_retention_days:
                 (arg("failedRunRetentionDays") ?? null) as number | null,
+              orphan_file_retention_days:
+                (arg("orphanFileRetentionDays") ?? null) as number | null,
             };
             return projectRunRetention;
           }

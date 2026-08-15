@@ -620,6 +620,7 @@ pub(crate) fn ProjSettingsOverlay(
     // means the automatic sweep stays off.
     let retention_succeeded = create_rw_signal(String::new());
     let retention_failed = create_rw_signal(String::new());
+    let retention_orphan = create_rw_signal(String::new());
     create_effect(move |_| {
         if !show_proj_settings.get() {
             return;
@@ -641,6 +642,7 @@ pub(crate) fn ProjSettingsOverlay(
                     };
                     retention_succeeded.set(field("run_retention_days"));
                     retention_failed.set(field("failed_run_retention_days"));
+                    retention_orphan.set(field("orphan_file_retention_days"));
                 }
             }
         });
@@ -650,6 +652,7 @@ pub(crate) fn ProjSettingsOverlay(
         let args = to_value(&serde_json::json!({
             "runRetentionDays": parse(&retention_succeeded.get_untracked()),
             "failedRunRetentionDays": parse(&retention_failed.get_untracked()),
+            "orphanFileRetentionDays": parse(&retention_orphan.get_untracked()),
         }))
         .unwrap();
         spawn_local(async move {
@@ -706,6 +709,13 @@ pub(crate) fn ProjSettingsOverlay(
                                 placeholder=move || t(locale.get(), "proj_settings.retention_off")
                                 prop:value=move || retention_failed.get()
                                 on:input=move |ev| retention_failed.set(event_target_value(&ev))
+                                on:change=move |_| save_retention() />
+                            <span>{move || t(locale.get(), "proj_settings.retention_orphan")}</span>
+                            <input type="number" min="1" max="3650" inputmode="numeric"
+                                class="ps-retention" data-testid="retention-orphan"
+                                placeholder=move || t(locale.get(), "proj_settings.retention_off")
+                                prop:value=move || retention_orphan.get()
+                                on:input=move |ev| retention_orphan.set(event_target_value(&ev))
                                 on:change=move |_| save_retention() />
                         </div>
                     </label>

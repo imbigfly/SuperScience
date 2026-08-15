@@ -46,11 +46,38 @@ struct TransferRequest {
     route: String,
     #[serde(default = "default_auto")]
     transport: String,
+    /// Continue an interrupted local↔SSH transfer instead of refusing the
+    /// partially written destination. Requires transport=rsync.
+    #[serde(default)]
+    resume: bool,
     timeout_secs: Option<u64>,
 }
 
 fn default_auto() -> String {
     "auto".into()
+}
+
+/// Transport actually used for local↔SSH transfers. `auto` stays on scp;
+/// rsync is explicit because it needs the binary on both sides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TransferTransport {
+    Scp,
+    Rsync,
+}
+
+fn local_transport_choice(transport: &str) -> TransferTransport {
+    if transport == "rsync" {
+        TransferTransport::Rsync
+    } else {
+        TransferTransport::Scp
+    }
+}
+
+fn transport_label(transport: TransferTransport) -> &'static str {
+    match transport {
+        TransferTransport::Scp => "scp",
+        TransferTransport::Rsync => "rsync",
+    }
 }
 
 pub struct ConfigureSshTrustTool {
@@ -173,7 +200,7 @@ impl Tool for TransferBetweenContextsTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             self.name(),
-            "Transfer one exact file or directory between `local` and a selected SSH context, or between two selected SSH contexts, as a persisted Run. SSH-to-SSH `auto` uses a verified direct edge when available (rsync with scp fallback), otherwise it relays through a private local temporary directory. Local transfers use the SSH context's configured credentials and never overwrite an existing destination. Never use shell ssh/scp/rsync for this.",
+            "Transfer one exact file or directory between `local` and a selected SSH context, or between two selected SSH contexts, as a persisted Run. SSH-to-SSH `auto` uses a verified direct edge when available (rsync with scp fallback), otherwise it relays through a private local temporary directory. Local transfers default to scp and never overwrite an existing destination; pick transport=rsync for large files so an interrupted transfer can be retried with resume=true instead of starting over. Never use shell ssh/scp/rsync for this.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -182,7 +209,8 @@ impl Tool for TransferBetweenContextsTool {
                     "destination_context_id": { "type": "string", "description": "Selected SSH context id, or `local` for a download" },
                     "destination_path": { "type": "string", "description": "SSH: exact absolute or ~/ path; omit to place the file under this project's configured remote data root for the destination server. Local: exact new absolute file/directory path; do not guess it—ask the user when unspecified. Globs are rejected." },
                     "route": { "type": "string", "enum": ["auto", "direct", "relay"], "default": "auto", "description": "direct/relay apply to SSH-to-SSH; transfers involving local accept auto or relay" },
-                    "transport": { "type": "string", "enum": ["auto", "rsync", "scp"], "default": "auto", "description": "Transfers involving local currently accept auto or scp" },
+                    "transport": { "type": "string", "enum": ["auto", "rsync", "scp"], "default": "auto", "description": "Local↔SSH: auto/scp use scp; rsync requires rsync on both sides and supports resumable transfers" },
+                    "resume": { "type": "boolean", "default": false, "description": "Local↔SSH with transport=rsync only: continue an interrupted transfer, reusing partial data instead of refusing the existing destination" },
                     "timeout_secs": { "type": "integer", "description": "Wall timeout, 1 second to 7 days" }
                 },
                 "required": ["source_context_id", "source_path", "destination_context_id"]
@@ -827,6 +855,8 @@ pub(crate) async fn submit_local_uploads_to_context(
                 &source,
                 &context,
                 &destination_path,
+                TransferTransport::Scp,
+                false,
                 timeout,
             )
             .await?;
@@ -878,6 +908,15 @@ async fn submit_transfer(
     if !matches!(request.transport.as_str(), "auto" | "rsync" | "scp") {
         return Err("transport must be 'auto', 'rsync', or 'scp'".into());
     }
+    let local_route =
+        request.source_context_id == "local" || request.destination_context_id == "local";
+    if request.resume && !(local_route && request.transport == "rsync") {
+        return Err(
+            "resume only applies to local↔SSH transfers with transport=rsync; retry the \
+             interrupted transfer with transport=rsync, resume=true"
+                .into(),
+        );
+    }
     let timeout_secs = request
         .timeout_secs
         .unwrap_or(4 * 60 * 60)
@@ -909,13 +948,11 @@ async fn submit_transfer(
         if request.route == "direct" {
             return Err("Local-to-SSH transfers use route=auto or route=relay".into());
         }
-        if request.transport == "rsync" {
-            return Err("Local-to-SSH transfers use transport=auto or transport=scp".into());
-        }
         let source_path = validate_local_source(&request.source_path)?;
         validate_remote_path("destination_path", &destination_path)?;
         let destination =
             selected_ssh_context(store, frame_id, &request.destination_context_id).await?;
+        let transport = local_transport_choice(&request.transport);
         let response = manager
             .submit_local_upload_to_ssh(
                 store.clone(),
@@ -924,6 +961,8 @@ async fn submit_transfer(
                 &source_path,
                 &destination,
                 &destination_path,
+                transport,
+                request.resume,
                 Duration::from_secs(timeout_secs),
             )
             .await?;
@@ -931,7 +970,7 @@ async fn submit_transfer(
             "run_id": response.run_id,
             "status": response.status,
             "route": "local",
-            "transport": "scp",
+            "transport": transport_label(transport),
             "source_path": source_path,
             "destination_path": destination_path,
             "next_action": "Call monitor_run exactly once to wait for completion."
@@ -951,10 +990,8 @@ async fn submit_transfer(
         if request.route == "direct" {
             return Err("SSH-to-local transfers use route=auto or route=relay".into());
         }
-        if request.transport == "rsync" {
-            return Err("SSH-to-local transfers use transport=auto or transport=scp".into());
-        }
         let destination = validate_local_destination(&destination_path)?;
+        let transport = local_transport_choice(&request.transport);
         let response = manager
             .submit_ssh_download_to_local(
                 store.clone(),
@@ -963,6 +1000,7 @@ async fn submit_transfer(
                 &source,
                 &request.source_path,
                 &destination,
+                transport,
                 Duration::from_secs(timeout_secs),
             )
             .await?;
@@ -970,7 +1008,7 @@ async fn submit_transfer(
             "run_id": response.run_id,
             "status": response.status,
             "route": "local",
-            "transport": "scp",
+            "transport": transport_label(transport),
             "destination_path": destination,
             "next_action": "Call monitor_run exactly once to wait for completion."
         }));
@@ -1162,6 +1200,8 @@ impl RunManager {
         source_path: &Path,
         destination: &wisp_store::ExecutionContext,
         destination_path: &str,
+        transport: TransferTransport,
+        resume: bool,
         timeout: Duration,
     ) -> Result<SubmitRunResponse, String> {
         let destination_connection =
@@ -1201,7 +1241,7 @@ impl RunManager {
         .map_err(|error| error.to_string())?;
         run.env_snapshot_json = serde_json::json!({
             "route": "local",
-            "transport": "scp",
+            "transport": transport_label(transport),
             "source_context_id": "local",
             "destination_context_id": destination.id,
             "source_path": source_path,
@@ -1242,6 +1282,8 @@ impl RunManager {
                 source_path,
                 destination_connection,
                 destination_path,
+                transport,
+                resume,
                 timeout,
                 started,
             )
@@ -1278,6 +1320,7 @@ impl RunManager {
         source: &wisp_store::ExecutionContext,
         source_path: &str,
         destination_path: &Path,
+        transport: TransferTransport,
         timeout: Duration,
     ) -> Result<SubmitRunResponse, String> {
         if destination_path.exists() {
@@ -1326,7 +1369,7 @@ impl RunManager {
         .map_err(|error| error.to_string())?;
         run.env_snapshot_json = serde_json::json!({
             "route": "local",
-            "transport": "scp",
+            "transport": transport_label(transport),
             "source_context_id": source.id,
             "destination_context_id": "local",
             "destination_path": destination_path
@@ -1367,6 +1410,7 @@ impl RunManager {
                 source_connection,
                 source_path,
                 destination_path,
+                transport,
                 timeout,
                 started,
             )
@@ -1578,6 +1622,143 @@ async fn download_remote_item(
     Ok((download, local_item, total_bytes, files_total))
 }
 
+const RSYNC_PROBE_MARKER: &str = "__WISP_RSYNC__";
+
+fn rsync_probe_line(transport: TransferTransport) -> &'static str {
+    match transport {
+        TransferTransport::Scp => "",
+        TransferTransport::Rsync => {
+            "command -v rsync >/dev/null 2>&1 && printf '__WISP_RSYNC__:yes\\n' || printf '__WISP_RSYNC__:no\\n'\n"
+        }
+    }
+}
+
+/// rsync's --protect-args disables remote tilde expansion, so `~/` prefixes
+/// become plain home-relative paths.
+fn rsync_remote_path(path: &str) -> String {
+    match path {
+        "~" => ".".into(),
+        _ => path.strip_prefix("~/").unwrap_or(path).to_string(),
+    }
+}
+
+fn rsync_base_args(connection: &crate::ssh_hosts::SshConnection) -> Result<Vec<String>, String> {
+    Ok(vec![
+        "-a".into(),
+        "-s".into(),
+        "--partial".into(),
+        "-e".into(),
+        connection.rsync_rsh()?,
+    ])
+}
+
+/// The remote side answered the probe in a pre-transfer RPC; the local side
+/// is probed by running `rsync --version`.
+async fn require_rsync_available(
+    runner: &dyn super::RunCommandRunner,
+    connection: &crate::ssh_hosts::SshConnection,
+    probe_stdout: &str,
+) -> Result<(), String> {
+    if !probe_stdout.contains(&format!("{RSYNC_PROBE_MARKER}:yes")) {
+        return Err(format!(
+            "rsync is not installed on {}; use transport=scp",
+            connection.alias
+        ));
+    }
+    let probe = runner
+        .run(
+            RunCommand {
+                context_id: "local".into(),
+                program: "rsync".into(),
+                args: vec!["--version".into()],
+                script: "probe local rsync".into(),
+                cwd: None,
+                stdin: None,
+                envs: Vec::new(),
+            },
+            REMOTE_RPC_TIMEOUT,
+        )
+        .await;
+    if !probe.map(|output| output.exit_code == 0).unwrap_or(false) {
+        return Err("rsync is not installed on this machine; use transport=scp".into());
+    }
+    Ok(())
+}
+
+/// Download through a deterministic hidden partial directory next to the
+/// destination: an interrupted transfer leaves it behind, and the retried
+/// rsync continues from the partial data instead of starting over.
+#[allow(clippy::too_many_arguments)]
+async fn rsync_download_into_partial(
+    store: &wisp_store::Store,
+    owner_id: &str,
+    run_id: &str,
+    runner: &dyn super::RunCommandRunner,
+    source: &crate::ssh_hosts::SshConnection,
+    source_path: &str,
+    destination_path: &Path,
+    timeout: Duration,
+) -> Result<(super::RunCommandOutput, PathBuf, u64, u64), String> {
+    let probe = checked_output(
+        "Check download source",
+        run_with_lifecycle_lease(
+            store,
+            run_id,
+            owner_id,
+            runner,
+            ssh_script_command(
+                source,
+                "check rsync download source",
+                format!("set -eu\n{}", rsync_probe_line(TransferTransport::Rsync)),
+            )?,
+            timeout,
+        )
+        .await,
+    )?;
+    require_rsync_available(runner, source, &probe.stdout).await?;
+    let file_name = destination_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "local destination_path has no portable item name".to_string())?;
+    let partial_dir = destination_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| "local destination_path must have a parent directory".to_string())?
+        .join(format!(".wisp-partial-{file_name}"));
+    std::fs::create_dir_all(&partial_dir)
+        .map_err(|error| format!("create partial download directory: {error}"))?;
+    let mut args = rsync_base_args(source)?;
+    args.push(format!(
+        "{}:{}",
+        source.target()?,
+        rsync_remote_path(source_path)
+    ));
+    args.push(scp_local_path(&partial_dir));
+    let download = checked_output(
+        "SSH download",
+        run_with_lifecycle_lease(
+            store,
+            run_id,
+            owner_id,
+            runner,
+            RunCommand {
+                context_id: format!("ssh:{}", source.alias),
+                program: "rsync".into(),
+                args,
+                script: "local download".into(),
+                cwd: None,
+                stdin: None,
+                envs: crate::ssh_hosts::auth_envs_for_connection(source)?,
+            },
+            timeout,
+        )
+        .await,
+    )?;
+    let local_item = single_relay_item(&partial_dir)?;
+    let (total_bytes, files_total) = relay_item_stats(&local_item)?;
+    Ok((download, local_item, total_bytes, files_total))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn local_upload_lifecycle(
     store: &wisp_store::Store,
@@ -1587,6 +1768,8 @@ async fn local_upload_lifecycle(
     source_path: PathBuf,
     destination: crate::ssh_hosts::SshConnection,
     destination_path: String,
+    transport: TransferTransport,
+    resume: bool,
     timeout: Duration,
     started: Instant,
 ) -> Result<(), String> {
@@ -1599,11 +1782,19 @@ async fn local_upload_lifecycle(
     }
     let result = async {
         let (total_bytes, files_total) = relay_item_stats(&source_path)?;
+        // With resume the partially written destination is expected; rsync
+        // continues from it instead of refusing it.
+        let exists_guard = if resume {
+            ""
+        } else {
+            "[ ! -e \"$dst\" ] || { echo 'remote destination_path already exists' >&2; exit 73; }\n"
+        };
         let destination_check = format!(
-            "set -eu\n{}\n[ ! -e \"$dst\" ] || {{ echo 'remote destination_path already exists' >&2; exit 73; }}\n",
-            remote_path_assignment("dst", &destination_path)
+            "set -eu\n{}\n{}{exists_guard}",
+            remote_path_assignment("dst", &destination_path),
+            rsync_probe_line(transport),
         );
-        checked_output(
+        let check = checked_output(
             "Check upload destination",
             run_with_lifecycle_lease(
                 store,
@@ -1619,22 +1810,20 @@ async fn local_upload_lifecycle(
             )
             .await,
         )?;
+        if transport == TransferTransport::Rsync {
+            require_rsync_available(runner.as_ref(), &destination, &check.stdout).await?;
+        }
         let remaining = timeout
             .checked_sub(started.elapsed())
             .ok_or_else(|| format!("run_in_context timed out after {}s", timeout.as_secs()))?;
-        let mut upload_args = destination.scp_option_args()?;
-        if source_path.is_dir() {
-            upload_args.push("-r".into());
-        }
-        upload_args.push(scp_local_path(&source_path));
-        upload_args.push(format!("{}:{destination_path}", destination.target()?));
-        let upload = checked_output(
-            "SSH upload",
-            run_with_lifecycle_lease(
-                store,
-                run_id,
-                owner_id,
-                runner.as_ref(),
+        let upload_command = match transport {
+            TransferTransport::Scp => {
+                let mut upload_args = destination.scp_option_args()?;
+                if source_path.is_dir() {
+                    upload_args.push("-r".into());
+                }
+                upload_args.push(scp_local_path(&source_path));
+                upload_args.push(format!("{}:{destination_path}", destination.target()?));
                 RunCommand {
                     context_id: format!("ssh:{}", destination.alias),
                     program: "scp".into(),
@@ -1643,7 +1832,42 @@ async fn local_upload_lifecycle(
                     cwd: source_path.parent().map(Path::to_path_buf),
                     stdin: None,
                     envs: crate::ssh_hosts::auth_envs_for_connection(&destination)?,
-                },
+                }
+            }
+            TransferTransport::Rsync => {
+                let mut args = rsync_base_args(&destination)?;
+                let remote = rsync_remote_path(&destination_path);
+                if source_path.is_dir() {
+                    // Trailing slashes copy contents into `dst` itself, so
+                    // rsync creates the same layout scp -r would.
+                    args.push(format!(
+                        "{}/",
+                        scp_local_path(&source_path).trim_end_matches('/')
+                    ));
+                    args.push(format!("{}:{remote}/", destination.target()?));
+                } else {
+                    args.push(scp_local_path(&source_path));
+                    args.push(format!("{}:{remote}", destination.target()?));
+                }
+                RunCommand {
+                    context_id: format!("ssh:{}", destination.alias),
+                    program: "rsync".into(),
+                    args,
+                    script: "local upload".into(),
+                    cwd: source_path.parent().map(Path::to_path_buf),
+                    stdin: None,
+                    envs: crate::ssh_hosts::auth_envs_for_connection(&destination)?,
+                }
+            }
+        };
+        let upload = checked_output(
+            "SSH upload",
+            run_with_lifecycle_lease(
+                store,
+                run_id,
+                owner_id,
+                runner.as_ref(),
+                upload_command,
                 remaining,
             )
             .await,
@@ -1734,6 +1958,7 @@ async fn local_download_lifecycle(
     source: crate::ssh_hosts::SshConnection,
     source_path: String,
     destination_path: PathBuf,
+    transport: TransferTransport,
     timeout: Duration,
     started: Instant,
 ) -> Result<(), String> {
@@ -1745,18 +1970,35 @@ async fn local_download_lifecycle(
         return Ok(());
     }
     let result = async {
-        let (download, local_item, total_bytes, files_total) = download_remote_item(
-            store,
-            owner_id,
-            run_id,
-            runner.as_ref(),
-            &staging_dir.0,
-            &source,
-            &source_path,
-            timeout,
-            "local download",
-        )
-        .await?;
+        let (download, local_item, total_bytes, files_total) = match transport {
+            TransferTransport::Scp => {
+                download_remote_item(
+                    store,
+                    owner_id,
+                    run_id,
+                    runner.as_ref(),
+                    &staging_dir.0,
+                    &source,
+                    &source_path,
+                    timeout,
+                    "local download",
+                )
+                .await?
+            }
+            TransferTransport::Rsync => {
+                rsync_download_into_partial(
+                    store,
+                    owner_id,
+                    run_id,
+                    runner.as_ref(),
+                    &source,
+                    &source_path,
+                    &destination_path,
+                    timeout,
+                )
+                .await?
+            }
+        };
         if destination_path.exists() {
             return Err(format!(
                 "local destination_path appeared during transfer and was not overwritten: {}",
@@ -1765,6 +2007,11 @@ async fn local_download_lifecycle(
         }
         std::fs::rename(&local_item, &destination_path)
             .map_err(|error| format!("finalize local download: {error}"))?;
+        if transport == TransferTransport::Rsync {
+            if let Some(partial_dir) = local_item.parent() {
+                let _ = std::fs::remove_dir_all(partial_dir);
+            }
+        }
         Ok::<_, String>((download, total_bytes, files_total))
     }
     .await;
@@ -2366,6 +2613,7 @@ mod tests {
                 destination_path: Some("/results/".into()),
                 route: "auto".into(),
                 transport: "auto".into(),
+                resume: false,
                 timeout_secs: Some(30),
             },
         )
@@ -2425,6 +2673,7 @@ mod tests {
                 destination_path: Some("/results/sample data.bam".into()),
                 route: "auto".into(),
                 transport: "auto".into(),
+                resume: false,
                 timeout_secs: Some(30),
             },
         )
@@ -2483,6 +2732,7 @@ mod tests {
                 destination_path: None,
                 route: "auto".into(),
                 transport: "auto".into(),
+                resume: false,
                 timeout_secs: Some(30),
             },
         )
@@ -2545,6 +2795,7 @@ mod tests {
                 destination_path: None,
                 route: "auto".into(),
                 transport: "auto".into(),
+                resume: false,
                 timeout_secs: Some(30),
             },
         )
@@ -2577,6 +2828,7 @@ mod tests {
                 destination_path: None,
                 route: "auto".into(),
                 transport: "auto".into(),
+                resume: false,
                 timeout_secs: Some(30),
             },
         )
@@ -2607,6 +2859,7 @@ mod tests {
                 destination_path: Some(destination.to_string_lossy().into_owned()),
                 route: "auto".into(),
                 transport: "auto".into(),
+                resume: false,
                 timeout_secs: Some(30),
             },
         )
@@ -2672,6 +2925,7 @@ mod tests {
                 destination_path: Some(destination.to_string_lossy().into_owned()),
                 route: "auto".into(),
                 transport: "scp".into(),
+                resume: false,
                 timeout_secs: Some(30),
             },
         )
@@ -2808,6 +3062,256 @@ mod tests {
         .await
         .unwrap_err();
         assert!(local.contains("SSH context"), "{local}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn resume_requires_a_local_route_with_rsync_transport() {
+        let (root, store) = test_store().await;
+        let manager = RunManager::with_runner(Arc::new(RelayRunner {
+            commands: StdMutex::new(Vec::new()),
+        }));
+        let source = root.join("data.bin");
+        std::fs::write(&source, b"payload").unwrap();
+        let error = submit_transfer(
+            &store,
+            &manager,
+            "p",
+            Some("f"),
+            &root,
+            TransferRequest {
+                source_context_id: "local".into(),
+                source_path: source.to_string_lossy().into_owned(),
+                destination_context_id: "ssh:a".into(),
+                destination_path: Some("/results/data.bin".into()),
+                route: "auto".into(),
+                transport: "scp".into(),
+                resume: true,
+                timeout_secs: Some(30),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("transport=rsync"), "{error}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn rsync_resume_upload_probes_both_ends_and_skips_the_exists_guard() {
+        let (root, store) = test_store().await;
+        let source = root.join("data.bin");
+        std::fs::write(&source, b"payload").unwrap();
+        let runner = Arc::new(RecordingRunner {
+            outputs: StdMutex::new(
+                vec![
+                    Ok(RunCommandOutput {
+                        exit_code: 0,
+                        stdout: "__WISP_RSYNC__:yes\n".into(),
+                        stderr: String::new(),
+                    }),
+                    Ok(RunCommandOutput {
+                        exit_code: 0,
+                        stdout: "rsync  version 3.2.7".into(),
+                        stderr: String::new(),
+                    }),
+                    Ok(RunCommandOutput {
+                        exit_code: 0,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                    }),
+                ]
+                .into(),
+            ),
+            commands: StdMutex::new(Vec::new()),
+        });
+        let manager = RunManager::with_runner(runner.clone());
+        let response = submit_transfer(
+            &store,
+            &manager,
+            "p",
+            Some("f"),
+            &root,
+            TransferRequest {
+                source_context_id: "local".into(),
+                source_path: source.to_string_lossy().into_owned(),
+                destination_context_id: "ssh:a".into(),
+                destination_path: Some("~/results/data.bin".into()),
+                route: "auto".into(),
+                transport: "rsync".into(),
+                resume: true,
+                timeout_secs: Some(30),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(response["transport"], "rsync");
+        let run_id = response["run_id"].as_str().unwrap();
+        let run = loop {
+            let run = store.get_run(run_id).await.unwrap().unwrap();
+            if run.status.is_terminal() {
+                break run;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        assert_eq!(run.status, wisp_store::RunStatus::Succeeded);
+        let commands = runner.commands.lock().unwrap();
+        assert_eq!(commands.len(), 3);
+        assert_eq!(commands[0].script, "check local upload destination");
+        let check_payload = commands[0].stdin.as_deref().unwrap();
+        assert!(check_payload.contains("__WISP_RSYNC__"), "{check_payload}");
+        // Resume keeps a partially uploaded destination instead of refusing it.
+        assert!(!check_payload.contains("already exists"), "{check_payload}");
+        assert_eq!(commands[1].program, "rsync");
+        assert_eq!(commands[1].args, vec!["--version".to_string()]);
+        assert_eq!(commands[2].program, "rsync");
+        assert!(commands[2].args.contains(&"--partial".to_string()));
+        // --protect-args disables remote tilde expansion, so ~/ is stripped.
+        assert!(commands[2]
+            .args
+            .iter()
+            .any(|arg| arg == "alice@a.example:results/data.bin"));
+        drop(commands);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn rsync_upload_fails_fast_when_the_remote_lacks_rsync() {
+        let (root, store) = test_store().await;
+        let source = root.join("data.bin");
+        std::fs::write(&source, b"payload").unwrap();
+        let runner = Arc::new(RecordingRunner {
+            outputs: StdMutex::new(
+                vec![Ok(RunCommandOutput {
+                    exit_code: 0,
+                    stdout: "__WISP_RSYNC__:no\n".into(),
+                    stderr: String::new(),
+                })]
+                .into(),
+            ),
+            commands: StdMutex::new(Vec::new()),
+        });
+        let manager = RunManager::with_runner(runner.clone());
+        let response = submit_transfer(
+            &store,
+            &manager,
+            "p",
+            Some("f"),
+            &root,
+            TransferRequest {
+                source_context_id: "local".into(),
+                source_path: source.to_string_lossy().into_owned(),
+                destination_context_id: "ssh:a".into(),
+                destination_path: Some("/results/data.bin".into()),
+                route: "auto".into(),
+                transport: "rsync".into(),
+                resume: false,
+                timeout_secs: Some(30),
+            },
+        )
+        .await
+        .unwrap();
+        let run_id = response["run_id"].as_str().unwrap();
+        let run = loop {
+            let run = store.get_run(run_id).await.unwrap().unwrap();
+            if run.status.is_terminal() {
+                break run;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        assert_eq!(run.status, wisp_store::RunStatus::Failed);
+        let stderr = run.stderr_tail.unwrap_or_default();
+        assert!(stderr.contains("rsync is not installed on a"), "{stderr}");
+        assert_eq!(runner.commands.lock().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Answers the remote rsync probe, then materializes the downloaded file
+    /// inside the partial directory rsync would have written into.
+    struct RsyncDownloadRunner {
+        commands: StdMutex<Vec<RunCommand>>,
+    }
+
+    #[async_trait::async_trait]
+    impl super::super::RunCommandRunner for RsyncDownloadRunner {
+        async fn run(
+            &self,
+            command: RunCommand,
+            _timeout: Duration,
+        ) -> Result<RunCommandOutput, String> {
+            let stdout = if command.script == "check rsync download source" {
+                "__WISP_RSYNC__:yes\n".to_string()
+            } else {
+                if command.program == "rsync" && command.script == "local download" {
+                    let directory = PathBuf::from(command.args.last().unwrap());
+                    std::fs::write(directory.join("result.txt"), b"rsync bytes").unwrap();
+                }
+                String::new()
+            };
+            self.commands.lock().unwrap().push(command);
+            Ok(RunCommandOutput {
+                exit_code: 0,
+                stdout,
+                stderr: String::new(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn rsync_download_lands_at_the_destination_and_clears_the_partial_dir() {
+        let (root, store) = test_store().await;
+        let runner = Arc::new(RsyncDownloadRunner {
+            commands: StdMutex::new(Vec::new()),
+        });
+        let manager = RunManager::with_runner(runner.clone());
+        let destination = root.join("igv").join("result.txt");
+        std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        let response = submit_transfer(
+            &store,
+            &manager,
+            "p",
+            Some("f"),
+            &root,
+            TransferRequest {
+                source_context_id: "ssh:a".into(),
+                source_path: "/data/result.txt".into(),
+                destination_context_id: "local".into(),
+                destination_path: Some(destination.to_string_lossy().into_owned()),
+                route: "auto".into(),
+                transport: "rsync".into(),
+                resume: false,
+                timeout_secs: Some(30),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(response["transport"], "rsync");
+        let run_id = response["run_id"].as_str().unwrap();
+        let run = loop {
+            let run = store.get_run(run_id).await.unwrap().unwrap();
+            if run.status.is_terminal() {
+                break run;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        assert_eq!(run.status, wisp_store::RunStatus::Succeeded);
+        assert_eq!(std::fs::read(&destination).unwrap(), b"rsync bytes");
+        assert!(!destination
+            .parent()
+            .unwrap()
+            .join(".wisp-partial-result.txt")
+            .exists());
+        let commands = runner.commands.lock().unwrap();
+        assert_eq!(commands.len(), 3);
+        assert_eq!(commands[0].script, "check rsync download source");
+        assert_eq!(commands[1].program, "rsync");
+        assert_eq!(commands[1].args, vec!["--version".to_string()]);
+        assert_eq!(commands[2].program, "rsync");
+        assert!(commands[2].args.contains(&"--partial".to_string()));
+        assert!(commands[2]
+            .args
+            .iter()
+            .any(|arg| arg == "alice@a.example:/data/result.txt"));
+        drop(commands);
         let _ = std::fs::remove_dir_all(root);
     }
 }

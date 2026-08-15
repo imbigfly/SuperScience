@@ -887,6 +887,7 @@ mod tests {
                 harvested_at: None,
                 cleaned_at: None,
                 cleanup_error: None,
+                logs_path: None,
             })
             .await
             .unwrap();

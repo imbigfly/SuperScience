@@ -1075,6 +1075,10 @@ pub struct RunRecord {
     /// exists (or was never created).
     pub cleaned_at: Option<i64>,
     pub cleanup_error: Option<String>,
+    /// Project-relative directory holding the run's full stdout/stderr logs,
+    /// pulled back before the server workspace was cleaned. NULL means logs
+    /// were never saved locally.
+    pub logs_path: Option<String>,
 }
 
 /// Polling/list projection for the WebView. Large command, output, remote
@@ -1297,6 +1301,7 @@ impl RunRecord {
             harvested_at: None,
             cleaned_at: None,
             cleanup_error: None,
+            logs_path: None,
         }
     }
 
@@ -1406,6 +1411,7 @@ pub(crate) fn run_from_row(row: SqliteRow) -> Result<RunRecord> {
         harvested_at: row.try_get("harvested_at")?,
         cleaned_at: row.try_get("cleaned_at")?,
         cleanup_error: row.try_get("cleanup_error")?,
+        logs_path: row.try_get("logs_path")?,
     })
 }
 

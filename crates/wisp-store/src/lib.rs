@@ -164,6 +164,8 @@ const REMOTE_STAGING_MIGRATION: &str = "0046_remote_staging";
 const RUN_RETENTION_MIGRATION: &str = "0047_run_retention";
 const SCHEDULES_MIGRATION: &str = "0048_schedules";
 const ARTIFACT_SOURCE_DISCARDED_MIGRATION: &str = "0049_artifact_source_discarded";
+const RUN_LOG_PULL_MIGRATION: &str = "0050_run_log_pull";
+const ORPHAN_FILE_RETENTION_MIGRATION: &str = "0051_orphan_file_retention";
 
 #[derive(Clone)]
 pub struct Store {
@@ -679,6 +681,19 @@ impl Store {
             )
             .await?;
             Self::record_migration(pool, ARTIFACT_SOURCE_DISCARDED_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, RUN_LOG_PULL_MIGRATION).await? {
+            Self::add_columns_if_missing(pool, "runs", &[("logs_path", "TEXT")]).await?;
+            Self::record_migration(pool, RUN_LOG_PULL_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, ORPHAN_FILE_RETENTION_MIGRATION).await? {
+            Self::add_columns_if_missing(
+                pool,
+                "projects",
+                &[("orphan_file_retention_days", "INTEGER")],
+            )
+            .await?;
+            Self::record_migration(pool, ORPHAN_FILE_RETENTION_MIGRATION).await?;
         }
         Ok(())
     }

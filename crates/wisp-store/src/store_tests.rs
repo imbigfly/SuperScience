@@ -3277,6 +3277,8 @@ async fn store_open_records_migrations_and_seeds_local_context() {
             RUN_RETENTION_MIGRATION.to_string(),
             SCHEDULES_MIGRATION.to_string(),
             ARTIFACT_SOURCE_DISCARDED_MIGRATION.to_string(),
+            RUN_LOG_PULL_MIGRATION.to_string(),
+            ORPHAN_FILE_RETENTION_MIGRATION.to_string(),
         ]
     );
 

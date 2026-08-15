@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS projects (
     created_at    INTEGER NOT NULL,
     updated_at    INTEGER NOT NULL,
     run_retention_days        INTEGER,
-    failed_run_retention_days INTEGER
+    failed_run_retention_days INTEGER,
+    orphan_file_retention_days INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS folders (
@@ -365,7 +366,8 @@ CREATE TABLE IF NOT EXISTS runs (
     exploration_id     TEXT,
     harvested_at       INTEGER,
     cleaned_at         INTEGER,
-    cleanup_error      TEXT
+    cleanup_error      TEXT,
+    logs_path          TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_runs_project ON runs(project_id, created_at);
 CREATE INDEX IF NOT EXISTS ix_runs_context ON runs(context_id);

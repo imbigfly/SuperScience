@@ -224,6 +224,36 @@ impl SshConnection {
         Ok(args)
     }
 
+    /// The `-e` remote-shell string for a locally spawned rsync: the same ssh
+    /// options Runs use, quoted so rsync's tokenizer keeps paths with spaces
+    /// intact.
+    pub fn rsync_rsh(&self) -> Result<String, String> {
+        self.validate()?;
+        let mut parts = vec!["ssh".to_string()];
+        parts.extend(if self.uses_password() {
+            password_option_args()
+        } else {
+            common_option_args()
+        });
+        if let Some(port) = self.port {
+            parts.extend(["-p".into(), port.to_string()]);
+        }
+        if !self.uses_password() {
+            push_batch_identity_args(&mut parts, self.identity_file.as_deref());
+        }
+        Ok(parts
+            .into_iter()
+            .map(|part| {
+                if part.contains([' ', '\t', '\'', '"']) {
+                    format!("\"{}\"", part.replace('"', "\\\""))
+                } else {
+                    part
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" "))
+    }
+
     /// Fail before spawning when a configured identity file is missing, or
     /// when password auth is selected but no password is stored.
     pub fn assert_ready_to_connect(&self) -> Result<(), String> {

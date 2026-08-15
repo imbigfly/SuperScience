@@ -1006,6 +1006,74 @@ impl RunManager {
         Ok(cleaned)
     }
 
+    /// Opt-in automatic reclamation of orphaned ledgered remote files: staged
+    /// uploads and persisted outputs that nothing references anymore, past
+    /// the project's orphan window. Replaced ledger entries are closed
+    /// in-ledger only — the newer entry owns those remote bytes. Only
+    /// ledgered paths are ever deleted, through the same safe channel as the
+    /// manual tool.
+    pub async fn orphan_file_sweep(&self, store: &wisp_store::Store) -> Result<u64, String> {
+        let now = chrono::Utc::now().timestamp();
+        let candidates = store
+            .list_orphan_gc_contexts(now)
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut removed = 0;
+        for (project_id, context_id, cutoff) in candidates {
+            let Some(context) = store
+                .get_execution_context(&context_id)
+                .await
+                .map_err(|e| e.to_string())?
+            else {
+                continue;
+            };
+            let views = match remote_files::list_remote_files(store, &project_id, &context_id).await
+            {
+                Ok(views) => views,
+                Err(error) => {
+                    tracing::warn!(context_id, "orphan sweep listing failed: {error}");
+                    continue;
+                }
+            };
+            let due = |view: &remote_files::RemoteFileView| view.created_at < cutoff;
+            let replaced: Vec<String> = views
+                .iter()
+                .filter(|view| view.state == remote_files::RemoteFileState::Replaced && due(view))
+                .map(|view| view.id.clone())
+                .collect();
+            if !replaced.is_empty() {
+                removed += store
+                    .mark_remote_staging_removed(&replaced)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            let orphans: Vec<String> = views
+                .iter()
+                .filter(|view| view.state == remote_files::RemoteFileState::Orphan && due(view))
+                .map(|view| view.id.clone())
+                .collect();
+            if orphans.is_empty() {
+                continue;
+            }
+            match remote_files::remove_remote_files(
+                store,
+                self.runner.as_ref(),
+                &project_id,
+                &context,
+                &orphans,
+                false,
+            )
+            .await
+            {
+                Ok(count) => removed += count,
+                Err(error) => {
+                    tracing::warn!(context_id, "orphan sweep deletion failed: {error}");
+                }
+            }
+        }
+        Ok(removed)
+    }
+
     async fn maybe_run_retention_sweep(&self, store: &wisp_store::Store) {
         {
             let mut last = self.last_retention_sweep.lock().await;
@@ -1019,6 +1087,9 @@ impl RunManager {
         }
         if let Err(error) = self.run_retention_sweep(store).await {
             tracing::warn!("run retention sweep failed: {error}");
+        }
+        if let Err(error) = self.orphan_file_sweep(store).await {
+            tracing::warn!("orphan file sweep failed: {error}");
         }
     }
 
@@ -1308,6 +1379,24 @@ impl RunManager {
                      harvest it before cleanup",
                     version.storage_path
                 ));
+            }
+        }
+        // Never destroy the only copy of the run's logs: pull them into the
+        // project first. A failed pull aborts cleanup and stays retryable.
+        if run.logs_path.is_none() {
+            match save_run_logs_locally(store, self.runner.as_ref(), &run, &handle).await {
+                Ok(Some(relative)) => {
+                    let _ = store
+                        .mark_run_logs_saved(run_id, &relative)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let error = format!("saving run logs before cleanup failed: {error}");
+                    let _ = store.record_run_cleanup_error(run_id, &error).await;
+                    return Err(error);
+                }
             }
         }
         match cleanup::delete_run_workspace(self.runner.as_ref(), &handle, run_id).await {
@@ -2979,6 +3068,68 @@ async fn remote_lifecycle(
         ))
         .await;
     }
+}
+
+/// Pull the run's full stdout/stderr logs into `<workspace>/runs/<run_id>/`
+/// so the server workspace can be deleted without losing them. Returns the
+/// project-relative log directory when anything was written.
+async fn save_run_logs_locally(
+    store: &wisp_store::Store,
+    runner: &dyn RunCommandRunner,
+    run: &wisp_store::RunRecord,
+    handle: &RemoteRunHandle,
+) -> Result<Option<String>, String> {
+    let Some(workspace) = store
+        .get_project(&run.project_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .map(|(_, workspace)| workspace)
+        .filter(|workspace| !workspace.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    let pull = cleanup::fetch_run_logs(runner, handle, &run.id).await?;
+    let (stdout_log, stderr_log) = match pull {
+        cleanup::LogPull::Absent => return Ok(None),
+        cleanup::LogPull::EncoderMissing => {
+            // The server cannot emit binary-safe output; the persisted tails
+            // are the best remaining copy.
+            let as_log = |tail: &Option<String>| {
+                tail.as_deref()
+                    .filter(|tail| !tail.is_empty())
+                    .map(|tail| cleanup::PulledLog {
+                        total_size: tail.len() as u64,
+                        bytes: tail.as_bytes().to_vec(),
+                    })
+            };
+            (as_log(&run.stdout_tail), as_log(&run.stderr_tail))
+        }
+        cleanup::LogPull::Logs { stdout, stderr } => (stdout, stderr),
+    };
+    if stdout_log.is_none() && stderr_log.is_none() {
+        return Ok(None);
+    }
+    let relative = format!("runs/{}", run.id);
+    let directory = Path::new(&workspace).join("runs").join(&run.id);
+    std::fs::create_dir_all(&directory).map_err(|e| format!("create local log directory: {e}"))?;
+    for (name, log) in [("stdout.log", stdout_log), ("stderr.log", stderr_log)] {
+        let Some(log) = log else { continue };
+        let path = directory.join(name);
+        let mut contents = Vec::with_capacity(log.bytes.len() + 96);
+        if (log.bytes.len() as u64) < log.total_size {
+            contents.extend_from_slice(
+                format!(
+                    "[wisp] log truncated: showing last {} of {} bytes\n",
+                    log.bytes.len(),
+                    log.total_size
+                )
+                .as_bytes(),
+            );
+        }
+        contents.extend_from_slice(&log.bytes);
+        std::fs::write(&path, contents).map_err(|e| format!("write {}: {e}", path.display()))?;
+    }
+    Ok(Some(relative))
 }
 
 async fn remote_run_from_record(

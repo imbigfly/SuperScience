@@ -4500,24 +4500,32 @@ test("project settings save opt-in run workspace retention windows", async ({ pa
   const settings = page.locator(".proj-settings-modal");
   const succeeded = settings.getByTestId("retention-succeeded");
   const failed = settings.getByTestId("retention-failed");
+  const orphan = settings.getByTestId("retention-orphan");
   // Off by default.
   await expect(succeeded).toHaveValue("");
   await expect(failed).toHaveValue("");
+  await expect(orphan).toHaveValue("");
 
   await succeeded.fill("7");
   await succeeded.blur();
-  // An empty second field serializes as undefined (retention stays off).
+  // Empty fields serialize as undefined (their sweeps stay off).
   await expect.poll(() => lastInvokeArgs(page, "set_project_run_retention")).toMatchObject({
     runRetentionDays: 7,
   });
   expect(
     (await lastInvokeArgs(page, "set_project_run_retention")).failedRunRetentionDays ?? null,
   ).toBeNull();
+  expect(
+    (await lastInvokeArgs(page, "set_project_run_retention")).orphanFileRetentionDays ?? null,
+  ).toBeNull();
   await failed.fill("14");
   await failed.blur();
+  await orphan.fill("30");
+  await orphan.blur();
   await expect.poll(() => lastInvokeArgs(page, "set_project_run_retention")).toMatchObject({
     runRetentionDays: 7,
     failedRunRetentionDays: 14,
+    orphanFileRetentionDays: 30,
   });
 
   // Reopening reflects the stored windows.
@@ -4526,6 +4534,7 @@ test("project settings save opt-in run workspace retention windows", async ({ pa
   await page.getByRole("button", { name: "Project settings" }).click();
   await expect(settings.getByTestId("retention-succeeded")).toHaveValue("7");
   await expect(settings.getByTestId("retention-failed")).toHaveValue("14");
+  await expect(settings.getByTestId("retention-orphan")).toHaveValue("30");
 });
 
 test("saving a changed agent context asks for confirmation", async ({ page }) => {

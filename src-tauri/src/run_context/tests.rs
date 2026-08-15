@@ -2819,6 +2819,12 @@ async fn ssh_harvest_uses_stored_local_results_dir_and_data_root() {
 
 // --- run workspace cleanup ---------------------------------------------------
 
+/// The log-pull RPC that precedes every first workspace deletion: the workdir
+/// is already gone, so there is nothing to save.
+fn log_pull_absent() -> Result<RunCommandOutput, String> {
+    ok_output("__WISP_LOGPULL__:absent\n__WISP_LOGPULL__:done\n")
+}
+
 async fn seed_cleanup_run(
     store: &wisp_store::Store,
     run_id: &str,
@@ -2894,7 +2900,9 @@ async fn cleanup_requires_terminal_state_and_harvested_outputs() {
     )
     .await;
     let runner = Arc::new(ScriptedRunRunner::new(vec![
+        log_pull_absent(),
         ok_output("__WISP_CLEANUP__:done\n"),
+        log_pull_absent(),
         ok_output("__WISP_CLEANUP__:done\n"),
     ]));
     let manager = RunManager::with_runner(runner.clone());
@@ -2927,8 +2935,12 @@ async fn cleanup_requires_terminal_state_and_harvested_outputs() {
     assert!(cleaned.cleaned_at.is_some());
     {
         let commands = runner.commands.lock().unwrap();
-        assert_eq!(commands.len(), 2);
-        let payload = commands[0].stdin.as_deref().unwrap();
+        assert_eq!(commands.len(), 4);
+        // Logs are pulled before the workdir is deleted.
+        let logs_payload = commands[0].stdin.as_deref().unwrap();
+        assert!(logs_payload.contains("stdout"));
+        assert!(!logs_payload.contains("rm -rf"));
+        let payload = commands[1].stdin.as_deref().unwrap();
         assert!(payload.contains("workdir=\"$HOME/.wisp-science/runs/run-failed\""));
         assert!(payload.contains("rm -rf \"$workdir\""));
         assert!(payload.contains("cleanup-token"));
@@ -2940,7 +2952,7 @@ async fn cleanup_requires_terminal_state_and_harvested_outputs() {
         .await
         .unwrap();
     assert!(again.cleaned_at.is_some());
-    assert_eq!(runner.commands.lock().unwrap().len(), 2);
+    assert_eq!(runner.commands.lock().unwrap().len(), 4);
 
     let _ = std::fs::remove_dir_all(&tmp);
 }
@@ -3017,6 +3029,7 @@ async fn cleanup_rejects_foreign_workdirs_and_records_failures() {
     .await;
     let runner = Arc::new(ScriptedRunRunner::new(vec![
         Err("ssh: connect to host gpu port 22: Connection refused".into()),
+        log_pull_absent(),
         ok_output("__WISP_CLEANUP__:done\n"),
     ]));
     let manager = RunManager::with_runner(runner.clone());
@@ -3425,6 +3438,107 @@ async fn discarding_a_server_marks_external_artifacts_and_blocks_fetch() {
 }
 
 #[tokio::test]
+async fn orphan_file_sweep_reclaims_only_expired_unreferenced_entries() {
+    let tmp = std::env::temp_dir().join(format!("wisp_orphan_gc_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .upsert_execution_context(&harvest_test_context())
+        .await
+        .unwrap();
+    let now = chrono::Utc::now().timestamp();
+    let seed_entry = |run_id: Option<&str>, path: &str, source: &str, age_days: i64| {
+        let mut entry = wisp_store::RemoteStagingEntry::new(
+            "p",
+            "ssh:gpu",
+            run_id.map(Into::into),
+            path,
+            source,
+        );
+        entry.created_at = now - age_days * 86_400;
+        entry
+    };
+    // Orphan and old: reclaimed. Orphan but recent: kept. Active: kept.
+    // Replaced and old: ledger-only removal (the newer entry owns the path).
+    let orphan_old = seed_entry(None, "~/wisp/proj/data/stale.bam", "transfer", 40);
+    let orphan_recent = seed_entry(None, "~/wisp/proj/data/fresh.bam", "transfer", 2);
+    let replaced_old = seed_entry(None, "~/wisp/proj/data/matrix.tsv", "transfer", 45);
+    let mut replacement = seed_entry(None, "~/wisp/proj/data/matrix.tsv", "transfer", 41);
+    replacement.created_at += 1; // strictly newer than replaced_old
+    seed_cleanup_run(
+        &store,
+        "run-live",
+        wisp_store::RunStatus::Running,
+        "[]",
+        false,
+    )
+    .await;
+    let active_old = seed_entry(
+        Some("run-live"),
+        "~/.wisp-science/runs/run-live/inputs/input.fasta",
+        "run_input",
+        40,
+    );
+    for entry in [
+        &orphan_old,
+        &orphan_recent,
+        &replaced_old,
+        &replacement,
+        &active_old,
+    ] {
+        store.record_remote_staging(entry).await.unwrap();
+    }
+
+    // Sweep is opt-in: without the window nothing is inspected.
+    let manager = RunManager::with_runner(Arc::new(ScriptedRunRunner::new(vec![])));
+    assert_eq!(manager.orphan_file_sweep(&store).await.unwrap(), 0);
+
+    store
+        .set_project_run_retention("p", None, None, Some(30))
+        .await
+        .unwrap();
+    // orphan_old and the (old) replacement entry are due for deletion;
+    // replaced_old is closed in-ledger only.
+    let runner = Arc::new(ScriptedRunRunner::new(vec![ok_output(&format!(
+        "__WISP_RM__:{}\n__WISP_RM__:{}\n",
+        orphan_old.id, replacement.id
+    ))]));
+    let manager = RunManager::with_runner(runner.clone());
+    let removed = manager.orphan_file_sweep(&store).await.unwrap();
+    assert_eq!(removed, 3);
+    {
+        let commands = runner.commands.lock().unwrap();
+        assert_eq!(commands.len(), 1);
+        let payload = commands[0].stdin.as_deref().unwrap();
+        assert!(payload.contains("'wisp/proj/data/stale.bam'"));
+        assert!(payload.contains("'wisp/proj/data/matrix.tsv'"));
+        assert!(!payload.contains("fresh.bam"));
+        assert!(!payload.contains("input.fasta"));
+    }
+    let remaining: Vec<String> = store
+        .list_remote_staging("p", "ssh:gpu", false)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.id)
+        .collect();
+    assert_eq!(remaining, vec![active_old.id.clone(), orphan_recent.id]);
+
+    // Idempotent: nothing left that is due.
+    let manager = RunManager::with_runner(Arc::new(ScriptedRunRunner::new(vec![])));
+    assert_eq!(manager.orphan_file_sweep(&store).await.unwrap(), 0);
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
 async fn workspace_cleanup_marks_staged_inputs_removed() {
     let tmp = std::env::temp_dir().join(format!("wisp_cleanup_ledger_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
@@ -3458,9 +3572,10 @@ async fn workspace_cleanup_marks_staged_inputs_removed() {
         ))
         .await
         .unwrap();
-    let runner = Arc::new(ScriptedRunRunner::new(vec![ok_output(
-        "__WISP_CLEANUP__:done\n",
-    )]));
+    let runner = Arc::new(ScriptedRunRunner::new(vec![
+        log_pull_absent(),
+        ok_output("__WISP_CLEANUP__:done\n"),
+    ]));
     let manager = RunManager::with_runner(runner);
 
     manager
@@ -3479,6 +3594,137 @@ async fn workspace_cleanup_marks_staged_inputs_removed() {
         .unwrap();
     assert_eq!(all.len(), 1);
     assert!(all[0].removed_at.is_some());
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn cleanup_pulls_full_logs_into_the_project_first() {
+    let tmp = std::env::temp_dir().join(format!("wisp_cleanup_logs_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .upsert_execution_context(&harvest_test_context())
+        .await
+        .unwrap();
+    seed_cleanup_run(
+        &store,
+        "run-logs",
+        wisp_store::RunStatus::Failed,
+        "[]",
+        false,
+    )
+    .await;
+    use base64::Engine as _;
+    let stdout_b64 = base64::engine::general_purpose::STANDARD.encode(b"full stdout\n");
+    // stderr reports a larger on-server size than the pulled bytes: truncated.
+    let stderr_b64 = base64::engine::general_purpose::STANDARD.encode(b"tail of stderr\n");
+    let log_pull = format!(
+        "__WISP_LOGPULL__:stdout:12\n{stdout_b64}\n__WISP_LOGPULL__:end\n\
+         __WISP_LOGPULL__:stderr:9999\n{stderr_b64}\n__WISP_LOGPULL__:end\n\
+         __WISP_LOGPULL__:done\n"
+    );
+    let runner = Arc::new(ScriptedRunRunner::new(vec![
+        ok_output(&log_pull),
+        ok_output("__WISP_CLEANUP__:done\n"),
+    ]));
+    let manager = RunManager::with_runner(runner.clone());
+
+    let cleaned = manager
+        .cleanup_run_workspace(&store, "run-logs", false)
+        .await
+        .unwrap();
+    assert!(cleaned.cleaned_at.is_some());
+    assert_eq!(cleaned.logs_path.as_deref(), Some("runs/run-logs"));
+    assert_eq!(
+        std::fs::read(tmp.join("runs/run-logs/stdout.log")).unwrap(),
+        b"full stdout\n"
+    );
+    let stderr =
+        String::from_utf8(std::fs::read(tmp.join("runs/run-logs/stderr.log")).unwrap()).unwrap();
+    assert!(stderr.starts_with("[wisp] log truncated: showing last 15 of 9999 bytes\n"));
+    assert!(stderr.ends_with("tail of stderr\n"));
+    // The log pull happened before the deletion RPC.
+    {
+        let commands = runner.commands.lock().unwrap();
+        assert_eq!(commands.len(), 2);
+        assert!(!commands[0].stdin.as_deref().unwrap().contains("rm -rf"));
+        assert!(commands[1].stdin.as_deref().unwrap().contains("rm -rf"));
+    }
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn cleanup_aborts_when_log_pull_fails_and_falls_back_without_encoder() {
+    let tmp = std::env::temp_dir().join(format!("wisp_cleanup_logfail_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .upsert_execution_context(&harvest_test_context())
+        .await
+        .unwrap();
+    let mut run = wisp_store::RunRecord::new("run-nolog", "p", "ssh:gpu", "Remote", "ssh_direct");
+    run.frame_id = Some("f".into());
+    run.status = wisp_store::RunStatus::Failed;
+    run.command = Some("make outputs".into());
+    run.stdout_tail = Some("tail out".into());
+    let connection =
+        crate::ssh_hosts::SshConnection::from_execution_context(&harvest_test_context()).unwrap();
+    let handle = RemoteRunHandle::SshDirect {
+        connection,
+        workdir: ".wisp-science/runs/run-nolog".into(),
+        token: "cleanup-token".into(),
+        inputs_staged: true,
+        pgid: Some(4242),
+        start_time: Some(99),
+    };
+    run.remote_handle_json = Some(serde_json::to_string(&handle).unwrap());
+    store.create_run(&run).await.unwrap();
+
+    // A log pull that cannot confirm completion aborts cleanup: the workdir
+    // (and its logs) must survive for a retry.
+    let runner = Arc::new(ScriptedRunRunner::new(vec![
+        ok_output("garbled"),
+        // Retry: no base64 on the server → persisted tails become the copy.
+        ok_output("__WISP_LOGPULL__:noencoder\n__WISP_LOGPULL__:done\n"),
+        ok_output("__WISP_CLEANUP__:done\n"),
+    ]));
+    let manager = RunManager::with_runner(runner.clone());
+    let error = manager
+        .cleanup_run_workspace(&store, "run-nolog", false)
+        .await
+        .unwrap_err();
+    assert!(error.contains("saving run logs"), "{error}");
+    let run = store.get_run("run-nolog").await.unwrap().unwrap();
+    assert!(run.cleaned_at.is_none());
+    assert!(run.cleanup_error.as_deref().unwrap().contains("logs"));
+
+    let cleaned = manager
+        .cleanup_run_workspace(&store, "run-nolog", false)
+        .await
+        .unwrap();
+    assert!(cleaned.cleaned_at.is_some());
+    assert_eq!(cleaned.logs_path.as_deref(), Some("runs/run-nolog"));
+    assert_eq!(
+        std::fs::read(tmp.join("runs/run-nolog/stdout.log")).unwrap(),
+        b"tail out"
+    );
+    assert!(!tmp.join("runs/run-nolog/stderr.log").exists());
 
     let _ = std::fs::remove_dir_all(&tmp);
 }
@@ -3524,6 +3770,8 @@ async fn transfer_upload_ledgers_its_destination() {
             &source,
             &context,
             "~/wisp/proj/data/matrix.tsv",
+            transfer::TransferTransport::Scp,
+            false,
             Duration::from_secs(30),
         )
         .await
@@ -3763,11 +4011,11 @@ async fn retention_sweep_cleans_only_expired_eligible_runs() {
         .is_empty());
 
     store
-        .set_project_run_retention("p", Some(7), Some(14))
+        .set_project_run_retention("p", Some(7), Some(14), None)
         .await
         .unwrap();
     assert!(store
-        .set_project_run_retention("p", Some(0), None)
+        .set_project_run_retention("p", Some(0), None, None)
         .await
         .is_err());
 
@@ -3840,7 +4088,9 @@ async fn retention_sweep_cleans_only_expired_eligible_runs() {
     // The first cleanup fails; the sweep continues and cleans the rest.
     let runner = Arc::new(ScriptedRunRunner::new(vec![
         Err("connection refused".into()),
+        log_pull_absent(),
         ok_output("__WISP_CLEANUP__:done\n"),
+        log_pull_absent(),
         ok_output("__WISP_CLEANUP__:done\n"),
     ]));
     let manager = RunManager::with_runner(runner.clone());
@@ -3876,9 +4126,10 @@ async fn retention_sweep_cleans_only_expired_eligible_runs() {
         .is_none());
 
     // The failed run retries on the next sweep and drops out once cleaned.
-    let runner = Arc::new(ScriptedRunRunner::new(vec![ok_output(
-        "__WISP_CLEANUP__:done\n",
-    )]));
+    let runner = Arc::new(ScriptedRunRunner::new(vec![
+        log_pull_absent(),
+        ok_output("__WISP_CLEANUP__:done\n"),
+    ]));
     let manager = RunManager::with_runner(runner);
     assert_eq!(manager.run_retention_sweep(&store).await.unwrap(), 1);
     assert!(store
