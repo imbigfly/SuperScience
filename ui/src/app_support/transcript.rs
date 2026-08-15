@@ -136,7 +136,10 @@ pub(crate) fn review_message_ui_index(items: &[ChatItem], message_index: usize) 
 
 #[cfg(test)]
 mod review_jump_tests {
-    use super::{composer_text_from_user_message, review_message_ui_index};
+    use super::{
+        browser_offline_notice_from_items, composer_text_from_user_message,
+        last_user_composer_text, review_message_ui_index,
+    };
     use crate::dto::{ChatItem, ContextUsage, ReviewTransitionPhase};
 
     fn assistant(text: &str) -> ChatItem {
@@ -181,6 +184,111 @@ mod review_jump_tests {
             "The app froze"
         );
     }
+
+    #[test]
+    fn last_user_composer_text_skips_attachment_suffixes() {
+        let items = vec![
+            ChatItem::User("latest rustc\n\nUploaded files: a.png".into()),
+            ChatItem::Assistant {
+                text: "ok".into(),
+                model: None,
+                resources: Vec::new(),
+            },
+        ];
+        assert_eq!(last_user_composer_text(&items), "latest rustc");
+    }
+
+    #[test]
+    fn browser_offline_notice_tracks_disconnect_then_restore() {
+        let mut items = vec![
+            ChatItem::User("latest rustc".into()),
+            ChatItem::Tool {
+                name: "web_scan".into(),
+                ok: Some(false),
+                input: "tabs".into(),
+                output: "real-browser bridge unavailable. WISP_BROWSER_DISCONNECTED".into(),
+                started_at_ms: None,
+                duration_ms: None,
+            },
+        ];
+        let notice = browser_offline_notice_from_items("s1", &items).unwrap();
+        assert_eq!(notice.frame_id, "s1");
+        assert_eq!(notice.retry_text, "latest rustc");
+
+        items.push(ChatItem::Tool {
+            name: "web_scan".into(),
+            ok: Some(true),
+            input: "tabs".into(),
+            output: "{\"tabs\":[]}".into(),
+            started_at_ms: None,
+            duration_ms: None,
+        });
+        assert!(browser_offline_notice_from_items("s1", &items).is_none());
+    }
+}
+
+pub(crate) const BROWSER_DISCONNECTED_KIND: &str = "browser_disconnected";
+pub(crate) const BROWSER_DISCONNECTED_MARKER: &str = "WISP_BROWSER_DISCONNECTED";
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct BrowserOfflineNotice {
+    pub frame_id: String,
+    pub retry_text: String,
+}
+
+pub(crate) fn last_user_composer_text(items: &[ChatItem]) -> String {
+    items
+        .iter()
+        .rev()
+        .find_map(|item| match item {
+            ChatItem::User(text) => Some(composer_text_from_user_message(text)),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+fn is_browser_retrieval_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "web_scan" | "web_open_tab" | "web_execute_js" | "web_screenshot" | "browser_setup"
+    )
+}
+
+pub(crate) fn browser_retrieval_blocked(name: &str, ok: bool, content: &str) -> bool {
+    is_browser_retrieval_tool(name) && !ok && content.contains(BROWSER_DISCONNECTED_MARKER)
+}
+
+pub(crate) fn browser_retrieval_restored(name: &str, ok: bool) -> bool {
+    matches!(
+        name,
+        "web_scan" | "web_open_tab" | "web_execute_js" | "web_screenshot"
+    ) && ok
+}
+
+pub(crate) fn browser_offline_notice_from_items(
+    frame_id: &str,
+    items: &[ChatItem],
+) -> Option<BrowserOfflineNotice> {
+    let mut blocked = false;
+    for item in items {
+        if let ChatItem::Tool {
+            name,
+            ok: Some(ok),
+            output,
+            ..
+        } = item
+        {
+            if browser_retrieval_restored(name, *ok) {
+                blocked = false;
+            } else if browser_retrieval_blocked(name, *ok, output) {
+                blocked = true;
+            }
+        }
+    }
+    blocked.then(|| BrowserOfflineNotice {
+        frame_id: frame_id.to_string(),
+        retry_text: last_user_composer_text(items),
+    })
 }
 
 pub(crate) fn composer_text_from_user_message(text: &str) -> String {

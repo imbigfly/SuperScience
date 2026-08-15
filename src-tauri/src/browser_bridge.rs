@@ -28,12 +28,16 @@ use tokio_tungstenite::{accept_hdr_async, WebSocketStream};
 use uuid::Uuid;
 use wisp_llm::ToolSchema;
 use wisp_store::Store;
-use wisp_tools::{Approval, ImageData, Tool, ToolEnv, ToolResult};
+use wisp_tools::{Approval, ImageData, Tool, ToolEnv, ToolEvent, ToolResult};
 
 use crate::browser_url_filters::{self, BrowserUrlFilters};
 
 const BRIDGE_ADDR: &str = "127.0.0.1:18765";
 const EXTENSION_ORIGIN: &str = "chrome-extension://gnkjgagleagkgdlkkcianolobfdoocnp";
+const BROWSER_DISCONNECTED_KIND: &str = "browser_disconnected";
+const BROWSER_DISCONNECTED_CODE: &str = "browser_extension_disconnected";
+const BROWSER_DISCONNECTED_MARKER: &str = "WISP_BROWSER_DISCONNECTED";
+const DISCONNECTED_ASSISTANT_INSTRUCTION: &str = "Live web retrieval is unavailable. Do not answer live, latest, current, or URL-specific questions from prior knowledge. Tell the user this turn contains no live web retrieval, relay the install steps, and wait until status is connected. Only continue from memory if they explicitly ask for a knowledge-only answer.";
 const DEFAULT_TIMEOUT_MS: u64 = 15_000;
 const MAX_TIMEOUT_MS: u64 = 60_000;
 const MAX_SCRIPT_BYTES: usize = 64 * 1024;
@@ -116,6 +120,7 @@ impl BrowserBridge {
         } else {
             "disconnected"
         };
+        let live_retrieval = status == "connected";
         let steps = extension_path.as_ref().map_or_else(Vec::new, |path| {
             vec![
                 "Start Wisp Science and keep it running.".to_string(),
@@ -127,9 +132,21 @@ impl BrowserBridge {
                     .to_string(),
             ]
         });
+        let path_instruction = if extension_ready {
+            "Copy extension_path character-for-character. Never translate, infer, normalize, or replace any path segment."
+        } else {
+            "The running Wisp build has no verified bundled extension path. Do not invent a path or claim the extension exists."
+        };
+        let assistant_instruction = if live_retrieval {
+            path_instruction.to_string()
+        } else {
+            format!("{DISCONNECTED_ASSISTANT_INSTRUCTION} {path_instruction}")
+        };
 
         json!({
             "status": status,
+            "live_retrieval": live_retrieval,
+            "code": if live_retrieval { Value::Null } else { json!(BROWSER_DISCONNECTED_CODE) },
             "connected_tabs": state.tabs.len(),
             "runtime_os": std::env::consts::OS,
             "path_source": "wisp_tauri_resource_dir",
@@ -138,11 +155,7 @@ impl BrowserBridge {
             "extension_id": EXTENSION_ORIGIN.trim_start_matches("chrome-extension://"),
             "bridge_endpoint": format!("ws://{BRIDGE_ADDR}"),
             "install_scope": "once_per_browser_profile",
-            "assistant_instruction": if extension_ready {
-                "Copy extension_path character-for-character. Never translate, infer, normalize, or replace any path segment."
-            } else {
-                "The running Wisp build has no verified bundled extension path. Do not invent a path or claim the extension exists."
-            },
+            "assistant_instruction": assistant_instruction,
             "steps": steps,
             "download_automation": {
                 "limitation": "GA Web controls web-page tabs. It cannot operate Chrome/Edge toolbar download bubbles or native operating-system Open, Save, and Save As dialogs.",
@@ -383,7 +396,7 @@ impl BrowserBridge {
     }
 
     fn unavailable_message(&self, reason: &str) -> String {
-        match self.verified_extension_path() {
+        let setup = match self.verified_extension_path() {
             Some(path) => format!(
                 "real-browser bridge unavailable: {reason}. In Chrome/Chromium open chrome://extensions, enable Developer mode, and Load unpacked from this exact native {} path: '{path}'. Keep Wisp running; the extension connects only to {BRIDGE_ADDR}.",
                 std::env::consts::OS
@@ -391,7 +404,8 @@ impl BrowserBridge {
             None => format!(
                 "real-browser bridge unavailable: {reason}. This Wisp build has no verified bundled browser extension; do not infer an installation path."
             ),
-        }
+        };
+        format!("{setup} {BROWSER_DISCONNECTED_MARKER}. {DISCONNECTED_ASSISTANT_INSTRUCTION}")
     }
 
     fn verified_extension_path(&self) -> Option<String> {
@@ -400,6 +414,28 @@ impl BrowserBridge {
             .is_file()
             .then(|| dir.display().to_string())
     }
+}
+
+fn is_bridge_unavailable(error: &str) -> bool {
+    error.contains(BROWSER_DISCONNECTED_MARKER) || error.contains("real-browser bridge unavailable")
+}
+
+async fn emit_disconnected(env: &dyn ToolEnv) {
+    env.emit(ToolEvent::Presentation {
+        kind: BROWSER_DISCONNECTED_KIND.into(),
+        payload: json!({
+            "code": BROWSER_DISCONNECTED_CODE,
+            "live_retrieval": false,
+        }),
+    })
+    .await;
+}
+
+async fn fail_bridge(env: &dyn ToolEnv, error: String) -> ToolResult {
+    if is_bridge_unavailable(&error) {
+        emit_disconnected(env).await;
+    }
+    ToolResult::fail(error)
 }
 
 fn allowed_extension_origin(origin: Option<&str>) -> bool {
@@ -613,7 +649,7 @@ impl Tool for BrowserSetupTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             self.name(),
-            "Call when the user asks to configure, install, set up, or connect the real browser. The result is derived from the running Wisp binary's native Tauri resource directory and includes the manual settings required for unattended single and multiple downloads. Copy extension_path character-for-character and never convert it between Windows, WSL, macOS, or Linux. If extension_path_verified is false, report the missing bundled extension and never invent a path.",
+            "Call when the user asks to configure, install, set up, or connect the real browser, and before any live page retrieval. The result is derived from the running Wisp binary's native Tauri resource directory and includes the manual settings required for unattended single and multiple downloads. Copy extension_path character-for-character and never convert it between Windows, WSL, macOS, or Linux. If status is not connected, live_retrieval is false: do not answer live, latest, current, or URL-specific questions from prior knowledge; relay the steps and wait. If extension_path_verified is false, report the missing bundled extension and never invent a path.",
             json!({
                 "type": "object",
                 "properties": {},
@@ -626,7 +662,7 @@ impl Tool for BrowserSetupTool {
         "show real-browser setup status and extension path".into()
     }
 
-    async fn run(&self, _args: &Value, _env: &dyn ToolEnv) -> ToolResult {
+    async fn run(&self, _args: &Value, env: &dyn ToolEnv) -> ToolResult {
         let mut info = self.bridge.setup_info().await;
         let filters = browser_url_filters::load(&self.store).await;
         info["url_filters"] = json!({
@@ -634,6 +670,9 @@ impl Tool for BrowserSetupTool {
             "prefer": filters.prefer,
             "matching": "host and subdomains; block is enforced; prefer is advisory for literature and similar tasks"
         });
+        if info["status"] != "connected" {
+            emit_disconnected(env).await;
+        }
         ToolResult::ok(render_json(&info))
     }
 }
@@ -687,7 +726,7 @@ impl Tool for WebScanTool {
         }
     }
 
-    async fn run(&self, args: &Value, _env: &dyn ToolEnv) -> ToolResult {
+    async fn run(&self, args: &Value, env: &dyn ToolEnv) -> ToolResult {
         if args
             .get("tabs_only")
             .and_then(Value::as_bool)
@@ -695,7 +734,7 @@ impl Tool for WebScanTool {
         {
             return match self.bridge.tabs().await {
                 Ok(tabs) => ToolResult::ok(render_json(&json!({ "tabs": tabs }))),
-                Err(error) => ToolResult::fail(error),
+                Err(error) => fail_bridge(env, error).await,
             };
         }
         let tab_id = match tab_id_arg(args) {
@@ -727,7 +766,7 @@ impl Tool for WebScanTool {
                     "page": execution.value
                 })))
             }
-            Err(error) => ToolResult::fail(error),
+            Err(error) => fail_bridge(env, error).await,
         }
     }
 }
@@ -778,7 +817,7 @@ impl Tool for WebExecuteJsTool {
         preview
     }
 
-    async fn run(&self, args: &Value, _env: &dyn ToolEnv) -> ToolResult {
+    async fn run(&self, args: &Value, env: &dyn ToolEnv) -> ToolResult {
         let Some(script) = args
             .get("script")
             .and_then(Value::as_str)
@@ -820,7 +859,7 @@ impl Tool for WebExecuteJsTool {
                 "tab_id": execution.tab_id,
                 "result": execution.value
             }))),
-            Err(error) => ToolResult::fail(error),
+            Err(error) => fail_bridge(env, error).await,
         }
     }
 }
@@ -866,7 +905,7 @@ impl Tool for WebOpenTabTool {
         format!("open real-browser tab at {url}")
     }
 
-    async fn run(&self, args: &Value, _env: &dyn ToolEnv) -> ToolResult {
+    async fn run(&self, args: &Value, env: &dyn ToolEnv) -> ToolResult {
         let Some(url) = args
             .get("url")
             .and_then(Value::as_str)
@@ -885,7 +924,7 @@ impl Tool for WebOpenTabTool {
         let active = args.get("active").and_then(Value::as_bool).unwrap_or(false);
         match self.bridge.open_tab(url, active).await {
             Ok(tab) => ToolResult::ok(render_json(&open_tab_result(tab, url, &filters))),
-            Err(error) => ToolResult::fail(error),
+            Err(error) => fail_bridge(env, error).await,
         }
     }
 }
@@ -930,7 +969,7 @@ impl Tool for WebScreenshotTool {
             .unwrap_or_else(|| "screenshot selected real-browser tab".into())
     }
 
-    async fn run(&self, args: &Value, _env: &dyn ToolEnv) -> ToolResult {
+    async fn run(&self, args: &Value, env: &dyn ToolEnv) -> ToolResult {
         let tab_id = match tab_id_arg(args) {
             Ok(tab_id) => tab_id,
             Err(error) => return ToolResult::fail(error),
@@ -950,7 +989,7 @@ impl Tool for WebScreenshotTool {
             .await
         {
             Ok(execution) => execution,
-            Err(error) => return ToolResult::fail(error),
+            Err(error) => return fail_bridge(env, error).await,
         };
         let Some(data) = execution
             .value
@@ -1103,6 +1142,12 @@ mod tests {
         let expected_path = dunce::canonicalize(extension_dir).unwrap();
 
         assert_eq!(info["status"], "disconnected");
+        assert_eq!(info["live_retrieval"], false);
+        assert_eq!(info["code"], BROWSER_DISCONNECTED_CODE);
+        assert!(info["assistant_instruction"]
+            .as_str()
+            .unwrap()
+            .contains("Do not answer live, latest, current, or URL-specific questions"));
         assert_eq!(info["runtime_os"], std::env::consts::OS);
         assert_eq!(info["path_source"], "wisp_tauri_resource_dir");
         assert_eq!(info["extension_path"], expected_path.display().to_string());
@@ -1141,9 +1186,12 @@ mod tests {
             .as_str()
             .unwrap()
             .contains(info["extension_path"].as_str().unwrap())));
-        assert!(bridge
-            .unavailable_message("not connected")
-            .contains(info["extension_path"].as_str().unwrap()));
+        let unavailable = bridge.unavailable_message("not connected");
+        assert!(unavailable.contains(info["extension_path"].as_str().unwrap()));
+        assert!(unavailable.contains(BROWSER_DISCONNECTED_MARKER));
+        assert!(
+            unavailable.contains("Do not answer live, latest, current, or URL-specific questions")
+        );
         assert_eq!(
             BrowserSetupTool::new(bridge, store).minimum_approval(),
             Approval::Allow
@@ -1161,6 +1209,8 @@ mod tests {
         let info = bridge.setup_info().await;
 
         assert_eq!(info["status"], "extension_missing");
+        assert_eq!(info["live_retrieval"], false);
+        assert_eq!(info["code"], BROWSER_DISCONNECTED_CODE);
         assert_eq!(info["extension_path_verified"], false);
         assert!(info["extension_path"].is_null());
         assert!(info["steps"].as_array().unwrap().is_empty());
@@ -1324,5 +1374,58 @@ mod tests {
         let rendered = render_json(&json!({ "text": "x".repeat(MAX_RESULT_CHARS * 2) }));
         assert!(rendered.chars().count() <= MAX_RESULT_CHARS + 40);
         assert!(rendered.ends_with("browser result truncated"));
+    }
+
+    #[test]
+    fn unavailable_errors_are_marked_for_the_ui() {
+        assert!(is_bridge_unavailable(
+            "real-browser bridge unavailable: browser extension is not connected. WISP_BROWSER_DISCONNECTED. stop"
+        ));
+        assert!(!is_bridge_unavailable(
+            "blocked by user URL filter: blocked.test"
+        ));
+    }
+
+    struct RecordingEnv {
+        root: PathBuf,
+        events: std::sync::Mutex<Vec<ToolEvent>>,
+    }
+
+    #[async_trait]
+    impl ToolEnv for RecordingEnv {
+        fn project_root(&self) -> &std::path::Path {
+            &self.root
+        }
+
+        async fn confirm(&self, _message: &str) -> bool {
+            true
+        }
+
+        async fn emit(&self, event: ToolEvent) {
+            self.events.lock().unwrap().push(event);
+        }
+    }
+
+    #[tokio::test]
+    async fn disconnected_tools_emit_a_browser_disconnected_presentation() {
+        let bridge = Arc::new(BrowserBridge::new(PathBuf::from("extension")));
+        let env = RecordingEnv {
+            root: PathBuf::from("."),
+            events: std::sync::Mutex::new(Vec::new()),
+        };
+        let result = WebScanTool::new(bridge)
+            .run(&json!({ "tabs_only": true }), &env)
+            .await;
+        assert!(!result.success);
+        assert!(result.content.contains(BROWSER_DISCONNECTED_MARKER));
+        let events = env.events.lock().unwrap();
+        match events.as_slice() {
+            [ToolEvent::Presentation { kind, payload }] => {
+                assert_eq!(kind, BROWSER_DISCONNECTED_KIND);
+                assert_eq!(payload["code"], BROWSER_DISCONNECTED_CODE);
+                assert_eq!(payload["live_retrieval"], false);
+            }
+            other => panic!("expected one disconnected presentation, got {other:?}"),
+        }
     }
 }

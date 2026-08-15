@@ -334,6 +334,15 @@
 .exploration-banner button:disabled { opacity: .5; cursor: default; }
 .exploration-banner button.primary { background: var(--clay); color: var(--on-clay); border-color: var(--clay); }
 .exploration-banner button.danger-text { color: var(--err); }
+.exploration-banner.browser-offline {
+  margin: 0 12px 10px;
+  border-color: color-mix(in srgb, var(--err) 45%, var(--border));
+  background: color-mix(in srgb, var(--err) 10%, var(--bg-elev));
+}
+.exploration-banner.browser-offline .exploration-banner-eyebrow { color: var(--err); }
+.exploration-banner.browser-offline button.primary {
+  background: var(--err); color: var(--on-clay); border-color: var(--err);
+}
 @container (max-width: 620px) {
   .exploration-banner { align-items: flex-start; flex-direction: column; }
   .exploration-banner-actions { justify-content: flex-start; }
