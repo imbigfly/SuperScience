@@ -510,6 +510,7 @@ pub(crate) fn enrich_md_html(
         html = html.replace(&marker, &chip);
     }
     html = wrap_code_filenames_as_art_refs(html, arts);
+    html = linkify_bare_urls(html);
     html = wrap_inline_workspace_paths(html, project_root);
     html = strip_list_markers_before_art_refs(&html);
     html = collapse_orphan_separator_paragraphs(html);
@@ -555,6 +556,105 @@ fn wrap_inline_workspace_paths(html: String, project_root: Option<&str>) -> Stri
     }
     out.push_str(rest);
     out
+}
+
+/// Turn bare `http(s)://…` runs into links. CommonMark has no GFM autolink
+/// literals and pulldown-cmark implements none, so a URL the agent simply
+/// types stays plain text and cannot be opened — only `[text](url)` and
+/// `<url>` produced anchors. Text inside a tag, an existing anchor, or code is
+/// left alone; the result routes through the same external-link confirmation
+/// as any other link.
+fn linkify_bare_urls(html: String) -> String {
+    if !html.contains("http://") && !html.contains("https://") {
+        return html;
+    }
+    let src = html.as_str();
+    let mut out = String::with_capacity(src.len());
+    let mut copied = 0usize;
+    let mut i = 0usize;
+    let mut skipping: Option<&'static str> = None;
+    while i < src.len() {
+        if src.as_bytes()[i] == b'<' {
+            let end = src[i..]
+                .find('>')
+                .map_or(src.len(), |offset| i + offset + 1);
+            let tag = &src[i..end];
+            let closing = tag.starts_with("</");
+            match (skipping, container_tag_name(tag)) {
+                (Some(open), Some(name)) if closing && name == open => skipping = None,
+                (None, Some(name)) if !closing && !tag.ends_with("/>") => skipping = Some(name),
+                _ => {}
+            }
+            i = end;
+            continue;
+        }
+        let candidate = skipping.is_none()
+            && (src[i..].starts_with("http://") || src[i..].starts_with("https://"))
+            && !src[..i]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric());
+        if candidate {
+            let end = src[i..]
+                .find(|c: char| !url_char(c))
+                .map_or(src.len(), |offset| i + offset);
+            let url = trim_url_tail(&src[i..end]);
+            if url
+                .split_once("//")
+                .is_some_and(|(_, host)| !host.is_empty())
+            {
+                out.push_str(&src[copied..i]);
+                out.push_str(&format!(r#"<a href="{url}">{url}</a>"#));
+                i += url.len();
+                copied = i;
+                continue;
+            }
+        }
+        i += src[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    out.push_str(&src[copied..]);
+    out
+}
+
+/// The element name of `<a>`/`<code>`/`<pre>` open or close tags, whose text
+/// content must never be autolinked.
+fn container_tag_name(tag: &str) -> Option<&'static str> {
+    let name: String = tag
+        .trim_start_matches('<')
+        .trim_start_matches('/')
+        .chars()
+        .take_while(char::is_ascii_alphanumeric)
+        .collect();
+    ["a", "code", "pre"]
+        .into_iter()
+        .find(|known| name.eq_ignore_ascii_case(known))
+}
+
+/// A URL is ASCII, so any other character ends it — including CJK punctuation
+/// and prose, which often follows a link with no space in between.
+fn url_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || "-._~:/?#[]@!$&'()*+,;=%".contains(c)
+}
+
+/// Drop sentence punctuation that follows a bare URL rather than belonging to
+/// it, plus unbalanced closing brackets and a trailing HTML entity.
+fn trim_url_tail(url: &str) -> &str {
+    let mut url = url;
+    loop {
+        let before = url;
+        for entity in ["&quot;", "&amp;", "&#39;", "&gt;", "&lt;"] {
+            url = url.strip_suffix(entity).unwrap_or(url);
+        }
+        url = url.trim_end_matches(['.', ',', ';', ':', '!', '?', '\'']);
+        for (open, close) in [('(', ')'), ('[', ']'), ('{', '}')] {
+            if url.ends_with(close) && url.matches(close).count() > url.matches(open).count() {
+                url = &url[..url.len() - close.len_utf8()];
+            }
+        }
+        if url == before {
+            return url;
+        }
+    }
 }
 
 fn code_is_inside_link(before: &str) -> bool {
@@ -724,6 +824,40 @@ mod art_ref_marker_tests {
     }
 
     #[test]
+    fn bare_urls_in_prose_become_links() {
+        let out = enrich_md_html(
+            md_to_html("这是百度的网址：https://www.baidu.com，点开看看"),
+            &[],
+            &[],
+            Locale::En,
+            None,
+        );
+        assert!(out.contains(r#"<a href="https://www.baidu.com">https://www.baidu.com</a>"#));
+        assert!(out.contains("，点开看看"));
+    }
+
+    #[test]
+    fn autolinking_keeps_query_strings_and_drops_sentence_punctuation() {
+        let out = linkify_bare_urls(
+            "<p>see http://a.test/x?a=1&amp;b=2. and (https://b.test/docs), done</p>".into(),
+        );
+        assert!(out.contains(r#"<a href="http://a.test/x?a=1&amp;b=2">"#));
+        assert!(out.contains(r#"<a href="https://b.test/docs">https://b.test/docs</a>)"#));
+        assert!(out.ends_with(", done</p>"));
+    }
+
+    #[test]
+    fn autolinking_never_touches_existing_links_code_or_attributes() {
+        let html = concat!(
+            r#"<p><a href="https://x.test">https://x.test</a> "#,
+            r#"<code>https://y.test</code></p>"#,
+            "<pre class=\"md-code\"><code>curl https://z.test</code></pre>",
+            r#"<p><img src="https://img.test/a.png" alt="https://img.test/a.png" /></p>"#
+        );
+        assert_eq!(linkify_bare_urls(html.into()), html);
+    }
+
+    #[test]
     fn inline_commands_and_foreign_absolute_paths_stay_plain_code() {
         let html = r#"<p><code>monitor_run</code> <code>/usr/bin/python3</code> <code>D:\Other\secret.md</code></p>"#;
         let out = wrap_inline_workspace_paths(html.into(), Some(r"D:\Project"));
@@ -834,9 +968,9 @@ pub(crate) fn handle_md_click(
             }
             if let Some(href) = n.get_attribute("href") {
                 if opens_in_system_browser(&href) {
-                    ev.prevent_default();
-                    ev.stop_propagation();
-                    open_external_url(href);
+                    // Left untouched on purpose: the window-level handler in
+                    // `App` owns every external link so one confirmation
+                    // prompt covers all render paths.
                     return;
                 }
                 if !is_external_href(&href) {
