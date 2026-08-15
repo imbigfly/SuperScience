@@ -160,6 +160,7 @@ const CONTEXT_STORAGE_PREFS_MIGRATION: &str = "0044_context_storage_prefs";
 const RUN_CLEANUP_STATE_MIGRATION: &str = "0045_run_cleanup_state";
 const REMOTE_STAGING_MIGRATION: &str = "0046_remote_staging";
 const RUN_RETENTION_MIGRATION: &str = "0047_run_retention";
+const ARTIFACT_SOURCE_DISCARDED_MIGRATION: &str = "0048_artifact_source_discarded";
 
 #[derive(Clone)]
 pub struct Store {
@@ -627,6 +628,15 @@ impl Store {
             )
             .await?;
             Self::record_migration(pool, RUN_RETENTION_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, ARTIFACT_SOURCE_DISCARDED_MIGRATION).await? {
+            Self::add_columns_if_missing(
+                pool,
+                "artifact_versions",
+                &[("source_discarded_at", "INTEGER")],
+            )
+            .await?;
+            Self::record_migration(pool, ARTIFACT_SOURCE_DISCARDED_MIGRATION).await?;
         }
         Ok(())
     }

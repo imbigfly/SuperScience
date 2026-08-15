@@ -609,18 +609,31 @@ async fn collect_pull_register(
                     .logical_key
                     .clone()
                     .unwrap_or_else(|| format!("path:{relative}"));
-                crate::harvest::register_reference_artifact(
+                let uri =
+                    super::remote_files::ssh_uri_for_remote_path(&connection.alias, &entry.path);
+                let artifact = crate::harvest::register_reference_artifact(
                     store,
                     &remote.project_id,
                     frame_id,
                     &remote.run_id,
                     &spec.kind,
-                    &format!("ssh://{}{}", connection.alias, entry.path),
+                    &uri,
                     Some(entry.size),
                     Some(entry.checksum.clone()),
                     &logical_key,
                 )
-                .await?
+                .await?;
+                ledger_harvest_persist(
+                    store,
+                    &remote.project_id,
+                    &format!("ssh:{}", connection.alias),
+                    &remote.run_id,
+                    &entry.path,
+                    Some(entry.checksum.clone()),
+                    i64::try_from(entry.size).ok(),
+                )
+                .await?;
+                artifact
             }
             RemoteOutputKind::File => {
                 let logical_key = spec
@@ -664,6 +677,31 @@ async fn collect_pull_register(
         harvested.push(artifact);
     }
     Ok(harvested)
+}
+
+async fn ledger_harvest_persist(
+    store: &wisp_store::Store,
+    project_id: &str,
+    context_id: &str,
+    run_id: &str,
+    remote_path: &str,
+    checksum: Option<String>,
+    size_bytes: Option<i64>,
+) -> Result<(), String> {
+    let mut entry = wisp_store::RemoteStagingEntry::new(
+        project_id,
+        context_id,
+        Some(run_id.into()),
+        remote_path,
+        "harvest_persist",
+    );
+    entry.checksum = checksum;
+    entry.size_bytes = size_bytes;
+    store
+        .ensure_remote_staging(&entry)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Download `<workdir>/harvest` into the project landing directory as a

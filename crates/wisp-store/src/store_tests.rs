@@ -3443,6 +3443,59 @@ async fn remote_staging_ledger_round_trips_and_counts_external_references() {
         0
     );
 
+    let persist = RemoteStagingEntry::new(
+        "p",
+        "ssh:gpu",
+        Some("r1".into()),
+        "/scratch/proj/artifacts/r1/big.bam",
+        "harvest_persist",
+    );
+    assert!(store.ensure_remote_staging(&persist).await.unwrap());
+    assert!(!store.ensure_remote_staging(&persist).await.unwrap());
+    assert_eq!(
+        store
+            .list_live_external_uris_on_context("p", "ssh://gpu/")
+            .await
+            .unwrap(),
+        vec!["ssh://gpu/scratch/proj/artifacts/r1/big.bam".to_string()]
+    );
+
+    assert_eq!(
+        store
+            .mark_external_artifacts_source_discarded("ssh://gpu/")
+            .await
+            .unwrap(),
+        1
+    );
+    assert!(store
+        .ssh_uri_source_discarded("ssh://gpu/scratch/proj/artifacts/r1/big.bam")
+        .await
+        .unwrap());
+    assert_eq!(
+        store
+            .count_external_references_on_context("p", "ssh://gpu/")
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(store
+        .list_live_external_uris_on_context("p", "ssh://gpu/")
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        store
+            .mark_remote_staging_removed_for_context("ssh:gpu")
+            .await
+            .unwrap(),
+        1
+    );
+    assert!(store
+        .list_remote_staging("p", "ssh:gpu", false)
+        .await
+        .unwrap()
+        .is_empty());
+
     let _ = std::fs::remove_file(&tmp);
 }
 

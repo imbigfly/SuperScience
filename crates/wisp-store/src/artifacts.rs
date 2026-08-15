@@ -548,7 +548,12 @@ impl Store {
                       WHEN a.logical_key LIKE 'path:uploads/%' \
                         OR replace(a.storage_path, '\\\\', '/') LIKE replace(p.workspace_dir, '\\\\', '/') || '/uploads/%' THEN 'upload' \
                       ELSE 'artifact' \
-                    END AS origin \
+                    END AS origin, \
+                    CASE WHEN EXISTS (\
+                      SELECT 1 FROM artifact_versions discarded \
+                      WHERE discarded.id=a.latest_version_id \
+                        AND discarded.source_discarded_at IS NOT NULL\
+                    ) THEN 1 ELSE 0 END AS source_discarded \
              FROM artifacts a JOIN projects p ON p.id=a.project_id \
              LEFT JOIN frames f ON f.id=a.root_frame_id \
              WHERE a.exploration_id IS NULL AND (? IS NULL OR a.project_id=?) \
@@ -584,6 +589,7 @@ impl Store {
                     size_bytes: row.try_get("size_bytes")?,
                     origin: row.try_get("origin")?,
                     logical_path: row.try_get("logical_path")?,
+                    source_discarded: row.try_get::<i64, _>("source_discarded")? != 0,
                 })
             })
             .collect()
@@ -612,7 +618,13 @@ impl Store {
                     CASE WHEN a.exploration_id=view_exploration.id \
                          THEN (SELECT size_bytes FROM artifact_versions v WHERE v.id=a.latest_version_id) \
                          ELSE baseline_version.size_bytes END AS size_bytes,\
-                    CASE WHEN a.logical_key LIKE 'path:%' THEN substr(a.logical_key,6) END AS logical_path \
+                    CASE WHEN a.logical_key LIKE 'path:%' THEN substr(a.logical_key,6) END AS logical_path, \
+                    CASE WHEN COALESCE(\
+                      CASE WHEN a.exploration_id=view_exploration.id \
+                           THEN (SELECT discarded.source_discarded_at FROM artifact_versions discarded \
+                                 WHERE discarded.id=a.latest_version_id) \
+                           ELSE baseline_version.source_discarded_at END, \
+                      0) != 0 THEN 1 ELSE 0 END AS source_discarded \
              FROM artifacts a JOIN projects p ON p.id=a.project_id \
              JOIN explorations view_exploration ON view_exploration.id=? \
              LEFT JOIN exploration_baseline_artifact_heads baseline \
@@ -655,6 +667,7 @@ impl Store {
                     size_bytes: row.try_get("size_bytes")?,
                     origin: "artifact".into(),
                     logical_path: row.try_get("logical_path")?,
+                    source_discarded: row.try_get::<i64, _>("source_discarded")? != 0,
                 })
             })
             .collect()
@@ -693,6 +706,11 @@ impl Store {
                       AND m.role='user' ORDER BY m.seq LIMIT 1) AS first_user,\
                     (SELECT size_bytes FROM artifact_versions v WHERE v.id=a.latest_version_id) AS size_bytes,\
                     CASE WHEN a.logical_key LIKE 'path:%' THEN substr(a.logical_key,6) END AS logical_path,\
+                    CASE WHEN EXISTS (\
+                      SELECT 1 FROM artifact_versions discarded \
+                      WHERE discarded.id=a.latest_version_id \
+                        AND discarded.source_discarded_at IS NOT NULL\
+                    ) THEN 1 ELSE 0 END AS source_discarded, \
                     CASE \
                       WHEN EXISTS (SELECT 1 FROM run_artifacts ra WHERE ra.artifact_id=a.id) THEN 'output' \
                       WHEN a.logical_key LIKE 'path:uploads/%' \
@@ -725,6 +743,7 @@ impl Store {
                 size_bytes: row.try_get("size_bytes")?,
                 origin: row.try_get("origin")?,
                 logical_path: row.try_get("logical_path")?,
+                source_discarded: row.try_get::<i64, _>("source_discarded")? != 0,
             })
         })
         .transpose()

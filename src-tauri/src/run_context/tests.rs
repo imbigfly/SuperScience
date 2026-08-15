@@ -2466,6 +2466,22 @@ async fn ssh_harvest_downloads_verifies_and_registers_selected_outputs() {
         version.materialization,
         wisp_store::ArtifactMaterialization::External
     );
+    let staged = store
+        .list_remote_staging("p", "ssh:gpu", false)
+        .await
+        .unwrap();
+    assert_eq!(staged.len(), 1);
+    assert_eq!(staged[0].source, "harvest_persist");
+    assert_eq!(staged[0].remote_path, remote_path);
+    assert_eq!(staged[0].run_id.as_deref(), Some("run-h"));
+    let listed = crate::run_context::remote_files::list_remote_files(&store, "p", "ssh:gpu")
+        .await
+        .unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(
+        listed[0].state,
+        crate::run_context::remote_files::RemoteFileState::Active
+    );
     let transfers: Vec<_> = store
         .list_runs_by_project("p")
         .await
@@ -2493,6 +2509,14 @@ async fn ssh_harvest_downloads_verifies_and_registers_selected_outputs() {
         .unwrap();
     assert_eq!(again.len(), 3);
     assert_eq!(store.list_run_outputs("run-h").await.unwrap().len(), 3);
+    assert_eq!(
+        store
+            .list_remote_staging("p", "ssh:gpu", false)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
     assert_eq!(
         again
             .iter()
@@ -3307,6 +3331,95 @@ async fn remote_files_classify_and_remove_only_ledgered_paths() {
     .await
     .unwrap();
     assert_eq!(removed, 1);
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn discarding_a_server_marks_external_artifacts_and_blocks_fetch() {
+    let tmp = std::env::temp_dir().join(format!("wisp_discard_src_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .upsert_execution_context(&harvest_test_context())
+        .await
+        .unwrap();
+    let uri = "ssh://gpu/scratch/proj/artifacts/r1/big.bam";
+    store
+        .save_artifact_version(&wisp_store::ArtifactVersionDraft {
+            version_id: None,
+            artifact_id: wisp_store::logical_artifact_id("p", "path:big.bam"),
+            project_id: "p".into(),
+            root_frame_id: "f".into(),
+            filename: "big.bam".into(),
+            content_type: "data".into(),
+            storage_path: uri.into(),
+            logical_key: Some("path:big.bam".into()),
+            size_bytes: Some(12),
+            checksum: None,
+            producing_run_id: None,
+            env_snapshot_hash: None,
+            materialization: wisp_store::ArtifactMaterialization::External,
+            capture_timing: wisp_store::ArtifactCaptureTiming::AtCreation,
+        })
+        .await
+        .unwrap();
+    let mut persist = wisp_store::RemoteStagingEntry::new(
+        "p",
+        "ssh:gpu",
+        Some("r1".into()),
+        "/scratch/proj/artifacts/r1/big.bam",
+        "harvest_persist",
+    );
+    persist.created_at = 10;
+    store.record_remote_staging(&persist).await.unwrap();
+
+    let files = remote_files::list_remote_files(&store, "p", "ssh:gpu")
+        .await
+        .unwrap();
+    assert_eq!(files[0].state, remote_files::RemoteFileState::Active);
+    remote_files::refuse_if_source_discarded(&store, uri)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        remote_files::abandon_context_sources(&store, "gpu")
+            .await
+            .unwrap(),
+        1
+    );
+    assert!(store.ssh_uri_source_discarded(uri).await.unwrap());
+    assert!(store
+        .list_remote_staging("p", "ssh:gpu", false)
+        .await
+        .unwrap()
+        .is_empty());
+    let error = remote_files::refuse_if_source_discarded(&store, uri)
+        .await
+        .unwrap_err();
+    assert!(error.starts_with("source_discarded:"), "{error}");
+    let error = remote_files::refuse_if_context_path_discarded(
+        &store,
+        "ssh:gpu",
+        "/scratch/proj/artifacts/r1/big.bam",
+    )
+    .await
+    .unwrap_err();
+    assert!(error.starts_with("source_discarded:"), "{error}");
+
+    let found = store
+        .search_artifacts(Some("p"), "big", 8, None)
+        .await
+        .unwrap();
+    assert_eq!(found.len(), 1);
+    assert!(found[0].source_discarded);
 
     let _ = std::fs::remove_dir_all(&tmp);
 }

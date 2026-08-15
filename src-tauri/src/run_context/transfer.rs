@@ -939,6 +939,12 @@ async fn submit_transfer(
     }
 
     validate_remote_path("source_path", &request.source_path)?;
+    super::remote_files::refuse_if_context_path_discarded(
+        store,
+        &request.source_context_id,
+        &request.source_path,
+    )
+    .await?;
     let source = selected_ssh_context(store, frame_id, &request.source_context_id).await?;
 
     if request.destination_context_id == "local" {

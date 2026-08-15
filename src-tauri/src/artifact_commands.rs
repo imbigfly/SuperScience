@@ -200,6 +200,7 @@ async fn register_artifact_at(
         size_bytes: Some(size_bytes),
         origin: Some(origin.into()),
         logical_path: Some(source_path),
+        source_discarded: false,
     })
 }
 
@@ -363,6 +364,7 @@ pub(super) async fn list_artifacts(
                 size_bytes: None,
                 origin: None,
                 logical_path,
+                source_discarded: false,
             }
         })
         .filter(artifact_info_is_visible)
@@ -437,6 +439,7 @@ pub(super) async fn search_artifacts(
                 size_bytes: a.size_bytes,
                 origin: Some(a.origin),
                 logical_path: a.logical_path,
+                source_discarded: a.source_discarded,
             }
         })
         .filter(artifact_info_is_visible)
@@ -579,6 +582,10 @@ pub(super) async fn download_artifact(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("artifact '{id}' not found in the active state"))?;
+    if storage_path.starts_with("ssh://") {
+        crate::run_context::remote_files::refuse_if_source_discarded(&state.store, &storage_path)
+            .await?;
+    }
     let root = if matches!(&scope, wisp_store::StateScope::Exploration { .. }) {
         working_project.root
     } else {

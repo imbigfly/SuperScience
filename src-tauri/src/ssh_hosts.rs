@@ -1232,6 +1232,7 @@ pub async fn remove_ssh_host(
 ) -> Result<Vec<SshHost>, String> {
     let hosts = remove_host(load(&state.store).await, &alias);
     save(&state.store, &hosts).await?;
+    crate::run_context::remote_files::abandon_context_sources(&state.store, &alias).await?;
     remove_context_for_alias(&state.store, &alias).await?;
     let _ = password_delete(&alias);
     Ok(hosts.into_iter().map(decorate_host).collect())

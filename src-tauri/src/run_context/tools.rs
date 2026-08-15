@@ -666,7 +666,7 @@ impl Tool for ListRemoteFilesTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "list_remote_files",
-            "List the files this project placed on one SSH server (run input staging and uploads), classified as active (still referenced), replaced (a newer upload took the same path), or orphan (safe to delete). Use remove_remote_files to delete retracted files.",
+            "List the files this project placed on one SSH server (run input staging, uploads, and harvest-persisted outputs left on the server), classified as active (still referenced), replaced (a newer upload took the same path), or orphan (safe to delete). Use remove_remote_files to delete retracted files.",
             serde_json::json!({
                 "type": "object",
                 "properties": { "context_id": { "type": "string", "description": "SSH context id, e.g. ssh:gpu" } },

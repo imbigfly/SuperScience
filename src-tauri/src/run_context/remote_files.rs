@@ -1,10 +1,13 @@
 //! Remote staging ledger operations: list what this project placed on a
 //! server, classify what is still referenced, and delete retracted/replaced
 //! files. Only ledgered paths can ever be deleted — never arbitrary input.
+//! Harvest-persisted outputs (too large to pull back) live here too, so a
+//! discarded server can be audited and abandoned without leaving silent
+//! `ssh://` references.
 
 use super::{checked_output, ssh_script_command, RunCommandRunner, REMOTE_RPC_TIMEOUT};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -30,6 +33,65 @@ pub(crate) struct RemoteFileView {
     pub state: RemoteFileState,
 }
 
+/// Build the `ssh://alias/path` URI used for External Artifact versions.
+/// Absolute paths become `ssh://alias/home/...`; `~/...` stays `ssh://alias/~/...`.
+pub(crate) fn ssh_uri_for_remote_path(alias: &str, remote_path: &str) -> String {
+    if remote_path.starts_with('/') {
+        format!("ssh://{alias}{remote_path}")
+    } else {
+        format!("ssh://{alias}/{remote_path}")
+    }
+}
+
+pub(crate) fn ssh_uri_for_context_path(context_id: &str, remote_path: &str) -> String {
+    let alias = context_id.strip_prefix("ssh:").unwrap_or(context_id);
+    ssh_uri_for_remote_path(alias, remote_path)
+}
+
+/// Stable prefix so the UI can localize. Re-adding the same host alias must
+/// not resurrect a reference the user already abandoned.
+pub(crate) const SOURCE_DISCARDED_ERROR: &str = "source_discarded: This artifact's source server was discarded; the remote file is no longer available through Wisp.";
+
+pub(crate) async fn refuse_if_source_discarded(
+    store: &wisp_store::Store,
+    uri: &str,
+) -> Result<(), String> {
+    if store
+        .ssh_uri_source_discarded(uri)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        return Err(SOURCE_DISCARDED_ERROR.into());
+    }
+    Ok(())
+}
+
+pub(crate) async fn refuse_if_context_path_discarded(
+    store: &wisp_store::Store,
+    context_id: &str,
+    remote_path: &str,
+) -> Result<(), String> {
+    refuse_if_source_discarded(store, &ssh_uri_for_context_path(context_id, remote_path)).await
+}
+
+/// Drop the project's claim on a server: mark External artifacts discarded and
+/// close the staging ledger. Remote bytes are not deleted — the machine is
+/// being thrown away.
+pub(crate) async fn abandon_context_sources(
+    store: &wisp_store::Store,
+    alias: &str,
+) -> Result<u64, String> {
+    let marked = store
+        .mark_external_artifacts_source_discarded(&format!("ssh://{alias}/"))
+        .await
+        .map_err(|e| e.to_string())?;
+    store
+        .mark_remote_staging_removed_for_context(&format!("ssh:{alias}"))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(marked)
+}
+
 pub(crate) async fn list_remote_files(
     store: &wisp_store::Store,
     project_id: &str,
@@ -39,6 +101,13 @@ pub(crate) async fn list_remote_files(
         .list_remote_staging(project_id, context_id, false)
         .await
         .map_err(|e| e.to_string())?;
+    let alias = context_id.strip_prefix("ssh:").unwrap_or(context_id);
+    let live_uris: HashSet<String> = store
+        .list_live_external_uris_on_context(project_id, &format!("ssh://{alias}/"))
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .collect();
     // Latest ledger entry per remote path wins; older ones are "replaced".
     let mut latest: HashMap<&str, (i64, &str)> = HashMap::new();
     for entry in &entries {
@@ -61,9 +130,13 @@ pub(crate) async fn list_remote_files(
         let replaced = latest
             .get(entry.remote_path.as_str())
             .is_some_and(|(_, id)| *id != entry.id);
-        let active = run.as_ref().is_some_and(|run| {
-            !run.status.is_terminal() || (entry.source == "run_input" && run.cleaned_at.is_none())
-        });
+        let persist_live = entry.source == "harvest_persist"
+            && live_uris.contains(&ssh_uri_for_remote_path(alias, &entry.remote_path));
+        let active = persist_live
+            || run.as_ref().is_some_and(|run| {
+                !run.status.is_terminal()
+                    || (entry.source == "run_input" && run.cleaned_at.is_none())
+            });
         let state = if replaced {
             RemoteFileState::Replaced
         } else if active {
@@ -154,7 +227,19 @@ pub(crate) async fn remove_remote_files(
     store
         .mark_remote_staging_removed(&confirmed)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    let discarded_uris: Vec<String> = views
+        .iter()
+        .filter(|view| {
+            confirmed.iter().any(|id| id == &view.id) && view.source == "harvest_persist"
+        })
+        .map(|view| ssh_uri_for_context_path(&context.id, &view.remote_path))
+        .collect();
+    store
+        .mark_external_uris_source_discarded(&discarded_uris)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(confirmed.len() as u64)
 }
 
 /// Disposal audit before dropping a server: what would be abandoned.
@@ -205,5 +290,21 @@ mod tests {
         assert_eq!(payload.matches("rm -rf \"$path\"").count(), 2);
         assert!(payload.contains("__WISP_RM__:%s\\n' 'id-1'"));
         assert!(payload.contains("__WISP_RM__:%s\\n' 'id-2'"));
+    }
+
+    #[test]
+    fn ssh_uri_keeps_absolute_and_home_relative_paths() {
+        assert_eq!(
+            ssh_uri_for_remote_path("gpu", "/home/alice/data/x.bam"),
+            "ssh://gpu/home/alice/data/x.bam"
+        );
+        assert_eq!(
+            ssh_uri_for_remote_path("gpu", "~/wisp/proj/data/x.bam"),
+            "ssh://gpu/~/wisp/proj/data/x.bam"
+        );
+        assert_eq!(
+            ssh_uri_for_context_path("ssh:gpu", "/scratch/out.tsv"),
+            "ssh://gpu/scratch/out.tsv"
+        );
     }
 }

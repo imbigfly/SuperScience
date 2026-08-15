@@ -278,6 +278,12 @@ pub(super) async fn download_file(
     };
     let dest_path = std::path::PathBuf::from(dest.to_string());
     if let Some((context_id, remote_path)) = remote {
+        crate::run_context::remote_files::refuse_if_context_path_discarded(
+            &state.store,
+            &context_id,
+            &remote_path,
+        )
+        .await?;
         let frame_id = state.active_frame(window.label());
         let context = state
             .store
