@@ -117,72 +117,9 @@ pub async fn read_references(
     if project_ids.is_empty() && explicit_session_ids.is_empty() {
         return Ok(None);
     }
-    if matches!(
-        store
-            .frame_state_scope(target_frame_id)
-            .await
-            .map_err(|error| error.to_string())?,
-        Some(wisp_store::StateScope::Exploration { .. })
-    ) {
-        return Err(
-            "exploration_scope_violation: saved-session Reader references are disabled inside an exploration because they are not part of the frozen checkpoint view."
-                .into(),
-        );
-    }
-    let target_project = store
-        .frame_project_id(target_frame_id)
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "The current session no longer exists.".to_string())?;
-
-    let mut sessions = Vec::new();
-    let mut seen = HashSet::new();
-    for project_id in project_ids {
-        if project_id != &target_project {
-            return Err("#project can only read sessions from the current project.".into());
-        }
-        let project = store
-            .get_project(project_id)
-            .await
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| format!("Project '{project_id}' no longer exists."))?;
-        for (id, title, ..) in store
-            .list_sessions(project_id)
-            .await
-            .map_err(|error| error.to_string())?
-        {
-            if id == target_frame_id || !seen.insert(id.clone()) {
-                continue;
-            }
-            sessions.push(SessionSearchResult {
-                id,
-                project_id: project_id.clone(),
-                project_name: project.0.clone(),
-                title,
-                created_at: 0,
-                activity_at: 0,
-                last_role: None,
-                unseen: false,
-            });
-        }
-    }
-    for id in explicit_session_ids {
-        if id == target_frame_id {
-            return Err(
-                "The current session is already in context; choose a different session.".into(),
-            );
-        }
-        if !seen.insert(id.clone()) {
-            continue;
-        }
-        sessions.push(
-            store
-                .get_session_reference(id)
-                .await
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| format!("Attached session '{id}' no longer exists."))?,
-        );
-    }
+    let sessions =
+        resolve_reference_sessions(store, project_ids, explicit_session_ids, target_frame_id)
+            .await?;
 
     if sessions.is_empty() {
         return Ok(Some(
@@ -295,6 +232,76 @@ pub async fn read_references(
     }
     let failed_tasks = task_count.saturating_sub(successful_tasks);
     Ok(Some(render_injection(&inputs, by_session, failed_tasks)))
+}
+
+/// Resolve the durable sessions that a Reader request may inspect.
+///
+/// Exploration targets are intentionally accepted. These queries return only
+/// ordinary, non-exploration root frames, and Reader turns are read-only, so a
+/// reference cannot expose sibling-private state or mutate the frozen project
+/// checkpoint.
+async fn resolve_reference_sessions(
+    store: &Store,
+    project_ids: &[String],
+    explicit_session_ids: &[String],
+    target_frame_id: &str,
+) -> Result<Vec<SessionSearchResult>, String> {
+    let target_project = store
+        .frame_project_id(target_frame_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The current session no longer exists.".to_string())?;
+
+    let mut sessions = Vec::new();
+    let mut seen = HashSet::new();
+    for project_id in project_ids {
+        if project_id != &target_project {
+            return Err("#project can only read sessions from the current project.".into());
+        }
+        let project = store
+            .get_project(project_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("Project '{project_id}' no longer exists."))?;
+        for (id, title, ..) in store
+            .list_sessions(project_id)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            if id == target_frame_id || !seen.insert(id.clone()) {
+                continue;
+            }
+            sessions.push(SessionSearchResult {
+                id,
+                project_id: project_id.clone(),
+                project_name: project.0.clone(),
+                title,
+                created_at: 0,
+                activity_at: 0,
+                last_role: None,
+                unseen: false,
+            });
+        }
+    }
+    for id in explicit_session_ids {
+        if id == target_frame_id {
+            return Err(
+                "The current session is already in context; choose a different session.".into(),
+            );
+        }
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        sessions.push(
+            store
+                .get_session_reference(id)
+                .await
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| format!("Attached session '{id}' no longer exists."))?,
+        );
+    }
+
+    Ok(sessions)
 }
 
 fn failure_injection(results: &[TaskResult]) -> String {
@@ -806,6 +813,10 @@ fn clip(text: &str, cap: usize) -> String {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+    use wisp_store::{
+        ContextArchiveRecord, Exploration, ExplorationCheckpoint, ExplorationFamily,
+        ExplorationStatus, WorkspaceSnapshotRecord,
+    };
 
     struct SlowProvider {
         active: AtomicUsize,
@@ -853,6 +864,138 @@ mod tests {
             .enumerate()
             .map(|(index, message)| (index as i64 + 1, message))
             .collect()
+    }
+
+    #[tokio::test]
+    async fn exploration_targets_can_resolve_saved_session_references() {
+        let database = std::env::temp_dir().join(format!(
+            "wisp_reader_exploration_reference_{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let store = Store::open(&database).await.unwrap();
+        store
+            .create_project("project", "Project", "/tmp/project")
+            .await
+            .unwrap();
+        for frame_id in ["source", "reference", "exploration"] {
+            store
+                .create_frame(frame_id, "project", "OPERON", "model")
+                .await
+                .unwrap();
+        }
+        store
+            .append_message("source", 1, &Message::user("compare approaches"))
+            .await
+            .unwrap();
+        store
+            .append_message("source", 2, &Message::assistant("stable checkpoint"))
+            .await
+            .unwrap();
+        store
+            .append_message("reference", 1, &Message::user("historical evidence"))
+            .await
+            .unwrap();
+        store
+            .append_message("reference", 2, &Message::assistant("saved result"))
+            .await
+            .unwrap();
+        store
+            .create_workspace_snapshot(&WorkspaceSnapshotRecord {
+                id: "snapshot".into(),
+                project_id: "project".into(),
+                manifest_json: r#"{"version":1,"files":[]}"#.into(),
+                manifest_sha256: "a".repeat(64),
+                created_at: 1,
+            })
+            .await
+            .unwrap();
+        store
+            .create_context_archive(&ContextArchiveRecord {
+                id: "archive".into(),
+                project_id: "project".into(),
+                frame_id: "source".into(),
+                storage_path: ".wisp/history/archive.json".into(),
+                checksum: "b".repeat(64),
+                created_at: 1,
+            })
+            .await
+            .unwrap();
+        store
+            .create_exploration_family(&ExplorationFamily {
+                id: "family".into(),
+                project_id: "project".into(),
+                root_frame_id: "source".into(),
+                mainline_frame_id: "source".into(),
+                generation: 0,
+                created_at: 1,
+                updated_at: 1,
+            })
+            .await
+            .unwrap();
+        store
+            .create_exploration_checkpoint(&ExplorationCheckpoint {
+                id: "checkpoint".into(),
+                family_id: "family".into(),
+                project_id: "project".into(),
+                source_frame_id: "source".into(),
+                source_message_seq: 2,
+                source_frame_head_seq: 2,
+                source_ui_event_seq: 0,
+                source_family_generation: 0,
+                source_state_generation: 0,
+                workspace_snapshot_id: "snapshot".into(),
+                context_archive_id: "archive".into(),
+                guard_hash: "c".repeat(64),
+                entity_hash: "d".repeat(64),
+                isolation_summary_json: "{}".into(),
+                created_at: 1,
+            })
+            .await
+            .unwrap();
+        store
+            .create_exploration(&Exploration {
+                id: "explore".into(),
+                checkpoint_id: "checkpoint".into(),
+                frame_id: "exploration".into(),
+                name: "Alternative".into(),
+                status: ExplorationStatus::Creating,
+                workspace_dir: "/tmp/explorations/explore".into(),
+                workspace_backend: "snapshot".into(),
+                scope_generation: 0,
+                warnings_json: "[]".into(),
+                created_at: 2,
+                updated_at: 2,
+            })
+            .await
+            .unwrap();
+        assert!(store
+            .transition_exploration(
+                "explore",
+                ExplorationStatus::Creating,
+                ExplorationStatus::Active,
+            )
+            .await
+            .unwrap());
+
+        let explicit =
+            resolve_reference_sessions(&store, &[], &["reference".into()], "exploration")
+                .await
+                .unwrap();
+        assert_eq!(explicit.len(), 1);
+        assert_eq!(explicit[0].id, "reference");
+
+        let project = resolve_reference_sessions(&store, &["project".into()], &[], "exploration")
+            .await
+            .unwrap();
+        let ids = project
+            .into_iter()
+            .map(|session| session.id)
+            .collect::<HashSet<_>>();
+        assert_eq!(ids, HashSet::from(["source".into(), "reference".into()]));
+        assert!(!ids.contains("exploration"));
+
+        drop(store);
+        let _ = std::fs::remove_file(database);
     }
 
     #[test]
