@@ -3276,6 +3276,7 @@ async fn store_open_records_migrations_and_seeds_local_context() {
             REMOTE_STAGING_MIGRATION.to_string(),
             RUN_RETENTION_MIGRATION.to_string(),
             SCHEDULES_MIGRATION.to_string(),
+            ARTIFACT_SOURCE_DISCARDED_MIGRATION.to_string(),
         ]
     );
 
