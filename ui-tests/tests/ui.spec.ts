@@ -5526,9 +5526,26 @@ test("run review modal browses the workspace and downloads or deletes selections
   await runCard.getByTestId("run-review-open").click();
   const review = page.getByTestId("run-review-modal");
   await expect(review).toBeVisible();
+  await expect(review.getByTestId("run-review-subtitle")).toHaveText("Kinase screen QC");
   const rows = review.getByTestId("run-review-row");
   await expect(rows).toHaveCount(2);
   await expect(rows.filter({ hasText: "results" })).toContainText("132481 files");
+  const table = rows.filter({ hasText: "qc_table.tsv" });
+  await expect(table.getByTestId("run-review-name")).toHaveText("qc_table.tsv");
+  await expect(table.getByTestId("run-review-size")).toHaveText("2.0 KB");
+  const nameBox = await table.getByTestId("run-review-name").boundingBox();
+  const sizeBox = await table.getByTestId("run-review-size").boundingBox();
+  expect(nameBox).not.toBeNull();
+  expect(sizeBox).not.toBeNull();
+  expect(nameBox!.x + nameBox!.width).toBeLessThan(sizeBox!.x);
+  const cleanupBox = await review.getByRole("button", { name: "Clean entire workspace" }).boundingBox();
+  expect(cleanupBox).not.toBeNull();
+  expect(cleanupBox!.height).toBeLessThan(40);
+  await expect(review.getByRole("button", { name: "Download selected" })).toBeDisabled();
+  await review.getByTestId("run-review-select-all").check();
+  await expect(review.getByTestId("run-review-count")).toHaveText("2 selected");
+  await expect(review.getByRole("button", { name: "Download selected" })).toBeEnabled();
+  await review.getByTestId("run-review-select-all").uncheck();
 
   // Escape immediately: one press closes only the review modal — the runs
   // modal underneath stays open.

@@ -1226,3 +1226,229 @@ textarea.host-input { min-height:64px; resize:vertical; }
 .turn-memory-field select { height: 38px; padding: 0 34px 0 11px; }
 .turn-memory-field textarea { min-height: 210px; padding: 11px 12px; line-height: 1.55; resize: vertical; }
 .turn-memory-modal .row { justify-content: flex-end; margin-top: 18px; }
+
+/* Run workspace review: file picker + selective download/delete. */
+.modal.run-review-modal {
+  max-width: 560px;
+  overflow: hidden;
+  gap: var(--space-3);
+}
+.run-review-modal .ps-head { align-items: flex-start; }
+.run-review-subtitle {
+  margin: 3px 0 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+  font-size: var(--text-sm);
+  line-height: 1.4;
+}
+.run-review-subtitle.is-id { font: 11.5px/1.4 var(--font-mono); }
+.run-review-hint,
+.run-review-warning {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: var(--text-xs);
+  line-height: 1.45;
+}
+.run-review-toolbar { display: flex; flex-direction: column; gap: var(--space-2); }
+.run-review-pathbar { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.run-review-up {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  padding: 5px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  background: var(--bg-input);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+.run-review-up:hover:not(:disabled) { color: var(--text); border-color: var(--text-faint); }
+.run-review-up:disabled { opacity: .55; cursor: default; }
+.run-review-up svg { width: 14px; height: 14px; }
+.run-review-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font: 12px/1.4 var(--font-mono);
+}
+.run-review-filter-wrap {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: 0 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  transition: border-color .12s ease, box-shadow .12s ease;
+}
+.run-review-filter-wrap:focus-within {
+  border-color: var(--clay);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+.run-review-filter-wrap svg { flex: 0 0 auto; width: 15px; height: 15px; color: var(--text-faint); }
+.modal.run-review-modal .run-review-filter-wrap .run-review-filter {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 8px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.modal.run-review-modal .run-review-filter-wrap .run-review-filter:focus {
+  border: 0;
+  box-shadow: none;
+}
+.run-review-list {
+  display: flex;
+  flex-direction: column;
+  max-height: min(360px, 46vh);
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+}
+.run-review-list.is-busy { opacity: .65; }
+.run-review-cols,
+.run-review-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+}
+.run-review-cols {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding-top: 7px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sunken);
+  color: var(--text-faint);
+  font-size: var(--text-xs);
+  font-weight: 650;
+}
+.run-review-row {
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+.run-review-row:last-child { border-bottom: 0; }
+.run-review-row:hover { background: var(--surface-hover); }
+.run-review-row.selected {
+  background: color-mix(in srgb, var(--clay) 6%, var(--bg-elev));
+}
+.modal.run-review-modal .run-review-select {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
+  font-size: inherit;
+  font-weight: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.modal.run-review-modal .run-review-select input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--clay);
+  cursor: pointer;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.run-review-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text);
+  font-size: 13.5px;
+}
+.run-review-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--text-faint);
+}
+.run-review-icon svg { width: 16px; height: 16px; }
+.run-review-filename {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+button.run-review-dir {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+button.run-review-dir:hover .run-review-filename {
+  color: var(--clay-strong);
+  text-decoration: underline;
+}
+.run-review-meta {
+  color: var(--text-faint);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+.run-review-list .control-empty {
+  margin: auto;
+  padding: var(--space-5) var(--space-3);
+  border: 0;
+  background: transparent;
+  color: var(--text-faint);
+  text-align: center;
+}
+.run-review-more {
+  width: 100%;
+  margin-top: auto;
+  padding: 8px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  background: transparent;
+  color: var(--clay-strong);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+.run-review-more:hover:not(:disabled) { background: var(--surface-hover); }
+.run-review-more:disabled { opacity: .55; cursor: default; }
+.run-review-modal .run-review-actions {
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 0;
+}
+.run-review-modal .run-review-actions button { flex: 0 0 auto; white-space: nowrap; }
+.run-review-modal .run-review-cleanup { margin-right: auto; color: var(--text-muted); }
+.run-review-modal .run-review-cleanup:hover:not(:disabled),
+.run-review-modal .run-review-delete:hover:not(:disabled) {
+  color: var(--err);
+  border-color: color-mix(in srgb, var(--err) 35%, var(--border-strong));
+}
+.run-review-count {
+  color: var(--text-faint);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}

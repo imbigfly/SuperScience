@@ -6,7 +6,7 @@ use crate::app_support::{
 use crate::bindings::{invoke_checked, open_external_url, render_share_png};
 use crate::dto::*;
 use crate::i18n::{localize_backend, t, tf, Locale};
-use crate::text::{dom_value, event_target_value};
+use crate::text::{dom_value, event_target_value, file_kind, format_bytes};
 use leptos::*;
 use serde_wasm_bindgen::to_value;
 
@@ -598,16 +598,34 @@ pub(super) fn RuntimeInterpreterOverlay(
 #[derive(Clone, Copy)]
 pub(crate) struct RunReviewModal(pub(crate) RwSignal<Option<String>>);
 
-fn format_bytes(bytes: u64) -> String {
-    if bytes >= 1024 * 1024 * 1024 {
-        format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
-    } else if bytes >= 1024 * 1024 {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-    } else if bytes >= 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
+fn run_review_subtitle_label(title: Option<&str>, run_id: &str) -> (String, bool) {
+    if let Some(title) = title.map(str::trim).filter(|title| !title.is_empty()) {
+        (title.to_string(), false)
     } else {
-        format!("{bytes} B")
+        (run_id.split('-').next().unwrap_or(run_id).to_string(), true)
     }
+}
+
+fn run_review_icon(is_dir: bool, name: &str) -> &'static str {
+    if is_dir {
+        "folder"
+    } else if file_kind(name) == Some("image") {
+        "image"
+    } else {
+        "doc"
+    }
+}
+
+fn toggle_run_review_selection(
+    selection: RwSignal<std::collections::HashMap<String, String>>,
+    path: String,
+    kind: String,
+) {
+    selection.update(|selected| {
+        if selected.remove(&path).is_none() {
+            selected.insert(path, kind);
+        }
+    });
 }
 
 /// Review a finished Run's server workspace: browse one directory level at a
@@ -782,49 +800,86 @@ pub(super) fn RunReviewOverlay(
         });
     };
 
+    let toggle_all = move |_| {
+        let rows = entries.get_untracked();
+        selection.update(|selected| {
+            let all_on =
+                !rows.is_empty() && rows.iter().all(|entry| selected.contains_key(&entry.path));
+            if all_on {
+                for entry in &rows {
+                    selected.remove(&entry.path);
+                }
+            } else {
+                for entry in rows {
+                    selected.insert(entry.path, entry.kind);
+                }
+            }
+        });
+    };
+
     move || {
         modal.get().map(|run_id| {
+            let (subtitle, subtitle_is_id) = runs.with(|runs| {
+                run_review_subtitle_label(
+                    runs.iter()
+                        .find(|run| run.id == run_id)
+                        .map(|run| run.title.as_str()),
+                    &run_id,
+                )
+            });
+            let subtitle_title = run_id.clone();
             view! {
                 <div class="overlay">
-                    <div class="modal runs-details run-review-modal" data-testid="run-review-modal">
+                    <div class="modal run-review-modal" role="dialog" aria-modal="true"
+                        aria-labelledby="run-review-title" data-testid="run-review-modal">
                         <div class="ps-head">
                             <div class="context-modal-title">
-                                <h2>{move || t(locale.get(), "run_review.title")}</h2>
-                                <code>{run_id.clone()}</code>
+                                <h2 id="run-review-title">{move || t(locale.get(), "run_review.title")}</h2>
+                                <p class="run-review-subtitle" class:is-id=subtitle_is_id
+                                    data-testid="run-review-subtitle" title=subtitle_title>{subtitle}</p>
                             </div>
                             <button type="button" class="ps-close"
                                 title=move || t(locale.get(), "settings.cancel")
+                                aria-label=move || t(locale.get(), "settings.cancel")
                                 on:click=move |_| close()>{compose_icon("close")}</button>
                         </div>
-                        <p class="runtime-config-hint">{move || t(locale.get(), "run_review.hint")}</p>
+                        <p class="run-review-hint">{move || t(locale.get(), "run_review.hint")}</p>
                         <div class="run-review-toolbar">
                             {move || {
                                 let current = path.get();
-                                (!current.is_empty()).then(|| view! {
-                                    <button type="button" class="run-review-up"
-                                        disabled=move || busy.get()
-                                        on:click=move |_| {
-                                            path.update(|value| {
-                                                *value = value.rsplit_once('/')
-                                                    .map(|(parent, _)| parent.to_string())
-                                                    .unwrap_or_default();
-                                            });
-                                            fetch(false);
-                                        }>{move || t(locale.get(), "run_review.up")}</button>
+                                (!current.is_empty()).then(|| {
+                                    let display = format!("/{current}");
+                                    view! {
+                                        <div class="run-review-pathbar">
+                                            <button type="button" class="run-review-up"
+                                                disabled=move || busy.get()
+                                                on:click=move |_| {
+                                                    path.update(|value| {
+                                                        *value = value.rsplit_once('/')
+                                                            .map(|(parent, _)| parent.to_string())
+                                                            .unwrap_or_default();
+                                                    });
+                                                    fetch(false);
+                                                }>
+                                                {compose_icon("arrow-left")}
+                                                {move || t(locale.get(), "run_review.up")}
+                                            </button>
+                                            <code class="run-review-path" title=display.clone()>{display}</code>
+                                        </div>
+                                    }
                                 })
                             }}
-                            <code class="run-review-path">{move || {
-                                let current = path.get();
-                                if current.is_empty() { "/".to_string() } else { format!("/{current}") }
-                            }}</code>
-                            <input type="search" class="run-review-filter" autocomplete="off"
-                                aria-label=move || t(locale.get(), "run_review.filter")
-                                placeholder=move || t(locale.get(), "run_review.filter")
-                                prop:value=move || filter.get()
-                                on:input=move |event| {
-                                    filter.set(event_target_value(&event));
-                                    fetch(false);
-                                } />
+                            <div class="run-review-filter-wrap">
+                                {compose_icon("search")}
+                                <input type="search" class="run-review-filter" autocomplete="off" spellcheck="false"
+                                    aria-label=move || t(locale.get(), "run_review.filter")
+                                    placeholder=move || t(locale.get(), "run_review.filter")
+                                    prop:value=move || filter.get()
+                                    on:input=move |event| {
+                                        filter.set(event_target_value(&event));
+                                        fetch(false);
+                                    } />
+                            </div>
                         </div>
                         {move || error.get().map(|message| view! {
                             <div class="settings-status fail">{message}</div>
@@ -832,51 +887,92 @@ pub(super) fn RunReviewOverlay(
                         {move || status.get().map(|message| view! {
                             <div class="settings-status ok" data-testid="run-review-status">{message}</div>
                         })}
-                        <div class="run-review-list">
+                        <div class="run-review-list" class:is-busy=move || busy.get()>
+                            <div class="run-review-cols">
+                                <label class="run-review-select"
+                                    title=move || t(locale.get(), "run_review.select_all")>
+                                    <input type="checkbox" data-testid="run-review-select-all"
+                                        aria-label=move || t(locale.get(), "run_review.select_all")
+                                        prop:checked=move || {
+                                            let rows = entries.get();
+                                            !rows.is_empty() && rows.iter().all(|entry| {
+                                                selection.with(|selected| selected.contains_key(&entry.path))
+                                            })
+                                        }
+                                        prop:indeterminate=move || {
+                                            let rows = entries.get();
+                                            let selected = selection.get();
+                                            let n = rows.iter().filter(|entry| selected.contains_key(&entry.path)).count();
+                                            n > 0 && n < rows.len()
+                                        }
+                                        on:change=toggle_all />
+                                </label>
+                                <span>{move || t(locale.get(), "run_review.col_name")}</span>
+                                <span class="run-review-meta">{move || t(locale.get(), "run_review.col_size")}</span>
+                            </div>
                             {move || {
+                                let loc = locale.get();
                                 let rows = entries.get();
                                 if rows.is_empty() {
-                                    view! { <div class="control-empty">{move || t(locale.get(), "run_review.empty")}</div> }.into_view()
+                                    view! { <div class="control-empty">{t(loc, "run_review.empty")}</div> }.into_view()
                                 } else {
                                     rows.into_iter().map(|entry| {
                                         let is_dir = entry.kind == "dir";
                                         let toggle_path = entry.path.clone();
                                         let toggle_kind = entry.kind.clone();
+                                        let row_path = entry.path.clone();
+                                        let row_kind = entry.kind.clone();
                                         let enter_path = entry.path.clone();
                                         let checked_path = entry.path.clone();
+                                        let selected_path = entry.path.clone();
                                         let name = entry.path.rsplit('/').next().unwrap_or(&entry.path).to_string();
+                                        let icon = run_review_icon(is_dir, &name);
+                                        let count = entry.file_count.unwrap_or(0);
                                         let meta = if is_dir {
-                                            format!(
-                                                "{} · {} files",
-                                                format_bytes(entry.size_bytes),
-                                                entry.file_count.unwrap_or(0)
-                                            )
+                                            let files = if count == 1 {
+                                                t(loc, "run_review.dir_file")
+                                            } else {
+                                                tf(loc, "run_review.dir_files", &[("n", &count.to_string())])
+                                            };
+                                            format!("{} · {files}", format_bytes(entry.size_bytes))
                                         } else {
                                             format_bytes(entry.size_bytes)
                                         };
                                         view! {
-                                            <div class="run-review-row" data-testid="run-review-row">
-                                                <label class="run-review-select">
+                                            <div class="run-review-row" data-testid="run-review-row"
+                                                class:selected=move || selection.with(|selected| selected.contains_key(&selected_path))
+                                                on:click=move |_| toggle_run_review_selection(
+                                                    selection, row_path.clone(), row_kind.clone(),
+                                                )>
+                                                <label class="run-review-select"
+                                                    on:click=move |event| event.stop_propagation()>
                                                     <input type="checkbox"
                                                         prop:checked=move || selection.with(|selected| selected.contains_key(&checked_path))
-                                                        on:change=move |_| selection.update(|selected| {
-                                                            if selected.remove(&toggle_path).is_none() {
-                                                                selected.insert(toggle_path.clone(), toggle_kind.clone());
-                                                            }
-                                                        }) />
+                                                        on:change=move |_| toggle_run_review_selection(
+                                                            selection, toggle_path.clone(), toggle_kind.clone(),
+                                                        ) />
                                                 </label>
                                                 {if is_dir {
                                                     view! {
                                                         <button type="button" class="run-review-name run-review-dir"
-                                                            on:click=move |_| {
+                                                            on:click=move |event| {
+                                                                event.stop_propagation();
                                                                 path.set(enter_path.clone());
                                                                 fetch(false);
-                                                            }>{compose_icon("folder")}<span>{name}</span></button>
+                                                            }>
+                                                            <span class="run-review-icon">{compose_icon(icon)}</span>
+                                                            <span class="run-review-filename" data-testid="run-review-name">{name}</span>
+                                                        </button>
                                                     }.into_view()
                                                 } else {
-                                                    view! { <span class="run-review-name">{name}</span> }.into_view()
+                                                    view! {
+                                                        <span class="run-review-name">
+                                                            <span class="run-review-icon">{compose_icon(icon)}</span>
+                                                            <span class="run-review-filename" data-testid="run-review-name">{name}</span>
+                                                        </span>
+                                                    }.into_view()
                                                 }}
-                                                <span class="run-review-meta">{meta}</span>
+                                                <span class="run-review-meta" data-testid="run-review-size">{meta}</span>
                                             </div>
                                         }.into_view()
                                     }).collect_view()
@@ -887,11 +983,19 @@ pub(super) fn RunReviewOverlay(
                                     on:click=move |_| fetch(true)>{move || t(locale.get(), "run_review.more")}</button>
                             })}
                         </div>
-                        <p class="runtime-config-hint">{move || t(locale.get(), "run_review.delete_warning")}</p>
-                        <div class="row">
+                        <p class="run-review-warning">{move || t(locale.get(), "run_review.delete_warning")}</p>
+                        <div class="row run-review-actions">
                             <button type="button" class="run-review-cleanup"
                                 disabled=move || busy.get()
                                 on:click=cleanup_all>{move || t(locale.get(), "run_review.cleanup_all")}</button>
+                            {move || {
+                                let n = selection.with(|selected| selected.len());
+                                (n > 0).then(|| view! {
+                                    <span class="run-review-count" data-testid="run-review-count">
+                                        {tf(locale.get(), "run_review.selected_n", &[("n", &n.to_string())])}
+                                    </span>
+                                })
+                            }}
                             <button type="button" class="run-review-delete"
                                 disabled=move || busy.get() || selection.with(|selected| selected.is_empty())
                                 on:click=delete>{move || t(locale.get(), "run_review.delete_selected")}</button>
@@ -1203,5 +1307,32 @@ pub(super) fn OnboardingOverlay(
         </div>
     }.into_view()
 })
+    }
+}
+
+#[cfg(test)]
+mod run_review_label_tests {
+    use super::{run_review_icon, run_review_subtitle_label};
+
+    #[test]
+    fn prefers_the_run_title_over_the_id() {
+        let (label, is_id) = run_review_subtitle_label(Some("Kinase screen QC"), "run-kinase-001");
+        assert_eq!(label, "Kinase screen QC");
+        assert!(!is_id);
+    }
+
+    #[test]
+    fn falls_back_to_the_first_id_segment() {
+        let (label, is_id) =
+            run_review_subtitle_label(Some("   "), "55f3c6ca-fefb-4015-a083-d60d622a830e");
+        assert_eq!(label, "55f3c6ca");
+        assert!(is_id);
+    }
+
+    #[test]
+    fn picks_icons_by_entry_kind() {
+        assert_eq!(run_review_icon(true, "results"), "folder");
+        assert_eq!(run_review_icon(false, "summary.png"), "image");
+        assert_eq!(run_review_icon(false, "summary.tsv"), "doc");
     }
 }
