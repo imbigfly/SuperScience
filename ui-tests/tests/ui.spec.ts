@@ -694,6 +694,21 @@ test("sidebar Feedback opens a blank conversation and waits for the user's first
   await expect(userBubble).not.toContainText("GitHub issue");
 });
 
+test("Feedback send shows the new_session error instead of a {msg} placeholder", async ({ page }) => {
+  await enterApp(page);
+  await page.getByTestId("report-problem-entry").click();
+  await expect(page.getByTestId("feedback-context")).toContainText("System information");
+  await page.evaluate(() => {
+    (window as any).__failNextNewSession("Project not found");
+  });
+  await page.locator("#composer-input").fill("The send button does nothing");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.locator(".topbar .hint")).toHaveText("Send failed: Project not found");
+  await expect(page.locator(".topbar .hint")).not.toContainText("{msg}");
+  await expect(page.getByTestId("feedback-context")).toBeVisible();
+  await expect(page.locator("#composer-input")).toHaveValue("The send button does nothing");
+});
+
 test("Memory settings show the active project name", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Memory");
