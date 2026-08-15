@@ -2395,6 +2395,19 @@ pub(crate) struct DirectoryListing {
 }
 
 #[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UploadToContextItem {
+    #[serde(default)]
+    pub(crate) source_path: String,
+    #[serde(default)]
+    pub(crate) destination_path: String,
+    #[serde(default)]
+    pub(crate) run_id: String,
+    #[serde(default)]
+    pub(crate) status: String,
+}
+
+#[derive(Deserialize, Clone)]
 pub(crate) struct FileSearchHit {
     pub(crate) path: String,
     pub(crate) name: String,

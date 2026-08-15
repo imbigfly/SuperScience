@@ -34,7 +34,10 @@ pub use tools::{
     CancelRunTool, CleanupRunWorkspaceTool, GetRunTool, HarvestRunTool, ListRemoteFilesTool,
     MonitorRunTool, RemoveRemoteFilesTool, RunInContextTool,
 };
-pub(crate) use transfer::{load_trust_edges, revoke_trust_edge, RevokeTrustResponse, SshTrustEdge};
+pub(crate) use transfer::{
+    load_trust_edges, revoke_trust_edge, submit_local_uploads_to_context, RevokeTrustResponse,
+    SshTrustEdge, UploadToContextItem,
+};
 pub use transfer::{ConfigureSshTrustTool, TransferBetweenContextsTool};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

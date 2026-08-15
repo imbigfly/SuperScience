@@ -4671,6 +4671,22 @@ test("Files browses registered SSH contexts without a real remote host", async (
   await expect(page.locator('[data-workspace-path="report.csv"]')).toBeVisible();
 });
 
+test("Files uploads local paths to the selected SSH folder", async ({ page }) => {
+  await enterApp(page);
+  await page.getByRole("button", { name: "Files" }).click();
+  await page.getByRole("combobox", { name: "File location" }).selectOption("ssh:gpu-server");
+  await expect(page.getByRole("textbox", { name: "Remote path" })).toHaveValue("/home/research");
+
+  const upload = page.getByTestId("files-remote-upload");
+  await expect(upload).toBeVisible();
+  await upload.click();
+  await expect.poll(() => lastInvokeArgs(page, "upload_to_context")).toMatchObject({
+    contextId: "ssh:gpu-server",
+    destinationDir: "/home/research",
+  });
+  await expect(page.locator("#copy-toast")).toContainText("Uploading 1 item");
+});
+
 test("pasted image attaches to the composer", async ({ page }) => {
   await enterApp(page);
   await composer(page).evaluate((el) => {

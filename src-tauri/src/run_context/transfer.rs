@@ -738,6 +738,108 @@ fn remote_item_name(path: &str) -> Result<&str, String> {
     Ok(name)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UploadToContextItem {
+    pub source_path: String,
+    pub destination_path: String,
+    pub run_id: String,
+    pub status: String,
+}
+
+/// Place one local item into the remote directory the Files panel is showing.
+pub(crate) fn join_remote_upload_destination(dir: &str, item_name: &str) -> Result<String, String> {
+    if dir.is_empty()
+        || dir.contains(['\0', '\n', '\r'])
+        || dir.contains(['*', '?', '[', ']', '{', '}'])
+    {
+        return Err(
+            "destination directory must be one exact path without control characters or globs"
+                .into(),
+        );
+    }
+    if !(dir.starts_with('/') || dir == "~" || dir.starts_with("~/")) {
+        return Err("destination directory must be absolute or start with ~/".into());
+    }
+    if item_name.is_empty()
+        || item_name.contains(['/', '\\', '\0', '\n', '\r'])
+        || matches!(item_name, "." | "..")
+    {
+        return Err("upload item name is invalid".into());
+    }
+    let dest = match dir.trim_end_matches('/') {
+        "" | "/" => format!("/{item_name}"),
+        "~" => format!("~/{item_name}"),
+        trimmed => format!("{trimmed}/{item_name}"),
+    };
+    validate_remote_path("destination_path", &dest)?;
+    Ok(dest)
+}
+
+/// UI-initiated local → SSH uploads. Unlike the agent tool, this does not
+/// require the destination to be attached to the current session — Files can
+/// browse any registered, probed host.
+pub(crate) async fn submit_local_uploads_to_context(
+    store: &wisp_store::Store,
+    manager: &RunManager,
+    project_id: &str,
+    frame_id: Option<&str>,
+    context_id: &str,
+    destination_dir: &str,
+    source_paths: &[String],
+) -> Result<Vec<UploadToContextItem>, String> {
+    if source_paths.is_empty() {
+        return Err("upload_to_context requires at least one local path".into());
+    }
+    if context_id == "local" {
+        return Err("upload_to_context requires an SSH context".into());
+    }
+    let context = store
+        .get_execution_context(context_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Execution context not found: {context_id}"))?;
+    if context.kind != wisp_store::ExecutionContextKind::Ssh {
+        return Err(format!("Execution context is not SSH: {context_id}"));
+    }
+    crate::ssh_hosts::require_managed_ssh_ready(&context)?;
+
+    let mut prepared = Vec::with_capacity(source_paths.len());
+    for path in source_paths {
+        let source = validate_local_source(path)?;
+        let name = source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| "local source_path has no portable item name".to_string())?;
+        let destination_path = join_remote_upload_destination(destination_dir, name)?;
+        prepared.push((source, destination_path));
+    }
+
+    let timeout = Duration::from_secs(4 * 60 * 60);
+    let mut items = Vec::with_capacity(prepared.len());
+    for (source, destination_path) in prepared {
+        let response = manager
+            .submit_local_upload_to_ssh(
+                store.clone(),
+                project_id,
+                frame_id,
+                &source,
+                &context,
+                &destination_path,
+                timeout,
+            )
+            .await?;
+        items.push(UploadToContextItem {
+            source_path: source.to_string_lossy().into_owned(),
+            destination_path,
+            run_id: response.run_id,
+            status: response.status.as_str().to_string(),
+        });
+    }
+    Ok(items)
+}
+
 /// When the caller omits destination_path for an SSH destination, uploads land
 /// under this project's configured remote data root for that server.
 async fn default_remote_destination(
@@ -2606,6 +2708,100 @@ mod tests {
             "failed transfer staging directory was not cleaned"
         );
         assert_eq!(runner.commands.lock().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn join_remote_upload_destination_covers_home_and_absolute_dirs() {
+        assert_eq!(
+            join_remote_upload_destination("~", "counts.csv").unwrap(),
+            "~/counts.csv"
+        );
+        assert_eq!(
+            join_remote_upload_destination("/home/research/", "counts.csv").unwrap(),
+            "/home/research/counts.csv"
+        );
+        assert_eq!(
+            join_remote_upload_destination("/", "counts.csv").unwrap(),
+            "/counts.csv"
+        );
+        assert!(join_remote_upload_destination("relative", "a.csv").is_err());
+        assert!(join_remote_upload_destination("~", "../escape").is_err());
+        assert!(join_remote_upload_destination("~", "a/b.csv").is_err());
+    }
+
+    #[tokio::test]
+    async fn ui_upload_submits_one_transfer_per_local_path() {
+        let (root, store) = test_store().await;
+        let source = root.join("counts.csv");
+        std::fs::write(&source, b"a,b\n").unwrap();
+        let runner = Arc::new(RelayRunner {
+            commands: StdMutex::new(Vec::new()),
+        });
+        let manager = RunManager::with_runner(runner.clone());
+        let items = submit_local_uploads_to_context(
+            &store,
+            &manager,
+            "p",
+            Some("f"),
+            "ssh:a",
+            "/home/research",
+            &[source.to_string_lossy().into_owned()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].destination_path, "/home/research/counts.csv");
+        assert!(!items[0].run_id.is_empty());
+        let run_id = items[0].run_id.clone();
+        loop {
+            let run = store.get_run(&run_id).await.unwrap().unwrap();
+            if run.status.is_terminal() {
+                assert_eq!(run.status, wisp_store::RunStatus::Succeeded);
+                assert_eq!(run.kind, "file_transfer");
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let commands = runner.commands.lock().unwrap();
+        assert!(commands.iter().any(|command| command
+            .args
+            .iter()
+            .any(|arg| arg == "alice@a.example:/home/research/counts.csv")));
+        drop(commands);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn ui_upload_rejects_local_context_and_empty_paths() {
+        let (root, store) = test_store().await;
+        let manager = RunManager::with_runner(Arc::new(RelayRunner {
+            commands: StdMutex::new(Vec::new()),
+        }));
+        let empty = submit_local_uploads_to_context(
+            &store,
+            &manager,
+            "p",
+            None,
+            "ssh:a",
+            "/home/research",
+            &[],
+        )
+        .await
+        .unwrap_err();
+        assert!(empty.contains("at least one"), "{empty}");
+        let local = submit_local_uploads_to_context(
+            &store,
+            &manager,
+            "p",
+            None,
+            "local",
+            "/home/research",
+            &[root.join("missing.csv").to_string_lossy().into_owned()],
+        )
+        .await
+        .unwrap_err();
+        assert!(local.contains("SSH context"), "{local}");
         let _ = std::fs::remove_dir_all(root);
     }
 }

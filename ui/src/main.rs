@@ -293,6 +293,9 @@ fn App() -> impl IntoView {
     let input = create_rw_signal(String::new());
     let attachments = create_rw_signal::<Vec<ComposerAttachment>>(vec![]);
     let uploading = create_rw_signal(false);
+    let remote_file_uploading = create_rw_signal(false);
+    let files_drag_over = create_rw_signal(false);
+    let remote_files_refresh_tick = create_rw_signal(0u32);
     let drag_over = create_rw_signal(false);
     // Per-session streaming state. `running` is the set of session ids with an
     // in-flight turn; `transcripts` caches the live transcript of background
@@ -749,10 +752,11 @@ fn App() -> impl IntoView {
         })
     };
     // Tauri's native drag/drop event contains absolute paths (including
-    // directories). Keep those paths as references; unlike the browser File
-    // picker they must not be copied through `upload_file` first.
+    // directories). Drops on a remote Files panel upload via scp; drops on
+    // the composer stay as path references and must not go through `upload_file`.
     let native_drop_cb = Closure::wrap(Box::new(move |payload: JsValue| {
-        let inside = native_drop_in_composer(payload.clone());
+        let remote_target = native_drop_remote_target_value(payload.clone());
+        let inside_composer = native_drop_in_composer(payload.clone());
         let value =
             serde_wasm_bindgen::from_value::<serde_json::Value>(payload).unwrap_or_default();
         let kind = value
@@ -761,29 +765,44 @@ fn App() -> impl IntoView {
             .unwrap_or("")
             .to_ascii_lowercase();
         if matches!(kind.as_str(), "enter" | "over" | "hover" | "hovered") {
-            drag_over.set(inside);
+            files_drag_over.set(remote_target.is_some());
+            drag_over.set(inside_composer && remote_target.is_none());
             return;
         }
         if matches!(kind.as_str(), "leave" | "cancel" | "cancelled") {
+            files_drag_over.set(false);
             drag_over.set(false);
             return;
         }
         if !matches!(kind.as_str(), "drop" | "dropped") {
             return;
         }
+        files_drag_over.set(false);
         drag_over.set(false);
-        if !inside {
-            return;
-        }
         let paths = value
             .get("paths")
             .and_then(|item| item.as_array())
             .cloned()
-            .unwrap_or_default();
-        for path in paths
+            .unwrap_or_default()
             .into_iter()
             .filter_map(|item| item.as_str().map(str::to_string))
-        {
+            .collect::<Vec<_>>();
+        if let Some((context_id, destination_dir)) = remote_target {
+            if !paths.is_empty() {
+                upload_to_remote_context(
+                    context_id,
+                    destination_dir,
+                    Some(paths),
+                    remote_file_uploading,
+                    remote_files_refresh_tick,
+                );
+            }
+            return;
+        }
+        if !inside_composer {
+            return;
+        }
+        for path in paths {
             let _ = attach_ready_path(attachments, path);
         }
         if active_acp_agent_id.get_untracked().is_none() {
@@ -1223,6 +1242,20 @@ fn App() -> impl IntoView {
     let remote_file_entries = create_rw_signal::<Vec<DirEntry>>(vec![]);
     let remote_file_loading = create_rw_signal(false);
     let remote_file_error = create_rw_signal::<Option<String>>(None);
+    create_effect(move |_| {
+        if remote_files_refresh_tick.get() == 0 {
+            return;
+        }
+        refresh_active_file_dir(
+            file_source,
+            file_cwd,
+            file_entries,
+            remote_file_cwd,
+            remote_file_entries,
+            remote_file_loading,
+            remote_file_error,
+        );
+    });
     let center_files = create_rw_signal::<Vec<CenterFileTab>>(vec![]);
     let center_file = create_rw_signal::<Option<String>>(None);
     // Live MCP Apps use the same center-tab surface as files, but their HTML,
@@ -13170,7 +13203,7 @@ fn App() -> impl IntoView {
                                 .filter(|context| context.kind == "ssh")
                                 .collect::<Vec<_>>();
                             view! {
-                                <div class="rp-files">
+                                <div class="rp-files" class:drop-target=move || files_drag_over.get()>
                                     <label class="fb-source-label">
                                         <span>{t(loc, "files.source")}</span>
                                         <select class="fb-source" aria-label=t(loc, "files.source")
@@ -13460,6 +13493,40 @@ fn App() -> impl IntoView {
                                                         }
                                                     } />
                                             </div>
+                                            <div class="fb-actions">
+                                                <button type="button"
+                                                    data-testid="files-remote-upload"
+                                                    disabled=move || remote_file_uploading.get()
+                                                    on:click=move |_| {
+                                                        upload_to_remote_context(
+                                                            source.clone(),
+                                                            remote_file_cwd.get_untracked(),
+                                                            None,
+                                                            remote_file_uploading,
+                                                            remote_files_refresh_tick,
+                                                        );
+                                                    }>
+                                                    {compose_icon("upload")}
+                                                    <span>{move || t(locale.get(), if remote_file_uploading.get() {
+                                                        "files.uploading"
+                                                    } else {
+                                                        "files.upload"
+                                                    })}</span>
+                                                </button>
+                                                <button type="button" on:click=move |_| {
+                                                    refresh_remote_dir(
+                                                        source.clone(),
+                                                        remote_file_cwd,
+                                                        remote_file_entries,
+                                                        remote_file_loading,
+                                                        remote_file_error,
+                                                        file_source,
+                                                    );
+                                                }>
+                                                    {compose_icon("sync")}
+                                                    <span>{t(loc, "files.refresh")}</span>
+                                                </button>
+                                            </div>
                                             <div class="fb-list" class:grid=move || rp_grid.get()>
                                                 {if remote_file_loading.get() {
                                                     view! { <div class="rp-empty rp-files-empty"><p>{t(loc, "loading")}</p></div> }.into_view()
@@ -13585,7 +13652,7 @@ fn App() -> impl IntoView {
                                                     }).collect_view()
                                                 }}
                                             </div>
-                                            <div class="hint fb-root">{t(loc, "files.remote_read_only")}</div>
+                                            <div class="hint fb-root">{t(loc, "files.remote_upload_hint")}</div>
                                         }.into_view()
                                     }}}
                                 </div>
