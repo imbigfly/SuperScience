@@ -2178,6 +2178,7 @@ pub struct PromotionEligibility {
     pub code: Option<String>,
     pub reasons: Vec<PromotionBlocker>,
     pub expected_guard_hash: String,
+    pub manual_resolution_available: bool,
 }
 
 #[derive(Deserialize, Clone)]

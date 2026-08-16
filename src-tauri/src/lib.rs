@@ -6124,6 +6124,7 @@ pub fn run() {
             exploration_commands::open_exploration,
             exploration_commands::abandon_exploration_round,
             exploration_promotion::preview_exploration_promotion,
+            exploration_promotion::open_exploration_manual_resolution,
             exploration_promotion::promote_exploration,
             exploration_promotion::discard_exploration,
             session_commands::list_sessions_page,
