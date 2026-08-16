@@ -22,8 +22,12 @@ messages** restores the durable history from SQLite. This presentation limit
 does not change model context, exports, artifacts, or the saved transcript.
 
 wisp-science calls remote LLM APIs through model profiles. Desktop users
-configure these in **Settings -> Models**. Each row is a model profile with its
-own display name, provider, API URL, model ID, advanced options, and API key.
+configure these in **Settings -> Models**. **Add provider** is bring-your-own-key:
+paste the API URL and key once, then add every chat and image model that key
+can call. Each saved row is still a model profile with its own display name,
+model ID, and advanced options; profiles that share a normalized API URL share
+the key. Editing a profile can still change that one model. Changing the key on
+any profile updates the others on the same endpoint.
 A models.dev catalog baked in at build time maps exact model IDs to the
 vendor's documented ceilings: for a catalog-known model the form auto-fills
 **Max output tokens** and **Context window** and shows the ceiling next to the

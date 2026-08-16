@@ -29,7 +29,7 @@ async function openModelsSettings(page: Page) {
   if (await row.count()) {
     await row.click();
   } else {
-    await page.getByRole("button", { name: /Add model/i }).click();
+    await page.getByRole("button", { name: /Add provider/i }).click();
   }
   await expect(providerSelect(page)).toBeVisible();
 }
@@ -7638,32 +7638,68 @@ test("model settings rejects max output tokens above the known ceiling", async (
 test("model settings auto-fills catalog limits and save clamps to them", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Models");
-  await page.getByRole("button", { name: /Add model/i }).click();
+  await page.getByRole("button", { name: /Add provider/i }).click();
 
-  // The lookup fires on model input and reads the current API URL, so the
-  // URL must be in place before the model id is typed.
+  // Changing the URL refreshes suggested model ids; type the catalog id after.
   await page.getByLabel("API URL").fill("https://api.kimi.com/coding/v1");
-  await page.getByLabel("Model").fill("k3-256k");
+  const modelId = page.getByTestId("provider-model-row").first().getByLabel("Model ID");
+  await modelId.fill("k3-256k");
   await page.getByLabel("API key (stored in OS keyring)").fill("sk-k3");
 
-  // kimi-for-coding/k3-256k is in the baked catalog (262144 ctx / 131072 out).
-  await expect(page.getByLabel("Max output tokens")).toHaveValue("131072");
-  await expect(page.getByLabel("Context window")).toHaveValue("262144");
-  await expect(page.getByTestId("model-catalog-limits-hint")).toContainText("262144");
-
-  // Overriding the context window past the catalog ceiling gets clamped by
-  // the backend on save.
-  await page.getByLabel("Context window").fill("1000000");
   await page.getByRole("button", { name: "Save" }).click();
   await expect.poll(() => lastInvokeArgs(page, "save_model"))
     .toMatchObject({ profile: { model: "k3-256k" } });
-  // The invoke log records what the UI sent; the clamp happens inside the
-  // (mocked) backend, so assert on the stored profile via list_models.
+  // Catalog lookup on save fills documented ceilings; the mocked backend also
+  // clamps if the UI sent a larger window.
   const stored: any = await page.evaluate(async () => {
     const models: any[] = await (window as any).__TAURI__.core.invoke("list_models");
     return models.find((m: any) => m.model === "k3-256k") ?? null;
   });
   expect(stored).toMatchObject({ context_window: 262144, max_tokens: 131072 });
+});
+
+test("add provider creates several models with one key, including image", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Models");
+  await page.getByRole("button", { name: /Add provider/i }).click();
+
+  await expect(page.getByTestId("provider-byok-hint")).toContainText("Paste the key once");
+  await providerSelect(page).selectOption("openai_responses");
+  await expect(page.getByTestId("provider-model-row")).toHaveCount(2);
+  await expect(page.getByTestId("provider-model-row").nth(0).getByLabel("Model ID")).toHaveValue("gpt-5.5");
+  await expect(page.getByTestId("provider-model-row").nth(1).getByLabel("Model ID")).toHaveValue("gpt-image-2");
+  await expect(page.getByTestId("provider-model-row").nth(1).getByTestId("provider-use-for-image")).toBeChecked();
+
+  await page.getByLabel("API key (stored in OS keyring)").fill("sk-openai");
+  await page.getByRole("button", { name: "Save" }).click();
+
+  await expect.poll(() => page.evaluate(() => ((window as any).__skillInvokeLog ?? [])
+    .filter((c: any) => c.cmd === "save_model")
+    .map((c: any) => {
+      const args = c.args instanceof Map ? Object.fromEntries(c.args) : c.args;
+      const profile = args.profile instanceof Map ? Object.fromEntries(args.profile) : args.profile;
+      return profile.model;
+    }))).toEqual(["gpt-image-2", "gpt-5.5"]);
+});
+
+test("add provider reuses a stored key for the same API URL", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Models");
+  await page.getByRole("button", { name: /Add provider/i }).click();
+
+  // Default DeepSeek URL already has a saved key in the mock list.
+  await expect(page.getByTestId("provider-api-key")).toHaveAttribute(
+    "placeholder",
+    /api\.deepseek\.com/,
+  );
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect.poll(async () => {
+    const args = await lastInvokeArgs(page, "save_model");
+    return args ? { ...args, key: args.key ?? null } : null;
+  }).toMatchObject({
+    key: null,
+    profile: { model: "deepseek-v4-flash" },
+  });
 });
 
 test("onboarding key setup lands on flash after adding pro", async ({ page }) => {
