@@ -85,6 +85,15 @@ struct TerminalSession {
     writer: Mutex<Box<dyn Write + Send>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     output: Mutex<TerminalOutputState>,
+    /// One-shot OpenSSH askpass files. Must stay on disk until the child
+    /// exits — authentication happens after spawn, not at spawn.
+    auth_cleanup_envs: Vec<(String, String)>,
+}
+
+impl Drop for TerminalSession {
+    fn drop(&mut self) {
+        crate::ssh_hosts::cleanup_password_auth_env(&self.auth_cleanup_envs);
+    }
 }
 
 impl TerminalSession {
@@ -178,6 +187,7 @@ impl TerminalSession {
         if output.exit_code.replace(exit_code).is_some() {
             return;
         }
+        crate::ssh_hosts::cleanup_password_auth_env(&self.auth_cleanup_envs);
         let event = TerminalEvent::Exit { exit_code };
         output
             .subscribers
@@ -310,18 +320,22 @@ fn spawn_session(
         crate::ssh_hosts::cleanup_password_auth_env(&spec.envs);
         format!("failed to start {} terminal: {error}", context.id)
     })?;
-    // Password askpass is only needed while OpenSSH authenticates.
-    crate::ssh_hosts::cleanup_password_auth_env(&spec.envs);
     drop(pair.slave);
 
-    let reader = pair
-        .master
-        .try_clone_reader()
-        .map_err(|error| format!("failed to read terminal PTY: {error}"))?;
-    let writer = pair
-        .master
-        .take_writer()
-        .map_err(|error| format!("failed to write terminal PTY: {error}"))?;
+    let reader = match pair.master.try_clone_reader() {
+        Ok(reader) => reader,
+        Err(error) => {
+            crate::ssh_hosts::cleanup_password_auth_env(&spec.envs);
+            return Err(format!("failed to read terminal PTY: {error}"));
+        }
+    };
+    let writer = match pair.master.take_writer() {
+        Ok(writer) => writer,
+        Err(error) => {
+            crate::ssh_hosts::cleanup_password_auth_env(&spec.envs);
+            return Err(format!("failed to write terminal PTY: {error}"));
+        }
+    };
     let process_id = child.process_id();
     let killer = child.clone_killer();
     let label = if context.label.trim().is_empty() {
@@ -342,6 +356,7 @@ fn spawn_session(
         writer: Mutex::new(writer),
         killer: Mutex::new(killer),
         output: Mutex::new(TerminalOutputState::new()),
+        auth_cleanup_envs: spec.envs,
     });
     Ok((session, reader, child))
 }
@@ -576,7 +591,25 @@ mod tests {
             ]
         );
         assert!(!spec.args.iter().any(|arg| arg.contains("BatchMode")));
+        assert!(spec.envs.is_empty());
         assert_eq!(spec.display_cwd, "~");
+    }
+
+    #[test]
+    fn password_ssh_terminal_requires_stored_password_before_spawn() {
+        let mut context = wisp_store::ExecutionContext::new("ssh:lab", "Lab").unwrap();
+        context.config_json = serde_json::json!({
+            "alias": "lab",
+            "user": "alice",
+            "auth_method": "password"
+        })
+        .to_string();
+
+        let error = build_terminal_launch_spec(&context, Path::new("/local/project")).unwrap_err();
+        assert!(
+            error.contains("password"),
+            "expected a stored-password error, got {error}"
+        );
     }
 
     #[test]

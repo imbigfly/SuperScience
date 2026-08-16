@@ -198,6 +198,11 @@ impl SshConnection {
                 "PubkeyAuthentication=no".into(),
                 "-o".into(),
                 "NumberOfPasswordPrompts=1".into(),
+                // SSH_ASKPASS_REQUIRE=force sends every prompt through askpass,
+                // including host-key confirmation. Accept new keys the same way
+                // file browsing does so the stored password is not used as "yes".
+                "-o".into(),
+                "StrictHostKeyChecking=accept-new".into(),
             ]);
         }
         if let Some(port) = self.port {
@@ -281,7 +286,10 @@ impl SshConnection {
     }
 
     /// Build env vars that force OpenSSH to read a one-shot password via ASKPASS.
-    /// Caller must run `cleanup_password_auth_env` after the process exits.
+    /// Caller must run `cleanup_password_auth_env` after the process exits —
+    /// not after spawn. OpenSSH reads ASKPASS during authentication, which
+    /// happens after the child is running. Deleting the script earlier yields
+    /// `CreateProcessW failed error:2` / `ssh_askpass: posix_spawnp`.
     pub fn password_auth_env(&self) -> Result<Vec<(String, String)>, String> {
         if !self.uses_password() {
             return Ok(Vec::new());
@@ -1781,6 +1789,61 @@ Host -unsafe bad/name !negated
             .any(|w| w == ["-o", "PubkeyAuthentication=no"]));
         assert!(!args.iter().any(|a| a == "-i"));
         assert!(connection.assert_ready_to_connect().is_err());
+    }
+
+    #[test]
+    fn interactive_password_args_keep_tty_and_accept_new_host_keys() {
+        let connection = SshConnection {
+            alias: "lab".into(),
+            host_name: Some("gpu.example.test".into()),
+            user: Some("alice".into()),
+            port: None,
+            identity_file: None,
+            auth_method: SshAuthMethod::Password,
+        };
+        let args = connection.interactive_ssh_args().unwrap();
+        assert_eq!(args.first().map(String::as_str), Some("-tt"));
+        assert!(args.windows(2).any(|w| w
+            == [
+                "-o",
+                "PreferredAuthentications=password,keyboard-interactive"
+            ]));
+        assert!(args
+            .windows(2)
+            .any(|w| w == ["-o", "PubkeyAuthentication=no"]));
+        assert!(args
+            .windows(2)
+            .any(|w| w == ["-o", "StrictHostKeyChecking=accept-new"]));
+        assert!(!args.iter().any(|arg| arg.contains("BatchMode")));
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some("alice@gpu.example.test")
+        );
+    }
+
+    #[test]
+    fn password_askpass_files_exist_until_explicit_cleanup() {
+        let envs = build_password_askpass_env("test-password").unwrap();
+        let askpass = envs
+            .iter()
+            .find(|(key, _)| key == "SSH_ASKPASS")
+            .map(|(_, value)| PathBuf::from(value))
+            .expect("SSH_ASKPASS");
+        let passfile = envs
+            .iter()
+            .find(|(key, _)| key == PASSFILE_ENV)
+            .map(|(_, value)| PathBuf::from(value))
+            .expect("passfile");
+        assert!(askpass.is_file(), "askpass missing: {}", askpass.display());
+        assert!(
+            passfile.is_file(),
+            "passfile missing: {}",
+            passfile.display()
+        );
+        assert_eq!(std::fs::read_to_string(&passfile).unwrap(), "test-password");
+        cleanup_password_auth_env(&envs);
+        assert!(!askpass.exists());
+        assert!(!passfile.exists());
     }
 
     #[test]
