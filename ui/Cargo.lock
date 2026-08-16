@@ -1689,6 +1689,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "wisp-dto"
+version = "1.3.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "wisp-ui"
 version = "1.3.0"
 dependencies = [
@@ -1703,6 +1711,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "wisp-dto",
 ]
 
 [[package]]

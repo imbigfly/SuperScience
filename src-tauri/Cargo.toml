@@ -70,6 +70,11 @@ tokio-tungstenite = { version = "0.30.0", default-features = false, features = [
 qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 futures-util.workspace = true
 
+[dev-dependencies]
+# Contract tests: backend command payloads must deserialize into the shared
+# UI DTOs (crates/wisp-dto) to catch serde drift across the invoke boundary.
+wisp-dto = { workspace = true }
+
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
 tauri-winrt-notification = "0.7.3"

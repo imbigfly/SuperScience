@@ -236,165 +236,6 @@ fn request_turn_memory_proposal(
     });
 }
 
-const CONTEXT_USAGE_DRAG_THRESHOLD: f64 = 8.0;
-
-fn context_usage_event_target(ev: &web_sys::MouseEvent) -> Option<web_sys::Element> {
-    ev.target()
-        .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
-}
-
-fn context_usage_panel_el() -> Option<web_sys::Element> {
-    web_sys::window()?
-        .document()?
-        .query_selector("[data-testid='context-usage-panel']")
-        .ok()
-        .flatten()
-}
-
-fn event_inside_selector(ev: &web_sys::MouseEvent, selector: &str) -> bool {
-    context_usage_event_target(ev)
-        .and_then(|element| element.closest(selector).ok().flatten())
-        .is_some()
-}
-
-#[component]
-fn ContextUsagePanel(
-    snapshot: ContextUsageSnapshot,
-    floating: bool,
-    locale: ReadSignal<Locale>,
-    context_usage_open: RwSignal<bool>,
-    context_usage_details: RwSignal<Option<ContextUsageDetails>>,
-    context_usage_detail_open: RwSignal<Option<String>>,
-    context_usage_geom: RwSignal<Option<ContextUsageGeom>>,
-    on_header_down: Callback<web_sys::MouseEvent>,
-    on_header_dblclick: Callback<web_sys::MouseEvent>,
-    on_dock: Callback<()>,
-    on_resize_start: Callback<web_sys::MouseEvent>,
-) -> impl IntoView {
-    let loc = locale.get();
-    let pct = context_percent(snapshot.used, snapshot.max);
-    let used = fmt_context_tokens(snapshot.used);
-    let total = if snapshot.max == 0 {
-        tf(loc, "context_usage.total_used", &[("used", &used)])
-    } else {
-        let max = fmt_context_limit(snapshot.max);
-        tf(
-            loc,
-            if snapshot.estimated {
-                "context_usage.total_estimated"
-            } else {
-                "context_usage.total_exact"
-            },
-            &[("used", &used), ("max", &max)],
-        )
-    };
-    let rows = context_usage_rows(&snapshot, loc);
-    let segments = rows.clone();
-    let denominator = snapshot.max.max(snapshot.used).max(1);
-    let mode = if floating { "floating" } else { "docked" };
-    view! {
-        <section id="context-usage-panel" class="context-usage-panel"
-            class:is-docked=!floating
-            class:is-floating=floating
-            data-testid="context-usage-panel"
-            data-mode=mode
-            role="dialog"
-            aria-labelledby="context-usage-title"
-            style=move || {
-                if !floating {
-                    String::new()
-                } else if let Some(geom) = context_usage_geom.get() {
-                    format!(
-                        "left:{}px;top:{}px;width:{}px;height:{}px;--context-usage-h:{}px",
-                        geom.x, geom.y, geom.w, geom.h, geom.h
-                    )
-                } else {
-                    String::new()
-                }
-            }>
-            <div class="context-usage-head" data-testid="context-usage-head"
-                on:mousedown=move |ev| on_header_down.call(ev)
-                on:dblclick=move |ev| on_header_dblclick.call(ev)>
-                <h2 id="context-usage-title">{t(loc, "context_usage.title")}</h2>
-                <div class="context-usage-head-actions">
-                    {floating.then(|| view! {
-                        <button type="button" class="context-usage-dock"
-                            data-testid="context-usage-dock"
-                            title=t(loc, "context_usage.dock")
-                            aria-label=t(loc, "context_usage.dock")
-                            on:click=move |_| on_dock.call(())>
-                            {compose_icon("dock")}
-                        </button>
-                    })}
-                    <button type="button" class="context-usage-close"
-                        title=t(loc, "context_usage.close")
-                        aria-label=t(loc, "context_usage.close")
-                        on:click=move |_| context_usage_open.set(false)>
-                        {compose_icon("close")}
-                    </button>
-                </div>
-            </div>
-            <div class="context-usage-summary">
-                <span>{tf(loc, "context_usage.full", &[("pct", &pct.to_string())])}</span>
-                <span>{total}</span>
-            </div>
-            <div class="context-usage-bar" role="img"
-                aria-label=tf(loc, "context_usage.full", &[("pct", &pct.to_string())])>
-                {segments.into_iter().filter(|row| row.tokens > 0).map(|row| {
-                    let width = row.tokens as f64 * 100.0 / denominator as f64;
-                    view! {
-                        <span class=format!("context-usage-segment {}", row.color)
-                            style=format!("width:{width:.4}%")></span>
-                    }
-                }).collect_view()}
-            </div>
-            <div class="context-usage-list">
-                {rows.into_iter().map(|row| {
-                    let expandable = row.color != "conversation";
-                    let color = row.color.to_string();
-                    let detail_color = color.clone();
-                    let open_color = color.clone();
-                    view! {
-                        <div class="context-usage-item">
-                            <button type="button" class="context-usage-row"
-                                class:expandable=expandable
-                                disabled=!expandable
-                                aria-expanded=move || (expandable && context_usage_detail_open.get().as_deref() == Some(open_color.as_str())).to_string()
-                                on:click=move |_| {
-                                    if expandable {
-                                        context_usage_detail_open.update(|active| {
-                                            *active = (active.as_deref() != Some(color.as_str())).then(|| color.clone());
-                                        });
-                                    }
-                                }>
-                                <span class=format!("context-usage-swatch {}", row.color)
-                                    aria-hidden="true"></span>
-                                <span class="context-usage-label">{row.label}</span>
-                                <span class="context-usage-value">{fmt_context_tokens(row.tokens)}</span>
-                                {expandable.then(|| view! { <span class="context-usage-chevron">{"⌄"}</span> })}
-                            </button>
-                            {move || (context_usage_detail_open.get().as_deref() == Some(detail_color.as_str())).then(|| {
-                                let content = context_usage_details.get()
-                                    .map(|details| context_usage_detail_text(&details, &detail_color))
-                                    .unwrap_or_else(|| t(locale.get(), "context_usage.loading").into());
-                                view! { <pre class="context-usage-detail">{content}</pre> }
-                            })}
-                        </div>
-                    }
-                }).collect_view()}
-            </div>
-            {floating.then(|| view! {
-                <button type="button" class="context-usage-resize"
-                    data-testid="context-usage-resize"
-                    title=t(loc, "context_usage.resize")
-                    aria-label=t(loc, "context_usage.resize")
-                    on:mousedown=move |ev| on_resize_start.call(ev)>
-                </button>
-            })}
-        </section>
-    }
-}
-
 #[component]
 fn App() -> impl IntoView {
     let locale = create_rw_signal(Locale::detect_browser());
@@ -734,25 +575,16 @@ fn App() -> impl IntoView {
     let active_acp_agent_id = create_rw_signal::<Option<String>>(None);
     let acp_context_usage =
         create_rw_signal::<HashMap<String, ContextUsageSnapshot>>(HashMap::new());
-    let context_usage_open = create_rw_signal(false);
-    let context_usage_mode = create_rw_signal(ContextUsageMode::Docked);
-    let context_usage_geom = create_rw_signal(load_context_usage_geom());
-    let context_usage_dragging = create_rw_signal(false);
-    let context_usage_tracking = create_rw_signal(false);
-    let context_usage_resizing = create_rw_signal(false);
-    let context_usage_drag_origin = create_rw_signal((0.0_f64, 0.0_f64));
-    let context_usage_grab = create_rw_signal((0.0_f64, 0.0_f64));
-    let context_usage_resize_origin = create_rw_signal((0.0_f64, 0.0_f64));
-    let context_usage_resize_start = create_rw_signal(ContextUsageGeom {
-        x: 0.0,
-        y: 0.0,
-        w: CONTEXT_USAGE_DEFAULT_W,
-        h: CONTEXT_USAGE_DEFAULT_H,
-    });
-    let context_usage_passed_threshold = create_rw_signal(false);
-    let context_usage_suppress_click = create_rw_signal(false);
-    let context_usage_details = create_rw_signal::<Option<ContextUsageDetails>>(None);
-    let context_usage_detail_open = create_rw_signal::<Option<String>>(None);
+    let context_usage = ContextUsageState::new();
+    let context_usage_open = context_usage.open;
+    let context_usage_mode = context_usage.mode;
+    let context_usage_geom = context_usage.geom;
+    let context_usage_dragging = context_usage.dragging;
+    let context_usage_tracking = context_usage.tracking;
+    let context_usage_resizing = context_usage.resizing;
+    let context_usage_suppress_click = context_usage.suppress_click;
+    let context_usage_details = context_usage.details;
+    let context_usage_detail_open = context_usage.detail_open;
     let active_context_usage = create_memo(move |_| {
         let session_id = active_session.get()?;
         if active_acp_agent_id.get().is_some() {
@@ -1261,29 +1093,22 @@ fn App() -> impl IntoView {
     };
 
     // Three-pane layout state (mirrors web-dist: sidebar / conversation / right pane).
+    let pane_layout = PaneLayoutState::new();
     let show_sidebar = create_rw_signal(true);
-    let sidebar_w = create_rw_signal(load_sidebar_w());
-    let sidebar_dragging = create_rw_signal(false);
-    let sidebar_drag_start_x = create_rw_signal(0.0_f64);
-    let sidebar_drag_start_w = create_rw_signal(0.0_f64);
+    let sidebar_w = pane_layout.sidebar_w;
+    let sidebar_dragging = pane_layout.sidebar_dragging;
     let show_right = create_rw_signal(false);
-    let right_w = create_rw_signal(400.0_f64);
-    let dragging = create_rw_signal(false);
-    let drag_start_x = create_rw_signal(0.0_f64);
-    let drag_start_w = create_rw_signal(0.0_f64);
-    let composer_h = create_rw_signal(load_composer_h());
-    let composer_h_custom = create_rw_signal(composer_h_custom());
-    let composer_dragging = create_rw_signal(false);
-    let composer_drag_start_y = create_rw_signal(0.0_f64);
-    let composer_drag_start_h = create_rw_signal(0.0_f64);
+    let right_w = pane_layout.right_w;
+    let dragging = pane_layout.right_dragging;
+    let composer_h = pane_layout.composer_h;
+    let composer_h_custom = pane_layout.composer_h_custom;
+    let composer_dragging = pane_layout.composer_dragging;
     let terminal_sessions = create_rw_signal::<Vec<TerminalSessionSummary>>(vec![]);
     let active_terminal_id = create_rw_signal(None::<String>);
     let terminal_panel_open = create_rw_signal(false);
     let terminal_add_menu_open = create_rw_signal(false);
-    let terminal_h = create_rw_signal(320.0_f64);
-    let terminal_dragging = create_rw_signal(false);
-    let terminal_drag_start_y = create_rw_signal(0.0_f64);
-    let terminal_drag_start_h = create_rw_signal(0.0_f64);
+    let terminal_h = pane_layout.terminal_h;
+    let terminal_dragging = pane_layout.terminal_dragging;
 
     // Artifacts and notebook cells are projections of the active transcript.
     let proto_cache = Rc::new(RefCell::new(ProtoCache::new()));
@@ -1496,10 +1321,8 @@ fn App() -> impl IntoView {
     // hiding it. Same session, same history — only the layout moves.
     let center_split = create_rw_signal(false);
     let center_split_on = create_memo(move |_| center_split.get() && center_file_open.get());
-    let center_chat_w = create_rw_signal(None::<f64>);
-    let center_split_dragging = create_rw_signal(false);
-    let center_split_drag_start_x = create_rw_signal(0.0_f64);
-    let center_split_drag_start_w = create_rw_signal(0.0_f64);
+    let center_chat_w = pane_layout.center_chat_w;
+    let center_split_dragging = pane_layout.center_split_dragging;
     // Runtime binding for R/Python previews: file path -> execution context id.
     // The language comes from the extension, so the context is the whole binding.
     // In-memory on purpose — a runtime dies with the app, so a binding that
@@ -2628,17 +2451,17 @@ fn App() -> impl IntoView {
                     }
                 });
                 if browser_retrieval_blocked(&name, ok, &content) {
-                    let retry_text = if active_cb.get_untracked().as_deref() == Some(frame_id.as_str())
-                    {
-                        items_cb.with_untracked(|rows| last_user_composer_text(rows))
-                    } else {
-                        transcripts_cb.with_untracked(|cache| {
-                            cache
-                                .get(&frame_id)
-                                .map(|rows| last_user_composer_text(rows))
-                                .unwrap_or_default()
-                        })
-                    };
+                    let retry_text =
+                        if active_cb.get_untracked().as_deref() == Some(frame_id.as_str()) {
+                            items_cb.with_untracked(|rows| last_user_composer_text(rows))
+                        } else {
+                            transcripts_cb.with_untracked(|cache| {
+                                cache
+                                    .get(&frame_id)
+                                    .map(|rows| last_user_composer_text(rows))
+                                    .unwrap_or_default()
+                            })
+                        };
                     browser_offline_cb.set(Some(BrowserOfflineNotice {
                         frame_id: frame_id.clone(),
                         retry_text,
@@ -2679,17 +2502,17 @@ fn App() -> impl IntoView {
                 {
                     show_mcp_app.call((frame_id, presentation_id, payload, true));
                 } else if presentation_kind == BROWSER_DISCONNECTED_KIND {
-                    let retry_text = if active_cb.get_untracked().as_deref() == Some(frame_id.as_str())
-                    {
-                        items_cb.with_untracked(|rows| last_user_composer_text(rows))
-                    } else {
-                        transcripts_cb.with_untracked(|cache| {
-                            cache
-                                .get(&frame_id)
-                                .map(|rows| last_user_composer_text(rows))
-                                .unwrap_or_default()
-                        })
-                    };
+                    let retry_text =
+                        if active_cb.get_untracked().as_deref() == Some(frame_id.as_str()) {
+                            items_cb.with_untracked(|rows| last_user_composer_text(rows))
+                        } else {
+                            transcripts_cb.with_untracked(|cache| {
+                                cache
+                                    .get(&frame_id)
+                                    .map(|rows| last_user_composer_text(rows))
+                                    .unwrap_or_default()
+                            })
+                        };
                     browser_offline_cb.set(Some(BrowserOfflineNotice {
                         frame_id,
                         retry_text,
@@ -6535,269 +6358,42 @@ fn App() -> impl IntoView {
         },
     );
 
-    let on_sidebar_resize_start = move |ev: web_sys::MouseEvent| {
-        ev.prevent_default();
-        sidebar_dragging.set(true);
-        sidebar_drag_start_x.set(ev.client_x() as f64);
-        sidebar_drag_start_w.set(sidebar_w.get());
-    };
-    let on_sidebar_resize_move = move |ev: web_sys::MouseEvent| {
-        if sidebar_dragging.get() {
-            let dx = ev.client_x() as f64 - sidebar_drag_start_x.get();
-            sidebar_w.set((sidebar_drag_start_w.get() + dx).clamp(SIDEBAR_W_MIN, SIDEBAR_W_MAX));
-        }
-    };
-    let on_sidebar_resize_end = move |_| {
-        if sidebar_dragging.get() {
-            save_sidebar_w(sidebar_w.get());
-            sidebar_dragging.set(false);
-        }
-    };
+    let on_sidebar_resize_start =
+        move |ev: web_sys::MouseEvent| pane_layout.sidebar_resize_start(ev);
+    let on_sidebar_resize_move = move |ev: web_sys::MouseEvent| pane_layout.sidebar_resize_move(ev);
+    let on_sidebar_resize_end = move |_| pane_layout.sidebar_resize_end();
 
-    let on_resize_start = move |ev: web_sys::MouseEvent| {
-        ev.prevent_default();
-        dragging.set(true);
-        drag_start_x.set(ev.client_x() as f64);
-        drag_start_w.set(right_w.get());
-    };
-    let on_resize_move = move |ev: web_sys::MouseEvent| {
-        if dragging.get() {
-            let dx = drag_start_x.get() - ev.client_x() as f64;
-            let max_width = max_right_pane_width(show_sidebar.get(), sidebar_w.get());
-            right_w.set((drag_start_w.get() + dx).clamp(RIGHT_PANE_MIN_WIDTH, max_width));
-        }
-    };
+    let on_resize_start = move |ev: web_sys::MouseEvent| pane_layout.right_resize_start(ev);
+    let on_resize_move =
+        move |ev: web_sys::MouseEvent| pane_layout.right_resize_move(ev, show_sidebar.get());
 
-    let on_center_split_resize_start = move |ev: web_sys::MouseEvent| {
-        ev.prevent_default();
-        let width = web_sys::window()
-            .and_then(|window| window.document())
-            .and_then(|document| {
-                document
-                    .query_selector(".center.split > .chat-stage")
-                    .ok()
-                    .flatten()
-            })
-            .map(|element| element.get_bounding_client_rect().width())
-            .unwrap_or(CENTER_CHAT_MIN_WIDTH);
-        center_chat_w.set(Some(width));
-        center_split_drag_start_w.set(width);
-        center_split_drag_start_x.set(ev.client_x() as f64);
-        center_split_dragging.set(true);
-    };
-    let on_center_split_resize_move = move |ev: web_sys::MouseEvent| {
-        if !center_split_dragging.get() {
-            return;
-        }
-        let center_width = web_sys::window()
-            .and_then(|window| window.document())
-            .and_then(|document| document.query_selector(".center.split").ok().flatten())
-            .map(|element| element.get_bounding_client_rect().width())
-            .unwrap_or(CENTER_CHAT_MIN_WIDTH + CENTER_DOCUMENT_MIN_WIDTH + PANE_RESIZER_WIDTH);
-        let max_width = (center_width - CENTER_DOCUMENT_MIN_WIDTH - PANE_RESIZER_WIDTH)
-            .max(CENTER_CHAT_MIN_WIDTH);
-        let dx = center_split_drag_start_x.get() - ev.client_x() as f64;
-        center_chat_w.set(Some(
-            (center_split_drag_start_w.get() + dx).clamp(CENTER_CHAT_MIN_WIDTH, max_width),
-        ));
-    };
+    let on_center_split_resize_start =
+        move |ev: web_sys::MouseEvent| pane_layout.center_split_resize_start(ev);
+    let on_center_split_resize_move =
+        move |ev: web_sys::MouseEvent| pane_layout.center_split_resize_move(ev);
 
-    let on_composer_resize_start = move |ev: web_sys::MouseEvent| {
-        ev.prevent_default();
-        composer_dragging.set(true);
-        composer_drag_start_y.set(ev.client_y() as f64);
-        composer_drag_start_h.set(composer_h.get());
-    };
-    let on_composer_resize_move = move |ev: web_sys::MouseEvent| {
-        if composer_dragging.get() {
-            let dy = composer_drag_start_y.get() - ev.client_y() as f64;
-            composer_h
-                .set((composer_drag_start_h.get() + dy).clamp(COMPOSER_H_MIN, COMPOSER_H_MAX));
-            composer_h_custom.set(true);
-        }
-    };
-    let on_composer_resize_end = move |_| {
-        if composer_dragging.get() {
-            composer_dragging.set(false);
-            save_composer_h(composer_h.get());
-            schedule_chat_follow();
-        }
-    };
+    let on_composer_resize_start =
+        move |ev: web_sys::MouseEvent| pane_layout.composer_resize_start(ev);
+    let on_composer_resize_move =
+        move |ev: web_sys::MouseEvent| pane_layout.composer_resize_move(ev);
+    let on_composer_resize_end = move |_| pane_layout.composer_resize_end();
 
-    let on_terminal_resize_start = move |ev: web_sys::MouseEvent| {
-        ev.prevent_default();
-        terminal_dragging.set(true);
-        terminal_drag_start_y.set(ev.client_y() as f64);
-        terminal_drag_start_h.set(terminal_h.get());
-    };
-    let on_terminal_resize_move = move |ev: web_sys::MouseEvent| {
-        if terminal_dragging.get() {
-            let dy = terminal_drag_start_y.get() - ev.client_y() as f64;
-            let max_h = web_sys::window()
-                .and_then(|window| window.inner_height().ok())
-                .and_then(|height| height.as_f64())
-                .map(|height| (height - 180.0).max(220.0))
-                .unwrap_or(720.0);
-            terminal_h.set((terminal_drag_start_h.get() + dy).clamp(150.0, max_h));
-        }
-    };
+    let on_terminal_resize_start =
+        move |ev: web_sys::MouseEvent| pane_layout.terminal_resize_start(ev);
+    let on_terminal_resize_move =
+        move |ev: web_sys::MouseEvent| pane_layout.terminal_resize_move(ev);
 
-    let on_context_usage_header_down = Callback::new(move |ev: web_sys::MouseEvent| {
-        if ev.button() != 0 || event_inside_selector(&ev, "button") {
-            return;
-        }
-        let x = ev.client_x() as f64;
-        let y = ev.client_y() as f64;
-        context_usage_tracking.set(true);
-        context_usage_passed_threshold.set(false);
-        context_usage_drag_origin.set((x, y));
-        if let Some(panel) = context_usage_panel_el() {
-            let rect = panel.get_bounding_client_rect();
-            context_usage_grab.set((x - rect.x(), y - rect.y()));
-            if context_usage_geom.get_untracked().is_none() {
-                context_usage_geom.set(Some(ContextUsageGeom {
-                    x: rect.x(),
-                    y: rect.y(),
-                    w: rect.width(),
-                    h: rect.height(),
-                }));
-            }
-        }
-    });
-    let on_context_usage_header_dblclick = Callback::new(move |ev: web_sys::MouseEvent| {
-        if event_inside_selector(&ev, "button") {
-            return;
-        }
-        if context_usage_mode.get_untracked() == ContextUsageMode::Floating {
-            context_usage_mode.set(ContextUsageMode::Docked);
-        }
-    });
-    let on_context_usage_dock = Callback::new(move |()| {
-        context_usage_mode.set(ContextUsageMode::Docked);
-    });
-    let on_context_usage_drag_move = move |ev: web_sys::MouseEvent| {
-        if !context_usage_tracking.get() && !context_usage_dragging.get() {
-            return;
-        }
-        let x = ev.client_x() as f64;
-        let y = ev.client_y() as f64;
-        let (origin_x, origin_y) = context_usage_drag_origin.get();
-        let dx = x - origin_x;
-        let dy = y - origin_y;
-        if !context_usage_passed_threshold.get() {
-            if (dx * dx + dy * dy).sqrt() < CONTEXT_USAGE_DRAG_THRESHOLD {
-                return;
-            }
-            context_usage_passed_threshold.set(true);
-            context_usage_dragging.set(true);
-            if context_usage_mode.get_untracked() == ContextUsageMode::Docked {
-                let (grab_x, grab_y) = context_usage_grab.get_untracked();
-                let (width, height) = context_usage_geom
-                    .get_untracked()
-                    .map(|geom| (geom.w, geom.h))
-                    .or_else(|| {
-                        context_usage_panel_el().map(|panel| {
-                            let rect = panel.get_bounding_client_rect();
-                            (rect.width(), rect.height())
-                        })
-                    })
-                    .unwrap_or((CONTEXT_USAGE_DEFAULT_W, CONTEXT_USAGE_DEFAULT_H));
-                let (viewport_w, viewport_h) = viewport_size();
-                context_usage_geom.set(Some(clamp_context_usage_geom(
-                    x - grab_x,
-                    y - grab_y,
-                    width,
-                    height,
-                    viewport_w,
-                    viewport_h,
-                )));
-                context_usage_mode.set(ContextUsageMode::Floating);
-            }
-        }
-        if context_usage_mode.get_untracked() != ContextUsageMode::Floating {
-            return;
-        }
-        let (grab_x, grab_y) = context_usage_grab.get_untracked();
-        let (width, height) = context_usage_geom
-            .get_untracked()
-            .map(|geom| (geom.w, geom.h))
-            .unwrap_or((CONTEXT_USAGE_DEFAULT_W, CONTEXT_USAGE_DEFAULT_H));
-        let (viewport_w, viewport_h) = viewport_size();
-        context_usage_geom.set(Some(clamp_context_usage_geom(
-            x - grab_x,
-            y - grab_y,
-            width,
-            height,
-            viewport_w,
-            viewport_h,
-        )));
-    };
-    let on_context_usage_drag_end = move |_| {
-        if !context_usage_tracking.get() && !context_usage_dragging.get() {
-            return;
-        }
-        let moved = context_usage_passed_threshold.get();
-        context_usage_tracking.set(false);
-        context_usage_dragging.set(false);
-        if moved {
-            if let Some(geom) = context_usage_geom.get() {
-                save_context_usage_geom(geom);
-            }
-            context_usage_suppress_click.set(true);
-        }
-        context_usage_passed_threshold.set(false);
-    };
-    let on_context_usage_resize_start = Callback::new(move |ev: web_sys::MouseEvent| {
-        if ev.button() != 0 {
-            return;
-        }
-        ev.prevent_default();
-        ev.stop_propagation();
-        let geom = context_usage_panel_el()
-            .map(|panel| {
-                let rect = panel.get_bounding_client_rect();
-                ContextUsageGeom {
-                    x: rect.x(),
-                    y: rect.y(),
-                    w: rect.width(),
-                    h: rect.height(),
-                }
-            })
-            .or_else(|| context_usage_geom.get_untracked());
-        let Some(geom) = geom else {
-            return;
-        };
-        context_usage_geom.set(Some(geom));
-        context_usage_resizing.set(true);
-        context_usage_resize_origin.set((ev.client_x() as f64, ev.client_y() as f64));
-        context_usage_resize_start.set(geom);
-    });
-    let on_context_usage_resize_move = move |ev: web_sys::MouseEvent| {
-        if !context_usage_resizing.get() {
-            return;
-        }
-        let start = context_usage_resize_start.get();
-        let (origin_x, origin_y) = context_usage_resize_origin.get();
-        let (viewport_w, viewport_h) = viewport_size();
-        context_usage_geom.set(Some(clamp_context_usage_geom(
-            start.x,
-            start.y,
-            start.w + ev.client_x() as f64 - origin_x,
-            start.h + ev.client_y() as f64 - origin_y,
-            viewport_w,
-            viewport_h,
-        )));
-    };
-    let on_context_usage_resize_end = move |_| {
-        if !context_usage_resizing.get() {
-            return;
-        }
-        context_usage_resizing.set(false);
-        if let Some(geom) = context_usage_geom.get() {
-            save_context_usage_geom(geom);
-        }
-        context_usage_suppress_click.set(true);
-    };
+    let on_context_usage_header_down =
+        Callback::new(move |ev: web_sys::MouseEvent| context_usage.header_down(ev));
+    let on_context_usage_header_dblclick =
+        Callback::new(move |ev: web_sys::MouseEvent| context_usage.header_dblclick(ev));
+    let on_context_usage_dock = Callback::new(move |()| context_usage.dock());
+    let on_context_usage_drag_move = move |ev: web_sys::MouseEvent| context_usage.drag_move(ev);
+    let on_context_usage_drag_end = move |_| context_usage.drag_end();
+    let on_context_usage_resize_start =
+        Callback::new(move |ev: web_sys::MouseEvent| context_usage.resize_begin(ev));
+    let on_context_usage_resize_move = move |ev: web_sys::MouseEvent| context_usage.resize_move(ev);
+    let on_context_usage_resize_end = move |_| context_usage.resize_end();
 
     let open_files = move |_| {
         ensure_right_tab(RightTab::File, show_right, open_right_tabs, right_tab);

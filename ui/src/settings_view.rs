@@ -2,10 +2,10 @@ use crate::agent_workflows::{workflow_studio as workflow_studio_view, AgentPanel
 use crate::app_support::{
     allow_drop, build_conn_json, close_details_ancestor, compose_icon, conn_form_from_row,
     context_capability_summary, drag_session_id, focus_element_soon, format_relative_time,
-    import_custom_css_from_input, join_tags, js_error_text, new_acp_form, new_model_form, profile_to_form, quick_action_label,
-    reviewer_backend_key, reviewer_backend_label, reviewer_missing_acp_profile_id,
-    set_reviewer_backend, settings_section_label, settings_subpage_label, skill_matches_filter,
-    start_session_drag, CRED_GROUPS,
+    import_custom_css_from_input, join_tags, js_error_text, new_acp_form, new_model_form,
+    profile_to_form, quick_action_label, reviewer_backend_key, reviewer_backend_label,
+    reviewer_missing_acp_profile_id, set_reviewer_backend, settings_section_label,
+    settings_subpage_label, skill_matches_filter, start_session_drag, CRED_GROUPS,
 };
 use crate::bindings::{invoke, invoke_checked, is_mac, is_windows};
 use crate::dto::*;
