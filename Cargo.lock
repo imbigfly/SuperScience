@@ -7347,6 +7347,7 @@ dependencies = [
  "uuid",
  "walkdir",
  "which",
+ "windows",
  "winreg 0.55.0",
  "wisp-acp",
  "wisp-core",

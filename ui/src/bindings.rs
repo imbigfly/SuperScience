@@ -61,6 +61,7 @@ extern "C" {
     pub(crate) fn is_windows() -> bool;
     pub(crate) fn is_mac() -> bool;
     pub(crate) async fn window_control(action: &str);
+    pub(crate) async fn start_window_move();
     #[wasm_bindgen(js_name = upload_pasted_images)]
     pub(crate) async fn upload_pasted_images(event: JsValue) -> JsValue;
     #[wasm_bindgen(js_name = native_drop_in_composer)]
