@@ -14634,7 +14634,7 @@ fn App() -> impl IntoView {
         />
         <StoragePrefsOverlay locale=locale form=storage_prefs_form />
         <RunReviewOverlay locale=locale modal=run_review_modal runs=run_records />
-        <ShareOverlay locale=locale draft=share_draft />
+        <ShareOverlay locale=locale draft=share_draft session_id=active_session />
         <CapabilitiesOverlay
             locale=locale show_capabilities=show_capabilities
             bootstrap=bootstrap caps=caps busy=busy open_settings_section=open_capability_settings

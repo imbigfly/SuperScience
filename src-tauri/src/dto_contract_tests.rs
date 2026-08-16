@@ -77,6 +77,33 @@ fn model_profile_contract() {
 }
 
 #[test]
+fn share_social_copy_contract() {
+    let backend = crate::share_social::ShareSocialCopy {
+        platform: crate::share_social::ShareSocialPlatform::Xiaohongshu,
+        highlights: vec![crate::share_social::ShareSocialHighlight {
+            title: "Clean peak".into(),
+            why: "The 530 nm assignment is unambiguous.".into(),
+            message_indexes: vec![1, 3],
+        }],
+        variants: vec![crate::share_social::ShareSocialVariant {
+            title: "Spectrum note".into(),
+            body: "主峰在 530 nm。".into(),
+            hashtags: vec!["#RNA".into()],
+        }],
+    };
+    let json = serde_json::to_value(&backend).unwrap();
+    assert_eq!(json.get("platform"), Some(&json!("xiaohongshu")));
+    assert!(json.get("highlights").is_some());
+    assert!(json.get("variants").is_some());
+    let dto: wisp_dto::ShareSocialCopy = serde_json::from_value(json).unwrap();
+    assert_eq!(dto.platform, wisp_dto::ShareSocialPlatform::Xiaohongshu);
+    assert_eq!(dto.highlights[0].title, "Clean peak");
+    assert_eq!(dto.highlights[0].message_indexes, vec![1, 3]);
+    assert_eq!(dto.variants[0].body, "主峰在 530 nm。");
+    assert_eq!(dto.variants[0].hashtags, vec!["#RNA".to_string()]);
+}
+
+#[test]
 fn execution_context_contract() {
     let backend = wisp_store::ExecutionContext {
         id: "ssh:gpu".into(),

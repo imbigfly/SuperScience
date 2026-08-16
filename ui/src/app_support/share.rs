@@ -1,8 +1,45 @@
 //! `/share` support: turn the transcript into a selectable, redactable list
-//! of messages that the share overlay renders into a long PNG.
+//! of messages that the share overlay renders into a long PNG or social pack.
 
-use crate::dto::ChatItem;
+use crate::dto::{ChatItem, ShareSocialHighlight, ShareSocialVariant};
 use serde_json::{json, Value};
+
+/// How many highlight screenshots to prepare when the share dialog opens.
+pub(crate) const MAX_SHARE_CARDS: usize = 3;
+/// Pair the previous user turn with an assistant highlight when it is short.
+const SHARE_CARD_USER_PAIR_LIMIT: usize = 280;
+
+/// One screenshot card: a small slice of the transcript rendered as a PNG.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct ShareCardSpec {
+    pub(crate) title: String,
+    pub(crate) indexes: Vec<usize>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct ShareCardPreview {
+    pub(crate) title: String,
+    pub(crate) indexes: Vec<usize>,
+    pub(crate) png_base64: Option<String>,
+}
+
+impl ShareCardPreview {
+    pub(crate) fn from_spec(spec: ShareCardSpec) -> Self {
+        Self {
+            title: spec.title,
+            indexes: spec.indexes,
+            png_base64: None,
+        }
+    }
+}
+
+/// Export target chosen in the share overlay.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ShareExportFormat {
+    Png,
+    Html,
+    Social,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ShareRole {
@@ -49,6 +86,149 @@ pub(crate) fn share_messages(items: &[ChatItem]) -> Vec<ShareMessage> {
             selected,
         })
         .collect()
+}
+
+/// Pick 1–3 screenshot cards from the selected turns so the user does not
+/// have to crop the conversation themselves. Prefers the latest assistant
+/// replies and, when the previous user turn is short, keeps the Q&A pair.
+pub(crate) fn share_key_cards(messages: &[ShareMessage]) -> Vec<ShareCardSpec> {
+    let assistant: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| message.selected && message.role == ShareRole::Assistant)
+        .map(|(index, _)| index)
+        .collect();
+    let mut picked: Vec<usize> = assistant
+        .iter()
+        .rev()
+        .take(MAX_SHARE_CARDS)
+        .copied()
+        .collect();
+    picked.reverse();
+    if picked.is_empty() {
+        return messages
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, message)| message.selected)
+            .map(|(index, message)| {
+                vec![ShareCardSpec {
+                    title: share_card_title(&message.text),
+                    indexes: vec![index],
+                }]
+            })
+            .unwrap_or_default();
+    }
+    picked
+        .into_iter()
+        .map(|index| {
+            let mut indexes = Vec::new();
+            if let Some(previous) = messages[..index].iter().enumerate().rev().find_map(
+                |(prev_index, message)| {
+                    if message.role == ShareRole::Thinking {
+                        return None;
+                    }
+                    Some((prev_index, message))
+                },
+            ) {
+                if previous.1.selected
+                    && previous.1.role == ShareRole::User
+                    && previous.1.text.chars().count() <= SHARE_CARD_USER_PAIR_LIMIT
+                {
+                    indexes.push(previous.0);
+                }
+            }
+            indexes.push(index);
+            ShareCardSpec {
+                title: share_card_title(&messages[index].text),
+                indexes,
+            }
+        })
+        .collect()
+}
+
+/// Map 1-based excerpt indexes (`[1] user` in the model prompt) back onto
+/// the selected rows of the full share draft.
+pub(crate) fn map_excerpt_indexes(
+    selected_draft_indexes: &[usize],
+    excerpt_1based: &[usize],
+) -> Vec<usize> {
+    excerpt_1based
+        .iter()
+        .filter_map(|number| {
+            let offset = number.checked_sub(1)?;
+            selected_draft_indexes.get(offset).copied()
+        })
+        .collect()
+}
+
+/// Prefer model-picked highlight slices when they resolve to real rows.
+pub(crate) fn share_cards_from_highlights(
+    messages: &[ShareMessage],
+    selected_draft_indexes: &[usize],
+    highlights: &[ShareSocialHighlight],
+) -> Vec<ShareCardSpec> {
+    let mut cards = Vec::new();
+    for highlight in highlights.iter().take(MAX_SHARE_CARDS) {
+        let mut indexes = map_excerpt_indexes(selected_draft_indexes, &highlight.message_indexes);
+        indexes.retain(|index| messages.get(*index).is_some_and(|message| message.selected));
+        indexes.truncate(3);
+        if indexes.is_empty() {
+            continue;
+        }
+        let title = if highlight.title.trim().is_empty() {
+            messages
+                .get(*indexes.last().unwrap())
+                .map(|message| share_card_title(&message.text))
+                .unwrap_or_default()
+        } else {
+            highlight.title.trim().to_string()
+        };
+        cards.push(ShareCardSpec { title, indexes });
+    }
+    cards
+}
+
+/// Instant caption so the dialog is pasteable before the model returns.
+pub(crate) fn share_fallback_caption(messages: &[ShareMessage], limit: usize) -> String {
+    let raw = messages
+        .iter()
+        .rev()
+        .find(|message| message.selected && message.role == ShareRole::Assistant)
+        .or_else(|| {
+            messages
+                .iter()
+                .rev()
+                .find(|message| message.selected)
+        })
+        .map(|message| message.text.as_str())
+        .unwrap_or("")
+        .trim();
+    clamp_share_chars(raw, limit)
+}
+
+fn share_card_title(text: &str) -> String {
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("")
+        .trim_start_matches('#')
+        .trim();
+    clamp_share_chars(line, 36)
+}
+
+fn clamp_share_chars(text: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let keep = max.saturating_sub(1);
+    let mut out: String = text.chars().take(keep).collect();
+    out.push('…');
+    out
 }
 
 /// Split the redaction input into keywords: comma (ASCII or fullwidth) and
@@ -175,6 +355,74 @@ header .bar { width: 34px; height: 3px; border-radius: 2px; background: #2f6fed;
 .card img { max-width: 100%; }
 footer { margin-top: 28px; font-size: 11px; color: #8a97a5; }
 ";
+
+/// Join a generated variant into the text the user pastes into a social app.
+/// Title is omitted when it already prefixes the body; hashtags are appended
+/// only when they are not already in the body.
+pub(crate) fn share_social_pack_text(variant: &ShareSocialVariant) -> String {
+    let title = variant.title.trim();
+    let body = variant.body.trim();
+    let mut parts = Vec::new();
+    if !title.is_empty() && !body.starts_with(title) {
+        parts.push(title.to_string());
+    }
+    if !body.is_empty() {
+        parts.push(body.to_string());
+    }
+    let tags: Vec<String> = variant
+        .hashtags
+        .iter()
+        .map(|tag| normalize_share_hashtag(tag))
+        .filter(|tag| !tag.is_empty())
+        .collect();
+    if !tags.is_empty() {
+        let joined = tags.join(" ");
+        if !body.contains(&joined) && tags.iter().any(|tag| !body.contains(tag.as_str())) {
+            parts.push(joined);
+        }
+    }
+    parts.join("\n\n")
+}
+
+pub(crate) fn normalize_share_hashtag(raw: &str) -> String {
+    let trimmed = raw.trim().trim_start_matches('#').trim();
+    if trimmed.is_empty() {
+        String::new()
+    } else {
+        format!("#{trimmed}")
+    }
+}
+
+/// JSON payload consumed by the JS canvas renderer for the long PNG.
+pub(crate) fn share_png_payload(
+    title: &str,
+    subtitle: &str,
+    footer: &str,
+    rows: &[Value],
+) -> String {
+    json!({
+        "title": title,
+        "subtitle": subtitle,
+        "footer": footer,
+        "messages": rows,
+    })
+    .to_string()
+}
+
+/// One selected row for the PNG renderer, with assistant Markdown already
+/// split into canvas blocks.
+pub(crate) fn share_png_row(role: ShareRole, label: &str, text: &str) -> Value {
+    let mut row = json!({
+        "kind": role.tag(),
+        "label": label,
+    });
+    if role == ShareRole::Assistant {
+        row["blocks"] = json!(share_markdown_blocks(text));
+    } else {
+        row["text"] = json!(text);
+    }
+    row
+}
 
 /// Build a self-contained HTML document of the selected conversation: inline
 /// CSS, no external assets, assistant messages rendered as Markdown.
@@ -699,5 +947,126 @@ mod share_tests {
         assert_eq!(texts, vec!["第一行\n第二行"]);
         assert_eq!(blocks[1]["runs"][0]["text"], json!("☑ 已完成"));
         assert_eq!(blocks[2]["runs"][0]["text"], json!("☐ 待办"));
+    }
+
+    #[test]
+    fn social_pack_skips_duplicate_title_and_normalizes_tags() {
+        let variant = ShareSocialVariant {
+            title: "主峰".into(),
+            body: "主峰在 530 nm，谱图很干净。".into(),
+            hashtags: vec!["RNA".into(), "#谱图".into(), "  ".into()],
+        };
+        assert_eq!(
+            share_social_pack_text(&variant),
+            "主峰在 530 nm，谱图很干净。\n\n#RNA #谱图"
+        );
+        assert_eq!(normalize_share_hashtag("  ##RNA  "), "#RNA");
+    }
+
+    #[test]
+    fn social_pack_keeps_title_when_body_starts_differently() {
+        let variant = ShareSocialVariant {
+            title: "今天的拟合".into(),
+            body: "530 nm 的峰是主峰。".into(),
+            hashtags: vec![],
+        };
+        assert_eq!(
+            share_social_pack_text(&variant),
+            "今天的拟合\n\n530 nm 的峰是主峰。"
+        );
+    }
+
+    #[test]
+    fn key_cards_pair_short_user_with_latest_assistant() {
+        let messages = vec![
+            ShareMessage {
+                role: ShareRole::User,
+                text: "看一下主峰".into(),
+                selected: true,
+            },
+            ShareMessage {
+                role: ShareRole::Thinking,
+                text: "先比对谱库".into(),
+                selected: false,
+            },
+            ShareMessage {
+                role: ShareRole::Assistant,
+                text: "## 拟合结果\n主峰在 530 nm。".into(),
+                selected: true,
+            },
+        ];
+        let cards = share_key_cards(&messages);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].indexes, vec![0, 2]);
+        assert_eq!(cards[0].title, "拟合结果");
+    }
+
+    #[test]
+    fn key_cards_keep_the_last_three_assistant_turns() {
+        let messages: Vec<ShareMessage> = (0..5)
+            .map(|index| ShareMessage {
+                role: ShareRole::Assistant,
+                text: format!("结果 {index}"),
+                selected: true,
+            })
+            .collect();
+        let cards = share_key_cards(&messages);
+        assert_eq!(
+            cards
+                .iter()
+                .map(|card| card.indexes.clone())
+                .collect::<Vec<_>>(),
+            vec![vec![2], vec![3], vec![4]]
+        );
+    }
+
+    #[test]
+    fn highlight_indexes_map_from_the_excerpt_onto_the_draft() {
+        let messages = vec![
+            ShareMessage {
+                role: ShareRole::User,
+                text: "问".into(),
+                selected: true,
+            },
+            ShareMessage {
+                role: ShareRole::Thinking,
+                text: "想".into(),
+                selected: false,
+            },
+            ShareMessage {
+                role: ShareRole::Assistant,
+                text: "答".into(),
+                selected: true,
+            },
+        ];
+        let highlight = ShareSocialHighlight {
+            title: "Clean peak".into(),
+            why: "unambiguous".into(),
+            message_indexes: vec![1, 2],
+        };
+        let cards = share_cards_from_highlights(&messages, &[0, 2], &[highlight]);
+        assert_eq!(cards[0].indexes, vec![0, 2]);
+        assert_eq!(cards[0].title, "Clean peak");
+    }
+
+    #[test]
+    fn fallback_caption_uses_the_latest_assistant_reply() {
+        let messages = vec![
+            ShareMessage {
+                role: ShareRole::User,
+                text: "问".into(),
+                selected: true,
+            },
+            ShareMessage {
+                role: ShareRole::Assistant,
+                text: "主峰在 530 nm。".into(),
+                selected: true,
+            },
+        ];
+        assert_eq!(
+            share_fallback_caption(&messages, 80),
+            "主峰在 530 nm。"
+        );
+        assert!(share_fallback_caption(&messages, 6).ends_with('…'));
     }
 }

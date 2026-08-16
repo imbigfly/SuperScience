@@ -3917,6 +3917,40 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return "/mock/wisp-share.png";
           case "save_share_html":
             return "/mock/wisp-share.html";
+          case "generate_share_social_copy": {
+            const platform = String(arg("platform") ?? "twitter");
+            const messages = Array.isArray(arg("messages")) ? arg("messages") : [];
+            if (!messages.length) {
+              throw new Error("Select at least one message.");
+            }
+            return {
+              platform,
+              highlights: [
+                {
+                  title: "Clean peak",
+                  why: "The 530 nm assignment is unambiguous.",
+                  messageIndexes: [1, 2],
+                },
+              ],
+              variants: [
+                {
+                  title: `${platform} hook`,
+                  body: `Paste-ready ${platform} copy about the clean 530 nm peak.`,
+                  hashtags: ["#wisp", "#spectrum"],
+                },
+                {
+                  title: `${platform} alt`,
+                  body: `Another ${platform} angle: the spectrum came back clean.`,
+                  hashtags: ["#lab"],
+                },
+                {
+                  title: `${platform} short`,
+                  body: `530 nm. Clean. Ready to share on ${platform}.`,
+                  hashtags: [],
+                },
+              ],
+            };
+          }
           case "import_session_archive":
             return {
               frame_id: "imported-frame",

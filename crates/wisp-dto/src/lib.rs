@@ -4095,3 +4095,106 @@ pub struct ProvPkg {
     #[serde(default)]
     pub version: String,
 }
+
+/// Target app for `/share` social-media copy.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShareSocialPlatform {
+    #[default]
+    Xiaohongshu,
+    Wechat,
+    WechatMp,
+    Twitter,
+}
+
+impl ShareSocialPlatform {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim() {
+            "xiaohongshu" => Some(Self::Xiaohongshu),
+            "wechat" => Some(Self::Wechat),
+            "wechat_mp" => Some(Self::WechatMp),
+            "twitter" => Some(Self::Twitter),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Xiaohongshu => "xiaohongshu",
+            Self::Wechat => "wechat",
+            Self::WechatMp => "wechat_mp",
+            Self::Twitter => "twitter",
+        }
+    }
+
+    pub fn all() -> [Self; 4] {
+        [
+            Self::Xiaohongshu,
+            Self::Wechat,
+            Self::WechatMp,
+            Self::Twitter,
+        ]
+    }
+
+    /// Soft character budget for the caption the user pastes.
+    pub fn body_limit(self) -> usize {
+        match self {
+            Self::Xiaohongshu => 1000,
+            Self::Wechat => 500,
+            Self::WechatMp => 4000,
+            Self::Twitter => 280,
+        }
+    }
+
+    pub fn hashtag_limit(self) -> usize {
+        match self {
+            Self::Xiaohongshu => 8,
+            Self::Wechat => 2,
+            Self::WechatMp => 10,
+            Self::Twitter => 3,
+        }
+    }
+
+    pub fn label_key(self) -> &'static str {
+        match self {
+            Self::Xiaohongshu => "share.platform_xiaohongshu",
+            Self::Wechat => "share.platform_wechat",
+            Self::WechatMp => "share.platform_wechat_mp",
+            Self::Twitter => "share.platform_twitter",
+        }
+    }
+}
+
+/// One highlight the model pulled from the selected transcript.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShareSocialHighlight {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub why: String,
+    /// 1-based indexes into the excerpt sent to the model (`[1] user`…).
+    #[serde(default, alias = "messageIndexes")]
+    pub message_indexes: Vec<usize>,
+}
+
+/// One paste-ready caption variant.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShareSocialVariant {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub hashtags: Vec<String>,
+}
+
+/// Result of `generate_share_social_copy`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareSocialCopy {
+    pub platform: ShareSocialPlatform,
+    #[serde(default)]
+    pub highlights: Vec<ShareSocialHighlight>,
+    #[serde(default)]
+    pub variants: Vec<ShareSocialVariant>,
+}
