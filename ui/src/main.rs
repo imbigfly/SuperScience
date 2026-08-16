@@ -33,7 +33,7 @@ use app_overlays::{
 };
 use bindings::{
     attach_chat_autoscroll, cancel_saved_marks_apply, clear_selection, close_mcp_app,
-    force_chat_bottom, invoke, invoke_checked, invoke_timeout, is_mac, is_windows,
+    force_chat_bottom, invoke, invoke_checked, is_mac, is_windows,
     jump_chat_to_item, jump_chat_to_last_user, jump_chat_to_user, listen, listen_current_window,
     listen_native_file_drop, native_drop_in_composer, open_external_url, pasted_image_count,
     preserve_chat_prepend_position, preview_selection, restore_chat_session_scroll,
@@ -74,7 +74,7 @@ use std::rc::Rc;
 use text::{
     dom_value, event_target_checked, event_target_value, file_kind, format_bytes,
     group_artifact_indices, ime_composing, join_path, md_to_html, note_composition_end,
-    opens_in_system_browser, parent_path, provider_defaults, provider_value, runtime_language,
+    opens_in_system_browser, parent_path, provider_defaults, runtime_language,
     user_message_presentation, DEEPSEEK_FLASH_MODEL, DEEPSEEK_PRO_MODEL,
 };
 use wasm_bindgen::prelude::*;
@@ -369,18 +369,6 @@ fn App() -> impl IntoView {
     let stopping_session = create_rw_signal::<Option<String>>(None);
     let show_settings = create_rw_signal(false);
     let settings_section = create_rw_signal(String::from("general"));
-    let skills_list = create_rw_signal(Vec::<SkillRow>::new());
-    let skills_search = create_rw_signal(String::new());
-    let skills_msg = create_rw_signal(None::<(bool, String)>);
-    let plugins_list = create_rw_signal(Vec::<PluginRow>::new());
-    let plugins_msg = create_rw_signal(None::<(bool, String)>);
-    let model_form = create_rw_signal(None::<ModelForm>);
-    let model_catalog_limits = create_rw_signal(None::<CatalogEntryDto>);
-    let model_form_key = create_rw_signal(String::new());
-    let model_form_msg = create_rw_signal(None::<(bool, String)>);
-    let specialists = create_rw_signal::<Vec<Specialist>>(vec![]);
-    let specialist_form = create_rw_signal::<Option<Specialist>>(None);
-    let specialist_form_open = create_memo(move |_| specialist_form.get().is_some());
     let memory_view = create_rw_signal(None::<MemoryView>);
     let memory_selected = create_rw_signal(None::<String>);
     let memory_editor = create_rw_signal(String::new());
@@ -414,7 +402,6 @@ fn App() -> impl IntoView {
     // keystroke (each `on:input` calls `.update`), rebuilding the inputs and
     // dropping focus after each character (#62). A memo only notifies when the
     // Some/None state flips, so the inputs stay mounted while editing.
-    let model_form_open = create_memo(move |_| model_form.get().is_some());
     let conn_form_open = create_memo(move |_| conn_form.get().is_some());
     // Same reason, one level deeper: the connection form swaps stdio/http fields
     // on `kind`; track just `kind` so editing command/url doesn't rebuild them.
@@ -573,6 +560,28 @@ fn App() -> impl IntoView {
     let session_model_ids = create_rw_signal::<HashMap<String, String>>(HashMap::new());
     let acp_agents = create_rw_signal::<Vec<AcpAgentProfile>>(vec![]);
     let active_acp_agent_id = create_rw_signal::<Option<String>>(None);
+    let settings_busy = create_rw_signal(false);
+    let settings_message = create_rw_signal::<Option<(bool, String)>>(None);
+    // Model & specialist settings domain: form signals + save/validate/test
+    // handlers live in `app_support::model_settings`; `App` only wires them.
+    let model_settings = ModelSettingsState::new(
+        models,
+        acp_agents,
+        settings,
+        settings_busy,
+        settings_message,
+        locale,
+    );
+    let model_form = model_settings.model_form;
+    let model_catalog_limits = model_settings.model_catalog_limits;
+    let model_form_key = model_settings.model_form_key;
+    let model_form_msg = model_settings.model_form_msg;
+    let specialists = model_settings.specialists;
+    let specialist_form = model_settings.specialist_form;
+    // Some/None memos (not the form contents) gate the sub-form panes; see the
+    // comment on `conn_form_open` above.
+    let model_form_open = create_memo(move |_| model_form.get().is_some());
+    let specialist_form_open = create_memo(move |_| specialist_form.get().is_some());
     let acp_context_usage =
         create_rw_signal::<HashMap<String, ContextUsageSnapshot>>(HashMap::new());
     let context_usage = ContextUsageState::new();
@@ -694,39 +703,7 @@ fn App() -> impl IntoView {
     // inherit the new default on their next turn.
     let apply_model_effort = Callback::new(move |(id, effort): (String, String)| {
         effort_menu_for.set(None);
-        let Some(profile) = models.get_untracked().into_iter().find(|m| m.id == id) else {
-            return;
-        };
-        spawn_local(async move {
-            let arg = to_value(&serde_json::json!({
-                "profile": {
-                    "id": profile.id,
-                    "label": profile.label,
-                    "provider": profile.provider,
-                    "api_url": profile.api_url,
-                    "model": profile.model,
-                    "max_tokens": profile.max_tokens,
-                    "context_window": profile.context_window,
-                    "reasoning_effort": effort,
-                    "supports_vision": profile.supports_vision,
-                    "use_for_vision": profile.use_for_vision,
-                    "use_for_image_generation": profile.use_for_image_generation,
-                },
-                // No key field: the backend keeps the stored key.
-                "key": Option::<String>::None,
-                "useForVision": profile.use_for_vision,
-                "useForImageGeneration": profile.use_for_image_generation,
-            }))
-            .unwrap();
-            match invoke_checked("save_model", arg).await {
-                Ok(v) => {
-                    if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ModelProfile>>(v) {
-                        models.set(list);
-                    }
-                }
-                Err(err) => show_warning_toast(&js_error_text(err)),
-            }
-        });
+        model_settings.apply_model_effort(id, effort);
     });
     let model_switch_confirm = create_rw_signal::<Option<(String, String, bool)>>(None);
     let status = create_rw_signal(String::new());
@@ -772,12 +749,19 @@ fn App() -> impl IntoView {
     let side_chat_model_menu_open = create_rw_signal(false);
     // Side chat routes through this ACP Agent when set; None = the active model.
     let side_chat_acp_agent = create_rw_signal::<Option<String>>(None);
-    let settings_busy = create_rw_signal(false);
     // Owned here so the window-level Escape stack can close the confirm before
     // it falls through to closing the whole settings page.
     let delete_confirm = create_rw_signal(None::<DeleteConfirm>);
     let plugin_install_open = create_rw_signal(false);
-    let settings_message = create_rw_signal::<Option<(bool, String)>>(None);
+    // Skills & plugins domain: pane state + install/enable handlers live in
+    // `app_support::extensions`; `App` only wires them.
+    let extensions = ExtensionsState::new(plugin_install_open, locale);
+    let skills_list = extensions.skills_list;
+    let skills_search = extensions.skills_search;
+    let skills_msg = extensions.skills_msg;
+    let skill_filter_tag = extensions.skill_filter_tag;
+    let plugins_list = extensions.plugins_list;
+    let plugins_msg = extensions.plugins_msg;
     let update_check_busy = create_rw_signal(false);
     let update_check_modal = create_rw_signal::<Option<UpdateCheckModal>>(None);
     // Newer release found by the silent auto-check → sidebar prompt card.
@@ -796,18 +780,7 @@ fn App() -> impl IntoView {
     let context_recovery_dialog = create_rw_signal::<Option<String>>(None);
     let context_recovery_busy = create_rw_signal(false);
     let context_recovery_error = create_rw_signal::<Option<String>>(None);
-    let refresh_models = move || {
-        spawn_local(async move {
-            let v = invoke("list_models", JsValue::UNDEFINED).await;
-            if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ModelProfile>>(v) {
-                models.set(list);
-            }
-            let v = invoke("list_acp_agents", JsValue::UNDEFINED).await;
-            if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<AcpAgentProfile>>(v) {
-                acp_agents.set(list);
-            }
-        })
-    };
+    let refresh_models = move || model_settings.refresh_models();
     // Tauri's native drag/drop event contains absolute paths (including
     // directories). Drops on a remote Files panel upload via scp; drops on
     // the composer stay as path references and must not go through `upload_file`.
@@ -874,14 +847,7 @@ fn App() -> impl IntoView {
     spawn_local(async move {
         let _ = listen_native_file_drop(&native_drop_js).await;
     });
-    let refresh_specialists = move || {
-        spawn_local(async move {
-            let v = invoke("list_specialists", JsValue::UNDEFINED).await;
-            if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<Specialist>>(v) {
-                specialists.set(list);
-            }
-        })
-    };
+    let refresh_specialists = move || model_settings.refresh_specialists();
     // Per-session specialist (persona) picker, gated to before the first message.
     let session_specialist = create_rw_signal::<Option<Specialist>>(None);
     let demos = create_rw_signal::<Vec<DemoInfo>>(vec![]);
@@ -1399,7 +1365,6 @@ fn App() -> impl IntoView {
     // interactive project-open path. The callback is built after `load_session`.
     let dedicated_project_id = url_project_param();
     let show_capabilities = create_rw_signal(false);
-    let skill_filter_tag = create_rw_signal(String::new());
     let caps = create_rw_signal::<Option<Capabilities>>(None);
     let bootstrap = create_rw_signal::<Option<BootstrapStatus>>(None);
     let show_onboarding = create_rw_signal(false);
@@ -4574,153 +4539,28 @@ fn App() -> impl IntoView {
         move |_| run_update_check()
     };
 
-    let refresh_skills = move || {
-        spawn_local(async move {
-            let v = invoke("list_skills", JsValue::UNDEFINED).await;
-            if let Ok(rows) = serde_wasm_bindgen::from_value::<Vec<SkillRow>>(v) {
-                skills_list.set(rows);
-            }
-        });
-    };
+    let refresh_skills = move || extensions.refresh_skills();
 
-    let reload_skills = Callback::new(move |_: ()| {
-        spawn_local(async move {
-            match invoke_checked("reload_skills", JsValue::UNDEFINED).await {
-                Ok(value) => match serde_wasm_bindgen::from_value::<Vec<SkillRow>>(value) {
-                    Ok(rows) => {
-                        let total = rows.len().to_string();
-                        skills_list.set(rows);
-                        skills_msg.set(Some((
-                            true,
-                            tf(locale.get(), "skills.reloaded", &[("total", &total)]),
-                        )));
-                    }
-                    Err(error) => skills_msg.set(Some((false, error.to_string()))),
-                },
-                Err(error) => skills_msg.set(Some((
-                    false,
-                    localize_backend(locale.get(), &js_error_text(error)),
-                ))),
-            }
-        });
-    });
+    let reload_skills = Callback::new(move |_: ()| extensions.reload_skills());
 
-    let install_skill_from = move |path: String| {
-        spawn_local(async move {
-            let arg = to_value(&serde_json::json!({ "srcPath": path })).unwrap();
-            match invoke_checked("install_skill", arg).await {
-                Ok(_) => {
-                    skills_msg.set(Some((true, t(locale.get(), "skills.installed").into())));
-                    refresh_skills();
-                }
-                Err(err) => {
-                    skills_msg.set(Some((
-                        false,
-                        localize_backend(locale.get(), &js_error_text(err)),
-                    )));
-                }
-            }
-        });
-    };
+    let install_skill_from = move |path: String| extensions.install_skill_from(path);
 
-    let refresh_plugins = move || {
-        spawn_local(async move {
-            let value = invoke("list_plugins", JsValue::UNDEFINED).await;
-            if let Ok(rows) = serde_wasm_bindgen::from_value::<Vec<PluginRow>>(value) {
-                plugins_list.set(rows);
-            }
-        });
-    };
+    let refresh_plugins = move || extensions.refresh_plugins();
 
     let install_plugin_from =
         Callback::new(move |(path, expected_sha256): (String, Option<String>)| {
-            spawn_local(async move {
-                let args = to_value(&serde_json::json!({
-                    "srcPath": path,
-                    "expectedSha256": expected_sha256,
-                }))
-                .unwrap();
-                match invoke_checked("install_plugin", args).await {
-                    Ok(_) => {
-                        plugins_msg.set(Some((true, t(locale.get(), "plugins.installed").into())));
-                        plugin_install_open.set(false);
-                        refresh_plugins();
-                    }
-                    Err(error) => {
-                        plugins_msg.set(Some((
-                            false,
-                            localize_backend(locale.get(), &js_error_text(error)),
-                        )));
-                        refresh_plugins();
-                    }
-                }
-            });
+            extensions.install_plugin_from(path, expected_sha256)
         });
     let install_plugin_url =
         Callback::new(move |(source_url, expected_sha256): (String, String)| {
-            spawn_local(async move {
-                let args = to_value(&serde_json::json!({
-                    "sourceUrl": source_url,
-                    "expectedSha256": expected_sha256,
-                }))
-                .unwrap();
-                match invoke_checked("install_plugin_url", args).await {
-                    Ok(_) => {
-                        plugins_msg.set(Some((true, t(locale.get(), "plugins.installed").into())));
-                        plugin_install_open.set(false);
-                        refresh_plugins();
-                    }
-                    Err(error) => {
-                        plugins_msg.set(Some((
-                            false,
-                            localize_backend(locale.get(), &js_error_text(error)),
-                        )));
-                        refresh_plugins();
-                    }
-                }
-            });
+            extensions.install_plugin_url(source_url, expected_sha256)
         });
     let set_plugin_enabled =
         Callback::new(move |(id, version, enabled): (String, String, bool)| {
-            spawn_local(async move {
-                let args = to_value(&serde_json::json!({
-                    "pluginId": id,
-                    "version": version,
-                    "enabled": enabled,
-                }))
-                .unwrap();
-                match invoke_checked("set_plugin_enabled", args).await {
-                    Ok(_) => {
-                        plugins_msg.set(None);
-                        refresh_plugins();
-                        refresh_skills();
-                    }
-                    Err(error) => {
-                        plugins_msg.set(Some((
-                            false,
-                            localize_backend(locale.get(), &js_error_text(error)),
-                        )));
-                        refresh_plugins();
-                    }
-                }
-            });
+            extensions.set_plugin_enabled(id, version, enabled)
         });
     let remove_plugin = Callback::new(move |(id, version): (String, String)| {
-        spawn_local(async move {
-            let args =
-                to_value(&serde_json::json!({ "pluginId": id, "version": version })).unwrap();
-            match invoke_checked("remove_plugin", args).await {
-                Ok(_) => {
-                    plugins_msg.set(None);
-                    refresh_plugins();
-                    refresh_skills();
-                }
-                Err(error) => plugins_msg.set(Some((
-                    false,
-                    localize_backend(locale.get(), &js_error_text(error)),
-                ))),
-            }
-        });
+        extensions.remove_plugin(id, version)
     });
 
     let refresh_conns = move || {
@@ -4957,272 +4797,15 @@ fn App() -> impl IntoView {
         });
     };
 
-    let save_model_form = move |_| {
-        if settings_busy.get() {
-            return;
-        }
-        let Some(form) = model_form.get() else {
-            return;
-        };
-        let loc = locale.get();
-        let key = model_form_key.get();
-        let has_key = form
-            .id
-            .as_ref()
-            .and_then(|id| {
-                models
-                    .get()
-                    .iter()
-                    .find(|m| &m.id == id)
-                    .map(|m| m.has_api_key)
-            })
-            .unwrap_or(false);
-        let cfg = model_form_to_settings(&form, has_key && key.is_empty());
-        if let Some(err_key) = settings_required_error_key(&cfg, &key) {
-            let err = t(loc, err_key);
-            let text = tf(loc, "status.save_failed", &[("msg", &err)]);
-            model_form_msg.set(Some((false, text)));
-            return;
-        }
-        // A catalog-known model has a documented output ceiling; saving a
-        // larger max_tokens only ever surfaces as a provider 400 mid-turn.
-        if let Some(dto) = model_catalog_limits.get() {
-            if form.max_tokens > dto.max_tokens {
-                let text = tf(
-                    loc,
-                    "err.max_tokens_ceiling",
-                    &[
-                        ("model", form.model.trim()),
-                        ("max", &dto.max_tokens.to_string()),
-                    ],
-                );
-                model_form_msg.set(Some((false, text)));
-                return;
-            }
-        }
-        settings_busy.set(true);
-        model_form_msg.set(Some((true, t(loc, "status.saving_settings").into())));
-        let provider = provider_value(&form.provider);
-        let profile = serde_json::json!({
-            "id": form.id.clone().unwrap_or_default(),
-            "label": form.label.trim(),
-            "provider": provider,
-            "api_url": form.api_url.trim(),
-            "model": form.model.trim(),
-            "max_tokens": form.max_tokens,
-            "context_window": form.context_window,
-            "reasoning_effort": form.reasoning_effort.trim(),
-            "supports_vision": form.supports_vision,
-            "use_for_vision": form.use_for_vision,
-            "use_for_image_generation": form.use_for_image_generation,
-        });
-        let key_arg = if key.is_empty() { None } else { Some(key) };
-        spawn_local(async move {
-            let arg = to_value(&serde_json::json!({
-                "profile": profile,
-                "key": key_arg,
-                "useForVision": form.use_for_vision,
-                "useForImageGeneration": form.use_for_image_generation,
-            }))
-            .unwrap();
-            match invoke_checked("save_model", arg).await {
-                Ok(v) => {
-                    if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ModelProfile>>(v) {
-                        models.set(list);
-                    }
-                    let v = invoke("get_settings", JsValue::UNDEFINED).await;
-                    if let Ok(cfg) = serde_wasm_bindgen::from_value::<Settings>(v) {
-                        settings.set(normalized_settings(cfg));
-                    }
-                    model_form.set(None);
-                    model_form_key.set(String::new());
-                    model_form_msg.set(Some((true, t(loc, "status.settings_saved").into())));
-                }
-                Err(err) => {
-                    model_form_msg.set(Some((false, localize_backend(loc, &js_error_text(err)))));
-                }
-            }
-            settings_busy.set(false);
-        });
-    };
+    let save_model_form = move |_| model_settings.save_model_form();
 
-    let validate_model_form = move |_| {
-        if settings_busy.get() {
-            return;
-        }
-        let Some(form) = model_form.get() else {
-            return;
-        };
-        let loc = locale.get();
-        let key = model_form_key.get();
-        let has_key = models
-            .get()
-            .iter()
-            .find(|m| Some(m.id.as_str()) == form.id.as_deref())
-            .map(|m| m.has_api_key)
-            .unwrap_or(false);
-        let cfg = model_form_to_settings(&form, has_key);
-        if let Some(err_key) = settings_required_error_key(&cfg, &key) {
-            let err = t(loc, err_key);
-            model_form_msg.set(Some((
-                false,
-                tf(loc, "status.validation_failed", &[("msg", &err)]),
-            )));
-            return;
-        }
-        settings_busy.set(true);
-        model_form_msg.set(Some((true, t(loc, "status.validating").into())));
-        // The backend probes with a test image when "supports images" is on,
-        // so both outcomes say which probe ran — a checked box was never
-        // proof that the model takes images.
-        let vision = cfg.supports_vision;
-        spawn_local(async move {
-            let res = invoke_timeout(
-                "validate_settings",
-                to_value(&serde_json::json!({
-                    "settings": cfg,
-                    "key": key,
-                    "profileId": form.id.clone(),
-                }))
-                .unwrap(),
-                35_000,
-            )
-            .await;
-            match res {
-                Ok(v) => {
-                    let raw = v
-                        .as_string()
-                        .unwrap_or_else(|| t(loc, "status.validation_succeeded").into());
-                    let mut msg = localize_backend(loc, &raw);
-                    if vision {
-                        msg.push_str(&t(loc, "status.vision_ok"));
-                    }
-                    model_form_msg.set(Some((true, msg)));
-                }
-                Err(err) => {
-                    let mut msg = tf(
-                        loc,
-                        "status.validation_failed",
-                        &[("msg", &localize_backend(loc, &js_error_text(err)))],
-                    );
-                    if vision {
-                        msg.push_str(&t(loc, "err.vision_probe_failed"));
-                    }
-                    model_form_msg.set(Some((false, msg)));
-                }
-            }
-            settings_busy.set(false);
-        });
-    };
+    let validate_model_form = move |_| model_settings.validate_model_form();
 
-    let test_reviewer_form = move |_| {
-        let Some(spec) = specialist_form.get() else {
-            return;
-        };
-        if spec.id != "reviewer" || settings_busy.get() {
-            return;
-        }
-        let loc = locale.get();
-        settings_busy.set(true);
-        model_form_msg.set(Some((true, t(loc, "specialists.reviewer.testing").into())));
-        spawn_local(async move {
-            let result = invoke_timeout(
-                "test_reviewer_backend",
-                to_value(&serde_json::json!({ "reviewer": spec })).unwrap(),
-                120_000,
-            )
-            .await;
-            match result {
-                Ok(value) => {
-                    match serde_wasm_bindgen::from_value::<ReviewerBackendTestResult>(value) {
-                        Ok(result) => {
-                            let backend = match result.backend.as_str() {
-                                "acp_agent" => "ACP",
-                                "http_model" => "HTTP",
-                                other => other,
-                            };
-                            let headline = tf(
-                                loc,
-                                "specialists.reviewer.test_ok",
-                                &[
-                                    ("backend", backend),
-                                    ("model", &result.model),
-                                    ("status", &result.status),
-                                ],
-                            );
-                            model_form_msg.set(Some((
-                                true,
-                                if result.summary.trim().is_empty() {
-                                    headline
-                                } else {
-                                    format!("{headline} {}", result.summary.trim())
-                                },
-                            )));
-                        }
-                        Err(error) => model_form_msg.set(Some((false, error.to_string()))),
-                    }
-                }
-                Err(error) => model_form_msg.set(Some((
-                    false,
-                    tf(
-                        loc,
-                        "specialists.reviewer.test_failed",
-                        &[("msg", &localize_backend(loc, &js_error_text(error)))],
-                    ),
-                ))),
-            }
-            settings_busy.set(false);
-        });
-    };
+    let test_reviewer_form = move |_| model_settings.test_reviewer_form();
 
-    let save_specialist_form = move |_| {
-        let Some(spec) = specialist_form.get() else {
-            return;
-        };
-        let loc = locale.get();
-        if spec.name.trim().is_empty() {
-            model_form_msg.set(Some((false, t(loc, "specialists.name_required").into())));
-            return;
-        }
-        let saved_id = spec.id.clone();
-        let keep_open = saved_id == "reviewer";
-        settings_busy.set(true);
-        model_form_msg.set(Some((true, t(loc, "status.saving_settings").into())));
-        spawn_local(async move {
-            let args = to_value(&serde_json::json!({ "spec": spec })).unwrap();
-            match invoke_checked("save_specialist_cmd", args).await {
-                Ok(value) => match serde_wasm_bindgen::from_value::<Vec<Specialist>>(value) {
-                    Ok(value) => {
-                        let saved = value.iter().find(|item| item.id == saved_id).cloned();
-                        specialists.set(value);
-                        if keep_open {
-                            specialist_form.set(saved);
-                            model_form_msg.set(Some((true, t(loc, "specialists.saved").into())));
-                        } else {
-                            specialist_form.set(None);
-                            settings_message.set(Some((true, t(loc, "specialists.saved").into())));
-                        }
-                    }
-                    Err(error) => model_form_msg.set(Some((false, error.to_string()))),
-                },
-                Err(error) => model_form_msg.set(Some((false, js_error_text(error)))),
-            }
-            settings_busy.set(false);
-        });
-    };
+    let save_specialist_form = move |_| model_settings.save_specialist_form();
 
-    let remove_specialist_fn = move |id: String| {
-        spawn_local(async move {
-            let args = to_value(&serde_json::json!({ "id": id })).unwrap();
-            match invoke_checked("remove_specialist", args).await {
-                Ok(value) => match serde_wasm_bindgen::from_value::<Vec<Specialist>>(value) {
-                    Ok(value) => specialists.set(value),
-                    Err(error) => settings_message.set(Some((false, error.to_string()))),
-                },
-                Err(error) => settings_message.set(Some((false, js_error_text(error)))),
-            }
-        });
-    };
+    let remove_specialist_fn = move |id: String| model_settings.remove_specialist(id);
 
     let new_session = move |_| {
         if demo_mode.get_untracked() {
@@ -6490,46 +6073,11 @@ fn App() -> impl IntoView {
     });
 
     let save_skill_tags = Callback::new(move |(name, raw): (String, String)| {
-        let tags = split_tags(&raw);
-        spawn_local(async move {
-            let _ = invoke_checked(
-                "set_skill_tags",
-                to_value(&serde_json::json!({ "name": name, "tags": tags })).unwrap(),
-            )
-            .await;
-            refresh_skills();
-        });
+        extensions.save_skill_tags(name, raw)
     });
 
-    let set_visible_skills_enabled = Callback::new(move |enabled: bool| {
-        let tag = skill_filter_tag.get();
-        let query = skills_search.get();
-        let names = skills_list
-            .get()
-            .into_iter()
-            .filter(|s| !s.managed && skill_matches_filter(s, &tag, &query))
-            .map(|s| s.name)
-            .collect::<Vec<_>>();
-        if names.is_empty() {
-            return;
-        }
-        let names_for_update = names.clone();
-        skills_list.update(|list| {
-            for skill in list {
-                if names_for_update.contains(&skill.name) {
-                    skill.enabled = enabled;
-                }
-            }
-        });
-        spawn_local(async move {
-            let _ = invoke_checked(
-                "set_skills_enabled",
-                to_value(&serde_json::json!({ "names": names, "enabled": enabled })).unwrap(),
-            )
-            .await;
-            refresh_skills();
-        });
-    });
+    let set_visible_skills_enabled =
+        Callback::new(move |enabled: bool| extensions.set_visible_skills_enabled(enabled));
 
     let dismiss_onboarding = Callback::new(move |_| {
         show_onboarding.set(false);
