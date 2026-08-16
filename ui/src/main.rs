@@ -3568,7 +3568,17 @@ fn App() -> impl IntoView {
             return;
         }
         if active_is_exploration.get() && action == ComposerSendAction::BranchNew {
-            status.set("Conversation branches cannot be created inside an exploration.".into());
+            status.set(localize_backend(
+                locale.get(),
+                "Conversation branches cannot be created inside an exploration.",
+            ));
+            return;
+        }
+        if active_branch_state.get().is_some() && action == ComposerSendAction::BranchNew {
+            status.set(localize_backend(
+                locale.get(),
+                "Conversation branches cannot be branched again.",
+            ));
             return;
         }
         let branch = action == ComposerSendAction::BranchNew;
@@ -6153,6 +6163,20 @@ fn App() -> impl IntoView {
         match name {
             "compact" => return false,
             "fork" => {
+                if active_branch_state.get_untracked().is_some()
+                    || active_is_exploration.get_untracked()
+                {
+                    input.set(String::new());
+                    status.set(localize_backend(
+                        locale.get_untracked(),
+                        if active_is_exploration.get_untracked() {
+                            "Conversation branches cannot be created inside an exploration."
+                        } else {
+                            "Conversation branches cannot be branched again."
+                        },
+                    ));
+                    return true;
+                }
                 if payload.is_empty() {
                     input.set(String::new());
                     status.set(t(locale.get_untracked(), "composer.cmd_fork_empty"));
@@ -13219,7 +13243,8 @@ fn App() -> impl IntoView {
                                             <span class="compose-item-icon">{compose_icon("chat")}</span>
                                             <span>{move || t(locale.get(), "composer.side_chat")}</span>
                                         </button>
-                                        {move || (!active_is_exploration.get()).then(|| view! {
+                                        {move || (active_branch_state.get().is_none()
+                                            && !active_is_exploration.get()).then(|| view! {
                                             <button type="button" class="send-mode-item"
                                                 on:click=move |_| {
                                                     send_mode_menu_open.set(false);

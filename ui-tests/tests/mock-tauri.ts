@@ -4198,8 +4198,12 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return null;
           }
           case "branch_session": {
-            const id = `branch-${Math.random().toString(36).slice(2)}`;
             const source = String(arg("sessionId") ?? "");
+            const sourceSession = mockSessions.find((session) => session.id === source);
+            if (sourceSession?.branched_from || sourceSession?.branch_state) {
+              throw new Error("Conversation branches cannot be branched again.");
+            }
+            const id = `branch-${Math.random().toString(36).slice(2)}`;
             sessionModels[id] = sessionModels[source] ?? activeHttpModelId();
             if (Object.prototype.hasOwnProperty.call(sessionReasoningEfforts, source)) {
               sessionReasoningEfforts[id] = sessionReasoningEfforts[source];
