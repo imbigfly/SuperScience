@@ -4725,6 +4725,29 @@ pub fn localize_backend(locale: Locale, msg: &str) -> String {
                 msg.into()
             }
         }
+        "Conversation branches cannot be branched again." => {
+            if locale == Locale::Zh {
+                "对话分支不能再创建分支。".into()
+            } else {
+                msg.into()
+            }
+        }
+        m if m.starts_with("exploration_branch_unsupported:")
+            || m == "Conversation branches cannot start an exploration." =>
+        {
+            if locale == Locale::Zh {
+                "未回并的对话分支不能开始探索。".into()
+            } else {
+                "Conversation branches cannot start an exploration.".into()
+            }
+        }
+        "Conversation branches cannot be created inside an exploration." => {
+            if locale == Locale::Zh {
+                "探索会话中不能创建对话分支。".into()
+            } else {
+                msg.into()
+            }
+        }
         "Conversation branches changed while the summary was being prepared. Compare them again." => {
             if locale == Locale::Zh {
                 "生成总结期间分支已发生变化，请重新比较。".into()
@@ -5079,6 +5102,35 @@ mod api_error_hint_tests {
         assert_eq!(
             send_failed(Locale::En, "Project not found"),
             "Send failed: Project not found"
+        );
+    }
+
+    #[test]
+    fn localize_nested_conversation_branch_errors() {
+        assert_eq!(
+            localize_backend(Locale::Zh, "Conversation branches cannot be branched again."),
+            "对话分支不能再创建分支。"
+        );
+        assert_eq!(
+            localize_backend(
+                Locale::En,
+                "Conversation branches cannot be branched again."
+            ),
+            "Conversation branches cannot be branched again."
+        );
+        assert_eq!(
+            localize_backend(
+                Locale::Zh,
+                "Conversation branches cannot be created inside an exploration."
+            ),
+            "探索会话中不能创建对话分支。"
+        );
+        assert_eq!(
+            localize_backend(
+                Locale::Zh,
+                "exploration_branch_unsupported: Conversation branches cannot start an exploration."
+            ),
+            "未回并的对话分支不能开始探索。"
         );
     }
 

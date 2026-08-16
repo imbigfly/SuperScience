@@ -5,7 +5,7 @@ Explorations let you test a scientific direction without changing the project ma
 ## Start and use an exploration
 
 1. Finish a turn on a native Wisp conversation.
-2. Choose **Start exploration** on the latest completed assistant response, name it, and create it.
+2. Choose **Start exploration** on the latest completed assistant response, name it, and create it. Ordinary conversation branches do not show this action; start the exploration from main.
 3. Use the exploration normally. Its banner shows the isolation level and provides **View diff**, **Set as mainline**, and **Discard** actions.
 4. Switch between the mainline and sibling explorations either from the exploration group in the sidebar or from the individual exploration cards below the assistant response that created the checkpoint.
 
@@ -27,7 +27,7 @@ Ordinary conversation branches use a branch icon in the sidebar and also appear 
 
 Right-click a branch and choose **Merge back** when its focused work is ready. Wisp reads only the branch messages created after its checkpoint and drafts a self-contained summary. The user reviews and edits that draft; the approved text is appended to the current end of main as normal readable conversation context. Mainline turns created after the checkpoint are never compared, truncated, replaced, or included in the branch summary.
 
-Conversation branches are one level deep and merge only once. After merge-back, the branch is frozen as read-only history: it cannot accept new turns, create another branch, rewind, or merge again. On main, the summary is projected as a compact **Merged branch result** card beneath the branch's original checkpoint instead of expanded at the tail. Clicking the card opens the complete Markdown. This is presentation only: the underlying assistant message remains at its real append position as ordinary mainline context that later model turns can read.
+Conversation branches are one level deep and merge only once. The composer send menu and `/fork` stay on the mainline; a branch cannot create another branch. After merge-back, the branch is frozen as read-only history: it cannot accept new turns, create another branch, rewind, or merge again. On main, the summary is projected as a compact **Merged branch result** card beneath the branch's original checkpoint instead of expanded at the tail. Clicking the card opens the complete Markdown. This is presentation only: the underlying assistant message remains at its real append position as ordinary mainline context that later model turns can read.
 
 Rewind follows that real append position, not the card's visual location. Rewinding main past a merge revokes it and reopens the branch. Rewinding past the branch checkpoint keeps the branch as frozen history, removes its checkpoint attachment, and prevents it from merging into the rewritten mainline.
 
