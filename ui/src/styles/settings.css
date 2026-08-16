@@ -1717,31 +1717,45 @@ button.workflow-graph-port.output.active {
   background: var(--bg-input); color: var(--text); font: inherit; font-size: 12.5px;
 }
 .appearance-font-input:focus { border-color: var(--clay); outline: none; box-shadow: 0 0 0 3px var(--focus-ring); }
-.appearance-custom-css-section { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
-.appearance-custom-css-section h3 { margin: 0; font-size: 14px; }
-.appearance-custom-css-section .hint { margin: 0; color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
-.appearance-custom-css-section textarea {
-  width: 100%; min-height: 140px; resize: vertical; box-sizing: border-box;
-  padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
-  background: var(--bg-input); color: var(--text); font-family: var(--font-mono); font-size: 12.5px; line-height: 1.45;
+.appearance-custom-css-card { padding-bottom: 0; }
+.appearance-custom-css-head { padding: 8px 0 14px; border-bottom: 1px solid var(--border); }
+.appearance-custom-css-head .appearance-config-row { min-height: 0; padding: 8px 0 6px; border-bottom: none; }
+.appearance-custom-css-meta {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 24px;
 }
-.appearance-custom-css-section textarea:focus { border-color: var(--clay); outline: none; box-shadow: 0 0 0 3px var(--focus-ring); }
-.appearance-custom-css-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.appearance-custom-css-import {
-  display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px;
-  border: 1px solid var(--border-strong); border-radius: var(--radius-xs);
-  background: var(--bg-elev); color: var(--text); font-size: 12.5px; font-weight: 600; cursor: pointer;
+.appearance-custom-css-meta > span:first-child { color: var(--text-faint); font-size: 12px; line-height: 1.5; }
+.appearance-config-row > .appearance-custom-css-actions {
+  display: flex; flex-direction: row; align-items: center; justify-content: flex-end;
+  gap: 8px; flex: 0 0 auto; flex-wrap: nowrap; min-width: auto;
 }
-.appearance-custom-css-import:hover { border-color: var(--clay); color: var(--clay-strong); }
-.appearance-custom-css-import input { display: none; }
-.appearance-custom-css-import svg,
-.appearance-custom-css-actions button svg { width: 16px; height: 16px; }
+.settings-page label.appearance-custom-css-import {
+  display: inline-flex; flex-direction: row; align-items: center; gap: 7px;
+  margin: 0; font: inherit; font-size: 13.5px; font-weight: 500; color: var(--text);
+  padding: 8px 14px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--bg-input); cursor: pointer; white-space: nowrap;
+  transition: border-color .12s ease, background .12s ease, color .12s ease;
+}
+.settings-page label.appearance-custom-css-import:hover { border-color: var(--text-faint); }
+.settings-page label.appearance-custom-css-import input { display: none; }
+.settings-page label.appearance-custom-css-import svg { width: 16px; height: 16px; }
 .appearance-custom-css-actions button {
-  height: 32px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs);
-  background: transparent; color: var(--text-muted); font: inherit; font-size: 12.5px; cursor: pointer;
+  font: inherit; font-size: 13.5px; font-weight: 500; padding: 8px 14px;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--bg-input); color: var(--text); cursor: pointer; white-space: nowrap;
+  transition: border-color .12s ease, background .12s ease, color .12s ease;
 }
-.appearance-custom-css-actions button:hover { color: var(--text); border-color: var(--border); }
-.appearance-custom-css-actions span { color: var(--text-faint); font-size: 12px; font-variant-numeric: tabular-nums; }
+.appearance-custom-css-actions button:hover:not(:disabled) { border-color: var(--text-faint); }
+.appearance-custom-css-actions button:disabled { opacity: .5; cursor: default; }
+.appearance-custom-css-meta > span:last-child { color: var(--text-faint); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.appearance-custom-css-card textarea {
+  display: block; width: calc(100% + 48px); margin: 0 -24px; min-height: 168px; resize: vertical;
+  box-sizing: border-box; padding: 16px 24px; border: none; border-radius: 0;
+  background: var(--bg-sunken); color: var(--text);
+  font-family: var(--font-mono); line-height: 1.5;
+}
+.appearance-custom-css-card textarea:focus {
+  outline: none; box-shadow: inset 0 0 0 2px var(--clay);
+}
 .settings-form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2728,6 +2742,8 @@ button.workflow-graph-port.output.active {
   .appearance-config-head, .appearance-config-row { align-items: flex-start; flex-direction: column; gap: 10px; padding: 14px 0; }
   .appearance-config-head select, .appearance-color-value { width: 100%; }
   .appearance-font-input { width: 100%; }
+  .appearance-custom-css-actions { justify-content: flex-start; width: 100%; }
+  .appearance-custom-css-meta { flex-direction: column; gap: 8px; }
   .settings-page label.font-size-control { width: 100%; grid-template-columns: 1fr 54px; }
   .settings-form-grid .span-2 { grid-column: auto; }
   .settings-toolbar { grid-template-columns: 1fr; }

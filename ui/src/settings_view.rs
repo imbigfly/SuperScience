@@ -2447,9 +2447,35 @@ pub(super) fn SettingsView(
                                 </section>
                             }
                         }}
-                        <section class="appearance-custom-css-section">
-                            <h3>{move || t(locale.get(), "appearance.custom_css")}</h3>
-                            <p class="hint">{move || t(locale.get(), "appearance.custom_css_hint")}</p>
+                        <section class="appearance-config-card appearance-custom-css-card" data-testid="appearance-custom-css-card">
+                            <div class="appearance-custom-css-head">
+                                <div class="appearance-config-row">
+                                    <strong>{move || t(locale.get(), "appearance.custom_css")}</strong>
+                                    <div class="appearance-custom-css-actions">
+                                        <label class="appearance-custom-css-import">
+                                            <input
+                                                type="file"
+                                                accept=".css,text/css"
+                                                data-testid="appearance-custom-css-file"
+                                                on:change=move |ev| import_custom_css_from_input(&ev, custom_css)
+                                            />
+                                            {compose_icon("upload")}
+                                            {move || t(locale.get(), "appearance.custom_css_import")}
+                                        </label>
+                                        <button type="button" data-testid="appearance-custom-css-clear"
+                                            disabled=move || custom_css.get().is_empty()
+                                            on:click=move |_| custom_css.set(String::new())>
+                                            {move || t(locale.get(), "appearance.custom_css_clear")}
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="appearance-custom-css-meta">
+                                    <span>{move || t(locale.get(), "appearance.custom_css_hint")}</span>
+                                    <span data-testid="appearance-custom-css-status">
+                                        {move || tf(locale.get(), "appearance.custom_css_bytes", &[("n", &custom_css.get().len().to_string())])}
+                                    </span>
+                                </div>
+                            </div>
                             <textarea
                                 data-testid="appearance-custom-css"
                                 spellcheck="false"
@@ -2457,25 +2483,6 @@ pub(super) fn SettingsView(
                                 prop:value=move || custom_css.get()
                                 on:input=move |ev| custom_css.set(event_target_value(&ev))>
                             </textarea>
-                            <div class="appearance-custom-css-actions">
-                                <label class="appearance-custom-css-import">
-                                    <input
-                                        type="file"
-                                        accept=".css,text/css"
-                                        data-testid="appearance-custom-css-file"
-                                        on:change=move |ev| import_custom_css_from_input(&ev, custom_css)
-                                    />
-                                    {compose_icon("upload")}
-                                    {move || t(locale.get(), "appearance.custom_css_import")}
-                                </label>
-                                <button type="button" data-testid="appearance-custom-css-clear"
-                                    on:click=move |_| custom_css.set(String::new())>
-                                    {move || t(locale.get(), "appearance.custom_css_clear")}
-                                </button>
-                                <span data-testid="appearance-custom-css-status">
-                                    {move || tf(locale.get(), "appearance.custom_css_bytes", &[("n", &custom_css.get().len().to_string())])}
-                                </span>
-                            </div>
                         </section>
                     </div>
                 }.into_view())}
