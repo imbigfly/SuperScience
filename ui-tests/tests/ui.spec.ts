@@ -7472,6 +7472,11 @@ test("appearance custom CSS can be pasted, imported, and cleared", async ({ page
   await enterApp(page);
   await openSettingsSection(page, "Appearance");
 
+  const card = page.getByTestId("appearance-custom-css-card");
+  await expect(card).toHaveClass(/appearance-config-card/);
+  await expect(card.getByTestId("appearance-custom-css")).toBeVisible();
+  await expect(card.getByTestId("appearance-custom-css-clear")).toBeDisabled();
+
   const css = ":root { --md-lead-bar-width: 0; --md-lead-bar-pad: 0; }";
   await page.getByTestId("appearance-custom-css").fill(css);
   await expect.poll(() => page.evaluate(() =>
