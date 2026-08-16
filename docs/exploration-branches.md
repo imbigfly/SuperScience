@@ -5,7 +5,7 @@ Explorations let you test a scientific direction without changing the project ma
 ## Start and use an exploration
 
 1. Finish a turn on a native Wisp conversation.
-2. Choose **Start exploration** on the latest completed assistant response, name it, and create it.
+2. Choose **Start exploration** on the latest completed assistant response, name it, and create it. Ordinary conversation branches do not show this action; start the exploration from main.
 3. Use the exploration normally. Its banner shows the isolation level and provides **View diff**, **Set as mainline**, and **Discard** actions.
 4. Switch between the mainline and sibling explorations either from the exploration group in the sidebar or from the individual exploration cards below the assistant response that created the checkpoint.
 

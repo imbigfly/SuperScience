@@ -4732,6 +4732,15 @@ pub fn localize_backend(locale: Locale, msg: &str) -> String {
                 msg.into()
             }
         }
+        m if m.starts_with("exploration_branch_unsupported:")
+            || m == "Conversation branches cannot start an exploration." =>
+        {
+            if locale == Locale::Zh {
+                "未回并的对话分支不能开始探索。".into()
+            } else {
+                "Conversation branches cannot start an exploration.".into()
+            }
+        }
         "Conversation branches cannot be created inside an exploration." => {
             if locale == Locale::Zh {
                 "探索会话中不能创建对话分支。".into()
@@ -5115,6 +5124,13 @@ mod api_error_hint_tests {
                 "Conversation branches cannot be created inside an exploration."
             ),
             "探索会话中不能创建对话分支。"
+        );
+        assert_eq!(
+            localize_backend(
+                Locale::Zh,
+                "exploration_branch_unsupported: Conversation branches cannot start an exploration."
+            ),
+            "未回并的对话分支不能开始探索。"
         );
     }
 

@@ -5837,6 +5837,9 @@ fn App() -> impl IntoView {
         let Some(source_frame_id) = active_session.get_untracked() else {
             return;
         };
+        if active_branch_state.get_untracked().is_some() {
+            return;
+        }
         if explorations.with_untracked(|rows| {
             rows.iter()
                 .any(|row| row.exploration.frame_id == source_frame_id)
@@ -11255,6 +11258,7 @@ fn App() -> impl IntoView {
                                     let show_explore = Signal::derive(move || {
                                         if compact_assistant
                                             || active_acp_agent_id.get().is_some()
+                                            || active_branch_state.get().is_some()
                                             || explore_turn_index.is_none()
                                         {
                                             return false;

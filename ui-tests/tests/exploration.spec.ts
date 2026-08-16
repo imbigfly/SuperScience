@@ -162,6 +162,9 @@ test("conversation branches appear at their checkpoint and expose merge-back act
   await branch.click();
   await expect(page.locator(".msg-branch-btn")).toHaveCount(0);
   await expect(page.locator('.user-bubble [title="Branch"]')).toHaveCount(0);
+  await expect(page.getByTestId("start-exploration")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Start exploration", exact: true })).toHaveCount(0);
+  await expect(page.getByTestId("exploration-start-overlay")).toHaveCount(0);
   await expect(page.locator("#composer-input")).toBeEnabled();
   await page.getByRole("button", { name: "Message options" }).click();
   await expect(page.getByRole("button", { name: "Branch in new session", exact: true })).toHaveCount(0);
