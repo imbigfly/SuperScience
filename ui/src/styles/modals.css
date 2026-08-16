@@ -283,6 +283,14 @@
 }
 .exploration-eligibility.blocked { border: 1px solid color-mix(in srgb, var(--warn) 38%, var(--border)); background: color-mix(in srgb, var(--warn) 8%, transparent); color: var(--text-muted); }
 .exploration-eligibility strong { color: var(--warn); }
+.exploration-manual-resolution {
+  display: flex; flex: 0 0 auto; flex-direction: column; gap: 5px; padding: 10px 11px;
+  border: 1px solid var(--border); border-radius: var(--radius-xs); background: var(--bg-elev);
+  color: var(--text-muted); font-size: 12px; line-height: 1.5;
+}
+.exploration-manual-resolution strong { color: var(--text); }
+.exploration-manual-resolution .warning { color: var(--warn); }
+.exploration-manual-resolution .row { justify-content: flex-end; margin-top: 3px; }
 .exploration-tabs { display: flex; flex: 0 0 auto; gap: 3px; overflow-x: auto; padding-bottom: 2px; }
 .exploration-tabs button {
   flex: 0 0 auto; padding: 6px 9px; border: 1px solid transparent; border-radius: var(--radius-xs);

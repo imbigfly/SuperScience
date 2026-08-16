@@ -5362,6 +5362,78 @@ fn App() -> impl IntoView {
             });
         })
     };
+    let open_exploration_manual_resolution = Callback::new(move |exploration_id: String| {
+        if exploration_busy.get_untracked() {
+            return;
+        }
+        exploration_busy.set(true);
+        exploration_error.set(None);
+        spawn_local(async move {
+            let args = to_value(&tauri_args::exploration(&exploration_id)).unwrap();
+            if let Err(error) = invoke_checked("open_exploration_manual_resolution", args).await {
+                exploration_error.set(Some(localize_backend(
+                    locale.get_untracked(),
+                    &js_error_text(error),
+                )));
+            }
+            exploration_busy.set(false);
+        });
+    });
+    let finish_exploration_manual_resolution = {
+        let load_session = load_session.clone();
+        Callback::new(move |exploration_id: String| {
+            if exploration_busy.get_untracked() {
+                return;
+            }
+            let source_frame_id = explorations.with_untracked(|rows| {
+                rows.iter()
+                    .find(|row| row.exploration.id == exploration_id)
+                    .map(|row| row.source_frame_id.clone())
+            });
+            let Some(source_frame_id) = source_frame_id else {
+                exploration_error.set(Some(t(
+                    locale.get_untracked(),
+                    "exploration.manual_missing_source",
+                )));
+                return;
+            };
+            exploration_busy.set(true);
+            exploration_error.set(None);
+            let load_session = load_session.clone();
+            spawn_local(async move {
+                let args = to_value(&serde_json::json!({
+                    "sourceFrameId": source_frame_id.clone(),
+                }))
+                .unwrap();
+                match invoke_checked("abandon_exploration_round", args).await {
+                    Ok(_) => {
+                        exploration_overlay.set(None);
+                        exploration_preview.set(None);
+                        let resolved_frames = explorations.with_untracked(|rows| {
+                            rows.iter()
+                                .filter(|row| row.source_frame_id == source_frame_id)
+                                .map(|row| row.exploration.frame_id.clone())
+                                .collect::<HashSet<_>>()
+                        });
+                        exploration_frames.update(|frames| {
+                            frames.retain(|frame_id| !resolved_frames.contains(frame_id));
+                        });
+                        explorations.update(|rows| {
+                            rows.retain(|row| row.source_frame_id != source_frame_id);
+                        });
+                        refresh_explorations(explorations);
+                        refresh_session_history();
+                        load_session.call(source_frame_id);
+                    }
+                    Err(error) => exploration_error.set(Some(localize_backend(
+                        locale.get_untracked(),
+                        &js_error_text(error),
+                    ))),
+                }
+                exploration_busy.set(false);
+            });
+        })
+    };
     let discard_exploration_from_overlay = {
         let load_session = load_session.clone();
         Callback::new(move |exploration_id: String| {
@@ -14055,6 +14127,8 @@ fn App() -> impl IntoView {
             on_start=create_exploration_from_overlay
             on_promote=promote_exploration_from_overlay
             on_discard=discard_exploration_from_overlay
+            on_open_manual_resolution=open_exploration_manual_resolution
+            on_finish_manual_resolution=finish_exploration_manual_resolution
         />
 
         <SessionTransferOverlay

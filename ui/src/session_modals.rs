@@ -983,6 +983,9 @@ enum ExplorationConfirm {
     Discard {
         exploration_id: String,
     },
+    ManualResolution {
+        exploration_id: String,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -1008,6 +1011,17 @@ fn exploration_status(locale: Locale, status: &str) -> String {
 fn exploration_empty(locale: Locale) -> View {
     view! { <div class="exploration-diff-empty">{t(locale, "exploration.diff_empty")}</div> }
         .into_view()
+}
+
+fn exploration_blocker_message(locale: Locale, blocker: &PromotionBlocker) -> String {
+    let key = match blocker.code.as_str() {
+        "MainlineAdvanced" => "exploration.blocker_mainline_advanced",
+        "ExternalReferenceChanged" => "exploration.blocker_external_reference_changed",
+        "ExplorationBusy" => "exploration.blocker_busy",
+        "ExplorationNotPromotable" => "exploration.blocker_not_promotable",
+        _ => return blocker.message.clone(),
+    };
+    t(locale, key)
 }
 
 fn exploration_diff_body(
@@ -1170,6 +1184,8 @@ pub(crate) fn ExplorationOverlayView(
     on_start: Callback<(String, usize, String)>,
     on_promote: Callback<(String, String)>,
     on_discard: Callback<String>,
+    on_open_manual_resolution: Callback<String>,
+    on_finish_manual_resolution: Callback<String>,
 ) -> impl IntoView {
     let ExplorationOverlayState {
         locale,
@@ -1254,14 +1270,40 @@ pub(crate) fn ExplorationOverlayView(
                                 let promote_id = current.exploration.id.clone();
                                 let promote_guard = current.eligibility.expected_guard_hash.clone();
                                 let blockers = current.eligibility.reasons.clone();
+                                let manual_resolution_available = current.eligibility.manual_resolution_available;
+                                let manual_open_id = current.exploration.id.clone();
+                                let manual_finish_id = current.exploration.id.clone();
                                 view! {
                                     {(!eligible).then(|| view! {
                                         <div class="exploration-eligibility blocked" data-testid="exploration-promotion-blocked">
                                             <strong>{t(locale.get(), "exploration.cannot_promote")}</strong>
-                                            {blockers.into_iter().map(|reason| view! {
-                                                <span data-blocker-code=reason.code>{reason.message}</span>
+                                            {blockers.into_iter().map(|reason| {
+                                                let code = reason.code.clone();
+                                                let message = exploration_blocker_message(locale.get(), &reason);
+                                                view! { <span data-blocker-code=code>{message}</span> }
                                             }).collect_view()}
                                         </div>
+                                    })}
+                                    {manual_resolution_available.then(|| view! {
+                                        <section class="exploration-manual-resolution" data-testid="exploration-manual-resolution">
+                                            <strong>{t(locale.get(), "exploration.manual_title")}</strong>
+                                            <span>{t(locale.get(), "exploration.manual_body")}</span>
+                                            <span class="warning">{t(locale.get(), "exploration.manual_warning")}</span>
+                                            <div class="row">
+                                                <button type="button" disabled=move || busy.get()
+                                                    data-testid="exploration-open-manual-folders"
+                                                    on:click=move |_| on_open_manual_resolution.call(manual_open_id.clone())>
+                                                    {move || t(locale.get(), "exploration.manual_open_folders")}
+                                                </button>
+                                                <button type="button" class="primary" disabled=move || busy.get()
+                                                    data-testid="exploration-finish-manual"
+                                                    on:click=move |_| confirm.set(Some(ExplorationConfirm::ManualResolution {
+                                                        exploration_id: manual_finish_id.clone(),
+                                                    }))>
+                                                    {move || t(locale.get(), "exploration.manual_finish")}
+                                                </button>
+                                            </div>
+                                        </section>
                                     })}
                                     <div class="exploration-tabs" role="tablist">
                                         {[
@@ -1307,11 +1349,33 @@ pub(crate) fn ExplorationOverlayView(
         {move || confirm.get().map(|choice| {
             let choice_for_confirm = choice.clone();
             let promote = matches!(choice, ExplorationConfirm::Promote { .. });
+            let manual = matches!(choice, ExplorationConfirm::ManualResolution { .. });
+            let title_key = if promote {
+                "exploration.promote_confirm_title"
+            } else if manual {
+                "exploration.manual_confirm_title"
+            } else {
+                "exploration.discard_confirm_title"
+            };
+            let body_key = if promote {
+                "exploration.promote_confirm_body"
+            } else if manual {
+                "exploration.manual_confirm_body"
+            } else {
+                "exploration.discard_confirm_body"
+            };
+            let action_key = if promote {
+                "exploration.promote"
+            } else if manual {
+                "exploration.manual_finish"
+            } else {
+                "exploration.discard"
+            };
             view! {
                 <div class="overlay exploration-confirm-overlay" data-testid="exploration-confirm-overlay">
                     <div class="modal confirm-modal exploration-confirm-modal" role="alertdialog" aria-modal="true">
-                        <h2>{t(locale.get(), if promote { "exploration.promote_confirm_title" } else { "exploration.discard_confirm_title" })}</h2>
-                        <div class="hint">{t(locale.get(), if promote { "exploration.promote_confirm_body" } else { "exploration.discard_confirm_body" })}</div>
+                        <h2>{t(locale.get(), title_key)}</h2>
+                        <div class="hint">{t(locale.get(), body_key)}</div>
                         <div class="row">
                             <button type="button" on:click=move |_| confirm.set(None)>{move || t(locale.get(), "settings.cancel")}</button>
                             <button type="button" class="primary" class:danger=!promote data-testid="exploration-confirm-action"
@@ -1320,8 +1384,9 @@ pub(crate) fn ExplorationOverlayView(
                                     match choice_for_confirm.clone() {
                                         ExplorationConfirm::Promote { exploration_id, expected_guard_hash } => on_promote.call((exploration_id, expected_guard_hash)),
                                         ExplorationConfirm::Discard { exploration_id } => on_discard.call(exploration_id),
+                                        ExplorationConfirm::ManualResolution { exploration_id } => on_finish_manual_resolution.call(exploration_id),
                                     }
-                                }>{t(locale.get(), if promote { "exploration.promote" } else { "exploration.discard" })}</button>
+                                }>{t(locale.get(), action_key)}</button>
                         </div>
                     </div>
                 </div>

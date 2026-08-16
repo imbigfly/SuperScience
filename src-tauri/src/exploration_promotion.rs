@@ -13,6 +13,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use tauri::State;
+use tauri_plugin_opener::OpenerExt;
 use wisp_store::{
     ArtifactHead, ArtifactMaterialization, Exploration, ExplorationEffect, ExplorationPromotion,
     ExplorationPromotionStatus, ExplorationStatus, ExternalResource, ResearchEdge, ResearchNode,
@@ -75,6 +76,7 @@ pub(crate) struct PromotionEligibility {
     pub code: Option<String>,
     pub reasons: Vec<PromotionBlocker>,
     pub expected_guard_hash: String,
+    pub manual_resolution_available: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,6 +107,37 @@ impl ExplorationPromotionService {
 
     fn workspace_backend(&self) -> PersistentExplorationWorkspace {
         PersistentExplorationWorkspace::new(self.app_data.clone())
+    }
+
+    async fn manual_resolution_roots(
+        &self,
+        exploration_id: &str,
+    ) -> Result<(PathBuf, PathBuf), String> {
+        let exploration = self
+            .store
+            .get_exploration(exploration_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| coded(ERR_NOT_PROMOTABLE, "exploration not found"))?;
+        let checkpoint = self
+            .store
+            .get_exploration_checkpoint(&exploration.checkpoint_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| coded(ERR_NOT_PROMOTABLE, "checkpoint not found"))?;
+        let (_, workspace_dir) = self
+            .store
+            .get_project(&checkpoint.project_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| coded(ERR_NOT_PROMOTABLE, "project not found"))?;
+        let project_root = dunce::canonicalize(workspace_dir)
+            .map_err(|error| format!("cannot resolve project root: {error}"))?;
+        let base = self
+            .workspace_backend()
+            .load_snapshot(&checkpoint.workspace_snapshot_id)?;
+        let exploration_root = validated_exploration_root(&exploration, &base, &self.app_data)?;
+        Ok((project_root, exploration_root))
     }
 
     async fn preview(&self, exploration_id: &str) -> Result<ExplorationPromotionPreview, String> {
@@ -260,8 +293,9 @@ impl ExplorationPromotionService {
                 message: "Only an active exploration can be promoted.".into(),
             });
         }
-        let mainline_advanced = family.mainline_frame_id != checkpoint.source_frame_id
-            || family.generation != checkpoint.source_family_generation
+        let family_advanced = family.mainline_frame_id != checkpoint.source_frame_id
+            || family.generation != checkpoint.source_family_generation;
+        let mainline_advanced = family_advanced
             || source_message_head != checkpoint.source_frame_head_seq
             || source_ui_event_head != checkpoint.source_ui_event_seq
             || state_generation != checkpoint.source_state_generation
@@ -289,6 +323,15 @@ impl ExplorationPromotionService {
                 message: "Finish or cancel exploration Runs before promotion.".into(),
             });
         }
+        let manual_resolution_available = exploration.status == ExplorationStatus::Active
+            && !family_advanced
+            && !reasons.is_empty()
+            && reasons.iter().all(|reason| {
+                matches!(
+                    reason.code.as_str(),
+                    ERR_MAINLINE_ADVANCED | ERR_EXTERNAL_REFERENCE_CHANGED
+                )
+            });
         let expected_guard_hash = hash_json(&serde_json::json!({
             "checkpoint_id": checkpoint.id,
             "checkpoint_guard": checkpoint.guard_hash,
@@ -310,6 +353,7 @@ impl ExplorationPromotionService {
                 code: reasons.first().map(|reason| reason.code.clone()),
                 reasons,
                 expected_guard_hash,
+                manual_resolution_available,
             },
         })
     }
@@ -810,6 +854,38 @@ pub(crate) async fn preview_exploration_promotion(
     ExplorationPromotionService::new(state.store.clone(), state.app_data.clone())
         .preview(&exploration_id)
         .await
+}
+
+/// Opens the live mainline and the selected isolated workspace so the user can
+/// manually copy or merge files without weakening the promotion guard. The
+/// roots are resolved from persisted ownership data rather than UI-provided
+/// paths so this command cannot become a general filesystem opener.
+#[tauri::command]
+pub(crate) async fn open_exploration_manual_resolution(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    exploration_id: String,
+) -> Result<(), String> {
+    let service = ExplorationPromotionService::new(state.store.clone(), state.app_data.clone());
+    let preview = service.preview(&exploration_id).await?;
+    if !preview.eligibility.manual_resolution_available {
+        return Err(coded(
+            ERR_NOT_PROMOTABLE,
+            "this exploration does not have a file-level manual resolution path",
+        ));
+    }
+    let (mainline_root, exploration_root) =
+        service.manual_resolution_roots(&exploration_id).await?;
+    app.opener()
+        .open_path(mainline_root.to_string_lossy().into_owned(), None::<String>)
+        .map_err(|error| format!("cannot open the mainline workspace: {error}"))?;
+    app.opener()
+        .open_path(
+            exploration_root.to_string_lossy().into_owned(),
+            None::<String>,
+        )
+        .map_err(|error| format!("cannot open the exploration workspace: {error}"))?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -2541,6 +2617,16 @@ mod tests {
         let promotion = ExplorationPromotionService::new(store.clone(), app_data.clone());
         let initial = promotion.preview(&exploration.id).await.unwrap();
         assert!(initial.eligibility.eligible);
+        assert!(!initial.eligibility.manual_resolution_available);
+        let (manual_mainline, manual_exploration) = promotion
+            .manual_resolution_roots(&exploration.id)
+            .await
+            .unwrap();
+        assert_eq!(manual_mainline, dunce::canonicalize(&project).unwrap());
+        assert_eq!(
+            manual_exploration,
+            PathBuf::from(&exploration.workspace_dir)
+        );
 
         std::fs::write(
             PathBuf::from(&exploration.workspace_dir).join("branch.txt"),
@@ -2573,6 +2659,7 @@ mod tests {
             Some(ERR_MAINLINE_ADVANCED)
         );
         assert!(!advanced.mainline_changes.files.is_empty());
+        assert!(advanced.eligibility.manual_resolution_available);
         let error = promotion
             .promote_locked(&exploration.id, &refreshed.eligibility.expected_guard_hash)
             .await
@@ -2607,6 +2694,7 @@ mod tests {
             Some(ERR_MAINLINE_ADVANCED)
         );
         assert_eq!(preview.mainline_changes.source_message_head, 4);
+        assert!(preview.eligibility.manual_resolution_available);
         let _ = std::fs::remove_dir_all(base);
 
         let (creator, store, base, _project, app_data) = fixture("artifact_guard").await;
@@ -2685,6 +2773,32 @@ mod tests {
             .entity_keys
             .iter()
             .any(|key| key == "research_node:mainline-decision"));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[tokio::test]
+    async fn active_exploration_runs_do_not_offer_manual_resolution() {
+        let (creator, store, base, _project, app_data) = fixture("busy_manual_resolution").await;
+        let checkpoint = creator.create_checkpoint("p", "main").await.unwrap();
+        let exploration = creator
+            .create_exploration(&checkpoint.id, "Busy")
+            .await
+            .unwrap();
+        let mut run = RunRecord::new("busy-run", "p", "local", "Busy run", "command");
+        run.frame_id = Some(exploration.frame_id.clone());
+        run.status = RunStatus::Running;
+        store.create_run(&run).await.unwrap();
+
+        let preview = ExplorationPromotionService::new(store, app_data)
+            .preview(&exploration.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            preview.eligibility.code.as_deref(),
+            Some(ERR_EXPLORATION_BUSY)
+        );
+        assert!(!preview.eligibility.manual_resolution_available);
+
         let _ = std::fs::remove_dir_all(base);
     }
 

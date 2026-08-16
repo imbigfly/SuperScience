@@ -122,6 +122,44 @@ test("exploration cards expose right-click actions and selecting opens guarded p
   await expect(page.getByTestId("exploration-confirm-overlay")).toBeVisible();
 });
 
+test("blocked promotion offers a guarded manual file recovery flow", async ({ page }) => {
+  await page.goto("/?mockExplorations=1&mockMainlineAdvanced=1");
+  await page.locator(".proj-card-main").first().click();
+  await page
+    .getByTestId("sidebar-explorations")
+    .locator('[data-exploration-id="exploration-a"]')
+    .click();
+  await page.getByTestId("exploration-banner").getByRole("button", { name: "View diff" }).click();
+
+  const diff = page.getByTestId("exploration-diff-overlay");
+  await expect(diff.getByTestId("exploration-promotion-blocked")).toContainText(
+    "Automatic promotion stopped to avoid overwriting it",
+  );
+  const manual = diff.getByTestId("exploration-manual-resolution");
+  await expect(manual).toContainText("Resolve files manually");
+  await expect(diff.getByTestId("exploration-promote")).toBeDisabled();
+
+  await manual.getByTestId("exploration-open-manual-folders").click();
+  await expect.poll(() => lastInvokeArgs(page, "open_exploration_manual_resolution")).toMatchObject({
+    explorationId: "exploration-a",
+  });
+
+  await manual.getByTestId("exploration-finish-manual").click();
+  const confirm = page.getByTestId("exploration-confirm-overlay");
+  await expect(confirm).toContainText("Exploration-only conversation history and structured records will not be merged");
+  await page.keyboard.press("Escape");
+  await expect(confirm).toBeHidden();
+  await expect(diff).toBeVisible();
+
+  await manual.getByTestId("exploration-finish-manual").click();
+  await page.getByTestId("exploration-confirm-action").click();
+  await expect.poll(() => lastInvokeArgs(page, "abandon_exploration_round")).toMatchObject({
+    sourceFrameId: "exploration-mainline",
+  });
+  await expect(page.getByTestId("sidebar-explorations")).toHaveCount(0);
+  await expect(page.locator("#composer-input")).toBeEnabled();
+});
+
 test("discard permanently removes the exploration instead of leaving an unwritable tombstone", async ({ page }) => {
   await enterExplorationProject(page);
   const candidate = page

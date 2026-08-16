@@ -290,6 +290,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
         code: blocked ? "MainlineAdvanced" : null,
         reasons: blocked ? [{ code: "MainlineAdvanced", message: "The mainline no longer matches this exploration checkpoint." }] : [],
         expectedGuardHash: `guard-${id}`,
+        manualResolutionAvailable: blocked && row.exploration.status === "active",
       },
     };
   };
@@ -2163,6 +2164,13 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           }
           case "preview_exploration_promotion":
             return mockExplorationPreview(String(arg("explorationId")));
+          case "open_exploration_manual_resolution": {
+            const preview = mockExplorationPreview(String(arg("explorationId")));
+            if (!preview.eligibility.manualResolutionAvailable) {
+              throw new Error("ExplorationNotPromotable: this exploration does not have a file-level manual resolution path");
+            }
+            return null;
+          }
           case "promote_exploration": {
             const id = String(arg("explorationId"));
             const preview = mockExplorationPreview(id);
