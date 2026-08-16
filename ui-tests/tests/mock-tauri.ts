@@ -390,7 +390,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     resolveMockOAuth = null;
   };
   let skills = [
-    { name: "remote-compute-modal", description: "Run jobs on Modal", tags: ["compute"], scope: "bundled", enabled: true, builtin: true, dir: "/skills/remote-compute-modal" },
+    { name: "remote-compute-ssh", description: "Submit SSH-direct research Runs", tags: ["compute"], scope: "bundled", enabled: true, builtin: true, dir: "/skills/remote-compute-ssh" },
     { name: "literature-review", description: "Find and synthesize literature", tags: ["literature"], scope: "bundled", enabled: true, builtin: true, dir: "/skills/literature-review" },
     { name: "paper-narrative", description: "Shape a paper story", tags: [], scope: "global", enabled: true, builtin: false, dir: "/home/me/.wisp/skills/paper-narrative" },
   ];

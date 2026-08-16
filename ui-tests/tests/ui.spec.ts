@@ -8185,10 +8185,10 @@ test("skill manager filters by tag and batch disables visible skills", async ({ 
 
   await page.getByRole("button", { name: "Enabled", exact: true }).click();
   await expect(page.getByText("literature-review")).toBeVisible();
-  await expect(page.getByText("remote-compute-modal")).toBeVisible();
+  await expect(page.getByText("remote-compute-ssh")).toBeVisible();
 
   await page.getByRole("button", { name: "compute", exact: true }).click();
-  await expect(page.getByText("remote-compute-modal")).toBeVisible();
+  await expect(page.getByText("remote-compute-ssh")).toBeVisible();
   await expect(page.getByText("literature-review")).not.toBeVisible();
 
   await page.getByRole("button", { name: "Disable visible" }).click();
@@ -8196,8 +8196,8 @@ test("skill manager filters by tag and batch disables visible skills", async ({ 
     const calls = ((window as any).__skillInvokeLog ?? []).filter((c: any) => c.cmd === "set_skills_enabled");
     const args = calls.at(-1)?.args;
     return args instanceof Map ? Object.fromEntries(args) : (args ?? null);
-  })).toEqual({ names: ["remote-compute-modal"], enabled: false });
-  await expect(page.locator('[data-skill-name="remote-compute-modal"] input[type="checkbox"]')).not.toBeChecked();
+  })).toEqual({ names: ["remote-compute-ssh"], enabled: false });
+  await expect(page.locator('[data-skill-name="remote-compute-ssh"] input[type="checkbox"]')).not.toBeChecked();
 });
 
 test("skill manager reloads manually copied skills and shows their scope", async ({ page }) => {
