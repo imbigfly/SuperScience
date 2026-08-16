@@ -460,8 +460,8 @@ In the `mod tests` block at the bottom of `src-tauri/src/lib.rs`, add:
     fn parse_disabled_skills_handles_missing_and_valid() {
         assert!(parse_disabled_skills(None).is_empty());
         assert!(parse_disabled_skills(Some("not json")).is_empty());
-        let s = parse_disabled_skills(Some(r#"["alphafold2","boltz"]"#));
-        assert!(s.contains("alphafold2") && s.contains("boltz") && s.len() == 2);
+        let s = parse_disabled_skills(Some(r#"["literature-review","analysis-workflow"]"#));
+        assert!(s.contains("literature-review") && s.contains("analysis-workflow") && s.len() == 2);
     }
 ```
 

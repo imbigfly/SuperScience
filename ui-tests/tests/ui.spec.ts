@@ -1557,14 +1557,14 @@ test("ACP turns retain explicitly selected Wisp skills", async ({ page }) => {
   await newSessionButton(page).click();
   await page.locator(".model-picker-btn").click();
   await page.getByRole("button", { name: /Test ACP Agent/ }).click();
-  await composer(page).pressSequentially("/alpha");
+  await composer(page).pressSequentially("/lit");
   await page.locator(".mention-menu .mention-item").first().click();
   await composer(page).fill("use this skill");
   await page.getByRole("button", { name: "Send" }).click();
 
   await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
     acpAgentId: "acp-test",
-    references: [{ kind: "skill", name: "alphafold2" }],
+    references: [{ kind: "skill", name: "literature-review" }],
   });
 });
 
@@ -1874,8 +1874,8 @@ test("composer @ # and / add typed context references", async ({ page }) => {
   await expect(composerInput).toHaveValue("");
   await expect(composerInput).toBeFocused();
 
-  await composerInput.pressSequentially("/alpha");
-  await expect(page.locator(".mention-menu")).toContainText("alphafold2");
+  await composerInput.pressSequentially("/lit");
+  await expect(page.locator(".mention-menu")).toContainText("literature-review");
   await page.locator(".mention-menu .mention-item").first().click();
 
   await composerInput.pressSequentially("/round");
@@ -1903,7 +1903,7 @@ test("composer @ # and / add typed context references", async ({ page }) => {
       { kind: "artifact", id: "art-tree" },
       { kind: "session", id: "s-current" },
       { kind: "project", id: "default" },
-      { kind: "skill", name: "alphafold2" },
+      { kind: "skill", name: "literature-review" },
       { kind: "workflow", id: "roundtable" },
       { kind: "context", id: "ssh:gpu-server" },
     ],
@@ -1913,7 +1913,7 @@ test("composer @ # and / add typed context references", async ({ page }) => {
   await expect(page.locator('.msg.user [data-reference-kind="artifact"]')).toContainText("nif3.treefile");
   await expect(page.locator('.msg.user [data-reference-kind="session"]')).toContainText("Current analysis");
   await expect(page.locator('.msg.user [data-reference-kind="project"]')).toContainText("wisp-science");
-  await expect(page.locator('.msg.user [data-reference-kind="skill"]')).toContainText("alphafold2");
+  await expect(page.locator('.msg.user [data-reference-kind="skill"]')).toContainText("literature-review");
   await expect(page.locator('.msg.user [data-reference-kind="workflow"]')).toContainText("Roundtable");
   const sentEnvironment = page.locator('.msg.user [data-reference-kind="context"]');
   await expect(sentEnvironment).toContainText("gpu-server");
@@ -2184,9 +2184,9 @@ test("composer / menu layers sections and gives each command its own icon", asyn
 
   // A query matching no command keeps the remaining sections layered.
   await composerInput.fill("");
-  await composerInput.pressSequentially("/alpha");
+  await composerInput.pressSequentially("/lit");
   await expect(menu.locator(".mention-group-label")).toHaveText(["Skills"]);
-  await expect(menu).toContainText("alphafold2");
+  await expect(menu).toContainText("literature-review");
 });
 
 test("composer /plan and /permission drive the session mode flags", async ({ page }) => {
@@ -8184,12 +8184,12 @@ test("skill manager filters by tag and batch disables visible skills", async ({ 
   await expect(page.locator("[data-skill-name]")).toHaveCount(0);
 
   await page.getByRole("button", { name: "Enabled", exact: true }).click();
-  await expect(page.getByText("alphafold2")).toBeVisible();
+  await expect(page.getByText("literature-review")).toBeVisible();
   await expect(page.getByText("remote-compute-modal")).toBeVisible();
 
   await page.getByRole("button", { name: "compute", exact: true }).click();
   await expect(page.getByText("remote-compute-modal")).toBeVisible();
-  await expect(page.getByText("alphafold2")).not.toBeVisible();
+  await expect(page.getByText("literature-review")).not.toBeVisible();
 
   await page.getByRole("button", { name: "Disable visible" }).click();
   await expect.poll(async () => page.evaluate(() => {

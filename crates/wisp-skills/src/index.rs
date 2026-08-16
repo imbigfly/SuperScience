@@ -694,7 +694,7 @@ mod tests {
             count += 1;
         }
         assert!(
-            count >= 40,
+            count >= 30,
             "unexpectedly small bundled skill catalog: {count}"
         );
     }

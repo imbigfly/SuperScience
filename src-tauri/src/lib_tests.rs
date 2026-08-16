@@ -1465,7 +1465,7 @@ fn validate_skill_name_rejects_traversal() {
     ] {
         assert!(validate_skill_name(bad).is_err(), "should reject {bad:?}");
     }
-    for ok in ["alphafold2", "my-skill", "Skill_1"] {
+    for ok in ["literature-review", "my-skill", "Skill_1"] {
         assert!(validate_skill_name(ok).is_ok(), "should accept {ok:?}");
     }
 }
@@ -1474,8 +1474,8 @@ fn validate_skill_name_rejects_traversal() {
 fn parse_disabled_skills_handles_missing_and_valid() {
     assert!(parse_disabled_skills(None).is_empty());
     assert!(parse_disabled_skills(Some("not json")).is_empty());
-    let s = parse_disabled_skills(Some(r#"["alphafold2","boltz"]"#));
-    assert!(s.contains("alphafold2") && s.contains("boltz") && s.len() == 2);
+    let s = parse_disabled_skills(Some(r#"["literature-review","analysis-workflow"]"#));
+    assert!(s.contains("literature-review") && s.contains("analysis-workflow") && s.len() == 2);
 }
 
 #[test]

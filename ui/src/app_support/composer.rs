@@ -734,7 +734,7 @@ mod mention_tests {
         assert!(slash_command_matches("s").contains(&"skills"));
         assert!(slash_command_matches("s").contains(&"save-as-skill"));
         assert_eq!(slash_command_matches("shar"), vec!["share"]);
-        assert!(slash_command_matches("boltz").is_empty());
+        assert!(slash_command_matches("literature-review").is_empty());
     }
 
     #[test]
@@ -792,7 +792,7 @@ mod mention_tests {
             matches!(active_composer_trigger("#old", 4), Some((0, 4, ComposerPickerMode::Session, q)) if q == "old")
         );
         assert!(
-            matches!(active_composer_trigger("/boltz", 6), Some((0, 6, ComposerPickerMode::Skill, q)) if q == "boltz")
+            matches!(active_composer_trigger("/literature-review", 18), Some((0, 18, ComposerPickerMode::Skill, q)) if q == "literature-review")
         );
     }
 
