@@ -2806,6 +2806,22 @@ pub struct ConnForm {
 }
 
 #[derive(Clone, Default)]
+pub struct ModelFormEntry {
+    pub row_id: u64,
+    pub label: String,
+    pub model: String,
+    pub supports_vision: bool,
+    pub use_for_vision: bool,
+    pub use_for_image_generation: bool,
+}
+
+impl ModelFormEntry {
+    pub fn is_image_model(&self) -> bool {
+        self.use_for_image_generation || self.model.trim().eq_ignore_ascii_case("gpt-image-2")
+    }
+}
+
+#[derive(Clone, Default)]
 pub struct ModelForm {
     pub id: Option<String>,
     pub label: String,
@@ -2818,6 +2834,9 @@ pub struct ModelForm {
     pub supports_vision: bool,
     pub use_for_vision: bool,
     pub use_for_image_generation: bool,
+    /// Used only when adding a provider (`id` is `None`): one row per model
+    /// that should be created with the shared API URL and key.
+    pub entries: Vec<ModelFormEntry>,
 }
 
 /// `model_catalog_lookup` projection of one baked catalog entry.

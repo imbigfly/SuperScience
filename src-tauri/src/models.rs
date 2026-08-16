@@ -62,6 +62,92 @@ fn secret_name(id: &str) -> String {
     format!("model_key:{id}")
 }
 
+/// Identity of an LLM credential: the API origin, not the provider enum and
+/// not the model id. `openai` covers DeepSeek, official OpenAI, and local
+/// gateways; those must not share a key. OpenAI Chat and Responses on the
+/// same host should.
+pub(crate) fn normalize_endpoint(url: &str) -> String {
+    let url = url.trim();
+    if url.is_empty() {
+        return String::new();
+    }
+    let (scheme, rest) = if let Some(rest) = url.strip_prefix("https://") {
+        ("https://", rest)
+    } else if let Some(rest) = url.strip_prefix("http://") {
+        ("http://", rest)
+    } else {
+        ("", url)
+    };
+    let rest = if scheme.is_empty() {
+        rest.to_string()
+    } else {
+        match rest.split_once('/') {
+            Some((host, path)) => format!("{}/{}", host.to_ascii_lowercase(), path),
+            None => rest.to_ascii_lowercase(),
+        }
+    };
+    let mut endpoint = format!("{scheme}{rest}");
+    loop {
+        while endpoint.ends_with('/') {
+            endpoint.pop();
+        }
+        let Some(stripped) = [
+            "/v1/messages",
+            "/v1/chat/completions",
+            "/chat/completions",
+            "/responses",
+            "/v1",
+        ]
+        .into_iter()
+        .find_map(|suffix| endpoint.strip_suffix(suffix).map(str::to_string)) else {
+            break;
+        };
+        endpoint = stripped;
+    }
+    endpoint
+}
+
+fn same_endpoint(left: &str, right: &str) -> bool {
+    let left = normalize_endpoint(left);
+    !left.is_empty() && left == normalize_endpoint(right)
+}
+
+fn sibling_key(profiles: &[ModelProfile], api_url: &str, exclude_id: &str) -> String {
+    profiles
+        .iter()
+        .filter(|profile| profile.id != exclude_id && same_endpoint(&profile.api_url, api_url))
+        .map(|profile| key_for(&profile.id))
+        .find(|key| !key.is_empty())
+        .unwrap_or_default()
+}
+
+/// Write a pasted key to this profile and every sibling on the same endpoint.
+/// If no key is pasted and this profile has none, copy a sibling's key so
+/// adding another model on the same URL does not require pasting again.
+fn store_profile_key(
+    id: &str,
+    key: Option<&str>,
+    api_url: &str,
+    profiles: &[ModelProfile],
+) -> Result<(), String> {
+    if let Some(key) = key.map(str::trim).filter(|key| !key.is_empty()) {
+        secret_set(&secret_name(id), key)?;
+        for profile in profiles {
+            if profile.id != id && same_endpoint(&profile.api_url, api_url) {
+                secret_set(&secret_name(&profile.id), key)?;
+            }
+        }
+        return Ok(());
+    }
+    if key_for(id).is_empty() {
+        let inherited = sibling_key(profiles, api_url, id);
+        if !inherited.is_empty() {
+            secret_set(&secret_name(id), &inherited)?;
+        }
+    }
+    Ok(())
+}
+
 /// Process-lifetime cache of resolved secrets, keyed by keyring name.
 ///
 /// On macOS the OS keyring pops a login-password prompt whenever the calling
@@ -975,6 +1061,7 @@ pub async fn save_model(
         profile.id = fresh_id(&profiles);
     }
     let id = profile.id.clone();
+    let api_url = profile.api_url.clone();
     let is_new = !profiles.iter().any(|p| p.id == id);
     if !is_chat_model(&profile) && !profiles.iter().any(|p| p.id != id && is_chat_model(p)) {
         return Err("At least one chat model is required.".into());
@@ -985,6 +1072,7 @@ pub async fn save_model(
         profiles.push(profile);
     }
     save_raw(&state.store, &profiles).await?;
+    store_profile_key(&id, key.as_deref(), &api_url, &profiles)?;
     if assign_vision {
         let _ = state.store.set_setting(VISION_KEY, &id).await;
     } else {
@@ -1015,12 +1103,6 @@ pub async fn save_model(
             .unwrap_or_default();
         if current == id {
             let _ = state.store.set_setting(IMAGE_GENERATION_KEY, "").await;
-        }
-    }
-    if let Some(k) = key {
-        let k = k.trim();
-        if !k.is_empty() {
-            secret_set(&secret_name(&id), k)?;
         }
     }
     // Land the user on a freshly added model so they can edit/use it right away.
@@ -1575,6 +1657,96 @@ mod tests {
         assert_eq!(secret_get(&name), "sk-abc");
         secret_del(&name).unwrap();
         assert_eq!(secret_get(&name), "");
+    }
+
+    #[test]
+    fn normalize_endpoint_strips_version_and_api_suffixes() {
+        assert_eq!(
+            normalize_endpoint("https://api.openai.com/v1"),
+            "https://api.openai.com"
+        );
+        assert_eq!(
+            normalize_endpoint("https://API.OpenAI.com/v1/"),
+            "https://api.openai.com"
+        );
+        assert_eq!(
+            normalize_endpoint("https://api.openai.com/v1/responses"),
+            "https://api.openai.com"
+        );
+        assert_eq!(
+            normalize_endpoint("https://api.deepseek.com"),
+            "https://api.deepseek.com"
+        );
+        assert_eq!(
+            normalize_endpoint("https://api.kimi.com/coding/v1"),
+            "https://api.kimi.com/coding"
+        );
+        assert!(same_endpoint(
+            "https://api.openai.com",
+            "https://api.openai.com/v1"
+        ));
+        assert!(!same_endpoint(
+            "https://api.deepseek.com",
+            "https://api.openai.com"
+        ));
+    }
+
+    #[test]
+    fn new_profile_inherits_sibling_key_on_the_same_endpoint() {
+        let prefix = uuid::Uuid::new_v4();
+        let existing_id = format!("{prefix}-a");
+        let new_id = format!("{prefix}-b");
+        let _ = secret_del(&secret_name(&existing_id));
+        let _ = secret_del(&secret_name(&new_id));
+        secret_set(&secret_name(&existing_id), "sk-shared").unwrap();
+        let mut existing = test_profile(&existing_id, "flash", "deepseek-v4-flash");
+        existing.api_url = "https://api.deepseek.com".into();
+        let mut added = test_profile(&new_id, "pro", "deepseek-v4-pro");
+        added.api_url = "https://api.deepseek.com/".into();
+        let added_url = added.api_url.clone();
+        store_profile_key(&new_id, None, &added_url, &[existing, added]).unwrap();
+        assert_eq!(key_for(&new_id), "sk-shared");
+        let _ = secret_del(&secret_name(&existing_id));
+        let _ = secret_del(&secret_name(&new_id));
+    }
+
+    #[test]
+    fn new_profile_does_not_inherit_a_key_from_another_endpoint() {
+        let prefix = uuid::Uuid::new_v4();
+        let existing_id = format!("{prefix}-a");
+        let new_id = format!("{prefix}-b");
+        let _ = secret_del(&secret_name(&existing_id));
+        let _ = secret_del(&secret_name(&new_id));
+        secret_set(&secret_name(&existing_id), "sk-deepseek").unwrap();
+        let mut existing = test_profile(&existing_id, "flash", "deepseek-v4-flash");
+        existing.api_url = "https://api.deepseek.com".into();
+        let mut added = test_profile(&new_id, "gpt", "gpt-5.5");
+        added.api_url = "https://api.openai.com/v1".into();
+        let added_url = added.api_url.clone();
+        store_profile_key(&new_id, None, &added_url, &[existing, added]).unwrap();
+        assert!(key_for(&new_id).is_empty());
+        let _ = secret_del(&secret_name(&existing_id));
+        let _ = secret_del(&secret_name(&new_id));
+    }
+
+    #[test]
+    fn pasted_key_rotates_every_sibling_on_the_same_endpoint() {
+        let prefix = uuid::Uuid::new_v4();
+        let first_id = format!("{prefix}-a");
+        let second_id = format!("{prefix}-b");
+        let _ = secret_del(&secret_name(&first_id));
+        let _ = secret_del(&secret_name(&second_id));
+        secret_set(&secret_name(&first_id), "sk-old").unwrap();
+        let mut first = test_profile(&first_id, "flash", "deepseek-v4-flash");
+        first.api_url = "https://api.deepseek.com".into();
+        let mut second = test_profile(&second_id, "pro", "deepseek-v4-pro");
+        second.api_url = "https://api.deepseek.com/v1".into();
+        let second_url = second.api_url.clone();
+        store_profile_key(&second_id, Some("sk-new"), &second_url, &[first, second]).unwrap();
+        assert_eq!(key_for(&first_id), "sk-new");
+        assert_eq!(key_for(&second_id), "sk-new");
+        let _ = secret_del(&secret_name(&first_id));
+        let _ = secret_del(&secret_name(&second_id));
     }
 
     /// Restores each captured secret on drop (even when an assert panics), so

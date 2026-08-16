@@ -53,6 +53,87 @@ mod project_sync_backend_tests {
     }
 }
 
+#[cfg(test)]
+mod provider_form_tests {
+    use super::{
+        apply_provider_suggestions, endpoint_has_stored_key, new_model_form,
+        provider_entries_are_pristine, suggested_provider_models, ModelProfile,
+        DEEPSEEK_FLASH_MODEL, DEEPSEEK_PRO_MODEL,
+    };
+
+    fn profile(url: &str, has_key: bool) -> ModelProfile {
+        ModelProfile {
+            id: "m1".into(),
+            label: "m".into(),
+            provider: "openai".into(),
+            api_url: url.into(),
+            model: "x".into(),
+            has_api_key: has_key,
+            active: false,
+            max_tokens: 0,
+            context_window: 128_000,
+            reasoning_effort: String::new(),
+            supports_vision: false,
+            use_for_vision: false,
+            use_for_image_generation: false,
+        }
+    }
+
+    #[test]
+    fn deepseek_add_form_starts_with_flash_and_pro() {
+        let form = new_model_form();
+        let models: Vec<_> = form
+            .entries
+            .iter()
+            .map(|entry| entry.model.as_str())
+            .collect();
+        assert_eq!(models, [DEEPSEEK_FLASH_MODEL, DEEPSEEK_PRO_MODEL]);
+    }
+
+    #[test]
+    fn openai_responses_suggests_chat_and_image_models() {
+        let models: Vec<_> = suggested_provider_models("openai_responses", "https://api.openai.com/v1")
+            .into_iter()
+            .map(|entry| (entry.model, entry.use_for_image_generation))
+            .collect();
+        assert_eq!(
+            models,
+            vec![
+                ("gpt-5.5".into(), false),
+                ("gpt-image-2".into(), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn changing_url_refreshes_only_pristine_suggestions() {
+        let mut form = new_model_form();
+        assert!(provider_entries_are_pristine(&form));
+        apply_provider_suggestions(&mut form, "openai", "https://api.kimi.com/coding/v1");
+        assert_eq!(form.entries[0].model, "kimi-coding");
+        form.entries[0].model = "k3-256k".into();
+        let before = form.entries.clone();
+        // User edited a row — a later URL tweak must not wipe it.
+        let mut edited = form.clone();
+        edited.api_url = "https://api.kimi.com/coding/v1/".into();
+        assert!(!provider_entries_are_pristine(&edited));
+        assert_eq!(edited.entries[0].model, before[0].model);
+    }
+
+    #[test]
+    fn stored_key_matches_the_same_endpoint_only() {
+        let models = vec![profile("https://api.deepseek.com", true)];
+        assert!(endpoint_has_stored_key(
+            &models,
+            "https://api.deepseek.com/v1"
+        ));
+        assert!(!endpoint_has_stored_key(
+            &models,
+            "https://api.openai.com/v1"
+        ));
+    }
+}
+
 pub(crate) fn settings_required_error_key(cfg: &Settings, key: &str) -> Option<&'static str> {
     if cfg.api_url.trim().is_empty() {
         return Some("err.api_url_required");
@@ -665,17 +746,105 @@ pub(crate) fn profile_to_form(m: &ModelProfile) -> ModelForm {
         supports_vision: m.supports_vision,
         use_for_vision: m.use_for_vision,
         use_for_image_generation: m.use_for_image_generation,
+        entries: Vec::new(),
     }
 }
 
+fn next_model_row_id() -> u64 {
+    use std::cell::Cell;
+    thread_local! {
+        static NEXT: Cell<u64> = const { Cell::new(1) };
+    }
+    NEXT.with(|next| {
+        let id = next.get();
+        next.set(id + 1);
+        id
+    })
+}
+
+pub(crate) fn model_form_entry(model: &str, image: bool) -> ModelFormEntry {
+    let image = image || model.trim().eq_ignore_ascii_case("gpt-image-2");
+    ModelFormEntry {
+        row_id: next_model_row_id(),
+        label: String::new(),
+        model: model.into(),
+        supports_vision: false,
+        use_for_vision: false,
+        use_for_image_generation: image,
+    }
+}
+
+pub(crate) fn suggested_provider_models(provider: &str, api_url: &str) -> Vec<ModelFormEntry> {
+    let provider = provider_value(provider);
+    let host = normalize_endpoint(api_url).to_ascii_lowercase();
+    match provider {
+        "anthropic" => vec![model_form_entry("claude-sonnet-5", false)],
+        "openai_responses" => vec![
+            model_form_entry("gpt-5.5", false),
+            model_form_entry("gpt-image-2", true),
+        ],
+        _ if host.contains("deepseek.com") || host.is_empty() => vec![
+            model_form_entry(DEEPSEEK_FLASH_MODEL, false),
+            model_form_entry(DEEPSEEK_PRO_MODEL, false),
+        ],
+        _ if host.contains("api.kimi.com") && host.contains("/coding") => {
+            vec![model_form_entry("kimi-coding", false)]
+        }
+        _ if host.contains("moonshot") || host.contains("api.kimi.com") => {
+            vec![model_form_entry("kimi-k3", false)]
+        }
+        _ if host.contains("bigmodel.cn") && host.contains("coding") => {
+            vec![model_form_entry("glm-5.2", false)]
+        }
+        _ if host.contains("bigmodel.cn") => vec![model_form_entry("glm-5", false)],
+        _ => vec![model_form_entry("", false)],
+    }
+}
+
+pub(crate) fn provider_entries_are_pristine(form: &ModelForm) -> bool {
+    let suggested = suggested_provider_models(&form.provider, &form.api_url);
+    let current: Vec<&str> = form
+        .entries
+        .iter()
+        .map(|entry| entry.model.trim())
+        .collect();
+    let expected: Vec<&str> = suggested
+        .iter()
+        .map(|entry| entry.model.trim())
+        .collect();
+    current == expected
+}
+
+pub(crate) fn apply_provider_suggestions(form: &mut ModelForm, provider: &str, api_url: &str) {
+    form.provider = provider_value(provider).into();
+    form.api_url = api_url.into();
+    form.entries = suggested_provider_models(&form.provider, &form.api_url);
+}
+
+pub(crate) fn endpoint_has_stored_key(models: &[ModelProfile], api_url: &str) -> bool {
+    models
+        .iter()
+        .any(|profile| profile.has_api_key && same_endpoint(&profile.api_url, api_url))
+}
+
+pub(crate) fn sibling_profile_id<'a>(
+    models: &'a [ModelProfile],
+    api_url: &str,
+) -> Option<&'a str> {
+    models
+        .iter()
+        .find(|profile| profile.has_api_key && same_endpoint(&profile.api_url, api_url))
+        .map(|profile| profile.id.as_str())
+}
+
 pub(crate) fn new_model_form() -> ModelForm {
-    let (api_url, model) = provider_defaults("openai");
+    let (api_url, _) = provider_defaults("openai");
     ModelForm {
         provider: "openai".into(),
         api_url: api_url.into(),
-        model: model.into(),
         max_tokens: 8192,
         context_window: 128_000,
+        entries: suggested_provider_models("openai", api_url),
         ..Default::default()
     }
 }

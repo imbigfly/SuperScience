@@ -2,8 +2,10 @@ use crate::agent_workflows::{workflow_studio as workflow_studio_view, AgentPanel
 use crate::app_support::{
     allow_drop, build_conn_json, close_details_ancestor, compose_icon, conn_form_from_row,
     context_capability_summary, drag_session_id, focus_element_soon, format_relative_time,
-    import_custom_css_from_input, join_tags, js_error_text, new_acp_form, new_model_form,
-    profile_to_form, quick_action_label, reviewer_backend_key, reviewer_backend_label,
+    apply_provider_suggestions, endpoint_has_stored_key, import_custom_css_from_input,
+    join_tags, js_error_text, model_form_entry, new_acp_form, new_model_form,
+    profile_to_form, provider_entries_are_pristine, quick_action_label, reviewer_backend_key,
+    reviewer_backend_label,
     reviewer_missing_acp_profile_id, set_reviewer_backend, settings_section_label,
     settings_subpage_label, skill_matches_filter, start_session_drag, CRED_GROUPS,
 };
@@ -11,7 +13,8 @@ use crate::bindings::{invoke, invoke_checked, is_mac, is_windows};
 use crate::dto::*;
 use crate::i18n::{localize_backend, set_document_lang, t, tf, Locale};
 use crate::text::{
-    dom_value, event_target_checked, event_target_input, event_target_value, format_bytes,
+    dom_value, endpoint_host, event_target_checked, event_target_input, event_target_value,
+    format_bytes,
 };
 use crate::window_capture_escape;
 use leptos::*;
@@ -2555,6 +2558,7 @@ pub(super) fn SettingsView(
                             </div>
                         }.into_view()
                     } else if model_form_open.get() {
+                        if model_form.get().is_some_and(|f| f.id.is_some()) {
                         view! {
                             <div class="settings-pane settings-pane-subpage">
                                 <div class="conn-form model-form">
@@ -2741,6 +2745,213 @@ pub(super) fn SettingsView(
                                 </div>
                             </div>
                         }.into_view()
+                        } else {
+                        view! {
+                            <div class="settings-pane settings-pane-subpage" data-testid="provider-add-form">
+                                <div class="conn-form model-form">
+                                    <p class="hint" data-testid="provider-byok-hint">{move || t(locale.get(), "models.byok_hint")}</p>
+                                    <div class="settings-form-grid">
+                                        <label class="span-2">{move || t(locale.get(), "settings.provider")}
+                                            <select data-testid="settings-provider"
+                                                on:change=move|ev| {
+                                                    let p = dom_value(&ev);
+                                                    let (api_url, _) = settings_provider_defaults(&p);
+                                                    model_form.update(|o| if let Some(o)=o {
+                                                        apply_provider_suggestions(o, &p, api_url);
+                                                    });
+                                                }
+                                                >
+                                                <option value="openai"
+                                                    prop:selected=move || model_form.get().is_some_and(|f| settings_provider_value(&f.provider) == "openai")>
+                                                    {move || t(locale.get(), "settings.provider.openai")}
+                                                </option>
+                                                <option value="openai_responses"
+                                                    prop:selected=move || model_form.get().is_some_and(|f| settings_provider_value(&f.provider) == "openai_responses")>
+                                                    {move || t(locale.get(), "settings.provider.openai_responses")}
+                                                </option>
+                                                <option value="anthropic"
+                                                    prop:selected=move || model_form.get().is_some_and(|f| settings_provider_value(&f.provider) == "anthropic")>
+                                                    {move || t(locale.get(), "settings.provider.anthropic")}
+                                                </option>
+                                            </select>
+                                        </label>
+                                        <label class="span-2">{move || t(locale.get(), "settings.api_url")}
+                                            <input aria-describedby="model-api-url-hint" data-testid="provider-api-url"
+                                                prop:value=move || model_form.get().map(|f| f.api_url.clone()).unwrap_or_default()
+                                                on:input=move |ev| {
+                                                    let url = event_target_input(&ev).value();
+                                                    model_form.update(|o| if let Some(o)=o {
+                                                        if provider_entries_are_pristine(o) {
+                                                            apply_provider_suggestions(o, &o.provider.clone(), &url);
+                                                        } else {
+                                                            o.api_url = url;
+                                                        }
+                                                    });
+                                                } /></label>
+                                        <span id="model-api-url-hint" class="hint span-2" data-testid="model-api-url-hint">
+                                            {move || t(locale.get(), "settings.tip")}
+                                        </span>
+                                        <label class="span-2">{move || t(locale.get(), "settings.api_key")}
+                                            <input type="password" id="model-form-api-key" data-testid="provider-api-key"
+                                                prop:value=move || model_form_key.get()
+                                                placeholder=move || {
+                                                    let url = model_form.get().map(|f| f.api_url).unwrap_or_default();
+                                                    if endpoint_has_stored_key(&models.get(), &url) {
+                                                        tf(locale.get(), "models.reuse_key", &[("host", &endpoint_host(&url))])
+                                                    } else {
+                                                        String::new()
+                                                    }
+                                                }
+                                                autocomplete="new-password"
+                                                on:input=move |ev| model_form_key.set(event_target_input(&ev).value()) /></label>
+                                    </div>
+                                    <div class="provider-models" data-testid="provider-models">
+                                        <div class="provider-models-head">
+                                            <strong>{move || t(locale.get(), "models.entries")}</strong>
+                                            <span class="hint">{move || t(locale.get(), "models.entries_hint")}</span>
+                                        </div>
+                                        <For
+                                            each=move || model_form.get().map(|f| f.entries).unwrap_or_default()
+                                            key=|entry| entry.row_id
+                                            let:entry
+                                        >
+                                            {
+                                                let row_id = entry.row_id;
+                                                view! {
+                                                    <div class="provider-model-row" data-testid="provider-model-row">
+                                                        <div class="provider-model-row-head">
+                                                            <label>{move || t(locale.get(), "settings.model")}
+                                                                <input data-testid="provider-model-id"
+                                                                    prop:value=move || model_form.get()
+                                                                        .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                                                        .map(|e| e.model)
+                                                                        .unwrap_or_default()
+                                                                    placeholder=move || t(locale.get(), "settings.model_ph")
+                                                                    on:input=move |ev| {
+                                                                        let value = event_target_input(&ev).value();
+                                                                        model_form.update(|o| if let Some(o)=o {
+                                                                            if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                                                                e.model = value;
+                                                                                if e.model.trim().eq_ignore_ascii_case("gpt-image-2") {
+                                                                                    e.supports_vision = false;
+                                                                                    e.use_for_vision = false;
+                                                                                    e.use_for_image_generation = true;
+                                                                                }
+                                                                            }
+                                                                        });
+                                                                    } /></label>
+                                                            <label>{move || t(locale.get(), "settings.label")}
+                                                                <input data-testid="provider-model-label"
+                                                                    prop:value=move || model_form.get()
+                                                                        .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                                                        .map(|e| e.label)
+                                                                        .unwrap_or_default()
+                                                                    placeholder=move || t(locale.get(), "settings.label_ph")
+                                                                    on:input=move |ev| {
+                                                                        let value = event_target_input(&ev).value();
+                                                                        model_form.update(|o| if let Some(o)=o {
+                                                                            if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                                                                e.label = value;
+                                                                            }
+                                                                        });
+                                                                    } /></label>
+                                                            <button type="button" class="settings-list-remove" data-testid="provider-remove-model"
+                                                                title=move || t(locale.get(), "models.remove_entry")
+                                                                disabled=move || model_form.get().is_some_and(|f| f.entries.len() < 2)
+                                                                on:click=move |_| {
+                                                                    model_form.update(|o| if let Some(o)=o {
+                                                                        if o.entries.len() > 1 {
+                                                                            o.entries.retain(|e| e.row_id != row_id);
+                                                                        }
+                                                                    });
+                                                                }>{compose_icon("close")}</button>
+                                                        </div>
+                                                        <div class="provider-model-roles">
+                                                            <label class="settings-check">
+                                                                <input type="checkbox"
+                                                                    prop:checked=move || model_form.get()
+                                                                        .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                                                        .map(|e| e.supports_vision)
+                                                                        .unwrap_or(false)
+                                                                    on:change=move |ev| {
+                                                                        let checked = event_target_checked(&ev);
+                                                                        model_form.update(|o| if let Some(o)=o {
+                                                                            if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                                                                e.supports_vision = checked;
+                                                                                if !checked {
+                                                                                    e.use_for_vision = false;
+                                                                                }
+                                                                            }
+                                                                        });
+                                                                    } />
+                                                                <span>{move || t(locale.get(), "settings.supports_vision")}</span>
+                                                            </label>
+                                                            <label class="settings-check">
+                                                                <input type="checkbox"
+                                                                    prop:checked=move || model_form.get()
+                                                                        .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                                                        .map(|e| e.use_for_vision)
+                                                                        .unwrap_or(false)
+                                                                    on:change=move |ev| {
+                                                                        let checked = event_target_checked(&ev);
+                                                                        model_form.update(|o| if let Some(o)=o {
+                                                                            if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                                                                e.use_for_vision = checked;
+                                                                                if checked {
+                                                                                    e.supports_vision = true;
+                                                                                }
+                                                                            }
+                                                                        });
+                                                                    } />
+                                                                <span>{move || t(locale.get(), "settings.use_for_vision")}</span>
+                                                            </label>
+                                                            <label class="settings-check">
+                                                                <input type="checkbox" data-testid="provider-use-for-image"
+                                                                    prop:checked=move || model_form.get()
+                                                                        .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                                                        .map(|e| e.use_for_image_generation)
+                                                                        .unwrap_or(false)
+                                                                    on:change=move |ev| {
+                                                                        let checked = event_target_checked(&ev);
+                                                                        model_form.update(|o| if let Some(o)=o {
+                                                                            if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                                                                e.use_for_image_generation = checked;
+                                                                                if checked {
+                                                                                    e.supports_vision = false;
+                                                                                    e.use_for_vision = false;
+                                                                                }
+                                                                            }
+                                                                        });
+                                                                    } />
+                                                                <span>{move || t(locale.get(), "settings.use_for_image_generation")}</span>
+                                                            </label>
+                                                        </div>
+                                                    </div>
+                                                }
+                                            }
+                                        </For>
+                                        <button type="button" class="settings-add-btn" data-testid="provider-add-model"
+                                            on:click=move |_| {
+                                                model_form.update(|o| if let Some(o)=o {
+                                                    o.entries.push(model_form_entry("", false));
+                                                });
+                                            }>
+                                            {compose_icon("plus")}
+                                            {move || t(locale.get(), "models.add_entry")}
+                                        </button>
+                                    </div>
+                                    {move || model_form_msg.get().map(|(ok, text)| view! {
+                                        <div class="settings-status" class:ok=ok class:fail=move || !ok>{text}</div>
+                                    })}
+                                    <div class="row settings-footer">
+                                        <button type="button" disabled=move || settings_busy.get() on:click=move |ev| validate_model_form.call(ev)>{move || t(locale.get(), "settings.validate")}</button>
+                                        <button type="button" disabled=move || settings_busy.get() on:click=move |_| close_settings_subpage.call(())>{move || t(locale.get(), "settings.cancel")}</button>
+                                        <button type="button" class="primary" data-testid="save-provider" disabled=move || settings_busy.get() on:click=move |ev| save_model_form.call(ev)>{move || t(locale.get(), "settings.save")}</button>
+                                    </div>
+                                </div>
+                            </div>
+                        }.into_view()
+                        }
                     } else {
                         view! {
                         <div class="settings-pane settings-pane-list model-settings-pane">
@@ -2778,12 +2989,16 @@ pub(super) fn SettingsView(
                                         }.into_view()
                                     } else {
                                         view! {
-                                            <button type="button" class="settings-add-btn" on:click=move |_| {
+                                            <button type="button" class="settings-add-btn" data-testid="add-provider" on:click=move |_| {
                                                 show_acp_agents.set(false);
-                                                model_form.set(Some(new_model_form()));
-                                                apply_catalog_limits(model_form, model_catalog_limits);
+                                                let form = new_model_form();
+                                                let reuse = endpoint_has_stored_key(&models.get(), &form.api_url);
+                                                model_form.set(Some(form));
                                                 model_form_key.set(String::new());
                                                 model_form_msg.set(None);
+                                                if !reuse {
+                                                    focus_element_soon("model-form-api-key");
+                                                }
                                             }>{move || t(locale.get(), "models.add")}</button>
                                         }.into_view()
                                     }}
@@ -2915,23 +3130,24 @@ pub(super) fn SettingsView(
                                     <p class="hint" data-testid="acp-models-list-hint">{move || t(locale.get(), "models.acp_hint")}</p>
                                     <div class="model-preset-row" data-testid="model-presets">
                                         <span class="model-preset-label">{move || t(locale.get(), "models.quick_add")}</span>
-                                        {MODEL_PRESETS.iter().map(|&(label, api_url, model)| view! {
+                                        {MODEL_PRESETS.iter().map(|&(label, api_url, _model)| view! {
                                             <button type="button" class="model-preset-btn"
                                                 on:click=move |_| {
                                                     show_acp_agents.set(false);
-                                                    model_form.set(Some(ModelForm {
-                                                        label: label.into(),
+                                                    let mut form = ModelForm {
                                                         provider: "openai".into(),
-                                                        api_url: api_url.into(),
-                                                        model: model.into(),
                                                         max_tokens: 8192,
                                                         context_window: 128_000,
                                                         ..Default::default()
-                                                    }));
-                                                    apply_catalog_limits(model_form, model_catalog_limits);
+                                                    };
+                                                    apply_provider_suggestions(&mut form, "openai", api_url);
+                                                    let reuse = endpoint_has_stored_key(&models.get(), &form.api_url);
+                                                    model_form.set(Some(form));
                                                     model_form_key.set(String::new());
                                                     model_form_msg.set(None);
-                                                    focus_element_soon("model-form-api-key");
+                                                    if !reuse {
+                                                        focus_element_soon("model-form-api-key");
+                                                    }
                                                 }>{label}</button>
                                         }).collect_view()}
                                     </div>

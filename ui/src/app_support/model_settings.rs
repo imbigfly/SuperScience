@@ -7,6 +7,23 @@
 use super::*;
 use crate::bindings::invoke_timeout;
 
+async fn catalog_limits_or_default(provider: &str, api_url: &str, model: &str) -> (u64, u64) {
+    let args = to_value(&serde_json::json!({
+        "provider": provider,
+        "apiUrl": api_url,
+        "model": model,
+    }))
+    .unwrap();
+    match invoke_checked("model_catalog_lookup", args).await {
+        Ok(value) => serde_wasm_bindgen::from_value::<Option<CatalogEntryDto>>(value)
+            .ok()
+            .flatten()
+            .map(|dto| (dto.max_tokens, dto.context_window))
+            .unwrap_or((8192, 128_000)),
+        Err(_) => (8192, 128_000),
+    }
+}
+
 /// Owned form state plus injected cross-domain wiring. `RwSignal` is `Copy`,
 /// so the whole struct is `Copy` and can be captured by every handler closure.
 #[derive(Clone, Copy)]
@@ -133,6 +150,10 @@ impl ModelSettingsState {
         let Some(form) = model_form.get() else {
             return;
         };
+        if form.id.is_none() {
+            self.save_provider_form(form);
+            return;
+        }
         let loc = locale.get();
         let key = model_form_key.get();
         let has_key = form
@@ -215,6 +236,141 @@ impl ModelSettingsState {
         });
     }
 
+    fn save_provider_form(self, form: ModelForm) {
+        let Self {
+            model_form,
+            model_form_key,
+            model_form_msg,
+            models,
+            settings,
+            settings_busy,
+            locale,
+            ..
+        } = self;
+        let loc = locale.get();
+        let key = model_form_key.get();
+        let api_url = form.api_url.trim().to_string();
+        if api_url.is_empty() {
+            let err = t(loc, "err.api_url_required");
+            model_form_msg.set(Some((
+                false,
+                tf(loc, "status.save_failed", &[("msg", &err)]),
+            )));
+            return;
+        }
+        let mut entries: Vec<ModelFormEntry> = form
+            .entries
+            .into_iter()
+            .filter(|entry| !entry.model.trim().is_empty())
+            .collect();
+        if entries.is_empty() {
+            let err = t(loc, "err.model_required");
+            model_form_msg.set(Some((
+                false,
+                tf(loc, "status.save_failed", &[("msg", &err)]),
+            )));
+            return;
+        }
+        let existing = models.get();
+        let has_chat = entries.iter().any(|entry| !entry.is_image_model())
+            || existing.iter().any(|profile| profile.is_chat_model());
+        if !has_chat {
+            model_form_msg.set(Some((false, t(loc, "models.need_chat").into())));
+            return;
+        }
+        if key.trim().is_empty() && !endpoint_has_stored_key(&existing, &api_url) {
+            let err = t(loc, "err.api_key_required");
+            model_form_msg.set(Some((
+                false,
+                tf(loc, "status.save_failed", &[("msg", &err)]),
+            )));
+            return;
+        }
+        // Image models first, then extra chat models, first chat last so
+        // `save_model` leaves the cheaper/default chat profile active.
+        let first_chat = entries.iter().position(|entry| !entry.is_image_model());
+        let mut ordered = Vec::with_capacity(entries.len());
+        if let Some(first) = first_chat {
+            let default_chat = entries.remove(first);
+            let mut images = Vec::new();
+            let mut other = Vec::new();
+            for entry in entries {
+                if entry.is_image_model() {
+                    images.push(entry);
+                } else {
+                    other.push(entry);
+                }
+            }
+            ordered.append(&mut images);
+            ordered.append(&mut other);
+            ordered.push(default_chat);
+        } else {
+            ordered = entries;
+        }
+        settings_busy.set(true);
+        model_form_msg.set(Some((true, t(loc, "status.saving_settings").into())));
+        let provider = provider_value(&form.provider).to_string();
+        let key_arg = if key.trim().is_empty() {
+            None
+        } else {
+            Some(key)
+        };
+        spawn_local(async move {
+            let mut last_ok = None;
+            let mut last_err = None;
+            for entry in ordered {
+                let (max_tokens, context_window) =
+                    catalog_limits_or_default(&provider, &api_url, entry.model.trim()).await;
+                let image = entry.is_image_model();
+                let profile = serde_json::json!({
+                    "id": "",
+                    "label": entry.label.trim(),
+                    "provider": provider,
+                    "api_url": api_url,
+                    "model": entry.model.trim(),
+                    "max_tokens": max_tokens,
+                    "context_window": context_window,
+                    "reasoning_effort": "",
+                    "supports_vision": entry.supports_vision && !image,
+                    "use_for_vision": entry.use_for_vision && !image,
+                    "use_for_image_generation": image,
+                });
+                let arg = to_value(&serde_json::json!({
+                    "profile": profile,
+                    "key": key_arg,
+                    "useForVision": entry.use_for_vision && !image,
+                    "useForImageGeneration": image,
+                }))
+                .unwrap();
+                match invoke_checked("save_model", arg).await {
+                    Ok(v) => last_ok = Some(v),
+                    Err(err) => {
+                        last_err = Some(js_error_text(err));
+                        break;
+                    }
+                }
+            }
+            if let Some(err) = last_err {
+                model_form_msg.set(Some((false, localize_backend(loc, &err))));
+                settings_busy.set(false);
+                return;
+            }
+            if let Some(v) = last_ok {
+                if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ModelProfile>>(v) {
+                    models.set(list);
+                }
+            }
+            let v = invoke("get_settings", JsValue::UNDEFINED).await;
+            if let Ok(cfg) = serde_wasm_bindgen::from_value::<Settings>(v) {
+                settings.set(normalized_settings(cfg));
+            }
+            model_form.set(None);
+            model_form_key.set(String::new());
+            model_form_msg.set(Some((true, t(loc, "status.settings_saved").into())));
+            settings_busy.set(false);
+        });
+    }
+
     pub(crate) fn validate_model_form(self) {
         let Self {
             model_form,
@@ -233,12 +389,38 @@ impl ModelSettingsState {
         };
         let loc = locale.get();
         let key = model_form_key.get();
-        let has_key = models
-            .get()
-            .iter()
-            .find(|m| Some(m.id.as_str()) == form.id.as_deref())
-            .map(|m| m.has_api_key)
-            .unwrap_or(false);
+        let listed = models.get();
+        let (form, has_key, profile_id) = if form.id.is_none() {
+            let Some(entry) = form
+                .entries
+                .iter()
+                .find(|entry| !entry.model.trim().is_empty())
+            else {
+                let err = t(loc, "err.model_required");
+                model_form_msg.set(Some((
+                    false,
+                    tf(loc, "status.validation_failed", &[("msg", &err)]),
+                )));
+                return;
+            };
+            let mut probe = form.clone();
+            probe.model = entry.model.clone();
+            probe.label = entry.label.clone();
+            probe.supports_vision = entry.supports_vision;
+            probe.use_for_vision = entry.use_for_vision;
+            probe.use_for_image_generation = entry.use_for_image_generation;
+            let has_key = endpoint_has_stored_key(&listed, &form.api_url);
+            let profile_id = sibling_profile_id(&listed, &form.api_url).map(str::to_string);
+            (probe, has_key, profile_id)
+        } else {
+            let has_key = listed
+                .iter()
+                .find(|m| Some(m.id.as_str()) == form.id.as_deref())
+                .map(|m| m.has_api_key)
+                .unwrap_or(false);
+            let profile_id = form.id.clone();
+            (form, has_key, profile_id)
+        };
         let cfg = model_form_to_settings(&form, has_key);
         if let Some(err_key) = settings_required_error_key(&cfg, &key) {
             let err = t(loc, err_key);
@@ -260,7 +442,7 @@ impl ModelSettingsState {
                 to_value(&serde_json::json!({
                     "settings": cfg,
                     "key": key,
-                    "profileId": form.id.clone(),
+                    "profileId": profile_id,
                 }))
                 .unwrap(),
                 35_000,

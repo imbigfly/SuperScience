@@ -86,6 +86,96 @@ pub(crate) fn provider_defaults(provider: &str) -> (&'static str, &'static str) 
     }
 }
 
+/// Same grouping as `models::normalize_endpoint`: one credential per API
+/// origin. Keep the suffix list in sync with the Tauri helper.
+pub(crate) fn normalize_endpoint(url: &str) -> String {
+    let url = url.trim();
+    if url.is_empty() {
+        return String::new();
+    }
+    let (scheme, rest) = if let Some(rest) = url.strip_prefix("https://") {
+        ("https://", rest)
+    } else if let Some(rest) = url.strip_prefix("http://") {
+        ("http://", rest)
+    } else {
+        ("", url)
+    };
+    let rest = if scheme.is_empty() {
+        rest.to_string()
+    } else {
+        match rest.split_once('/') {
+            Some((host, path)) => format!("{}/{}", host.to_ascii_lowercase(), path),
+            None => rest.to_ascii_lowercase(),
+        }
+    };
+    let mut endpoint = format!("{scheme}{rest}");
+    loop {
+        while endpoint.ends_with('/') {
+            endpoint.pop();
+        }
+        let Some(stripped) = [
+            "/v1/messages",
+            "/v1/chat/completions",
+            "/chat/completions",
+            "/responses",
+            "/v1",
+        ]
+        .into_iter()
+        .find_map(|suffix| endpoint.strip_suffix(suffix).map(str::to_string)) else {
+            break;
+        };
+        endpoint = stripped;
+    }
+    endpoint
+}
+
+pub(crate) fn same_endpoint(left: &str, right: &str) -> bool {
+    let left = normalize_endpoint(left);
+    !left.is_empty() && left == normalize_endpoint(right)
+}
+
+pub(crate) fn endpoint_host(url: &str) -> String {
+    let endpoint = normalize_endpoint(url);
+    endpoint
+        .strip_prefix("https://")
+        .or_else(|| endpoint.strip_prefix("http://"))
+        .unwrap_or(endpoint.as_str())
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
+#[cfg(test)]
+mod endpoint_tests {
+    use super::{endpoint_host, normalize_endpoint, same_endpoint};
+
+    #[test]
+    fn normalize_endpoint_strips_version_and_api_suffixes() {
+        assert_eq!(
+            normalize_endpoint("https://api.openai.com/v1"),
+            "https://api.openai.com"
+        );
+        assert_eq!(
+            normalize_endpoint("https://API.OpenAI.com/v1/"),
+            "https://api.openai.com"
+        );
+        assert!(same_endpoint(
+            "https://api.openai.com",
+            "https://api.openai.com/v1"
+        ));
+        assert!(same_endpoint(
+            "https://api.openai.com",
+            "https://api.openai.com/v1/responses"
+        ));
+        assert!(!same_endpoint(
+            "https://api.deepseek.com",
+            "https://api.openai.com"
+        ));
+        assert_eq!(endpoint_host("https://api.deepseek.com/v1"), "api.deepseek.com");
+    }
+}
+
 pub(crate) fn join_path(base: &str, name: &str) -> String {
     if base == "." || base.is_empty() {
         name.to_string()
