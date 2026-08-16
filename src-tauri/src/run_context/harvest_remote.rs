@@ -181,8 +181,33 @@ fi
         script.push_str(&format!(
             r#"count=0
 total=0
+# Replay files already moved to the persist area (a previous collect that
+# crashed after `mv` left them there; workdir globs would miss them).
+if [ -d "$persist" ]; then
+  _saved=$(pwd)
+  cd "$persist"
+  for f in {glob}; do
+    [ -f "$f" ] || continue
+    dest="$persist/$f"
+    count=$((count+1))
+    if [ "$count" -gt {match_cap} ]; then
+      printf '__WISP_HARVEST_ERROR__:output glob matched more than {match_cap} files; set bundle:true or narrow the glob to final products\n'
+      exit 65
+    fi
+    size=$(wc -c < "$dest")
+    total=$((total+size))
+    sum=$(wisp_sum "$dest")
+    emit_guard
+    printf '__WISP_HARVEST__:remote:{idx}:%s:%s:%s\n' "$size" "$sum" "$dest"
+  done
+  cd "$_saved"
+fi
 for f in {glob}; do
   [ -f "$f" ] || continue
+  dest="$persist/$f"
+  if [ -f "$dest" ]; then
+    continue
+  fi
   count=$((count+1))
   if [ "$count" -gt {match_cap} ]; then
     printf '__WISP_HARVEST_ERROR__:output glob matched more than {match_cap} files; set bundle:true or narrow the glob to final products\n'
@@ -192,7 +217,6 @@ for f in {glob}; do
   total=$((total+size))
   sum=$(wisp_sum "$f")
   if {remote_test}; then
-    dest="$persist/$f"
     mkdir -p "$(dirname "$dest")"
     mv "$f" "$dest"
     emit_guard
@@ -757,6 +781,15 @@ async fn pull_harvest_dir(
     {
         return Err("harvest transfer Run changed state before it could start".into());
     }
+    crate::run_context::persist_transfer_handle(
+        store,
+        owner_id,
+        &transfer_id,
+        &crate::run_context::TransferHandle::Harvest {
+            parent_run_id: remote.run_id.clone(),
+        },
+    )
+    .await?;
     let partial = landing.join(format!(".partial-{transfer_id}"));
     let result = pull_and_verify(
         store,
@@ -1132,10 +1165,30 @@ fn delete_payload(workdir: &str, token: &str, paths: &[String]) -> String {
 workdir="$HOME/{workdir}"
 [ -f "$workdir/token" ] && [ "$(cat "$workdir/token")" = "{token}" ] || {{ echo 'wisp token mismatch' >&2; exit 73; }}
 cd "$workdir/inputs"
+base=$(pwd -P)
 "#
     );
     for path in paths {
-        script.push_str(&format!("rm -rf -- '{path}'\n"));
+        // Resolve the on-disk target (following one symlink hop on the
+        // parent) and refuse anything that leaves the workdir. A run-planted
+        // `inputs/out -> /etc` plus `out/passwd` must not be deletable.
+        script.push_str(&format!(
+            r#"if [ -e '{path}' ] || [ -L '{path}' ]; then
+  if [ -d '{path}' ] && [ ! -L '{path}' ]; then
+    resolved=$(cd '{path}' && pwd -P)
+  else
+    parent=$(dirname -- '{path}')
+    name=$(basename -- '{path}')
+    resolved=$(cd "$parent" && pwd -P)/"$name"
+  fi
+  case "$resolved" in
+    "$base"|"$base"/*) ;;
+    *) echo "wisp delete refused: {path} escapes the run workspace" >&2; exit 74 ;;
+  esac
+fi
+rm -rf -- '{path}'
+"#
+        ));
     }
     script.push_str("printf '__WISP_RM_DONE__\\n'\n");
     script
@@ -1250,6 +1303,8 @@ mod tests {
         assert!(payload.contains("tar -czf"));
         assert!(payload.contains("bundle_1.tar.gz"));
         assert!(payload.contains("mv \"$f\" \"$dest\""));
+        assert!(payload.contains("if [ -d \"$persist\" ]; then"));
+        assert!(payload.contains("if [ -f \"$dest\" ]; then"));
         assert!(payload.contains("persist=\"$HOME/wisp/proj/data/artifacts/r1\""));
         assert!(payload.contains("__WISP_HARVEST_DONE__"));
         // Residency picks the relocation predicate: Remote relocates every
@@ -1406,6 +1461,8 @@ mod tests {
             &["read_partitions".into(), "results/tmp.log".into()],
         );
         assert!(payload.contains("cd \"$workdir/inputs\""));
+        assert!(payload.contains("base=$(pwd -P)"));
+        assert!(payload.contains("escapes the run workspace"));
         assert!(payload.contains("rm -rf -- 'read_partitions'"));
         assert!(payload.contains("rm -rf -- 'results/tmp.log'"));
         assert!(payload.contains("wisp token mismatch"));

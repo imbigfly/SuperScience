@@ -35,8 +35,8 @@ pub use tools::{
     MonitorRunTool, RemoveRemoteFilesTool, RunInContextTool,
 };
 pub(crate) use transfer::{
-    load_trust_edges, revoke_trust_edge, submit_local_uploads_to_context, RevokeTrustResponse,
-    SshTrustEdge, UploadToContextItem,
+    load_trust_edges, persist_transfer_handle, revoke_trust_edge, submit_local_uploads_to_context,
+    RevokeTrustResponse, SshTrustEdge, TransferHandle, UploadToContextItem,
 };
 pub use transfer::{ConfigureSshTrustTool, TransferBetweenContextsTool};
 
@@ -1120,6 +1120,12 @@ impl RunManager {
             if !claimed {
                 continue;
             }
+            if run.kind == "file_transfer" {
+                if let Err(error) = self.reclaim_transfer(store.clone(), &run).await {
+                    tracing::warn!(run_id = %run.id, "transfer reclaim failed: {error}");
+                }
+                continue;
+            }
             match remote_run_from_record(store, &run).await {
                 Ok(Some(remote)) => self.spawn_remote_claimed(store.clone(), remote).await,
                 Ok(None) => {
@@ -1310,6 +1316,58 @@ impl RunManager {
             let _ = task.await;
             active.lock().await.remove(&cleanup_id);
         });
+    }
+
+    /// Cancel every in-flight Run for a project, then best-effort clean their
+    /// server workspaces. Called before `delete_project` so dropping the SQLite
+    /// rows does not abandon live nohup jobs.
+    pub async fn wind_down_project(
+        &self,
+        store: &wisp_store::Store,
+        project_id: &str,
+    ) -> Result<(), String> {
+        let active = store
+            .list_active_runs_for_project(project_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        for run in &active {
+            if let Err(error) = self.cancel(store, &run.id).await {
+                tracing::warn!(run_id = %run.id, "wind-down cancel failed: {error}");
+            }
+        }
+        let runs = store
+            .list_uncleaned_runs_for_project(project_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        for run in runs {
+            if run.kind == "file_transfer" {
+                continue;
+            }
+            if let Err(error) = self.cleanup_run_workspace(store, &run.id, true).await {
+                tracing::warn!(run_id = %run.id, "wind-down cleanup failed: {error}");
+            }
+        }
+        Ok(())
+    }
+
+    /// Cancel in-flight Runs on one SSH context across every project.
+    /// Called before dropping a host so nohup jobs do not keep running after
+    /// Wisp forgets the machine. Remote bytes are abandoned, not deleted.
+    pub async fn wind_down_context(
+        &self,
+        store: &wisp_store::Store,
+        context_id: &str,
+    ) -> Result<(), String> {
+        let active = store
+            .list_active_runs_for_context(context_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        for run in &active {
+            if let Err(error) = self.cancel(store, &run.id).await {
+                tracing::warn!(run_id = %run.id, "context wind-down cancel failed: {error}");
+            }
+        }
+        Ok(())
     }
 
     /// Delete a terminal Run's server-side workspace. `force` is an explicit
@@ -3070,8 +3128,9 @@ async fn remote_lifecycle(
     }
 }
 
-/// Pull the run's full stdout/stderr logs into `<workspace>/runs/<run_id>/`
-/// so the server workspace can be deleted without losing them. Returns the
+/// Pull a trailing slice of the run's stdout/stderr logs (capped, not the
+/// full remote files) into `<workspace>/runs/<run_id>/` so the server
+/// workspace can be deleted without losing the useful tail. Returns the
 /// project-relative log directory when anything was written.
 async fn save_run_logs_locally(
     store: &wisp_store::Store,

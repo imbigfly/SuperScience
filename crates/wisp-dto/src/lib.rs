@@ -3582,6 +3582,10 @@ pub struct ContextDisposalReport {
     pub context_id: String,
     pub external_references: i64,
     pub staged_files: i64,
+    #[serde(default)]
+    pub active_runs: i64,
+    #[serde(default)]
+    pub sole_remote_copies: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]

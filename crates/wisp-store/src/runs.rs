@@ -341,6 +341,66 @@ impl Store {
         rows.into_iter().map(run_from_row).collect()
     }
 
+    pub async fn list_uncleaned_runs_for_project(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<RunRecord>> {
+        let rows = sqlx::query(
+            "SELECT id,project_id,frame_id,context_id,title,kind,status,command,script_path,\
+                    input_refs_json,output_specs_json,created_at,started_at,ended_at,exit_code,\
+                    stdout_tail,stderr_tail,remote_workdir,remote_handle_json,timeout_secs,\
+                    last_polled_at,last_poll_error,progress_json,env_snapshot_json,harvested_at,cleaned_at,cleanup_error,logs_path \
+             FROM runs WHERE project_id=? AND cleaned_at IS NULL \
+             AND remote_handle_json IS NOT NULL \
+             AND status IN ('succeeded','failed','cancelled','timed_out','lost') \
+             ORDER BY created_at, id",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(run_from_row).collect()
+    }
+
+    pub async fn list_active_runs_for_project(&self, project_id: &str) -> Result<Vec<RunRecord>> {
+        let rows = sqlx::query(
+            "SELECT id,project_id,frame_id,context_id,title,kind,status,command,script_path,\
+                    input_refs_json,output_specs_json,created_at,started_at,ended_at,exit_code,\
+                    stdout_tail,stderr_tail,remote_workdir,remote_handle_json,timeout_secs,\
+                    last_polled_at,last_poll_error,progress_json,env_snapshot_json,harvested_at,cleaned_at,cleanup_error,logs_path \
+             FROM runs WHERE project_id=? AND status IN ('submitted','running','cancelling') \
+             ORDER BY created_at, id",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(run_from_row).collect()
+    }
+
+    pub async fn list_active_runs_for_context(&self, context_id: &str) -> Result<Vec<RunRecord>> {
+        let rows = sqlx::query(
+            "SELECT id,project_id,frame_id,context_id,title,kind,status,command,script_path,\
+                    input_refs_json,output_specs_json,created_at,started_at,ended_at,exit_code,\
+                    stdout_tail,stderr_tail,remote_workdir,remote_handle_json,timeout_secs,\
+                    last_polled_at,last_poll_error,progress_json,env_snapshot_json,harvested_at,cleaned_at,cleanup_error,logs_path \
+             FROM runs WHERE context_id=? AND status IN ('submitted','running','cancelling') \
+             ORDER BY created_at, id",
+        )
+        .bind(context_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter().map(run_from_row).collect()
+    }
+
+    pub async fn count_active_runs_on_context(&self, context_id: &str) -> Result<i64> {
+        Ok(sqlx::query_scalar(
+            "SELECT COUNT(*) FROM runs \
+             WHERE context_id=? AND status IN ('submitted','running','cancelling')",
+        )
+        .bind(context_id)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
     pub async fn list_active_runs(&self) -> Result<Vec<RunRecord>> {
         let rows = sqlx::query(
             "SELECT id,project_id,frame_id,context_id,title,kind,status,command,script_path,\
