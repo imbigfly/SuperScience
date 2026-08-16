@@ -1558,7 +1558,9 @@ test("ACP turns retain explicitly selected Wisp skills", async ({ page }) => {
   await page.locator(".model-picker-btn").click();
   await page.getByRole("button", { name: /Test ACP Agent/ }).click();
   await composer(page).pressSequentially("/lit");
-  await page.locator(".mention-menu .mention-item").first().click();
+  await page.locator(".mention-menu .mention-item")
+    .filter({ hasText: "literature-review" })
+    .click();
   await composer(page).fill("use this skill");
   await page.getByRole("button", { name: "Send" }).click();
 
@@ -1876,7 +1878,9 @@ test("composer @ # and / add typed context references", async ({ page }) => {
 
   await composerInput.pressSequentially("/lit");
   await expect(page.locator(".mention-menu")).toContainText("literature-review");
-  await page.locator(".mention-menu .mention-item").first().click();
+  await page.locator(".mention-menu .mention-item")
+    .filter({ hasText: "literature-review" })
+    .click();
 
   await composerInput.pressSequentially("/round");
   const workflowItem = page.locator(".mention-menu .mention-item")
@@ -2183,10 +2187,12 @@ test("composer / menu layers sections and gives each command its own icon", asyn
   expect(new Set(svgs).size).toBe(svgs.length);
 
   // A query matching no command keeps the remaining sections layered.
+  // `/lit` hits both the literature skill and the literature-evidence workflow.
   await composerInput.fill("");
   await composerInput.pressSequentially("/lit");
-  await expect(menu.locator(".mention-group-label")).toHaveText(["Skills"]);
+  await expect(menu.locator(".mention-group-label")).toHaveText(["Workflows", "Skills"]);
   await expect(menu).toContainText("literature-review");
+  await expect(menu).toContainText("Literature evidence review");
 });
 
 test("composer /plan and /permission drive the session mode flags", async ({ page }) => {
@@ -11400,7 +11406,7 @@ test("specialist skills whitelist uses a searchable picker instead of a full lis
   const search = page.getByTestId("specialist-skill-search");
   await expect(page.getByTestId("specialist-skill-results")).toContainText("3 available skills");
 
-  await search.fill("alpha");
+  await search.fill("narrative");
   await expect(options).toHaveCount(1);
   await options.first().click();
   await expect(selected).toHaveCount(3);
