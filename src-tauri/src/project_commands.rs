@@ -353,6 +353,7 @@ pub(super) async fn spawn_project_window(
     #[cfg(target_os = "windows")]
     let builder = builder.decorations(false).shadow(true);
     let win = builder.build().map_err(|e| e.to_string())?;
+    crate::windows_snap::install_for_window(&win);
     #[cfg(target_os = "macos")]
     wire_macos_menu_events(&win);
     let evt_app = app.clone();

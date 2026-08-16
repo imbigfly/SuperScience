@@ -28,6 +28,18 @@ export async function window_control(action) {
   if (action === "close") return current.close();
 }
 
+/** Caption-style move so Windows Aero Snap / edge snap can engage. */
+export async function start_window_move() {
+  const core = tauriCore();
+  if (!core) return;
+  try {
+    return await core.invoke("start_window_move");
+  } catch (err) {
+    const current = window.__TAURI__?.window?.getCurrentWindow?.();
+    return current?.startDragging?.();
+  }
+}
+
 function missingBridgeError(cmd) {
   return new Error(`Tauri bridge is not available while calling ${cmd}. Open the app with 'cargo tauri dev', not the raw Trunk URL.`);
 }

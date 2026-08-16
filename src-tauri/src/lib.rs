@@ -100,6 +100,7 @@ mod storage_prefs;
 mod terminal_sessions;
 mod turn_memory;
 mod turn_undo;
+mod windows_snap;
 mod workspace_manifest;
 mod workspace_scan;
 mod wsl_contexts;
@@ -7864,6 +7865,7 @@ pub fn run() {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.set_decorations(false);
                     let _ = window.set_shadow(true);
+                    windows_snap::install_for_window(&window);
                 }
             }
             #[cfg(target_os = "macos")]
@@ -8114,6 +8116,7 @@ pub fn run() {
             pet_commands::get_pet_runtime_status,
             pet_commands::open_pet_session,
             desktop_lifecycle::set_pet_window_visible,
+            windows_snap::start_window_move,
             models::list_models,
             models::get_session_model,
             models::get_session_reasoning_effort,

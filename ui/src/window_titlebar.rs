@@ -1,6 +1,6 @@
 //! Windows integrated title bar: brand, File/Edit/View/Help menus, window controls.
 
-use crate::bindings::{open_external_url, window_control};
+use crate::bindings::{open_external_url, start_window_move, window_control};
 use crate::i18n::{t, Locale};
 use leptos::{ev, window_event_listener, *};
 use wasm_bindgen::JsCast;
@@ -126,8 +126,9 @@ pub(super) fn WindowTitlebar(
     });
 
     view! {
-        <header class="window-titlebar" data-tauri-drag-region>
-            <div class="window-brand" data-tauri-drag-region>
+        <header class="window-titlebar">
+            <div class="window-brand" data-testid="window-snap-drag"
+                on:mousedown=begin_window_move>
                 <span class="window-brand-icon"></span>
                 <span>"wisp science"</span>
                 <span class="window-brand-version">{concat!("v", env!("CARGO_PKG_VERSION"))}</span>
@@ -186,15 +187,25 @@ pub(super) fn WindowTitlebar(
             {move || open.get().is_some().then(|| view! {
                 <div class="window-menu-backdrop" on:click=move |_| open.set(None)></div>
             })}
-            <div class="window-drag" data-tauri-drag-region></div>
+            <div class="window-drag" data-testid="window-snap-drag"
+                on:mousedown=begin_window_move></div>
             <div class="window-controls">
                 <button type="button" aria-label="Minimize"
                     on:click=move |_| spawn_local(async { window_control("minimize").await })>"−"</button>
-                <button type="button" aria-label="Maximize"
+                <button type="button" id="titlebar-maximize" data-testid="window-maximize"
+                    aria-label="Maximize"
                     on:click=move |_| spawn_local(async { window_control("toggle-maximize").await })>"□"</button>
                 <button type="button" class="window-close" aria-label="Close"
                     on:click=move |_| spawn_local(async { window_control("close").await })>"×"</button>
             </div>
         </header>
     }
+}
+
+fn begin_window_move(ev: web_sys::MouseEvent) {
+    if ev.button() != 0 {
+        return;
+    }
+    ev.prevent_default();
+    spawn_local(async { start_window_move().await });
 }

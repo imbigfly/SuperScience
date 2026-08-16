@@ -9666,6 +9666,14 @@ test("Windows uses the integrated title bar without covering the project landing
 
   await expect(page.locator(".window-titlebar")).toBeVisible();
   await expect(page.getByRole("button", { name: "Minimize" })).toBeVisible();
+  await expect(page.getByTestId("window-maximize")).toBeVisible();
+  await expect(page.locator("#titlebar-maximize")).toHaveAttribute("aria-label", "Maximize");
+  await expect(page.locator(".window-titlebar [data-tauri-drag-region]")).toHaveCount(0);
+  await expect(page.getByTestId("window-snap-drag")).toHaveCount(2);
+  await page.getByTestId("window-snap-drag").nth(1).dispatchEvent("mousedown", { button: 0 });
+  await expect.poll(async () => page.evaluate(() =>
+    ((window as any).__skillInvokeLog ?? []).some((call: any) => call.cmd === "start_window_move")
+  )).toBeTruthy();
   await expect.poll(async () => page.locator(".projects-screen").evaluate((el) =>
     Math.round(el.getBoundingClientRect().top)
   )).toBe(38);
