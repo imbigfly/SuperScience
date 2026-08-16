@@ -51,8 +51,10 @@ pub struct SshHost {
     /// `key` (default) or `password`. Persisted in settings JSON only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_method: Option<String>,
-    /// Computed on read from the keyring; never part of the persisted JSON.
-    #[serde(default, skip_serializing)]
+    /// Computed on read from the keyring (never the password itself). Must be
+    /// serialized: the UI's password placeholder relies on it. `persistable_host`
+    /// zeroes it before the settings JSON is written.
+    #[serde(default)]
     pub has_password: bool,
     /// Write-only: accepted from the UI to set/update the keyring secret.
     /// Never returned by list APIs.

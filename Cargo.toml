@@ -12,6 +12,7 @@ members = [
     "crates/wisp-cli",
     "crates/wisp-paths",
     "crates/wisp-sync",
+    "crates/wisp-dto",
     "src-tauri",
 ]
 default-members = ["crates/wisp-cli"]
@@ -69,6 +70,7 @@ wisp-mcp = { path = "crates/wisp-mcp" }
 wisp-acp = { path = "crates/wisp-acp" }
 wisp-paths = { path = "crates/wisp-paths" }
 wisp-sync = { path = "crates/wisp-sync" }
+wisp-dto = { path = "crates/wisp-dto" }
 
 [profile.release]
 codegen-units = 1

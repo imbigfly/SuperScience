@@ -7195,6 +7195,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "wisp-dto"
+version = "1.3.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "wisp-llm"
 version = "1.3.0"
 dependencies = [
@@ -7350,6 +7358,7 @@ dependencies = [
  "winreg 0.55.0",
  "wisp-acp",
  "wisp-core",
+ "wisp-dto",
  "wisp-llm",
  "wisp-mcp",
  "wisp-paths",
