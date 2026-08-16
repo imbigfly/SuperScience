@@ -91,6 +91,7 @@ mod session_context_tool;
 mod session_export;
 mod session_import;
 mod settings_commands;
+mod share_social;
 mod side_chat;
 mod skill_commands;
 mod skill_portfolio;
@@ -6169,6 +6170,7 @@ pub fn run() {
             app_commands::upload_to_context,
             app_commands::save_share_image,
             app_commands::save_share_html,
+            share_social::generate_share_social_copy,
             export_session,
             import_session_archive,
             debug_request::export_debug_request,

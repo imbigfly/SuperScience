@@ -101,6 +101,92 @@
   background: var(--bg-elev); color: var(--text); font-weight: 600;
   box-shadow: 0 1px 2px rgba(16, 24, 40, 0.08);
 }
+.share-modal.share-social-modal { max-width: 640px; }
+.share-modal .share-list-compact { max-height: 168px; }
+.share-modal .share-platform-seg { flex-wrap: wrap; }
+.share-modal .share-social { display: flex; flex-direction: column; gap: 12px; }
+.share-modal .share-advanced { margin-top: 4px; border-top: 1px solid var(--border); padding-top: 10px; }
+.share-modal .share-advanced summary {
+  cursor: pointer; font-size: 12.5px; color: var(--text-muted); font-weight: 500;
+}
+.share-modal .share-advanced[open] summary { margin-bottom: 10px; }
+.share-modal .share-cards { display: flex; flex-direction: column; gap: 6px; }
+.share-modal .share-card-row {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px;
+}
+.share-modal .share-card {
+  display: flex; flex-direction: column; gap: 6px; padding: 6px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-elev); color: var(--text); cursor: pointer; text-align: left;
+}
+.share-modal .share-card.active {
+  border-color: var(--border-active);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--clay) 25%, transparent);
+}
+.share-modal .share-card img {
+  width: 100%; height: 92px; object-fit: cover; object-position: top;
+  border-radius: calc(var(--radius-sm) - 2px); background: #f5f6f8;
+}
+.share-modal .share-card-placeholder {
+  display: flex; align-items: center; justify-content: center;
+  height: 92px; border-radius: calc(var(--radius-sm) - 2px);
+  background: var(--bg-sunken); color: var(--text-faint); font-size: 12px;
+}
+.share-modal .share-card-label {
+  font-size: 11.5px; color: var(--text-muted); line-height: 1.35;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.share-modal .share-variants .share-generate { margin-left: auto; }
+.share-modal .share-social-generate { display: flex; }
+.share-modal .share-generate {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--bg-elev); color: var(--text); font: inherit; font-size: 13px;
+  padding: 6px 12px; cursor: pointer;
+}
+.share-modal .share-generate:disabled { opacity: 0.55; cursor: default; }
+.share-modal .share-generate svg,
+.share-modal .share-social-actions button svg {
+  width: 14px; height: 14px; flex: 0 0 auto;
+}
+.share-modal .share-highlights ul {
+  margin: 6px 0 0; padding-left: 18px; display: grid; gap: 4px;
+  color: var(--text); font-size: 12.5px; line-height: 1.45;
+}
+.share-modal .share-highlights li span { color: var(--text-muted); margin-left: 6px; }
+.share-modal .share-variants {
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.share-modal .share-variants button {
+  border: 1px solid var(--border-strong); border-radius: 999px;
+  background: var(--bg-input); color: var(--text-muted);
+  font: inherit; font-size: 12px; padding: 4px 10px; cursor: pointer;
+}
+.share-modal .share-variants button.active {
+  background: var(--clay-soft); color: var(--clay-strong);
+  border-color: var(--border-active); font-weight: 600;
+}
+.share-modal .share-copy-editor {
+  display: flex; flex-direction: column; gap: 6px;
+  font-size: 12px; font-weight: 500; color: var(--text-muted);
+}
+.share-modal .share-copy-editor textarea {
+  box-sizing: border-box; width: 100%; min-height: 110px; resize: vertical;
+  padding: 9px 11px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--bg-input); color: var(--text); font: inherit; font-size: 13.5px;
+  line-height: 1.5; outline: none;
+}
+.share-modal .share-copy-editor textarea:focus {
+  border-color: var(--clay); box-shadow: 0 0 0 3px var(--focus-ring);
+}
+.share-modal .share-copy-meta { font-size: 11px; color: var(--text-faint); font-weight: 400; }
+.share-modal .share-social-actions {
+  display: flex; flex-wrap: wrap; gap: 8px;
+}
+.share-modal .share-social-actions button {
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.share-modal .share-social-footer { margin: 0; }
 
 .portfolio-planner-modal { max-width: 560px; }
 .portfolio-planner-modal .hint {

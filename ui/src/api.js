@@ -442,6 +442,32 @@ function shareRoundRect(ctx, x, y, w, h, r) {
  * cards; user/thinking rows carry plain `text` shrink-to-fit bubbles.
  * @param {string} payloadJson
  */
+/**
+ * Copy a social-share pack to the clipboard. `text` becomes text/plain and
+ * `pngBase64` (no data-URL prefix) becomes image/png. Either side may be
+ * empty. Some host apps still paste only one of the two flavors.
+ * @param {string} text
+ * @param {string} pngBase64
+ */
+export async function copy_share_pack(text, pngBase64) {
+  const record = {};
+  if (typeof text === "string" && text.length > 0) {
+    record["text/plain"] = new Blob([text], { type: "text/plain" });
+  }
+  if (typeof pngBase64 === "string" && pngBase64.length > 0) {
+    const binary = atob(pngBase64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    record["image/png"] = new Blob([bytes], { type: "image/png" });
+  }
+  if (Object.keys(record).length === 0) {
+    throw new Error("nothing to copy");
+  }
+  await navigator.clipboard.write([new ClipboardItem(record)]);
+}
+
 export async function render_share_png(payloadJson) {
   const payload = JSON.parse(payloadJson);
   const messages = Array.isArray(payload.messages) ? payload.messages : [];

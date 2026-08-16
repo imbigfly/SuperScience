@@ -76,6 +76,8 @@ extern "C" {
     pub(crate) fn clear_selection();
     #[wasm_bindgen(catch, js_name = render_share_png)]
     pub(crate) async fn render_share_png(payload_json: &str) -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(catch, js_name = copy_share_pack)]
+    pub(crate) async fn copy_share_pack(text: &str, png_base64: &str) -> Result<JsValue, JsValue>;
     #[wasm_bindgen(js_name = crop_region_to_upload)]
     pub(crate) async fn crop_region_to_upload(
         host_id: &str,

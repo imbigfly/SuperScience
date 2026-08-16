@@ -2084,7 +2084,9 @@ test("/share exports selected, keyword-redacted messages as a PNG", async ({ pag
   await expect(overlay).toHaveCount(0);
   expect(await lastInvokeArgs(page, "send_message")).toBeNull();
   await page.locator(".composer-plus").click();
-  const shareItem = page.locator(".compose-item").filter({ hasText: "Share as image" });
+  const shareItem = page.locator(".compose-item").filter({
+    has: page.locator(".compose-item-label", { hasText: "Share" }),
+  });
   await expect(shareItem).toBeDisabled();
   await page.locator(".compose-backdrop").click();
   await expect(shareItem).toHaveCount(0);
@@ -2106,6 +2108,7 @@ test("/share exports selected, keyword-redacted messages as a PNG", async ({ pag
   await composerInput.pressSequentially("/share");
   await page.locator(".mention-menu .mention-item").filter({ hasText: "/share" }).click();
   await expect(overlay).toBeVisible();
+  await overlay.getByTestId("share-advanced").locator("summary").click();
 
   // User and assistant rows are preselected; thinking is listed but hidden.
   const rows = overlay.locator(".share-row");
@@ -2142,6 +2145,7 @@ test("/share exports selected, keyword-redacted messages as a PNG", async ({ pag
   await composerInput.fill("/share");
   await composerInput.press("Enter");
   await expect(overlay).toBeVisible();
+  await overlay.getByTestId("share-advanced").locator("summary").click();
   await overlay.getByTestId("share-format-html").click();
   await expect(overlay.getByTestId("share-export")).toHaveText("Export HTML");
   await overlay.locator("#share-redact-input").fill("alice");
@@ -2163,6 +2167,94 @@ test("/share exports selected, keyword-redacted messages as a PNG", async ({ pag
   await shareItem.click();
   await expect(overlay).toBeVisible();
   // One Escape closes only the dialog; the chat stays up.
+  await page.keyboard.press("Escape");
+  await expect(overlay).toHaveCount(0);
+  await expect(composerInput).toBeVisible();
+});
+
+test("/share social mode generates platform copy and copies a text+image pack", async ({ page }) => {
+  await enterApp(page);
+  const composerInput = composer(page);
+  const overlay = page.getByTestId("share-overlay");
+
+  await composerInput.fill("SHARETHINK check the spectrum");
+  await composerInput.press("Enter");
+  await expect(page.getByText("Alice confirmed the spectrum is clean.")).toBeVisible({ timeout: 10_000 });
+
+  await composerInput.fill("/share");
+  await composerInput.press("Enter");
+  await expect(overlay).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(overlay).toHaveCount(0);
+
+  await composerInput.fill("/share");
+  await composerInput.press("Enter");
+  await expect(overlay).toBeVisible();
+  const social = overlay.getByTestId("share-social");
+  await expect(social).toBeVisible();
+  await expect(overlay.getByTestId("share-platform-twitter")).toHaveClass(/active/);
+  await expect.poll(() => lastInvokeArgs(page, "generate_share_social_copy")).toMatchObject({
+    platform: "twitter",
+    locale: "en",
+  });
+  await expect(overlay.getByTestId("share-copy-input")).toHaveValue(/twitter hook/);
+  await expect(overlay.getByTestId("share-card-0")).toBeVisible();
+
+  await overlay.getByTestId("share-advanced").locator("summary").click();
+  await overlay.locator("#share-redact-input").fill("alice");
+  await overlay.getByTestId("share-platform-xiaohongshu").click();
+  await expect(overlay.getByTestId("share-platform-xiaohongshu")).toHaveClass(/active/);
+  await expect.poll(() => lastInvokeArgs(page, "generate_share_social_copy")).toMatchObject({
+    platform: "xiaohongshu",
+    locale: "en",
+  });
+  const generateArgs = await lastInvokeArgs(page, "generate_share_social_copy");
+  expect(JSON.stringify(generateArgs.messages)).toContain("xxx confirmed");
+  await expect(overlay.getByTestId("share-variant-0")).toBeVisible();
+  await expect(overlay.getByTestId("share-copy-input")).toHaveValue(/xiaohongshu hook/);
+
+  await overlay.getByTestId("share-variant-2").click();
+  await expect(overlay.getByTestId("share-copy-input")).toHaveValue(/Ready to share on xiaohongshu/);
+
+  await page.evaluate(() => {
+    const log: Array<Record<string, unknown>> = [];
+    (window as any).__shareClipboard = log;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (text: string) => {
+          log.push({ text });
+        },
+        write: async (items: ClipboardItem[]) => {
+          const kinds: string[] = [];
+          let text = "";
+          for (const item of items) {
+            for (const type of item.types) {
+              kinds.push(type);
+              if (type === "text/plain") {
+                text = await (await item.getType(type)).text();
+              }
+            }
+          }
+          log.push({ kinds, text });
+        },
+      },
+    });
+  });
+
+  await overlay.getByTestId("share-copy-caption").click();
+  await expect.poll(() => page.evaluate(() => (window as any).__shareClipboard?.at(-1)?.text ?? "")).toMatch(
+    /Ready to share on xiaohongshu/,
+  );
+
+  await overlay.getByTestId("share-copy-pack").click();
+  await expect.poll(() => page.evaluate(() => (window as any).__shareClipboard?.at(-1)?.kinds ?? [])).toEqual(
+    expect.arrayContaining(["text/plain", "image/png"]),
+  );
+  await expect.poll(() => page.evaluate(() => (window as any).__shareClipboard?.at(-1)?.text ?? "")).toMatch(
+    /Ready to share on xiaohongshu/,
+  );
+
   await page.keyboard.press("Escape");
   await expect(overlay).toHaveCount(0);
   await expect(composerInput).toBeVisible();
