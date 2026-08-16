@@ -22,12 +22,13 @@ messages** restores the durable history from SQLite. This presentation limit
 does not change model context, exports, artifacts, or the saved transcript.
 
 wisp-science calls remote LLM APIs through model profiles. Desktop users
-configure these in **Settings -> Models**. **Add provider** is bring-your-own-key:
-paste the API URL and key once, then add every chat and image model that key
-can call. Each saved row is still a model profile with its own display name,
-model ID, and advanced options; profiles that share a normalized API URL share
-the key. Editing a profile can still change that one model. Changing the key on
-any profile updates the others on the same endpoint.
+configure these in **Settings -> Models**. **Add API access** is bring-your-own-key:
+enter the shared **Base URL** and API key first, then add every chat and image
+model that key can call. Each model row independently selects its **Protocol**,
+model ID, optional endpoint suffix, display name, and capabilities. Profiles
+that share a normalized Base URL share the key even when their protocols or
+endpoint suffixes differ. Editing a profile can still change that one model.
+Changing the key on any profile updates the others on the same Base URL.
 A models.dev catalog baked in at build time maps exact model IDs to the
 vendor's documented ceilings: for a catalog-known model the form auto-fills
 **Max output tokens** and **Context window** and shows the ceiling next to the
@@ -104,21 +105,31 @@ route and returns `404` or `405`, Wisp checks its model-list endpoint instead.
 It does not send the image-only model to Responses/Chat Completions and does not
 generate a billable validation image.
 
-## API providers
+## API protocols
 
-| Provider | Use when | Required fields |
+| Protocol | Use when | Per-model fields |
 | --- | --- | --- |
-| OpenAI-compatible | DeepSeek, GLM, local gateways, or any `/chat/completions` compatible endpoint | API URL, Model ID, API key |
-| OpenAI (Responses API) | OpenAI reasoning/tool-call models through `/v1/responses` | API URL, Model ID, API key |
-| Anthropic | Claude API through `/v1/messages` | API URL, Model ID, API key |
+| OpenAI Chat Completions | DeepSeek, GLM, local gateways, or any `/chat/completions` compatible endpoint | Protocol, Model ID, optional endpoint suffix |
+| OpenAI Responses | Reasoning/tool-call models through `/v1/responses` | Protocol, Model ID, optional endpoint suffix |
+| Anthropic | Claude-compatible models through `/v1/messages` | Protocol, Model ID, optional endpoint suffix |
 
-Enter the provider's API base URL. Do not append `/v1`, `/chat/completions`,
-`/responses`, or `/v1/messages`; Wisp adds the matching request path for the
-selected provider. For OpenAI-compatible services, Wisp tries both
-`/chat/completions` and `/v1/chat/completions` when the base URL has no explicit
-version or endpoint path. It only falls back when the first route is missing or
-returns an obvious non-API response, so authentication and rate-limit failures
-are not duplicated.
+Enter the API root as the shared Base URL. Do not append `/v1`,
+`/chat/completions`, `/responses`, or `/v1/messages`; Wisp adds the matching
+request path for the selected protocol. If a service exposes one protocol or a
+specific image model below a distinct path, put that path in the model's
+optional **Endpoint suffix**. Wisp joins the suffix to the Base URL first, then
+adds the selected protocol's request path. For OpenAI-compatible services, Wisp
+tries both `/chat/completions` and `/v1/chat/completions` when the base URL has
+no explicit version or endpoint path. It only falls back when the first route
+is missing or returns an obvious non-API response, so authentication and
+rate-limit failures are not duplicated.
+
+For example, one DeepSeek API key can be represented by the shared Base URL
+`https://api.deepseek.com`. Models using OpenAI Chat Completions or OpenAI
+Responses leave the endpoint suffix blank. A model using DeepSeek's Anthropic
+entry selects the Anthropic protocol and sets its endpoint suffix to
+`/anthropic`, producing the effective Base URL
+`https://api.deepseek.com/anthropic` before Wisp adds `/v1/messages`.
 
 OpenAI-compatible reasoning streams are normalized into one reasoning channel.
 Empty `content` placeholders sent alongside Alibaba/DashScope
@@ -223,7 +234,8 @@ The desktop app stores model profile metadata in `.wisp/wisp.sqlite`. Existing s
 
 ## Headless CLI
 
-The `wisp-science` headless CLI uses environment variables and supports API providers:
+The `wisp-science` headless CLI uses environment variables and supports the
+same API protocols:
 
 ```powershell
 $env:WISP_PROVIDER = "openai"           # openai, openai_responses, or anthropic

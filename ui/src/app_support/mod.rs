@@ -16,7 +16,7 @@ use crate::text::{
     is_external_href, is_separator, is_table_row, md_document_to_html, md_inline_to_html,
     md_to_html, next_artifact_id, normalize_path, opens_in_system_browser, parent_path,
     parse_csv_line, parse_notebook, pretty_json, provider_defaults, provider_value, split_row,
-    normalize_endpoint, same_endpoint, DEEPSEEK_FLASH_MODEL, DEEPSEEK_PRO_MODEL,
+    join_api_url, normalize_endpoint, same_endpoint, DEEPSEEK_FLASH_MODEL, DEEPSEEK_PRO_MODEL,
     tool_card_label, tool_lang, unique_dom_id, user_message_presentation, NbOutput, Notebook,
 };
 use leptos::{ev, window_event_listener, *};

@@ -107,6 +107,7 @@ impl ModelSettingsState {
                     "label": profile.label,
                     "provider": profile.provider,
                     "api_url": profile.api_url,
+                    "endpoint_suffix": profile.endpoint_suffix,
                     "model": profile.model,
                     "max_tokens": profile.max_tokens,
                     "context_window": profile.context_window,
@@ -198,6 +199,7 @@ impl ModelSettingsState {
             "label": form.label.trim(),
             "provider": provider,
             "api_url": form.api_url.trim(),
+            "endpoint_suffix": form.endpoint_suffix.trim(),
             "model": form.model.trim(),
             "max_tokens": form.max_tokens,
             "context_window": form.context_window,
@@ -309,7 +311,6 @@ impl ModelSettingsState {
         }
         settings_busy.set(true);
         model_form_msg.set(Some((true, t(loc, "status.saving_settings").into())));
-        let provider = provider_value(&form.provider).to_string();
         let key_arg = if key.trim().is_empty() {
             None
         } else {
@@ -319,14 +320,22 @@ impl ModelSettingsState {
             let mut last_ok = None;
             let mut last_err = None;
             for entry in ordered {
-                let (max_tokens, context_window) =
-                    catalog_limits_or_default(&provider, &api_url, entry.model.trim()).await;
+                let provider = provider_value(&entry.provider).to_string();
+                let endpoint_suffix = entry.endpoint_suffix.trim().to_string();
+                let effective_api_url = join_api_url(&api_url, &endpoint_suffix);
+                let (max_tokens, context_window) = catalog_limits_or_default(
+                    &provider,
+                    &effective_api_url,
+                    entry.model.trim(),
+                )
+                .await;
                 let image = entry.is_image_model();
                 let profile = serde_json::json!({
                     "id": "",
                     "label": entry.label.trim(),
                     "provider": provider,
                     "api_url": api_url,
+                    "endpoint_suffix": endpoint_suffix,
                     "model": entry.model.trim(),
                     "max_tokens": max_tokens,
                     "context_window": context_window,
@@ -404,6 +413,8 @@ impl ModelSettingsState {
                 return;
             };
             let mut probe = form.clone();
+            probe.provider = entry.provider.clone();
+            probe.endpoint_suffix = entry.endpoint_suffix.clone();
             probe.model = entry.model.clone();
             probe.label = entry.label.clone();
             probe.supports_vision = entry.supports_vision;

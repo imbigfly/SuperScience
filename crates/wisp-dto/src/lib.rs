@@ -1149,6 +1149,7 @@ mod session_context_window_tests {
             label: id.into(),
             provider: "openai".into(),
             api_url: String::new(),
+            endpoint_suffix: String::new(),
             model: format!("model-{id}"),
             has_api_key: true,
             active,
@@ -2577,6 +2578,8 @@ pub struct ModelProfile {
     #[serde(default)]
     pub api_url: String,
     #[serde(default)]
+    pub endpoint_suffix: String,
+    #[serde(default)]
     pub model: String,
     #[serde(default)]
     pub has_api_key: bool,
@@ -2808,6 +2811,8 @@ pub struct ConnForm {
 #[derive(Clone, Default)]
 pub struct ModelFormEntry {
     pub row_id: u64,
+    pub provider: String,
+    pub endpoint_suffix: String,
     pub label: String,
     pub model: String,
     pub supports_vision: bool,
@@ -2827,6 +2832,7 @@ pub struct ModelForm {
     pub label: String,
     pub provider: String,
     pub api_url: String,
+    pub endpoint_suffix: String,
     pub model: String,
     pub max_tokens: u64,
     pub context_window: u64,

@@ -50,6 +50,7 @@ fn model_profile_contract() {
         label: "Fast".into(),
         provider: "openai".into(),
         api_url: "https://api.example.com".into(),
+        endpoint_suffix: "/gateway".into(),
         model: "gpt-test".into(),
         has_api_key: true,
         active: true,
@@ -65,6 +66,7 @@ fn model_profile_contract() {
     assert_eq!(dto.label, "Fast");
     assert_eq!(dto.provider, "openai");
     assert_eq!(dto.api_url, "https://api.example.com");
+    assert_eq!(dto.endpoint_suffix, "/gateway");
     assert_eq!(dto.model, "gpt-test");
     assert!(dto.has_api_key);
     assert!(dto.active);

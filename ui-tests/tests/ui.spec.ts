@@ -29,7 +29,7 @@ async function openModelsSettings(page: Page) {
   if (await row.count()) {
     await row.click();
   } else {
-    await page.getByRole("button", { name: /Add provider/i }).click();
+    await page.getByRole("button", { name: /Add API access/i }).click();
   }
   await expect(providerSelect(page)).toBeVisible();
 }
@@ -7411,7 +7411,7 @@ test("artifact panel normalizes png/pdf shorthand to the previewable image", asy
   await expect(page.locator('.rp-tile[data-artifact-name="panel_I_heatmap_4genes_median.png/.pdf"]')).toHaveCount(0);
 });
 
-test("settings page shows the saved provider", async ({ page }) => {
+test("settings page shows the saved protocol", async ({ page }) => {
   await enterApp(page);
   await openModelsSettings(page);
   await expect(providerSelect(page)).toHaveValue("openai");
@@ -7664,7 +7664,7 @@ test("vision assignment keeps model fields and stored key placeholder untouched"
   const useForVision = page.getByLabel("Use for image analysis");
 
   await providerSelect(page).selectOption("openai_responses");
-  await page.getByLabel("API URL").fill("https://api.openai-proxy.org/v1");
+  await page.getByLabel("Base URL").fill("https://api.openai-proxy.org/v1");
   await page.getByLabel("Model").fill("gpt-5.6-luna");
   await effort.selectOption("medium");
   await expect(key).toHaveValue("");
@@ -7730,10 +7730,10 @@ test("model settings rejects max output tokens above the known ceiling", async (
 test("model settings auto-fills catalog limits and save clamps to them", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Models");
-  await page.getByRole("button", { name: /Add provider/i }).click();
+  await page.getByRole("button", { name: /Add API access/i }).click();
 
   // Changing the URL refreshes suggested model ids; type the catalog id after.
-  await page.getByLabel("API URL").fill("https://api.kimi.com/coding/v1");
+  await page.getByLabel("Base URL").fill("https://api.kimi.com/coding/v1");
   const modelId = page.getByTestId("provider-model-row").first().getByLabel("Model ID");
   await modelId.fill("k3-256k");
   await page.getByLabel("API key (stored in OS keyring)").fill("sk-k3");
@@ -7750,17 +7750,20 @@ test("model settings auto-fills catalog limits and save clamps to them", async (
   expect(stored).toMatchObject({ context_window: 262144, max_tokens: 131072 });
 });
 
-test("add provider creates several models with one key, including image", async ({ page }) => {
+test("API access creates several models with one key, including an explicit image endpoint", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Models");
-  await page.getByRole("button", { name: /Add provider/i }).click();
+  await page.getByRole("button", { name: /Add API access/i }).click();
 
-  await expect(page.getByTestId("provider-byok-hint")).toContainText("Paste the key once");
-  await providerSelect(page).selectOption("openai_responses");
+  await expect(page.getByTestId("provider-byok-hint")).toContainText("shared Base URL and key once");
+  await page.getByLabel("Base URL").fill("https://api.openai.com");
   await expect(page.getByTestId("provider-model-row")).toHaveCount(2);
+  await expect(page.getByTestId("provider-model-protocol").nth(0)).toHaveValue("openai_responses");
+  await expect(page.getByTestId("provider-model-protocol").nth(1)).toHaveValue("openai_responses");
   await expect(page.getByTestId("provider-model-row").nth(0).getByLabel("Model ID")).toHaveValue("gpt-5.5");
   await expect(page.getByTestId("provider-model-row").nth(1).getByLabel("Model ID")).toHaveValue("gpt-image-2");
   await expect(page.getByTestId("provider-model-row").nth(1).getByTestId("provider-use-for-image")).toBeChecked();
+  await page.getByTestId("provider-endpoint-suffix").nth(1).fill("/v1/images/generations");
 
   await page.getByLabel("API key (stored in OS keyring)").fill("sk-openai");
   await page.getByRole("button", { name: "Save" }).click();
@@ -7770,14 +7773,32 @@ test("add provider creates several models with one key, including image", async 
     .map((c: any) => {
       const args = c.args instanceof Map ? Object.fromEntries(c.args) : c.args;
       const profile = args.profile instanceof Map ? Object.fromEntries(args.profile) : args.profile;
-      return profile.model;
-    }))).toEqual(["gpt-image-2", "gpt-5.5"]);
+      return {
+        model: profile.model,
+        provider: profile.provider,
+        apiUrl: profile.api_url,
+        suffix: profile.endpoint_suffix,
+      };
+    }))).toEqual([
+      {
+        model: "gpt-image-2",
+        provider: "openai_responses",
+        apiUrl: "https://api.openai.com",
+        suffix: "/v1/images/generations",
+      },
+      {
+        model: "gpt-5.5",
+        provider: "openai_responses",
+        apiUrl: "https://api.openai.com",
+        suffix: "",
+      },
+    ]);
 });
 
-test("add provider reuses a stored key for the same API URL", async ({ page }) => {
+test("API access reuses a stored key for the same Base URL", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Models");
-  await page.getByRole("button", { name: /Add provider/i }).click();
+  await page.getByRole("button", { name: /Add API access/i }).click();
 
   // Default DeepSeek URL already has a saved key in the mock list.
   await expect(page.getByTestId("provider-api-key")).toHaveAttribute(
@@ -7792,6 +7813,47 @@ test("add provider reuses a stored key for the same API URL", async ({ page }) =
     key: null,
     profile: { model: "deepseek-v4-flash" },
   });
+});
+
+test("one DeepSeek Base URL can save Responses and Anthropic protocol models", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Models");
+  await page.getByRole("button", { name: /Add API access/i }).click();
+
+  await page.getByLabel("Base URL").fill("https://api.deepseek.com");
+  const rows = page.getByTestId("provider-model-row");
+  await expect(rows).toHaveCount(2);
+
+  await rows.nth(0).getByTestId("provider-model-protocol").selectOption("openai_responses");
+  await rows.nth(1).getByTestId("provider-model-protocol").selectOption("anthropic");
+  await rows.nth(1).getByTestId("provider-endpoint-suffix").fill("/anthropic");
+  await page.getByRole("button", { name: "Save" }).click();
+
+  await expect.poll(() => page.evaluate(() => ((window as any).__skillInvokeLog ?? [])
+    .filter((call: any) => call.cmd === "save_model")
+    .map((call: any) => {
+      const args = call.args instanceof Map ? Object.fromEntries(call.args) : call.args;
+      const profile = args.profile instanceof Map ? Object.fromEntries(args.profile) : args.profile;
+      return {
+        model: profile.model,
+        protocol: profile.provider,
+        baseUrl: profile.api_url,
+        suffix: profile.endpoint_suffix,
+      };
+    }))).toEqual([
+      {
+        model: "deepseek-v4-pro",
+        protocol: "anthropic",
+        baseUrl: "https://api.deepseek.com",
+        suffix: "/anthropic",
+      },
+      {
+        model: "deepseek-v4-flash",
+        protocol: "openai_responses",
+        baseUrl: "https://api.deepseek.com",
+        suffix: "",
+      },
+    ]);
 });
 
 test("onboarding key setup lands on flash after adding pro", async ({ page }) => {
@@ -7826,7 +7888,7 @@ test("gpt-image-2 can be assigned for generation but not selected for chat", asy
   await opus.click();
 
   await providerSelect(page).selectOption("openai_responses");
-  await page.getByLabel("API URL").fill("https://api.openai.com/v1");
+  await page.getByLabel("Base URL").fill("https://api.openai.com/v1");
   await page.getByLabel("Model").fill("gpt-image-2");
   await expect(page.getByLabel("Supports image input")).not.toBeChecked();
   await page.getByLabel("Use for image generation").check();
@@ -7865,23 +7927,23 @@ test("settings normalizes a blank stored provider to openai", async ({ page }) =
   await expect(page.locator(".settings-status")).toContainText("Validated openai with deepseek-v4-pro");
 });
 
-test("editing API URL keeps provider state and display aligned", async ({ page }) => {
+test("editing Base URL keeps protocol state and display aligned", async ({ page }) => {
   await enterApp(page);
   await openModelsSettings(page);
-  await page.getByLabel("API URL").fill("https://api.deepseek.com");
+  await page.getByLabel("Base URL").fill("https://api.deepseek.com");
   await expect(providerSelect(page)).toHaveValue("openai");
   await page.getByRole("button", { name: "Valid" }).click();
   await expect(page.locator(".settings-status")).toContainText("Validated openai with deepseek-v4-pro");
 });
 
-test("model API URL explains that endpoint paths are added automatically", async ({ page }) => {
+test("model Base URL explains per-model endpoint suffixes", async ({ page }) => {
   await enterApp(page);
   await openModelsSettings(page);
 
   await expect(page.getByTestId("model-api-url-hint")).toHaveText(
-    "Enter the provider's API base URL. You do not need to append /v1, /chat/completions, /responses, or /v1/messages; Wisp completes the request path and probes common OpenAI-compatible paths automatically.",
+    "Enter the shared API root. Put protocol-specific paths such as /anthropic or an explicit image endpoint in that model's optional suffix; Wisp then completes the protocol request path.",
   );
-  await expect(page.getByLabel("API URL")).toHaveAttribute(
+  await expect(page.getByLabel("Base URL")).toHaveAttribute(
     "aria-describedby",
     "model-api-url-hint",
   );
@@ -8589,26 +8651,32 @@ test("OAuth authorization keeps Cancel available and clears form status", async 
 test("settings validation rejects blank required fields", async ({ page }) => {
   await enterApp(page);
   await openModelsSettings(page);
-  await page.getByLabel("API URL").fill("");
+  await page.getByLabel("Base URL").fill("");
   await page.getByRole("button", { name: "Valid" }).click();
   await expect(page.locator(".settings-status")).toHaveText("Validation failed: API URL is required.");
 });
 
-test("provider switch fills current API defaults", async ({ page }) => {
+test("protocol switch keeps the current Base URL, endpoint suffix, and model ID", async ({ page }) => {
   await enterApp(page);
   await openModelsSettings(page);
+
+  const baseUrl = page.getByLabel("Base URL");
+  const endpointSuffix = page.getByLabel("Endpoint suffix (optional)");
+  const model = page.getByLabel("Model ID");
+  await endpointSuffix.fill("/anthropic");
+
   await providerSelect(page).selectOption("openai_responses");
-  await expect(page.getByLabel("API URL")).toHaveValue("https://api.openai.com/v1");
-  await expect(page.getByLabel("Model")).toHaveValue("gpt-5.5");
+  await expect(baseUrl).toHaveValue("https://api.deepseek.com");
+  await expect(endpointSuffix).toHaveValue("/anthropic");
+  await expect(model).toHaveValue("deepseek-v4-pro");
+
   await providerSelect(page).selectOption("anthropic");
-  await expect(page.getByLabel("API URL")).toHaveValue("https://api.anthropic.com");
-  await expect(page.getByLabel("Model")).toHaveValue("claude-sonnet-5");
-  await providerSelect(page).selectOption("openai");
-  await expect(page.getByLabel("API URL")).toHaveValue("https://api.deepseek.com");
-  await expect(page.getByLabel("Model")).toHaveValue("deepseek-v4-flash");
+  await expect(baseUrl).toHaveValue("https://api.deepseek.com");
+  await expect(endpointSuffix).toHaveValue("/anthropic");
+  await expect(model).toHaveValue("deepseek-v4-pro");
 });
 
-test("model form input keeps focus while typing (#62)", async ({ page }) => {
+test("model form inputs keep focus while typing (#62)", async ({ page }) => {
   await enterApp(page);
   await openModelsSettings(page);
   const model = page.getByLabel("Model");
@@ -8619,6 +8687,16 @@ test("model form input keeps focus while typing (#62)", async ({ page }) => {
   await model.pressSequentially("gpt-5.5-x");
   await expect(model).toHaveValue("gpt-5.5-x");
   await expect(model).toBeFocused();
+
+  // The provider-level add form has a separate multi-model editor. Its
+  // edit/add view gate must also remain stable as a model row changes.
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await page.getByRole("button", { name: /Add API access/i }).click();
+  const providerModel = page.getByTestId("provider-model-id").first();
+  await providerModel.fill("");
+  await providerModel.pressSequentially("deepseek-v4-flash-x");
+  await expect(providerModel).toHaveValue("deepseek-v4-flash-x");
+  await expect(providerModel).toBeFocused();
 });
 
 test("inline approval card keeps its buttons reachable with a long preview (#63)", async ({ page }) => {

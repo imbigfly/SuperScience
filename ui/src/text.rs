@@ -134,6 +134,16 @@ pub(crate) fn same_endpoint(left: &str, right: &str) -> bool {
     !left.is_empty() && left == normalize_endpoint(right)
 }
 
+pub(crate) fn join_api_url(base_url: &str, endpoint_suffix: &str) -> String {
+    let base_url = base_url.trim().trim_end_matches('/');
+    let endpoint_suffix = endpoint_suffix.trim().trim_matches('/');
+    if endpoint_suffix.is_empty() {
+        base_url.to_string()
+    } else {
+        format!("{base_url}/{endpoint_suffix}")
+    }
+}
+
 pub(crate) fn endpoint_host(url: &str) -> String {
     let endpoint = normalize_endpoint(url);
     endpoint
@@ -148,7 +158,7 @@ pub(crate) fn endpoint_host(url: &str) -> String {
 
 #[cfg(test)]
 mod endpoint_tests {
-    use super::{endpoint_host, normalize_endpoint, same_endpoint};
+    use super::{endpoint_host, join_api_url, normalize_endpoint, same_endpoint};
 
     #[test]
     fn normalize_endpoint_strips_version_and_api_suffixes() {
@@ -173,6 +183,18 @@ mod endpoint_tests {
             "https://api.openai.com"
         ));
         assert_eq!(endpoint_host("https://api.deepseek.com/v1"), "api.deepseek.com");
+    }
+
+    #[test]
+    fn joins_a_per_model_suffix_to_the_shared_base_url() {
+        assert_eq!(
+            join_api_url("https://api.deepseek.com/", "/anthropic"),
+            "https://api.deepseek.com/anthropic"
+        );
+        assert_eq!(
+            join_api_url("https://api.deepseek.com", ""),
+            "https://api.deepseek.com"
+        );
     }
 }
 

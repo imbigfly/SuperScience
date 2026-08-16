@@ -21,7 +21,11 @@ pub struct ModelProfile {
     pub id: String,
     pub label: String,
     pub provider: String,
+    /// Shared credential root. Protocol-specific paths live in
+    /// `endpoint_suffix` so profiles on one service can reuse a key.
     pub api_url: String,
+    #[serde(default)]
+    pub endpoint_suffix: String,
     pub model: String,
     /// Computed on read from the keyring; never part of the persisted JSON.
     #[serde(default)]
@@ -60,6 +64,44 @@ const CUSTOM_CREDENTIAL_SECRET_PREFIX: &str = "custom_credential:";
 
 fn secret_name(id: &str) -> String {
     format!("model_key:{id}")
+}
+
+fn normalize_endpoint_suffix(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(String::new());
+    }
+    if value.contains("://")
+        || value.starts_with("//")
+        || value.contains('?')
+        || value.contains('#')
+    {
+        return Err(
+            "Endpoint suffix must be a URL path without a host, query, or fragment.".into(),
+        );
+    }
+    let value = value.trim_matches('/');
+    if value.is_empty() {
+        return Ok(String::new());
+    }
+    if value.split('/').any(|segment| segment == "..") {
+        return Err("Endpoint suffix cannot contain '..' path segments.".into());
+    }
+    Ok(format!("/{value}"))
+}
+
+pub(crate) fn join_api_url(base_url: &str, endpoint_suffix: &str) -> String {
+    let base_url = base_url.trim().trim_end_matches('/');
+    let endpoint_suffix = endpoint_suffix.trim().trim_matches('/');
+    if endpoint_suffix.is_empty() {
+        base_url.to_string()
+    } else {
+        format!("{base_url}/{endpoint_suffix}")
+    }
+}
+
+fn effective_api_url(profile: &ModelProfile) -> String {
+    join_api_url(&profile.api_url, &profile.endpoint_suffix)
 }
 
 /// Identity of an LLM credential: the API origin, not the provider enum and
@@ -556,6 +598,7 @@ async fn ensure(store: &wisp_store::Store) -> Vec<ModelProfile> {
         },
         provider,
         api_url,
+        endpoint_suffix: String::new(),
         model,
         has_api_key: false,
         active: false,
@@ -666,7 +709,8 @@ pub async fn active_config(store: &wisp_store::Store) -> (String, String, String
         .find(|p| p.id == id)
         .cloned()
         .unwrap_or_else(|| profiles[0].clone());
-    (p.provider, p.api_url, p.model, key_for(&p.id))
+    let api_url = effective_api_url(&p);
+    (p.provider, api_url, p.model, key_for(&p.id))
 }
 
 pub(crate) fn is_image_generation_model(model: &str) -> bool {
@@ -730,9 +774,10 @@ pub async fn vision_config(
     let profiles = ensure(store).await;
     let id = vision_id(store, &profiles).await?;
     let p = profiles.iter().find(|p| p.id == id)?.clone();
+    let api_url = effective_api_url(&p);
     Some((
         p.provider,
-        p.api_url,
+        api_url,
         p.model,
         key_for(&p.id),
         p.max_tokens,
@@ -749,7 +794,7 @@ pub async fn image_generation_config(
     let profiles = ensure(store).await;
     let id = image_generation_id(store, &profiles).await?;
     let p = profiles.iter().find(|p| p.id == id)?;
-    Some((p.api_url.clone(), p.model.clone(), key_for(&p.id)))
+    Some((effective_api_url(p), p.model.clone(), key_for(&p.id)))
 }
 
 /// Update the active profile's provider/api_url/model/label. The classic Settings
@@ -764,8 +809,12 @@ pub async fn set_active_fields(
     let mut profiles = ensure(store).await;
     let id = active_id(store, &profiles).await;
     if let Some(p) = profiles.iter_mut().find(|p| p.id == id) {
+        let current_api_url = effective_api_url(p);
         p.provider = provider.to_string();
-        p.api_url = api_url.to_string();
+        if current_api_url != api_url.trim() {
+            p.api_url = api_url.to_string();
+            p.endpoint_suffix.clear();
+        }
         p.model = model.to_string();
         let alias = label.trim();
         p.label = if alias.is_empty() {
@@ -889,7 +938,7 @@ pub async fn profile_llm(
     }
     Some((
         p.provider.clone(),
-        p.api_url.clone(),
+        effective_api_url(p),
         p.model.clone(),
         key_for(&p.id),
         p.max_tokens,
@@ -1047,6 +1096,8 @@ pub async fn save_model(
     if profile.api_url.trim().is_empty() {
         return Err("API URL is required.".into());
     }
+    profile.api_url = profile.api_url.trim().trim_end_matches('/').to_string();
+    profile.endpoint_suffix = normalize_endpoint_suffix(&profile.endpoint_suffix)?;
     if assign_vision && !can_describe_images(&profile) {
         return Err("Image analysis requires an API model marked as vision-capable.".into());
     }
@@ -1283,6 +1334,7 @@ mod tests {
             label: label.into(),
             provider: "openai".into(),
             api_url: "u".into(),
+            endpoint_suffix: String::new(),
             model: model.into(),
             has_api_key: false,
             active: false,
@@ -1689,6 +1741,64 @@ mod tests {
             "https://api.deepseek.com",
             "https://api.openai.com"
         ));
+    }
+
+    #[test]
+    fn endpoint_suffix_is_normalized_and_joined_to_the_shared_root() {
+        assert_eq!(
+            normalize_endpoint_suffix(" anthropic/ ").unwrap(),
+            "/anthropic"
+        );
+        assert_eq!(normalize_endpoint_suffix("/").unwrap(), "");
+        assert_eq!(
+            join_api_url("https://api.deepseek.com/", "/anthropic"),
+            "https://api.deepseek.com/anthropic"
+        );
+        assert!(normalize_endpoint_suffix("https://other.example/v1").is_err());
+        assert!(normalize_endpoint_suffix("/anthropic?version=1").is_err());
+        assert!(normalize_endpoint_suffix("/../anthropic").is_err());
+    }
+
+    #[tokio::test]
+    async fn runtime_configs_use_the_per_model_endpoint_suffix() {
+        let tmp = std::env::temp_dir().join(format!(
+            "wisp_model_endpoint_suffix_{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let store = wisp_store::Store::open(&tmp).await.unwrap();
+
+        let mut anthropic = test_profile("anthropic", "deepseek-anthropic", "deepseek-chat");
+        anthropic.provider = "anthropic".into();
+        anthropic.api_url = "https://api.deepseek.com".into();
+        anthropic.endpoint_suffix = "/anthropic".into();
+
+        let mut image = test_profile("image", "image", "gpt-image-2");
+        image.provider = "openai_responses".into();
+        image.api_url = "https://api.openai.com".into();
+        image.endpoint_suffix = "/v1/images/generations".into();
+
+        save_raw(&store, &[anthropic, image]).await.unwrap();
+        store.set_setting(ACTIVE_KEY, "anthropic").await.unwrap();
+        store
+            .set_setting(IMAGE_GENERATION_KEY, "image")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            active_config(&store).await.1,
+            "https://api.deepseek.com/anthropic"
+        );
+        assert_eq!(
+            profile_llm(&store, "anthropic").await.unwrap().1,
+            "https://api.deepseek.com/anthropic"
+        );
+        assert_eq!(
+            image_generation_config(&store).await.unwrap().0,
+            "https://api.openai.com/v1/images/generations"
+        );
+
+        drop(store);
+        let _ = std::fs::remove_file(&tmp);
     }
 
     #[test]

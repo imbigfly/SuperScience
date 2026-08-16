@@ -56,8 +56,8 @@ mod project_sync_backend_tests {
 #[cfg(test)]
 mod provider_form_tests {
     use super::{
-        apply_provider_suggestions, endpoint_has_stored_key, new_model_form,
-        provider_entries_are_pristine, suggested_provider_models, ModelProfile,
+        apply_base_url_suggestions, endpoint_has_stored_key, new_model_form,
+        provider_entries_are_pristine, suggested_base_url_models, ModelProfile,
         DEEPSEEK_FLASH_MODEL, DEEPSEEK_PRO_MODEL,
     };
 
@@ -67,6 +67,7 @@ mod provider_form_tests {
             label: "m".into(),
             provider: "openai".into(),
             api_url: url.into(),
+            endpoint_suffix: String::new(),
             model: "x".into(),
             has_api_key: has_key,
             active: false,
@@ -91,16 +92,16 @@ mod provider_form_tests {
     }
 
     #[test]
-    fn openai_responses_suggests_chat_and_image_models() {
-        let models: Vec<_> = suggested_provider_models("openai_responses", "https://api.openai.com/v1")
+    fn openai_base_url_suggests_responses_chat_and_image_models() {
+        let models: Vec<_> = suggested_base_url_models("https://api.openai.com/v1")
             .into_iter()
-            .map(|entry| (entry.model, entry.use_for_image_generation))
+            .map(|entry| (entry.provider, entry.model, entry.use_for_image_generation))
             .collect();
         assert_eq!(
             models,
             vec![
-                ("gpt-5.5".into(), false),
-                ("gpt-image-2".into(), true),
+                ("openai_responses".into(), "gpt-5.5".into(), false),
+                ("openai_responses".into(), "gpt-image-2".into(), true),
             ]
         );
     }
@@ -109,7 +110,7 @@ mod provider_form_tests {
     fn changing_url_refreshes_only_pristine_suggestions() {
         let mut form = new_model_form();
         assert!(provider_entries_are_pristine(&form));
-        apply_provider_suggestions(&mut form, "openai", "https://api.kimi.com/coding/v1");
+        apply_base_url_suggestions(&mut form, "https://api.kimi.com/coding/v1");
         assert_eq!(form.entries[0].model, "kimi-coding");
         form.entries[0].model = "k3-256k".into();
         let before = form.entries.clone();
@@ -731,6 +732,7 @@ pub(crate) fn profile_to_form(m: &ModelProfile) -> ModelForm {
         label: m.label.clone(),
         provider: m.provider.clone(),
         api_url: m.api_url.clone(),
+        endpoint_suffix: m.endpoint_suffix.clone(),
         model: m.model.clone(),
         max_tokens: if m.max_tokens >= 16 {
             m.max_tokens
@@ -762,10 +764,17 @@ fn next_model_row_id() -> u64 {
     })
 }
 
-pub(crate) fn model_form_entry(model: &str, image: bool) -> ModelFormEntry {
+pub(crate) fn model_form_entry(
+    provider: &str,
+    model: &str,
+    endpoint_suffix: &str,
+    image: bool,
+) -> ModelFormEntry {
     let image = image || model.trim().eq_ignore_ascii_case("gpt-image-2");
     ModelFormEntry {
         row_id: next_model_row_id(),
+        provider: provider_value(provider).into(),
+        endpoint_suffix: endpoint_suffix.into(),
         label: String::new(),
         model: model.into(),
         supports_vision: false,
@@ -774,51 +783,76 @@ pub(crate) fn model_form_entry(model: &str, image: bool) -> ModelFormEntry {
     }
 }
 
-pub(crate) fn suggested_provider_models(provider: &str, api_url: &str) -> Vec<ModelFormEntry> {
-    let provider = provider_value(provider);
+pub(crate) fn suggested_base_url_models(api_url: &str) -> Vec<ModelFormEntry> {
     let host = normalize_endpoint(api_url).to_ascii_lowercase();
-    match provider {
-        "anthropic" => vec![model_form_entry("claude-sonnet-5", false)],
-        "openai_responses" => vec![
-            model_form_entry("gpt-5.5", false),
-            model_form_entry("gpt-image-2", true),
+    match host.as_str() {
+        host if host.contains("api.anthropic.com") => vec![model_form_entry(
+            "anthropic",
+            "claude-sonnet-5",
+            "",
+            false,
+        )],
+        host if host.contains("api.openai.com") => vec![
+            model_form_entry("openai_responses", "gpt-5.5", "", false),
+            model_form_entry("openai_responses", "gpt-image-2", "", true),
         ],
-        _ if host.contains("deepseek.com") || host.is_empty() => vec![
-            model_form_entry(DEEPSEEK_FLASH_MODEL, false),
-            model_form_entry(DEEPSEEK_PRO_MODEL, false),
+        host if host.contains("deepseek.com") || host.is_empty() => vec![
+            model_form_entry("openai", DEEPSEEK_FLASH_MODEL, "", false),
+            model_form_entry("openai", DEEPSEEK_PRO_MODEL, "", false),
         ],
-        _ if host.contains("api.kimi.com") && host.contains("/coding") => {
-            vec![model_form_entry("kimi-coding", false)]
+        host if host.contains("api.kimi.com") && host.contains("/coding") => {
+            vec![model_form_entry("openai", "kimi-coding", "", false)]
         }
-        _ if host.contains("moonshot") || host.contains("api.kimi.com") => {
-            vec![model_form_entry("kimi-k3", false)]
+        host if host.contains("moonshot") || host.contains("api.kimi.com") => {
+            vec![model_form_entry("openai", "kimi-k3", "", false)]
         }
-        _ if host.contains("bigmodel.cn") && host.contains("coding") => {
-            vec![model_form_entry("glm-5.2", false)]
+        host if host.contains("bigmodel.cn") && host.contains("coding") => {
+            vec![model_form_entry("openai", "glm-5.2", "", false)]
         }
-        _ if host.contains("bigmodel.cn") => vec![model_form_entry("glm-5", false)],
-        _ => vec![model_form_entry("", false)],
+        host if host.contains("bigmodel.cn") => {
+            vec![model_form_entry("openai", "glm-5", "", false)]
+        }
+        _ => vec![model_form_entry("openai", "", "", false)],
     }
 }
 
 pub(crate) fn provider_entries_are_pristine(form: &ModelForm) -> bool {
-    let suggested = suggested_provider_models(&form.provider, &form.api_url);
-    let current: Vec<&str> = form
+    let suggested = suggested_base_url_models(&form.api_url);
+    let current: Vec<_> = form
         .entries
         .iter()
-        .map(|entry| entry.model.trim())
+        .map(|entry| {
+            (
+                provider_value(&entry.provider),
+                entry.endpoint_suffix.trim(),
+                entry.label.trim(),
+                entry.model.trim(),
+                entry.supports_vision,
+                entry.use_for_vision,
+                entry.use_for_image_generation,
+            )
+        })
         .collect();
-    let expected: Vec<&str> = suggested
+    let expected: Vec<_> = suggested
         .iter()
-        .map(|entry| entry.model.trim())
+        .map(|entry| {
+            (
+                provider_value(&entry.provider),
+                entry.endpoint_suffix.trim(),
+                entry.label.trim(),
+                entry.model.trim(),
+                entry.supports_vision,
+                entry.use_for_vision,
+                entry.use_for_image_generation,
+            )
+        })
         .collect();
     current == expected
 }
 
-pub(crate) fn apply_provider_suggestions(form: &mut ModelForm, provider: &str, api_url: &str) {
-    form.provider = provider_value(provider).into();
+pub(crate) fn apply_base_url_suggestions(form: &mut ModelForm, api_url: &str) {
     form.api_url = api_url.into();
-    form.entries = suggested_provider_models(&form.provider, &form.api_url);
+    form.entries = suggested_base_url_models(&form.api_url);
 }
 
 pub(crate) fn endpoint_has_stored_key(models: &[ModelProfile], api_url: &str) -> bool {
@@ -844,7 +878,7 @@ pub(crate) fn new_model_form() -> ModelForm {
         api_url: api_url.into(),
         max_tokens: 8192,
         context_window: 128_000,
-        entries: suggested_provider_models("openai", api_url),
+        entries: suggested_base_url_models(api_url),
         ..Default::default()
     }
 }
@@ -861,7 +895,7 @@ pub(crate) fn new_acp_form() -> AcpAgentProfile {
 pub(crate) fn model_form_to_settings(form: &ModelForm, has_api_key: bool) -> Settings {
     let mut cfg = Settings::default();
     cfg.provider = provider_value(&form.provider).into();
-    cfg.api_url = form.api_url.trim().into();
+    cfg.api_url = join_api_url(&form.api_url, &form.endpoint_suffix);
     cfg.model = form.model.trim().into();
     cfg.label = form.label.trim().into();
     cfg.has_api_key = has_api_key;

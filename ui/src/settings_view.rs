@@ -2,7 +2,7 @@ use crate::agent_workflows::{workflow_studio as workflow_studio_view, AgentPanel
 use crate::app_support::{
     allow_drop, build_conn_json, close_details_ancestor, compose_icon, conn_form_from_row,
     context_capability_summary, drag_session_id, focus_element_soon, format_relative_time,
-    apply_provider_suggestions, endpoint_has_stored_key, import_custom_css_from_input,
+    apply_base_url_suggestions, endpoint_has_stored_key, import_custom_css_from_input,
     join_tags, js_error_text, model_form_entry, new_acp_form, new_model_form,
     profile_to_form, provider_entries_are_pristine, quick_action_label, reviewer_backend_key,
     reviewer_backend_label,
@@ -14,7 +14,7 @@ use crate::dto::*;
 use crate::i18n::{localize_backend, set_document_lang, t, tf, Locale};
 use crate::text::{
     dom_value, endpoint_host, event_target_checked, event_target_input, event_target_value,
-    format_bytes,
+    format_bytes, join_api_url,
 };
 use crate::window_capture_escape;
 use leptos::*;
@@ -445,14 +445,6 @@ fn settings_provider_value(provider: &str) -> &'static str {
     }
 }
 
-fn settings_provider_defaults(provider: &str) -> (&'static str, &'static str) {
-    match settings_provider_value(provider) {
-        "anthropic" => ("https://api.anthropic.com", "claude-sonnet-5"),
-        "openai_responses" => ("https://api.openai.com/v1", "gpt-5.5"),
-        _ => ("https://api.deepseek.com", "deepseek-v4-flash"),
-    }
-}
-
 /// Every effort value any supported provider understands; shown when the
 /// model is not in the curated table below.
 pub(crate) const ALL_EFFORT_VALUES: &[&str] = &[
@@ -617,7 +609,11 @@ fn apply_catalog_limits(
     let Some(current) = model_form.get() else {
         return;
     };
-    let (provider, api_url, model) = (current.provider, current.api_url, current.model);
+    let (provider, api_url, model) = (
+        current.provider,
+        join_api_url(&current.api_url, &current.endpoint_suffix),
+        current.model,
+    );
     if model.trim().is_empty() {
         return;
     }
@@ -892,6 +888,10 @@ pub(super) fn SettingsView(
         delete_confirm,
     } = state;
     let acp_form_open = create_memo(move |_| acp_form.get().is_some());
+    // Keep the edit/add branch stable while fields update. Reading the whole
+    // form directly in the view gate remounts the inputs on every keystroke.
+    let model_form_is_edit =
+        create_memo(move |_| model_form.get().is_some_and(|form| form.id.is_some()));
     let memory_projects = create_rw_signal(Vec::<ProjectSummary>::new());
     let memory_project_menu_open = create_rw_signal(false);
     let global_memory_edit_id = create_rw_signal(None::<String>);
@@ -2558,20 +2558,36 @@ pub(super) fn SettingsView(
                             </div>
                         }.into_view()
                     } else if model_form_open.get() {
-                        if model_form.get().is_some_and(|f| f.id.is_some()) {
+                        if model_form_is_edit.get() {
                         view! {
                             <div class="settings-pane settings-pane-subpage">
                                 <div class="conn-form model-form">
                                     <div class="settings-form-grid">
-                                        <label class="span-2">{move || t(locale.get(), "settings.provider")}
+                                        <label class="span-2">{move || t(locale.get(), "settings.api_url")}
+                                            <input aria-describedby="model-api-url-hint"
+                                                prop:value=move || model_form.get().map(|f| f.api_url.clone()).unwrap_or_default()
+                                                on:input=move |ev| model_form.update(|o| if let Some(o)=o { o.api_url = event_target_input(&ev).value(); }) /></label>
+                                        <span id="model-api-url-hint" class="hint span-2" data-testid="model-api-url-hint">
+                                            {move || t(locale.get(), "settings.tip")}
+                                        </span>
+                                        <label class="span-2">{move || t(locale.get(), "settings.api_key")}
+                                            <input type="password" id="model-form-api-key" prop:value=move || model_form_key.get()
+                                                placeholder=move || {
+                                                    let Some(id) = model_form.get().and_then(|f| f.id) else { return String::new(); };
+                                                    if models.get().iter().any(|m| m.id == id && m.has_api_key) {
+                                                        t(locale.get(), "settings.stored_key").to_string()
+                                                    } else {
+                                                        String::new()
+                                                    }
+                                                }
+                                                autocomplete="new-password"
+                                                on:input=move |ev| model_form_key.set(event_target_input(&ev).value()) /></label>
+                                        <label>{move || t(locale.get(), "settings.provider")}
                                             <select data-testid="settings-provider"
                                                 on:change=move|ev| {
                                                     let p = dom_value(&ev);
                                                     model_form.update(|o| if let Some(o)=o {
-                                                        let (api_url, model) = settings_provider_defaults(&p);
                                                         o.provider = settings_provider_value(&p).into();
-                                                        o.api_url = api_url.into();
-                                                        o.model = model.into();
                                                     });
                                                     apply_catalog_limits(model_form, model_catalog_limits);
                                                 }
@@ -2590,17 +2606,6 @@ pub(super) fn SettingsView(
                                                 </option>
                                             </select>
                                         </label>
-                                        <label class="span-2">{move || t(locale.get(), "settings.api_url")}
-                                            <input aria-describedby="model-api-url-hint"
-                                                prop:value=move || model_form.get().map(|f| f.api_url.clone()).unwrap_or_default()
-                                                on:input=move |ev| model_form.update(|o| if let Some(o)=o { o.api_url = event_target_input(&ev).value(); }) /></label>
-                                        <span id="model-api-url-hint" class="hint span-2" data-testid="model-api-url-hint">
-                                            {move || t(locale.get(), "settings.tip")}
-                                        </span>
-                                        <label>{move || t(locale.get(), "settings.label")}
-                                            <input prop:value=move || model_form.get().map(|f| f.label.clone()).unwrap_or_default()
-                                                placeholder=move || t(locale.get(), "settings.label_ph")
-                                                on:input=move |ev| model_form.update(|o| if let Some(o)=o { o.label = event_target_input(&ev).value(); }) /></label>
                                         <label>{move || t(locale.get(), "settings.model")}
                                             <input prop:value=move || model_form.get().map(|f| f.model.clone()).unwrap_or_default()
                                                 placeholder=move || t(locale.get(), "settings.model_ph")
@@ -2614,6 +2619,17 @@ pub(super) fn SettingsView(
                                                     });
                                                     apply_catalog_limits(model_form, model_catalog_limits);
                                                 } /></label>
+                                        <label>{move || t(locale.get(), "settings.endpoint_suffix")}
+                                            <input data-testid="model-endpoint-suffix"
+                                                prop:value=move || model_form.get().map(|f| f.endpoint_suffix.clone()).unwrap_or_default()
+                                                placeholder=move || t(locale.get(), "settings.endpoint_suffix_ph")
+                                                on:input=move |ev| model_form.update(|o| if let Some(o)=o {
+                                                    o.endpoint_suffix = event_target_input(&ev).value();
+                                                }) /></label>
+                                        <label>{move || t(locale.get(), "settings.label")}
+                                            <input prop:value=move || model_form.get().map(|f| f.label.clone()).unwrap_or_default()
+                                                placeholder=move || t(locale.get(), "settings.label_ph")
+                                                on:input=move |ev| model_form.update(|o| if let Some(o)=o { o.label = event_target_input(&ev).value(); }) /></label>
                                         <label>{move || t(locale.get(), "settings.max_tokens")}
                                             <input type="number" min="16" step="1"
                                                 attr:max=move || model_catalog_limits.get().map(|d| d.max_tokens.to_string())
@@ -2721,18 +2737,6 @@ pub(super) fn SettingsView(
                                             </label>
                                             <span class="hint span-2">{move || t(locale.get(), "settings.image_generation_hint")}</span>
                                         </div>
-                                        <label class="span-2">{move || t(locale.get(), "settings.api_key")}
-                                            <input type="password" id="model-form-api-key" prop:value=move || model_form_key.get()
-                                                placeholder=move || {
-                                                    let Some(id) = model_form.get().and_then(|f| f.id) else { return String::new(); };
-                                                    if models.get().iter().any(|m| m.id == id && m.has_api_key) {
-                                                        t(locale.get(), "settings.stored_key").to_string()
-                                                    } else {
-                                                        String::new()
-                                                    }
-                                                }
-                                                autocomplete="new-password"
-                                                on:input=move |ev| model_form_key.set(event_target_input(&ev).value()) /></label>
                                     </div>
                                     {move || model_form_msg.get().map(|(ok, text)| view! {
                                         <div class="settings-status" class:ok=ok class:fail=move || !ok>{text}</div>
@@ -2751,30 +2755,6 @@ pub(super) fn SettingsView(
                                 <div class="conn-form model-form">
                                     <p class="hint" data-testid="provider-byok-hint">{move || t(locale.get(), "models.byok_hint")}</p>
                                     <div class="settings-form-grid">
-                                        <label class="span-2">{move || t(locale.get(), "settings.provider")}
-                                            <select data-testid="settings-provider"
-                                                on:change=move|ev| {
-                                                    let p = dom_value(&ev);
-                                                    let (api_url, _) = settings_provider_defaults(&p);
-                                                    model_form.update(|o| if let Some(o)=o {
-                                                        apply_provider_suggestions(o, &p, api_url);
-                                                    });
-                                                }
-                                                >
-                                                <option value="openai"
-                                                    prop:selected=move || model_form.get().is_some_and(|f| settings_provider_value(&f.provider) == "openai")>
-                                                    {move || t(locale.get(), "settings.provider.openai")}
-                                                </option>
-                                                <option value="openai_responses"
-                                                    prop:selected=move || model_form.get().is_some_and(|f| settings_provider_value(&f.provider) == "openai_responses")>
-                                                    {move || t(locale.get(), "settings.provider.openai_responses")}
-                                                </option>
-                                                <option value="anthropic"
-                                                    prop:selected=move || model_form.get().is_some_and(|f| settings_provider_value(&f.provider) == "anthropic")>
-                                                    {move || t(locale.get(), "settings.provider.anthropic")}
-                                                </option>
-                                            </select>
-                                        </label>
                                         <label class="span-2">{move || t(locale.get(), "settings.api_url")}
                                             <input aria-describedby="model-api-url-hint" data-testid="provider-api-url"
                                                 prop:value=move || model_form.get().map(|f| f.api_url.clone()).unwrap_or_default()
@@ -2782,7 +2762,7 @@ pub(super) fn SettingsView(
                                                     let url = event_target_input(&ev).value();
                                                     model_form.update(|o| if let Some(o)=o {
                                                         if provider_entries_are_pristine(o) {
-                                                            apply_provider_suggestions(o, &o.provider.clone(), &url);
+                                                            apply_base_url_suggestions(o, &url);
                                                         } else {
                                                             o.api_url = url;
                                                         }
@@ -2820,7 +2800,37 @@ pub(super) fn SettingsView(
                                                 view! {
                                                     <div class="provider-model-row" data-testid="provider-model-row">
                                                         <div class="provider-model-row-head">
-                                                            <label>{move || t(locale.get(), "settings.model")}
+                                                            <label class="provider-model-protocol">{move || t(locale.get(), "settings.provider")}
+                                                                <select data-testid="provider-model-protocol"
+                                                                    on:change=move |ev| {
+                                                                        let value = dom_value(&ev);
+                                                                        model_form.update(|o| if let Some(o)=o {
+                                                                            if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                                                                e.provider = settings_provider_value(&value).into();
+                                                                            }
+                                                                        });
+                                                                    }>
+                                                                    <option value="openai"
+                                                                        prop:selected=move || model_form.get()
+                                                                            .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                                                            .is_some_and(|e| settings_provider_value(&e.provider) == "openai")>
+                                                                        {move || t(locale.get(), "settings.provider.openai")}
+                                                                    </option>
+                                                                    <option value="openai_responses"
+                                                                        prop:selected=move || model_form.get()
+                                                                            .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                                                            .is_some_and(|e| settings_provider_value(&e.provider) == "openai_responses")>
+                                                                        {move || t(locale.get(), "settings.provider.openai_responses")}
+                                                                    </option>
+                                                                    <option value="anthropic"
+                                                                        prop:selected=move || model_form.get()
+                                                                            .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                                                            .is_some_and(|e| settings_provider_value(&e.provider) == "anthropic")>
+                                                                        {move || t(locale.get(), "settings.provider.anthropic")}
+                                                                    </option>
+                                                                </select>
+                                                            </label>
+                                                            <label class="provider-model-id">{move || t(locale.get(), "settings.model")}
                                                                 <input data-testid="provider-model-id"
                                                                     prop:value=move || model_form.get()
                                                                         .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
@@ -2840,7 +2850,7 @@ pub(super) fn SettingsView(
                                                                             }
                                                                         });
                                                                     } /></label>
-                                                            <label>{move || t(locale.get(), "settings.label")}
+                                                            <label class="provider-model-label">{move || t(locale.get(), "settings.label")}
                                                                 <input data-testid="provider-model-label"
                                                                     prop:value=move || model_form.get()
                                                                         .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
@@ -2852,6 +2862,21 @@ pub(super) fn SettingsView(
                                                                         model_form.update(|o| if let Some(o)=o {
                                                                             if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
                                                                                 e.label = value;
+                                                                            }
+                                                                        });
+                                                                    } /></label>
+                                                            <label class="provider-model-endpoint">{move || t(locale.get(), "settings.endpoint_suffix")}
+                                                                <input data-testid="provider-endpoint-suffix"
+                                                                    prop:value=move || model_form.get()
+                                                                        .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                                                        .map(|e| e.endpoint_suffix)
+                                                                        .unwrap_or_default()
+                                                                    placeholder=move || t(locale.get(), "settings.endpoint_suffix_ph")
+                                                                    on:input=move |ev| {
+                                                                        let value = event_target_input(&ev).value();
+                                                                        model_form.update(|o| if let Some(o)=o {
+                                                                            if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                                                                e.endpoint_suffix = value;
                                                                             }
                                                                         });
                                                                     } /></label>
@@ -2933,7 +2958,7 @@ pub(super) fn SettingsView(
                                         <button type="button" class="settings-add-btn" data-testid="provider-add-model"
                                             on:click=move |_| {
                                                 model_form.update(|o| if let Some(o)=o {
-                                                    o.entries.push(model_form_entry("", false));
+                                                    o.entries.push(model_form_entry("openai", "", "", false));
                                                 });
                                             }>
                                             {compose_icon("plus")}
@@ -3140,7 +3165,7 @@ pub(super) fn SettingsView(
                                                         context_window: 128_000,
                                                         ..Default::default()
                                                     };
-                                                    apply_provider_suggestions(&mut form, "openai", api_url);
+                                                    apply_base_url_suggestions(&mut form, api_url);
                                                     let reuse = endpoint_has_stored_key(&models.get(), &form.api_url);
                                                     model_form.set(Some(form));
                                                     model_form_key.set(String::new());
