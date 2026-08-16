@@ -2,7 +2,7 @@
 <!-- Desktop / store icon master.
 
      ui/logo.svg is the in-app mark: a 256 canvas with a baked rounded clip,
-     sized to look right at 18–46px in CSS.
+     sized to look right at 16–32px in CSS.
 
      macOS Dock and Launchpad apply their own squircle mask and fill the icon
      well. Feeding logo.svg to `cargo tauri icon` therefore:
@@ -52,7 +52,7 @@
   <rect width="256" height="256" fill="url(#bg)"/>
   <rect width="256" height="256" fill="url(#glow)"/>
 
-  <g transform="translate(128 128) scale(0.75) translate(-128 -128)">
+  <g transform="translate(128 128) scale(0.60) translate(-128 -128)">
     <path
       d="M98 52 C98 78 158 78 158 104 C158 130 98 130 98 156 C98 182 158 182 158 208"
       stroke="url(#strand-a)"

@@ -1445,6 +1445,8 @@ pub(crate) struct AppearancePrefs {
     pub(crate) selection_popup_enabled: bool,
     #[serde(default)]
     pub(crate) send_with_modifier: bool,
+    #[serde(default)]
+    pub(crate) custom_css: String,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]

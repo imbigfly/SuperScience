@@ -2376,6 +2376,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               code_font_family: "",
               selection_popup_enabled: true,
               send_with_modifier: false,
+              custom_css: "",
             };
           case "set_appearance_prefs": {
             const next = plain(arg("prefs") ?? args ?? {});
@@ -2390,6 +2391,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               code_font_family: String(next.code_font_family ?? ""),
               selection_popup_enabled: next.selection_popup_enabled !== false,
               send_with_modifier: Boolean(next.send_with_modifier),
+              custom_css: String(next.custom_css ?? ""),
             };
             return (window as any).__mockAppearancePrefs;
           }
@@ -5218,6 +5220,7 @@ export function parallelMock(): void {
               code_font_family: "",
               selection_popup_enabled: true,
               send_with_modifier: false,
+              custom_css: "",
             };
           case "set_appearance_prefs":
             return arg("prefs") ?? null;

@@ -145,6 +145,12 @@ const CATALOG: &[SettingSpec] = &[
         writable: true,
         summary: "When true, send with Shift+Enter (Enter inserts a newline). When false, Enter sends.",
     },
+    SettingSpec {
+        key: "custom_css",
+        kind: ValueKind::String,
+        writable: true,
+        summary: "User theme CSS injected after the built-in stylesheet. Empty clears it. Remote url()/ @import are stripped. Max 64KB.",
+    },
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -167,6 +173,8 @@ pub struct AppearancePrefs {
     pub selection_popup_enabled: bool,
     #[serde(default)]
     pub send_with_modifier: bool,
+    #[serde(default)]
+    pub custom_css: String,
 }
 
 impl Default for AppearancePrefs {
@@ -181,6 +189,7 @@ impl Default for AppearancePrefs {
             code_font_family: String::new(),
             selection_popup_enabled: true,
             send_with_modifier: false,
+            custom_css: String::new(),
         }
     }
 }
@@ -255,6 +264,7 @@ impl Tool for ConfigureTool {
             "Read or change Wisp app settings from this conversation, or report disk storage for the current project. \
 Use this instead of sending the user to Settings for allowlisted preferences. \
 Examples: bigger UI text → set ui_font_size to \"+2\"; switch to dark theme → set theme to \"dark\"; \
+import a custom theme → set custom_css to the stylesheet text; \
 \"show this project's storage\" → action storage. \
 Secrets, API keys, model profiles, workspace directory, and proxy are not writable here. \
 For specialists, get the `specialists` key then call save_specialist (pass id to update).",
@@ -437,7 +447,94 @@ fn sanitize_appearance(mut prefs: AppearancePrefs) -> AppearancePrefs {
     prefs.code_font_size = prefs.code_font_size.min(FONT_SIZE_MAX);
     prefs.ui_font_family = sanitize_font_family(&prefs.ui_font_family);
     prefs.code_font_family = sanitize_font_family(&prefs.code_font_family);
+    prefs.custom_css = sanitize_custom_css(&prefs.custom_css);
     prefs
+}
+
+pub(crate) const CUSTOM_CSS_MAX_BYTES: usize = 64_000;
+
+/// Strip constructs that can load remote content or break out of a `<style>` tag.
+/// Keep in sync with `ui/src/app_support/prefs.rs`.
+pub(crate) fn sanitize_custom_css(input: &str) -> String {
+    let mut css = String::with_capacity(input.len().min(CUSTOM_CSS_MAX_BYTES));
+    for ch in input.chars() {
+        if ch == '\0' {
+            continue;
+        }
+        if css.len() + ch.len_utf8() > CUSTOM_CSS_MAX_BYTES {
+            break;
+        }
+        css.push(ch);
+    }
+    let css = strip_ascii_ci(&css, "javascript:");
+    let css = strip_ascii_ci(&css, "expression(");
+    let css = strip_ascii_ci(&css, "behavior:");
+    let css = strip_ascii_ci(&css, "-moz-binding");
+    let css = strip_ascii_ci(&css, "</style");
+    let css = strip_ascii_ci(&css, "<script");
+    let css = strip_at_keyword(&css, "@import");
+    let css = strip_at_keyword(&css, "@namespace");
+    strip_url_functions(&css)
+}
+
+fn strip_ascii_ci(input: &str, needle: &str) -> String {
+    let needle_l = needle.to_ascii_lowercase();
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while !rest.is_empty() {
+        let lower = rest.to_ascii_lowercase();
+        if let Some(idx) = lower.find(&needle_l) {
+            out.push_str(&rest[..idx]);
+            rest = &rest[idx + needle.len()..];
+        } else {
+            out.push_str(rest);
+            break;
+        }
+    }
+    out
+}
+
+fn strip_at_keyword(input: &str, keyword: &str) -> String {
+    let needle = keyword.to_ascii_lowercase();
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while !rest.is_empty() {
+        let lower = rest.to_ascii_lowercase();
+        if let Some(idx) = lower.find(&needle) {
+            out.push_str(&rest[..idx]);
+            let after = &rest[idx + keyword.len()..];
+            if let Some(end) = after.find([';', '\n']) {
+                rest = &after[end + 1..];
+            } else {
+                rest = "";
+            }
+        } else {
+            out.push_str(rest);
+            break;
+        }
+    }
+    out
+}
+
+fn strip_url_functions(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while !rest.is_empty() {
+        let lower = rest.to_ascii_lowercase();
+        if let Some(idx) = lower.find("url(") {
+            out.push_str(&rest[..idx]);
+            let after = &rest[idx + 4..];
+            if let Some(end) = after.find(')') {
+                rest = &after[end + 1..];
+            } else {
+                rest = "";
+            }
+        } else {
+            out.push_str(rest);
+            break;
+        }
+    }
+    out
 }
 
 fn sanitize_font_family(value: &str) -> String {
@@ -514,7 +611,7 @@ async fn snapshot(store: &Store, keys: &[String]) -> Result<String, String> {
             "Unknown keys (not in the catalog): {}.",
             unknown.join(", ")
         ));
-        lines.push("Writable keys: ui_font_size, code_font_size, ui_font_family, code_font_family, theme, light_palette, dark_palette, locale, max_iter, auto_compact, auto_continue, auto_continue_limit, follow_up_questions, resume_last_session, notifications_enabled, selection_popup_enabled, send_with_modifier.".into());
+        lines.push(format!("Writable keys: {}.", writable_keys_csv()));
     }
     Ok(lines.join("\n"))
 }
@@ -545,9 +642,19 @@ fn render_specialists(list: &[crate::specialists::Specialist]) -> String {
     lines.join("\n")
 }
 
+fn writable_keys_csv() -> String {
+    CATALOG
+        .iter()
+        .filter(|spec| spec.writable)
+        .map(|spec| spec.key)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn render_value(value: &Value) -> String {
     match value {
         Value::String(text) if text.is_empty() => "(default)".into(),
+        Value::String(text) if text.len() > 80 => format!("({} bytes)", text.len()),
         Value::String(text) => format!("\"{text}\""),
         Value::Bool(flag) => flag.to_string(),
         Value::Number(number) => number.to_string(),
@@ -626,6 +733,7 @@ async fn current_values(store: &Store) -> Result<Map<String, Value>, String> {
         "send_with_modifier".into(),
         json!(appearance.send_with_modifier),
     );
+    values.insert("custom_css".into(), json!(appearance.custom_css));
     values.insert("locale".into(), json!(locale));
     values.insert("max_iter".into(), json!(max_iter));
     values.insert("auto_compact".into(), json!(auto_compact));
@@ -695,6 +803,7 @@ async fn apply_patch(store: &Store, values: &Map<String, Value>) -> Result<SetOu
             "send_with_modifier".into(),
             json!(appearance.send_with_modifier),
         );
+        presentation.insert("custom_css".into(), json!(appearance.custom_css));
     }
 
     Ok(SetOutcome {
@@ -811,6 +920,15 @@ async fn apply_one(
             appearance.send_with_modifier = bool_value(incoming)?;
             *appearance_dirty = true;
             Ok(appearance.send_with_modifier.to_string())
+        }
+        "custom_css" => {
+            appearance.custom_css = sanitize_custom_css(&string_value(incoming)?);
+            *appearance_dirty = true;
+            Ok(if appearance.custom_css.is_empty() {
+                "(cleared)".into()
+            } else {
+                format!("{} bytes", appearance.custom_css.len())
+            })
         }
         "locale" => {
             let locale = normalize_locale(&string_value(incoming)?)?;
@@ -1291,6 +1409,63 @@ mod tests {
         assert!(result.content.contains("2.0 KB"), "{}", result.content);
         assert!(result.content.contains("Workspace:"), "{}", result.content);
 
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_file(db);
+    }
+
+    #[test]
+    fn appearance_prefs_tolerate_missing_custom_css() {
+        let prefs: AppearancePrefs = serde_json::from_str(
+            r#"{"theme":"dark","light_palette":"paper","dark_palette":"charcoal","ui_font_size":14,"code_font_size":12}"#,
+        )
+        .unwrap();
+        assert_eq!(prefs.theme, "dark");
+        assert!(prefs.custom_css.is_empty());
+    }
+
+    #[test]
+    fn custom_css_strips_remote_loads_and_style_breakouts() {
+        let dirty = r#"
+:root { --md-lead-bar-width: 0; --md-lead-bar-pad: 0; }
+@import url("https://evil.example/x.css");
+.md table { background: url(https://evil.example/pixel.png); }
+</style><script>alert(1)</script>
+"#;
+        let clean = sanitize_custom_css(dirty);
+        assert!(clean.contains("--md-lead-bar-width: 0"));
+        assert!(!clean.to_ascii_lowercase().contains("@import"));
+        assert!(!clean.to_ascii_lowercase().contains("url("));
+        assert!(!clean.to_ascii_lowercase().contains("</style"));
+        assert!(!clean.to_ascii_lowercase().contains("<script"));
+        assert!(!clean.to_ascii_lowercase().contains("https://evil.example"));
+    }
+
+    #[test]
+    fn custom_css_caps_length() {
+        let huge = "a".repeat(CUSTOM_CSS_MAX_BYTES + 80);
+        assert_eq!(sanitize_custom_css(&huge).len(), CUSTOM_CSS_MAX_BYTES);
+    }
+
+    #[tokio::test]
+    async fn set_custom_css_persists_sanitized_stylesheet() {
+        let (store, root, db) = test_store().await;
+        let env = NoEnv(root.clone());
+        let configure = tool(store.clone(), root.clone());
+        let result = configure
+            .run(
+                &json!({
+                    "action": "set",
+                    "values": {
+                        "custom_css": ":root { --md-lead-bar-width: 0; }\n@import url(https://x);"
+                    }
+                }),
+                &env,
+            )
+            .await;
+        assert!(result.success, "{}", result.content);
+        let saved = load_appearance(&store).await.prefs.custom_css;
+        assert!(saved.contains("--md-lead-bar-width: 0"));
+        assert!(!saved.to_ascii_lowercase().contains("@import"));
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_file(db);
     }

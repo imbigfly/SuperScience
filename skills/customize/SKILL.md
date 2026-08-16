@@ -49,6 +49,13 @@ ask the user to install that folder through **Settings → Skills**. Wisp copies
 installed skills to its user skill directory; there is no Agent-side publish or
 delete interface.
 
+## Custom appearance
+
+For a user stylesheet (hide the lead bar, restyle chat, override tokens), load
+`custom-theme`. Write CSS that uses documented tokens, then apply it with
+`configure` `set custom_css` or ask the user to import the file under
+**Settings → Appearance**.
+
 ## Boundaries
 
 - Do not modify Wisp's SQLite store directly.
