@@ -1690,7 +1690,8 @@ pub(super) fn SettingsView(
                                                                     match report {
                                                                         Some(report)
                                                                             if report.external_references > 0
-                                                                                || report.staged_files > 0 =>
+                                                                                || report.staged_files > 0
+                                                                                || report.active_runs > 0 =>
                                                                         {
                                                                             let detail = tf(
                                                                                 locale.get_untracked(),
@@ -1698,6 +1699,7 @@ pub(super) fn SettingsView(
                                                                                 &[
                                                                                     ("refs", &report.external_references.to_string()),
                                                                                     ("files", &report.staged_files.to_string()),
+                                                                                    ("runs", &report.active_runs.to_string()),
                                                                                 ],
                                                                             );
                                                                             delete_confirm.set(Some(DeleteConfirm::Host {

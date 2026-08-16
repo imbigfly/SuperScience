@@ -1819,11 +1819,21 @@ fn permanent_remote_start_errors_require_user_intervention() {
         assert!(permanent_remote_start_error(error), "{error}");
     }
     assert!(permanent_remote_start_error(
-        "SSH launch failed: connection timed out"
-    ));
-    assert!(permanent_remote_start_error(
         "SSH authentication gate blocked for `ssh:gpu` after a previous failure"
     ));
+    for transient in [
+        "SSH poll failed: Connection reset by peer",
+        "SSH poll failed: Connection timed out",
+        "connect timed out",
+        "No route to host",
+        "Network is unreachable",
+        "Connection closed by remote host",
+    ] {
+        assert!(
+            !permanent_remote_start_error(transient),
+            "transient must not end a confirmed run: {transient}"
+        );
+    }
 }
 
 #[test]
@@ -3305,7 +3315,7 @@ async fn remote_files_classify_and_remove_only_ledgered_paths() {
     );
     assert_eq!(
         state_of(&new_upload.id),
-        remote_files::RemoteFileState::Orphan
+        remote_files::RemoteFileState::Active
     );
 
     // Active entries require force; unledgered ids are refused outright.
@@ -3335,10 +3345,44 @@ async fn remote_files_classify_and_remove_only_ledgered_paths() {
     assert!(error.contains("not ledgered"), "{error}");
     assert!(runner.commands.lock().unwrap().is_empty());
 
-    // Orphan and replaced entries delete; missing remote files still count.
+    // Replaced is ledger-only: deleting it must not rm the current file.
+    let runner = Arc::new(ScriptedRunRunner::new(vec![]));
+    let manager = RunManager::with_runner(runner.clone());
+    let removed = remote_files::remove_remote_files(
+        &store,
+        manager.runner_ref(),
+        "p",
+        &context,
+        &[old_upload.id.clone()],
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(removed, 1);
+    assert!(runner.commands.lock().unwrap().is_empty());
+    let remaining = store
+        .list_remote_staging("p", "ssh:gpu", false)
+        .await
+        .unwrap();
+    assert_eq!(remaining.len(), 2);
+    assert!(remaining.iter().any(|e| e.id == new_upload.id));
+    assert!(remaining.iter().any(|e| e.id == active.id));
+
+    // Current upload is Active and requires force. After force, one rm.
+    let error = remote_files::remove_remote_files(
+        &store,
+        manager.runner_ref(),
+        "p",
+        &context,
+        &[new_upload.id.clone()],
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(error.contains("still referenced"), "{error}");
     let runner = Arc::new(ScriptedRunRunner::new(vec![ok_output(&format!(
-        "__WISP_RM__:{}\n__WISP_RM__:{}\n",
-        old_upload.id, new_upload.id
+        "__WISP_RM__:{}\n",
+        new_upload.id
     ))]));
     let manager = RunManager::with_runner(runner.clone());
     let removed = remote_files::remove_remote_files(
@@ -3346,17 +3390,17 @@ async fn remote_files_classify_and_remove_only_ledgered_paths() {
         manager.runner_ref(),
         "p",
         &context,
-        &[old_upload.id.clone(), new_upload.id.clone()],
-        false,
+        &[new_upload.id.clone()],
+        true,
     )
     .await
     .unwrap();
-    assert_eq!(removed, 2);
+    assert_eq!(removed, 1);
     {
         let commands = runner.commands.lock().unwrap();
         assert_eq!(commands.len(), 1);
         let payload = commands[0].stdin.as_deref().unwrap();
-        assert_eq!(payload.matches("rm -rf \"$path\"").count(), 2);
+        assert_eq!(payload.matches("rm -rf \"$path\"").count(), 1);
         assert!(payload.contains("'wisp/proj/data/matrix.tsv'"));
     }
     let remaining = store
@@ -3504,10 +3548,29 @@ async fn orphan_file_sweep_reclaims_only_expired_unreferenced_entries() {
         entry.created_at = now - age_days * 86_400;
         entry
     };
-    // Orphan and old: reclaimed. Orphan but recent: kept. Active: kept.
-    // Replaced and old: ledger-only removal (the newer entry owns the path).
-    let orphan_old = seed_entry(None, "~/wisp/proj/data/stale.bam", "transfer", 40);
-    let orphan_recent = seed_entry(None, "~/wisp/proj/data/fresh.bam", "transfer", 2);
+    // Failed transfer (partial): orphan, reclaimed. Successful current upload:
+    // Active, kept. Replaced: ledger-only. Persist with no live artifact: orphan.
+    seed_cleanup_run(
+        &store,
+        "run-fail",
+        wisp_store::RunStatus::Failed,
+        "[]",
+        false,
+    )
+    .await;
+    let orphan_failed = seed_entry(
+        Some("run-fail"),
+        "~/wisp/proj/data/stale.bam",
+        "transfer",
+        40,
+    );
+    let persist_orphan = seed_entry(
+        None,
+        "/scratch/proj/artifacts/r1/gone.bam",
+        "harvest_persist",
+        40,
+    );
+    let kept_upload = seed_entry(None, "~/wisp/proj/data/fresh.bam", "transfer", 40);
     let replaced_old = seed_entry(None, "~/wisp/proj/data/matrix.tsv", "transfer", 45);
     let mut replacement = seed_entry(None, "~/wisp/proj/data/matrix.tsv", "transfer", 41);
     replacement.created_at += 1; // strictly newer than replaced_old
@@ -3526,8 +3589,9 @@ async fn orphan_file_sweep_reclaims_only_expired_unreferenced_entries() {
         40,
     );
     for entry in [
-        &orphan_old,
-        &orphan_recent,
+        &orphan_failed,
+        &persist_orphan,
+        &kept_upload,
         &replaced_old,
         &replacement,
         &active_old,
@@ -3543,11 +3607,11 @@ async fn orphan_file_sweep_reclaims_only_expired_unreferenced_entries() {
         .set_project_run_retention("p", None, None, Some(30))
         .await
         .unwrap();
-    // orphan_old and the (old) replacement entry are due for deletion;
-    // replaced_old is closed in-ledger only.
+    // Failed partial + unreferenced persist are deleted. Replaced is closed
+    // in-ledger only. Current successful upload and live run input stay.
     let runner = Arc::new(ScriptedRunRunner::new(vec![ok_output(&format!(
         "__WISP_RM__:{}\n__WISP_RM__:{}\n",
-        orphan_old.id, replacement.id
+        orphan_failed.id, persist_orphan.id
     ))]));
     let manager = RunManager::with_runner(runner.clone());
     let removed = manager.orphan_file_sweep(&store).await.unwrap();
@@ -3557,22 +3621,134 @@ async fn orphan_file_sweep_reclaims_only_expired_unreferenced_entries() {
         assert_eq!(commands.len(), 1);
         let payload = commands[0].stdin.as_deref().unwrap();
         assert!(payload.contains("'wisp/proj/data/stale.bam'"));
-        assert!(payload.contains("'wisp/proj/data/matrix.tsv'"));
+        assert!(payload.contains("gone.bam"));
         assert!(!payload.contains("fresh.bam"));
         assert!(!payload.contains("input.fasta"));
+        assert!(!payload.contains("matrix.tsv"));
     }
-    let remaining: Vec<String> = store
+    let mut remaining: Vec<String> = store
         .list_remote_staging("p", "ssh:gpu", false)
         .await
         .unwrap()
         .into_iter()
         .map(|entry| entry.id)
         .collect();
-    assert_eq!(remaining, vec![active_old.id.clone(), orphan_recent.id]);
+    remaining.sort();
+    let mut expected = vec![
+        active_old.id.clone(),
+        kept_upload.id.clone(),
+        replacement.id.clone(),
+    ];
+    expected.sort();
+    assert_eq!(remaining, expected);
 
     // Idempotent: nothing left that is due.
     let manager = RunManager::with_runner(Arc::new(ScriptedRunRunner::new(vec![])));
     assert_eq!(manager.orphan_file_sweep(&store).await.unwrap(), 0);
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn transfer_without_handle_fails_instead_of_lost_on_reconcile() {
+    let tmp = std::env::temp_dir().join(format!("wisp_xfer_reclaim_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    let mut run = wisp_store::RunRecord::new("xfer-1", "p", "ssh:gpu", "Upload", "file_transfer");
+    run.frame_id = Some("f".into());
+    run.status = wisp_store::RunStatus::Running;
+    store.create_run(&run).await.unwrap();
+
+    let manager = RunManager::with_runner(Arc::new(ScriptedRunRunner::new(vec![])));
+    let lost = manager.recover(&store).await.unwrap();
+    assert_eq!(lost, 0);
+    let run = store.get_run("xfer-1").await.unwrap().unwrap();
+    assert_eq!(run.status, wisp_store::RunStatus::Failed);
+    assert!(
+        run.last_poll_error
+            .as_deref()
+            .is_some_and(|e| e.contains("no recoverable handle")),
+        "{:?}",
+        run.last_poll_error
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn disposal_report_counts_every_project_on_the_host() {
+    let tmp = std::env::temp_dir().join(format!("wisp_disposal_all_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p1", "one", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store
+        .create_project("p2", "two", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f1", "p1", "OPERON", "m").await.unwrap();
+    store.create_frame("f2", "p2", "OPERON", "m").await.unwrap();
+    let context = harvest_test_context();
+    store.upsert_execution_context(&context).await.unwrap();
+    store
+        .record_remote_staging(&wisp_store::RemoteStagingEntry::new(
+            "p1",
+            "ssh:gpu",
+            None,
+            "~/wisp/p1/data/a.bam",
+            "transfer",
+        ))
+        .await
+        .unwrap();
+    store
+        .record_remote_staging(&wisp_store::RemoteStagingEntry::new(
+            "p2",
+            "ssh:gpu",
+            None,
+            "~/wisp/p2/data/b.bam",
+            "transfer",
+        ))
+        .await
+        .unwrap();
+    let uri = "ssh://gpu/scratch/p2/out.bam";
+    store
+        .save_artifact_version(&wisp_store::ArtifactVersionDraft {
+            version_id: None,
+            artifact_id: wisp_store::logical_artifact_id("p2", "path:out.bam"),
+            project_id: "p2".into(),
+            root_frame_id: "f2".into(),
+            filename: "out.bam".into(),
+            content_type: "data".into(),
+            storage_path: uri.into(),
+            logical_key: Some("path:out.bam".into()),
+            size_bytes: Some(12),
+            checksum: None,
+            producing_run_id: None,
+            env_snapshot_hash: None,
+            materialization: wisp_store::ArtifactMaterialization::External,
+            capture_timing: wisp_store::ArtifactCaptureTiming::AtCreation,
+        })
+        .await
+        .unwrap();
+
+    let report = remote_files::context_disposal_report(&store, "p1", &context)
+        .await
+        .unwrap();
+    assert_eq!(report.staged_files, 2);
+    assert_eq!(report.external_references, 1);
+    assert_eq!(report.sole_remote_copies, 1);
+    assert_eq!(report.active_runs, 0);
 
     let _ = std::fs::remove_dir_all(&tmp);
 }

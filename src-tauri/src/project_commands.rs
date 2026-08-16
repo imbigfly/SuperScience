@@ -433,6 +433,9 @@ pub(super) async fn delete_project(
     // the store cascade removes them); other projects keep running (#52).
     cancel_project_sessions(state.inner(), &id).await;
     state.runtime_manager.stop_project(&id).await;
+    if let Err(error) = state.run_manager.wind_down_project(&state.store, &id).await {
+        tracing::warn!(project_id = %id, "project wind-down failed: {error}");
+    }
     if let Some(target) = workspace_delete_target {
         delete_project_workspace_data(target).await?;
     }

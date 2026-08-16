@@ -132,11 +132,20 @@ pub(crate) async fn list_remote_files(
             .is_some_and(|(_, id)| *id != entry.id);
         let persist_live = entry.source == "harvest_persist"
             && live_uris.contains(&ssh_uri_for_remote_path(alias, &entry.remote_path));
-        let active = persist_live
-            || run.as_ref().is_some_and(|run| {
-                !run.status.is_terminal()
-                    || (entry.source == "run_input" && run.cleaned_at.is_none())
+        // A current upload is the user's dataset on that server — it stays
+        // Active after the transfer run succeeds. Only a failed/cancelled
+        // attempt (partial bytes) or a harvest-persist with no live artifact
+        // becomes an orphan. Replaced is decided first: the newer entry owns
+        // the path, so the older ledger row must never trigger `rm`.
+        let transfer_live = entry.source == "transfer"
+            && run.as_ref().map_or(true, |run| {
+                !run.status.is_terminal() || run.status == wisp_store::RunStatus::Succeeded
             });
+        let input_live = entry.source == "run_input"
+            && run
+                .as_ref()
+                .is_some_and(|run| !run.status.is_terminal() || run.cleaned_at.is_none());
+        let active = persist_live || transfer_live || input_live;
         let state = if replaced {
             RemoteFileState::Replaced
         } else if active {
@@ -172,6 +181,9 @@ fn removal_payload(paths: &[(String, String)]) -> String {
 /// Delete ledgered files from the server. Active entries require `force`
 /// (explicit user confirmation). A path that no longer exists on the server
 /// still counts as removed — ledger/reality drift resolves toward removal.
+///
+/// Replaced rows share a path with a newer entry that owns the bytes. They
+/// are closed in-ledger only — `rm` would delete the current file.
 pub(crate) async fn remove_remote_files(
     store: &wisp_store::Store,
     runner: &dyn RunCommandRunner,
@@ -184,7 +196,9 @@ pub(crate) async fn remove_remote_files(
         return Err("remove_remote_files requires at least one ledger entry id".into());
     }
     let views = list_remote_files(store, project_id, &context.id).await?;
+    let mut ledger_only = Vec::new();
     let mut targets = Vec::new();
+    let mut seen_paths = HashSet::new();
     for id in ids {
         let Some(view) = views.iter().find(|view| &view.id == id) else {
             return Err(format!(
@@ -199,29 +213,43 @@ pub(crate) async fn remove_remote_files(
                 view.run_id.as_deref().unwrap_or("unknown")
             ));
         }
-        targets.push((view.id.clone(), view.remote_path.clone()));
+        if view.state == RemoteFileState::Replaced {
+            ledger_only.push(view.id.clone());
+            continue;
+        }
+        if seen_paths.insert(view.remote_path.clone()) {
+            targets.push((view.id.clone(), view.remote_path.clone()));
+        } else {
+            ledger_only.push(view.id.clone());
+        }
     }
-    let connection = crate::ssh_hosts::SshConnection::from_execution_context(context)?;
-    let output = checked_output(
-        "remove remote files",
-        runner
-            .run(
-                ssh_script_command(
-                    &connection,
-                    "remove remote files",
-                    removal_payload(&targets),
-                )?,
-                REMOTE_RPC_TIMEOUT,
-            )
-            .await,
-    )?;
-    let confirmed: Vec<String> = output
-        .stdout
-        .lines()
-        .filter_map(|line| line.strip_prefix("__WISP_RM__:"))
-        .map(|id| id.trim().to_string())
-        .collect();
-    if confirmed.is_empty() {
+    let mut confirmed = ledger_only;
+    if !targets.is_empty() {
+        let connection = crate::ssh_hosts::SshConnection::from_execution_context(context)?;
+        let output = checked_output(
+            "remove remote files",
+            runner
+                .run(
+                    ssh_script_command(
+                        &connection,
+                        "remove remote files",
+                        removal_payload(&targets),
+                    )?,
+                    REMOTE_RPC_TIMEOUT,
+                )
+                .await,
+        )?;
+        let deleted: Vec<String> = output
+            .stdout
+            .lines()
+            .filter_map(|line| line.strip_prefix("__WISP_RM__:"))
+            .map(|id| id.trim().to_string())
+            .collect();
+        if deleted.is_empty() {
+            return Err("remote file removal did not confirm any deletion".into());
+        }
+        confirmed.extend(deleted);
+    } else if confirmed.is_empty() {
         return Err("remote file removal did not confirm any deletion".into());
     }
     store
@@ -243,35 +271,46 @@ pub(crate) async fn remove_remote_files(
 }
 
 /// Disposal audit before dropping a server: what would be abandoned.
+/// Counts are **across every project** — `abandon_context_sources` is
+/// alias-global, so a report of only the active project would hide sole copies.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct ContextDisposalReport {
     pub context_id: String,
     /// Registered artifact references (`ssh://alias/…`) that still live only
-    /// on this server.
+    /// on this server. These are the only Wisp copy of those bytes.
     pub external_references: i64,
     /// Ledgered files not yet removed from the server.
     pub staged_files: i64,
+    /// Runs still submitted/running/cancelling on this context.
+    pub active_runs: i64,
+    /// Same as `external_references`: External refs are the project's only copy.
+    pub sole_remote_copies: i64,
 }
 
 pub(crate) async fn context_disposal_report(
     store: &wisp_store::Store,
-    project_id: &str,
+    _project_id: &str,
     context: &wisp_store::ExecutionContext,
 ) -> Result<ContextDisposalReport, String> {
     let alias = context.id.strip_prefix("ssh:").unwrap_or(&context.id);
     let external_references = store
-        .count_external_references_on_context(project_id, &format!("ssh://{alias}/"))
+        .count_external_references_on_context_all(&format!("ssh://{alias}/"))
         .await
         .map_err(|e| e.to_string())?;
     let staged_files = store
-        .list_remote_staging(project_id, &context.id, false)
+        .count_remote_staging_on_context(&context.id)
         .await
-        .map_err(|e| e.to_string())?
-        .len() as i64;
+        .map_err(|e| e.to_string())?;
+    let active_runs = store
+        .count_active_runs_on_context(&context.id)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(ContextDisposalReport {
         context_id: context.id.clone(),
         external_references,
         staged_files,
+        active_runs,
+        sole_remote_copies: external_references,
     })
 }
 

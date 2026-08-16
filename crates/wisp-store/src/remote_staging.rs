@@ -205,6 +205,34 @@ impl Store {
         Ok(true)
     }
 
+    /// Live External references on this context across every project.
+    /// Host disposal is alias-global, so the audit cannot be project-scoped.
+    pub async fn count_external_references_on_context_all(&self, uri_prefix: &str) -> Result<i64> {
+        Ok(sqlx::query_scalar(
+            "SELECT COUNT(*) FROM artifact_versions v \
+             JOIN artifacts a ON a.id=v.artifact_id \
+             WHERE v.materialization='external' \
+             AND v.source_discarded_at IS NULL \
+             AND v.storage_path LIKE ? ESCAPE '\\' \
+             AND v.id=(SELECT id FROM artifact_versions latest \
+                       WHERE latest.artifact_id=v.artifact_id \
+                       ORDER BY latest.version_number DESC LIMIT 1)",
+        )
+        .bind(like_prefix(uri_prefix))
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    pub async fn count_remote_staging_on_context(&self, context_id: &str) -> Result<i64> {
+        Ok(sqlx::query_scalar(
+            "SELECT COUNT(*) FROM remote_staging \
+             WHERE context_id=? AND removed_at IS NULL",
+        )
+        .bind(context_id)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
     /// Disposal audit: live External artifact references whose URI targets this
     /// context (`ssh://<alias>/…`), still the head version of their artifact.
     /// Discarded sources are no longer a reason to keep the server.

@@ -53,7 +53,11 @@ Globs, roots, missing paths, symbolic links, and special files are rejected.
 Before uploading, Wisp checks through the configured SSH connection that the
 exact remote destination does not exist. It then uploads with scp as a
 persisted `file_transfer` Run, preserving cancellation, timeout, progress, and
-audit records. Existing remote destinations are never silently overwritten.
+audit records. The destination is ledgered when the attempt starts, so a
+failed or cancelled partial stays visible and can be deleted. A successful
+upload stays active on that server (it is project data, not sweep fodder).
+Existing remote destinations are never silently overwritten. Restarting Wisp
+retries a persisted transfer handle instead of marking the Run lost.
 
 ## User-approved trust
 

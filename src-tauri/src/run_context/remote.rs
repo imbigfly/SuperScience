@@ -1013,6 +1013,11 @@ pub(super) fn remote_poll_interval(consecutive_transport_errors: u32) -> Duratio
     }
 }
 
+/// Errors that mean we will never reattach a confirmed remote process:
+/// identity, host trust, or a missing supervisor prerequisite. Transient
+/// transport failures (`connection reset`, timed out, no route, …) are
+/// *not* listed — a confirmed `nohup` job keeps running and the poller
+/// must back off instead of marking the Run `lost`.
 pub(super) fn permanent_remote_start_error(error: &str) -> bool {
     let error = error.to_ascii_lowercase();
     [
@@ -1032,12 +1037,6 @@ pub(super) fn permanent_remote_start_error(error: &str) -> bool {
         "no such identity",
         "identity file is not accessible",
         "bad configuration option",
-        "connection reset",
-        "connection closed",
-        "connection timed out",
-        "connect timed out",
-        "no route to host",
-        "network is unreachable",
         "kex_exchange_identification",
         "ssh authentication gate blocked",
         "ssh connectivity gate blocked",

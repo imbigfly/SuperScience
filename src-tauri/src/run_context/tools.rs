@@ -666,7 +666,7 @@ impl Tool for ListRemoteFilesTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "list_remote_files",
-            "List the files this project placed on one SSH server (run input staging, uploads, and harvest-persisted outputs left on the server), classified as active (still referenced), replaced (a newer upload took the same path), or orphan (safe to delete). Use remove_remote_files to delete retracted files.",
+            "List the files this project placed on one SSH server (run input staging, uploads, and harvest-persisted outputs left on the server). Current successful uploads stay active (they are the user's dataset). Replaced means a newer upload owns that path (ledger-only). Orphan means a failed/cancelled partial or an unreferenced persist file — safe to delete. Use remove_remote_files to delete retracted files.",
             serde_json::json!({
                 "type": "object",
                 "properties": { "context_id": { "type": "string", "description": "SSH context id, e.g. ssh:gpu" } },
@@ -734,7 +734,7 @@ impl Tool for RemoveRemoteFilesTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "remove_remote_files",
-            "Delete ledgered files from one SSH server by their list_remote_files entry ids. Only orphaned/replaced entries are deleted; entries still referenced by a run are refused (the UI may force with explicit user confirmation). A path already gone on the server still counts as removed.",
+            "Delete ledgered files from one SSH server by their list_remote_files entry ids. Orphan entries delete the remote bytes. Replaced entries are closed in the ledger only — they share a path with the current file, so deleting them must not rm that path. Active entries are refused unless the UI passes force after explicit user confirmation.",
             serde_json::json!({
                 "type": "object",
                 "properties": {

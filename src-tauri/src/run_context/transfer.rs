@@ -80,6 +80,92 @@ fn transport_label(transport: TransferTransport) -> &'static str {
     }
 }
 
+/// Persisted so a transfer Run can be reclaimed after an app restart instead
+/// of being marked `lost`. The scp/rsync process itself is local to Wisp, so
+/// restart always retries (or fails cleanly) — it never reattaches a remote PID.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum TransferHandle {
+    LocalUpload {
+        source_path: String,
+        destination_context_id: String,
+        destination_path: String,
+        transport: String,
+        resume: bool,
+    },
+    LocalDownload {
+        source_context_id: String,
+        source_path: String,
+        destination_path: String,
+        transport: String,
+    },
+    Relay {
+        source_context_id: String,
+        source_path: String,
+        destination_context_id: String,
+        destination_path: String,
+    },
+    Harvest {
+        parent_run_id: String,
+    },
+}
+
+impl TransferHandle {
+    fn display_path(&self) -> &str {
+        match self {
+            Self::LocalUpload {
+                destination_path, ..
+            }
+            | Self::Relay {
+                destination_path, ..
+            } => destination_path,
+            Self::LocalDownload {
+                destination_path, ..
+            } => destination_path,
+            Self::Harvest { parent_run_id } => parent_run_id,
+        }
+    }
+}
+
+pub(crate) async fn persist_transfer_handle(
+    store: &wisp_store::Store,
+    owner_id: &str,
+    run_id: &str,
+    handle: &TransferHandle,
+) -> Result<(), String> {
+    let json = serde_json::to_string(handle).map_err(|error| error.to_string())?;
+    let _ = store
+        .set_run_remote_handle_owned(run_id, owner_id, &json, handle.display_path())
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+async fn ledger_upload_attempt(
+    store: &wisp_store::Store,
+    run_id: &str,
+    destination_alias: &str,
+    destination_path: &str,
+    size_bytes: Option<i64>,
+) -> Result<(), String> {
+    let Ok(Some(run)) = store.get_run(run_id).await else {
+        return Ok(());
+    };
+    let mut entry = wisp_store::RemoteStagingEntry::new(
+        run.project_id,
+        format!("ssh:{destination_alias}"),
+        Some(run_id.to_string()),
+        destination_path,
+        "transfer",
+    );
+    entry.size_bytes = size_bytes;
+    store
+        .ensure_remote_staging(&entry)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 pub struct ConfigureSshTrustTool {
     store: wisp_store::Store,
     manager: RunManager,
@@ -1191,6 +1277,262 @@ fi
 }
 
 impl RunManager {
+    /// Resume a transfer after process restart, or fail it cleanly. Never
+    /// mark a transfer `lost` — there is no remote supervisor to reattach.
+    pub(super) async fn reclaim_transfer(
+        &self,
+        store: wisp_store::Store,
+        run: &wisp_store::RunRecord,
+    ) -> Result<(), String> {
+        if self.active.lock().await.contains_key(&run.id) {
+            return Ok(());
+        }
+        let handle = run
+            .remote_handle_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<TransferHandle>(json).ok());
+        let Some(handle) = handle else {
+            let _ = store
+                .record_run_poll_owned(
+                    &run.id,
+                    &self.owner_id,
+                    None,
+                    None,
+                    Some("transfer has no recoverable handle; retry the transfer"),
+                )
+                .await;
+            let _ = store
+                .finish_active_run_owned(
+                    &run.id,
+                    &self.owner_id,
+                    wisp_store::RunStatus::Failed,
+                    Some(-1),
+                )
+                .await;
+            return Ok(());
+        };
+        let timeout = Duration::from_secs(run.timeout_secs.unwrap_or(4 * 60 * 60) as u64);
+        let started = Instant::now();
+        match handle {
+            TransferHandle::LocalUpload {
+                source_path,
+                destination_context_id,
+                destination_path,
+                transport,
+                ..
+            } => {
+                let Some(destination) = store
+                    .get_execution_context(&destination_context_id)
+                    .await
+                    .map_err(|e| e.to_string())?
+                else {
+                    return self
+                        .fail_transfer(
+                            &store,
+                            &run.id,
+                            &format!("destination context {destination_context_id} is gone"),
+                        )
+                        .await;
+                };
+                let connection =
+                    crate::ssh_hosts::SshConnection::from_execution_context(&destination)?;
+                let runner = self.runner.clone();
+                let owner_id = self.owner_id.clone();
+                let run_id = run.id.clone();
+                let active = self.active.clone();
+                let cleanup_id = run_id.clone();
+                let task_store = store;
+                let task = tokio::spawn(async move {
+                    let result = local_upload_lifecycle(
+                        &task_store,
+                        &owner_id,
+                        &run_id,
+                        runner,
+                        PathBuf::from(source_path),
+                        connection,
+                        destination_path,
+                        local_transport_choice(&transport),
+                        true,
+                        timeout,
+                        started,
+                    )
+                    .await;
+                    if let Err(error) = result {
+                        tracing::warn!(run_id, "reclaimed upload failed: {error}");
+                    }
+                });
+                self.active.lock().await.insert(
+                    cleanup_id.clone(),
+                    ActiveRun {
+                        abort: task.abort_handle(),
+                    },
+                );
+                tokio::spawn(async move {
+                    let _ = task.await;
+                    active.lock().await.remove(&cleanup_id);
+                });
+            }
+            TransferHandle::LocalDownload {
+                source_context_id,
+                source_path,
+                destination_path,
+                transport,
+            } => {
+                let Some(source) = store
+                    .get_execution_context(&source_context_id)
+                    .await
+                    .map_err(|e| e.to_string())?
+                else {
+                    return self
+                        .fail_transfer(
+                            &store,
+                            &run.id,
+                            &format!("source context {source_context_id} is gone"),
+                        )
+                        .await;
+                };
+                let dest = PathBuf::from(&destination_path);
+                let parent = dest.parent().filter(|p| !p.as_os_str().is_empty());
+                let Some(parent) = parent else {
+                    return self
+                        .fail_transfer(&store, &run.id, "download destination has no parent")
+                        .await;
+                };
+                let staging_dir = match RelayTempDir::new_in(parent, &run.id) {
+                    Ok(dir) => dir,
+                    Err(error) => return self.fail_transfer(&store, &run.id, &error).await,
+                };
+                let connection = crate::ssh_hosts::SshConnection::from_execution_context(&source)?;
+                let runner = self.runner.clone();
+                let owner_id = self.owner_id.clone();
+                let run_id = run.id.clone();
+                let active = self.active.clone();
+                let cleanup_id = run_id.clone();
+                let task_store = store;
+                let task = tokio::spawn(async move {
+                    let result = local_download_lifecycle(
+                        &task_store,
+                        &owner_id,
+                        &run_id,
+                        runner,
+                        staging_dir,
+                        connection,
+                        source_path,
+                        dest,
+                        local_transport_choice(&transport),
+                        timeout,
+                        started,
+                    )
+                    .await;
+                    if let Err(error) = result {
+                        tracing::warn!(run_id, "reclaimed download failed: {error}");
+                    }
+                });
+                self.active.lock().await.insert(
+                    cleanup_id.clone(),
+                    ActiveRun {
+                        abort: task.abort_handle(),
+                    },
+                );
+                tokio::spawn(async move {
+                    let _ = task.await;
+                    active.lock().await.remove(&cleanup_id);
+                });
+            }
+            TransferHandle::Relay {
+                source_context_id,
+                source_path,
+                destination_context_id,
+                destination_path,
+            } => {
+                let source = store
+                    .get_execution_context(&source_context_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let destination = store
+                    .get_execution_context(&destination_context_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let (Some(source), Some(destination)) = (source, destination) else {
+                    return self
+                        .fail_transfer(&store, &run.id, "relay context is gone")
+                        .await;
+                };
+                let source_conn = crate::ssh_hosts::SshConnection::from_execution_context(&source)?;
+                let dest_conn =
+                    crate::ssh_hosts::SshConnection::from_execution_context(&destination)?;
+                let relay_dir = match RelayTempDir::new(&run.id) {
+                    Ok(dir) => dir,
+                    Err(error) => return self.fail_transfer(&store, &run.id, &error).await,
+                };
+                let runner = self.runner.clone();
+                let owner_id = self.owner_id.clone();
+                let run_id = run.id.clone();
+                let active = self.active.clone();
+                let cleanup_id = run_id.clone();
+                let task_store = store;
+                let task = tokio::spawn(async move {
+                    let result = relay_lifecycle(
+                        &task_store,
+                        &owner_id,
+                        &run_id,
+                        runner,
+                        relay_dir,
+                        source_conn,
+                        source_path,
+                        dest_conn,
+                        destination_path,
+                        timeout,
+                        started,
+                    )
+                    .await;
+                    if let Err(error) = result {
+                        tracing::warn!(run_id, "reclaimed relay failed: {error}");
+                    }
+                });
+                self.active.lock().await.insert(
+                    cleanup_id.clone(),
+                    ActiveRun {
+                        abort: task.abort_handle(),
+                    },
+                );
+                tokio::spawn(async move {
+                    let _ = task.await;
+                    active.lock().await.remove(&cleanup_id);
+                });
+            }
+            TransferHandle::Harvest { parent_run_id } => {
+                self.fail_transfer(
+                    &store,
+                    &run.id,
+                    &format!("harvest transfer interrupted; retry harvest_run on {parent_run_id}"),
+                )
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn fail_transfer(
+        &self,
+        store: &wisp_store::Store,
+        run_id: &str,
+        error: &str,
+    ) -> Result<(), String> {
+        let _ = store
+            .record_run_poll_owned(run_id, &self.owner_id, None, None, Some(error))
+            .await;
+        let _ = store
+            .finish_active_run_owned(
+                run_id,
+                &self.owner_id,
+                wisp_store::RunStatus::Failed,
+                Some(-1),
+            )
+            .await;
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn submit_local_upload_to_ssh(
         &self,
@@ -1264,6 +1606,19 @@ impl RunManager {
         {
             return Err("Upload Run changed state before it could start".into());
         }
+        persist_transfer_handle(
+            &store,
+            &self.owner_id,
+            &run_id,
+            &TransferHandle::LocalUpload {
+                source_path: source_path.display().to_string(),
+                destination_context_id: destination.id.clone(),
+                destination_path: destination_path.to_string(),
+                transport: transport_label(transport).into(),
+                resume,
+            },
+        )
+        .await?;
 
         let runner = self.runner.clone();
         let owner_id = self.owner_id.clone();
@@ -1391,6 +1746,18 @@ impl RunManager {
         {
             return Err("Download Run changed state before it could start".into());
         }
+        persist_transfer_handle(
+            &store,
+            &self.owner_id,
+            &run_id,
+            &TransferHandle::LocalDownload {
+                source_context_id: source.id.clone(),
+                source_path: source_path.to_string(),
+                destination_path: destination_path.display().to_string(),
+                transport: transport_label(transport).into(),
+            },
+        )
+        .await?;
 
         let runner = self.runner.clone();
         let owner_id = self.owner_id.clone();
@@ -1503,6 +1870,18 @@ impl RunManager {
         {
             return Err("Relay Run changed state before it could start".into());
         }
+        persist_transfer_handle(
+            &store,
+            &self.owner_id,
+            &run_id,
+            &TransferHandle::Relay {
+                source_context_id: source.id.clone(),
+                source_path: source_path.to_string(),
+                destination_context_id: destination.id.clone(),
+                destination_path: destination_path.to_string(),
+            },
+        )
+        .await?;
 
         let runner = self.runner.clone();
         let owner_id = self.owner_id.clone();
@@ -1785,7 +2164,13 @@ async fn local_upload_lifecycle(
         // With resume the partially written destination is expected; rsync
         // continues from it instead of refusing it.
         let exists_guard = if resume {
-            ""
+            // A crashed attempt may have left a partial file. Remove it
+            // before scp; rsync --partial continues from whatever is there.
+            if transport == TransferTransport::Scp {
+                "rm -rf \"$dst\"\n"
+            } else {
+                ""
+            }
         } else {
             "[ ! -e \"$dst\" ] || { echo 'remote destination_path already exists' >&2; exit 73; }\n"
         };
@@ -1812,6 +2197,19 @@ async fn local_upload_lifecycle(
         )?;
         if transport == TransferTransport::Rsync {
             require_rsync_available(runner.as_ref(), &destination, &check.stdout).await?;
+        }
+        // Ledger the destination *before* bytes move so a crash or cancel
+        // leaves an orphan the user can see and delete — not a silent partial.
+        if let Err(error) = ledger_upload_attempt(
+            store,
+            run_id,
+            &destination.alias,
+            &destination_path,
+            i64::try_from(total_bytes).ok(),
+        )
+        .await
+        {
+            tracing::warn!(run_id, "remote staging ledger write failed: {error}");
         }
         let remaining = timeout
             .checked_sub(started.elapsed())
@@ -1928,21 +2326,20 @@ async fn local_upload_lifecycle(
         .finish_active_run_owned(run_id, owner_id, status, exit_code)
         .await
         .map_err(|error| error.to_string())?;
-    // Ledger every successful upload so retracted/replaced files can be found
-    // and deleted from the server later.
+    // Success keeps the attempt row (it is already the current file). Failure
+    // leaves it as an orphan so partials can be cleaned. A crash before this
+    // point still has the attempt row from `ledger_upload_attempt`.
     if status == wisp_store::RunStatus::Succeeded {
-        if let Ok(Some(run)) = store.get_run(run_id).await {
-            let mut entry = wisp_store::RemoteStagingEntry::new(
-                run.project_id,
-                format!("ssh:{}", destination.alias),
-                Some(run_id.to_string()),
-                destination_path.clone(),
-                "transfer",
-            );
-            entry.size_bytes = i64::try_from(progress.total_bytes).ok();
-            if let Err(error) = store.record_remote_staging(&entry).await {
-                tracing::warn!(run_id, "remote staging ledger write failed: {error}");
-            }
+        if let Err(error) = ledger_upload_attempt(
+            store,
+            run_id,
+            &destination.alias,
+            &destination_path,
+            i64::try_from(progress.total_bytes).ok(),
+        )
+        .await
+        {
+            tracing::warn!(run_id, "remote staging ledger write failed: {error}");
         }
     }
     Ok(())
@@ -2124,6 +2521,17 @@ async fn relay_lifecycle(
             .map_err(|error| error.to_string())?
         {
             return Err("Relay lifecycle lease expired before upload".into());
+        }
+        if let Err(error) = ledger_upload_attempt(
+            store,
+            run_id,
+            &destination.alias,
+            &destination_path,
+            i64::try_from(total_bytes).ok(),
+        )
+        .await
+        {
+            tracing::warn!(run_id, "remote staging ledger write failed: {error}");
         }
         let remaining = timeout
             .checked_sub(started.elapsed())
@@ -2772,6 +3180,87 @@ mod tests {
             .iter()
             .any(|arg| arg.contains("sample data.bam")));
         drop(commands);
+        let handle: TransferHandle =
+            serde_json::from_str(run.remote_handle_json.as_deref().unwrap()).unwrap();
+        assert!(matches!(handle, TransferHandle::LocalUpload { .. }));
+        let staged = store
+            .list_remote_staging("p", "ssh:a", false)
+            .await
+            .unwrap();
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].source, "transfer");
+        assert_eq!(staged[0].remote_path, "/results/sample data.bam");
+        let files = crate::run_context::remote_files::list_remote_files(&store, "p", "ssh:a")
+            .await
+            .unwrap();
+        assert_eq!(
+            files[0].state,
+            crate::run_context::remote_files::RemoteFileState::Active
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn failed_upload_is_ledgered_as_orphan() {
+        let (root, store) = test_store().await;
+        let source = root.join("sample.bam");
+        std::fs::write(&source, b"bam bytes").unwrap();
+        let runner = Arc::new(RecordingRunner {
+            outputs: StdMutex::new(
+                vec![
+                    Ok(RunCommandOutput {
+                        exit_code: 0,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                    }),
+                    Ok(RunCommandOutput {
+                        exit_code: 1,
+                        stdout: String::new(),
+                        stderr: "scp: failed".into(),
+                    }),
+                ]
+                .into(),
+            ),
+            commands: StdMutex::new(Vec::new()),
+        });
+        let manager = RunManager::with_runner(runner);
+        let response = submit_transfer(
+            &store,
+            &manager,
+            "p",
+            Some("f"),
+            &root,
+            TransferRequest {
+                source_context_id: "local".into(),
+                source_path: source.to_string_lossy().into_owned(),
+                destination_context_id: "ssh:a".into(),
+                destination_path: Some("/results/sample.bam".into()),
+                route: "auto".into(),
+                transport: "auto".into(),
+                resume: false,
+                timeout_secs: Some(30),
+            },
+        )
+        .await
+        .unwrap();
+        let run_id = response["run_id"].as_str().unwrap();
+        let run = loop {
+            let run = store.get_run(run_id).await.unwrap().unwrap();
+            if run.status.is_terminal() {
+                break run;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        assert_eq!(run.status, wisp_store::RunStatus::Failed);
+        let files = crate::run_context::remote_files::list_remote_files(&store, "p", "ssh:a")
+            .await
+            .unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            files[0].state,
+            crate::run_context::remote_files::RemoteFileState::Orphan
+        );
+        assert_eq!(files[0].remote_path, "/results/sample.bam");
         let _ = std::fs::remove_dir_all(root);
     }
 

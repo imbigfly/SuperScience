@@ -1264,6 +1264,13 @@ pub async fn remove_ssh_host(
 ) -> Result<Vec<SshHost>, String> {
     let hosts = remove_host(load(&state.store).await, &alias);
     save(&state.store, &hosts).await?;
+    if let Err(error) = state
+        .run_manager
+        .wind_down_context(&state.store, &format!("ssh:{alias}"))
+        .await
+    {
+        tracing::warn!(alias = %alias, "host wind-down failed: {error}");
+    }
     crate::run_context::remote_files::abandon_context_sources(&state.store, &alias).await?;
     remove_context_for_alias(&state.store, &alias).await?;
     let _ = password_delete(&alias);
