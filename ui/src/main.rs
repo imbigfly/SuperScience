@@ -33,8 +33,8 @@ use app_overlays::{
 };
 use bindings::{
     attach_chat_autoscroll, cancel_saved_marks_apply, clear_selection, close_mcp_app,
-    force_chat_bottom, invoke, invoke_checked, is_mac, is_windows,
-    jump_chat_to_item, jump_chat_to_last_user, jump_chat_to_user, listen, listen_current_window,
+    force_chat_bottom, invoke, invoke_checked, is_mac, is_windows, jump_chat_to_item,
+    jump_chat_to_last_user, jump_chat_to_user, listen, listen_current_window,
     listen_native_file_drop, native_drop_in_composer, open_external_url, pasted_image_count,
     preserve_chat_prepend_position, preview_selection, restore_chat_session_scroll,
     schedule_chat_follow, set_saved_marks, CHAT_SCROLLER_ID, CHAT_THREAD_ID,
@@ -4570,9 +4570,8 @@ fn App() -> impl IntoView {
         Callback::new(move |(id, version, enabled): (String, String, bool)| {
             extensions.set_plugin_enabled(id, version, enabled)
         });
-    let remove_plugin = Callback::new(move |(id, version): (String, String)| {
-        extensions.remove_plugin(id, version)
-    });
+    let remove_plugin =
+        Callback::new(move |(id, version): (String, String)| extensions.remove_plugin(id, version));
 
     let refresh_conns = move || {
         spawn_local(async move {
@@ -6148,9 +6147,8 @@ fn App() -> impl IntoView {
         });
     });
 
-    let save_skill_tags = Callback::new(move |(name, raw): (String, String)| {
-        extensions.save_skill_tags(name, raw)
-    });
+    let save_skill_tags =
+        Callback::new(move |(name, raw): (String, String)| extensions.save_skill_tags(name, raw));
 
     let set_visible_skills_enabled =
         Callback::new(move |enabled: bool| extensions.set_visible_skills_enabled(enabled));
@@ -14654,17 +14652,16 @@ fn App() -> impl IntoView {
         <ShareOverlay
             locale=locale
             draft=share_draft
-            session_id=active_session
-            on_xiaohongshu_skill=Callback::new(move |prompt: String| {
+            on_social_skill=Callback::new(move |prompt: String| {
                 composer_references.update(|refs| {
                     refs.retain(|item| {
                         !matches!(
                             item,
-                            ComposerReferenceChip::Skill { name } if name == XIAOHONGSHU_SHARE_SKILL
+                            ComposerReferenceChip::Skill { name } if name == SOCIAL_SHARE_SKILL
                         )
                     });
                     refs.push(ComposerReferenceChip::Skill {
-                        name: XIAOHONGSHU_SHARE_SKILL.to_string(),
+                        name: SOCIAL_SHARE_SKILL.to_string(),
                     });
                 });
                 input.set(prompt);

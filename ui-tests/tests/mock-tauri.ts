@@ -394,7 +394,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     { name: "remote-compute-ssh", description: "Submit SSH-direct research Runs", tags: ["compute"], scope: "bundled", enabled: true, builtin: true, dir: "/skills/remote-compute-ssh" },
     { name: "literature-review", description: "Find and synthesize literature", tags: ["literature"], scope: "bundled", enabled: true, builtin: true, dir: "/skills/literature-review" },
     { name: "paper-narrative", description: "Shape a paper story", tags: [], scope: "global", enabled: true, builtin: false, dir: "/home/me/.wisp/skills/paper-narrative" },
-    { name: "xiaohongshu-note", description: "Write a Xiaohongshu note from a scientific conversation", tags: ["share"], scope: "bundled", enabled: true, builtin: true, dir: "/skills/xiaohongshu-note" },
+    { name: "social-note", description: "Write paste-ready social copy for Xiaohongshu, WeChat, or Twitter after the user chooses a platform", tags: ["share"], scope: "bundled", enabled: true, builtin: true, dir: "/skills/social-note" },
   ];
   let plugins = [
     {

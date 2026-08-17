@@ -1,17 +1,14 @@
 use crate::app_support::{
-    compose_icon, copy_text, js_error_text, parse_redact_keywords, redact_text,
-    refresh_execution_contexts, refresh_runs, refresh_runtimes, share_cards_from_highlights,
-    share_fallback_caption, share_html_document, share_key_cards, share_png_payload, share_png_row,
-    share_social_pack_text, show_toast, xiaohongshu_skill_prompt, ShareCardPreview,
-    ShareExportFormat, ShareHtmlRow, ShareMessage, ShareRole,
+    compose_icon, js_error_text, parse_redact_keywords, redact_text, refresh_execution_contexts,
+    refresh_runs, refresh_runtimes, share_html_document, share_png_payload, share_png_row,
+    show_toast, social_skill_prompt, ShareExportFormat, ShareHtmlRow, ShareMessage, ShareRole,
 };
-use crate::bindings::{copy_share_pack, invoke_checked, open_external_url, render_share_png};
+use crate::bindings::{invoke_checked, open_external_url, render_share_png};
 use crate::dto::*;
 use crate::i18n::{localize_backend, t, tf, Locale};
 use crate::text::{dom_value, event_target_value, file_kind, format_bytes};
 use leptos::*;
 use serde_wasm_bindgen::to_value;
-use std::rc::Rc;
 
 #[component]
 pub(super) fn AddHostOverlay(
@@ -234,7 +231,11 @@ fn selected_share_messages<'a>(
     (selected, redact)
 }
 
-fn share_png_rows(loc: Locale, selected: &[&ShareMessage], redact: &[String]) -> Vec<serde_json::Value> {
+fn share_png_rows(
+    loc: Locale,
+    selected: &[&ShareMessage],
+    redact: &[String],
+) -> Vec<serde_json::Value> {
     selected
         .iter()
         .map(|message| {
@@ -247,240 +248,32 @@ fn share_png_rows(loc: Locale, selected: &[&ShareMessage], redact: &[String]) ->
         .collect()
 }
 
-fn default_share_platform(locale: Locale) -> ShareSocialPlatform {
-    if locale == Locale::Zh {
-        ShareSocialPlatform::Xiaohongshu
-    } else {
-        ShareSocialPlatform::Twitter
-    }
-}
-
-fn selected_draft_indexes(messages: &[ShareMessage]) -> Vec<usize> {
-    messages
-        .iter()
-        .enumerate()
-        .filter(|(_, message)| message.selected)
-        .map(|(index, _)| index)
-        .collect()
-}
-
-/// `/share` preview dialog. Opening it shows the long-image picker. Xiaohongshu
-/// copy is handed to the `xiaohongshu-note` skill instead of the one-shot
-/// caption generator. `draft` is root-owned (`None` = closed) so the app-level
-/// Escape stack can dismiss it in visual order.
+/// `/share` preview dialog. Opening it shows the long-image picker. Social
+/// copy is handed to the `social-note` skill after the user picks a platform.
+/// `draft` is root-owned (`None` = closed) so the app-level Escape stack can
+/// dismiss it in visual order.
 #[component]
 pub(super) fn ShareOverlay(
     locale: RwSignal<Locale>,
     draft: RwSignal<Option<Vec<ShareMessage>>>,
-    session_id: RwSignal<Option<String>>,
-    on_xiaohongshu_skill: Callback<String>,
+    on_social_skill: Callback<String>,
 ) -> impl IntoView {
     let keywords = create_rw_signal(String::new());
     let busy = create_rw_signal(false);
-    let generating = create_rw_signal(false);
     let error = create_rw_signal(None::<String>);
     let format = create_rw_signal(ShareExportFormat::Png);
-    let platform = create_rw_signal(ShareSocialPlatform::Xiaohongshu);
-    let social_copy = create_rw_signal(None::<ShareSocialCopy>);
-    let selected_variant = create_rw_signal(0usize);
-    let edit_body = create_rw_signal(String::new());
-    let copy_dirty = create_rw_signal(false);
-    let cards = create_rw_signal(Vec::<ShareCardPreview>::new());
-    let selected_card = create_rw_signal(0usize);
-    let generate_seq = create_rw_signal(0u32);
-    let card_seq = create_rw_signal(0u32);
+    let platform = create_rw_signal(None::<ShareSocialPlatform>);
     // Render from the open flag, not the editable draft, so checkbox toggles
     // and keyword input do not rebuild the dialog DOM and drop focus.
     let open = create_memo(move |_| draft.with(|value| value.is_some()));
-    let render_cards = Rc::new(move |previews: Vec<ShareCardPreview>| {
-        let next = card_seq.get_untracked().wrapping_add(1);
-        card_seq.set(next);
-        selected_card.set(0);
-        cards.set(previews.clone());
-        let messages = draft.get_untracked().unwrap_or_default();
-        let redact = parse_redact_keywords(&keywords.get_untracked());
-        let loc = locale.get_untracked();
-        let stamp = share_stamp();
-        let footer = t(loc, "share.image_footer");
-        let jobs: Vec<(usize, String)> = previews
-            .iter()
-            .enumerate()
-            .map(|(index, card)| {
-                let rows: Vec<serde_json::Value> = card
-                    .indexes
-                    .iter()
-                    .filter_map(|row| messages.get(*row))
-                    .map(|message| {
-                        share_png_row(
-                            message.role,
-                            &t(loc, share_role_key(message.role)),
-                            &redact_text(&message.text, &redact),
-                        )
-                    })
-                    .collect();
-                let title = if card.title.is_empty() {
-                    "wisp-science"
-                } else {
-                    card.title.as_str()
-                };
-                (
-                    index,
-                    share_png_payload(title, &stamp, &footer, &rows),
-                )
-            })
-            .collect();
-        spawn_local(async move {
-            for (index, payload) in jobs {
-                if card_seq.get_untracked() != next || draft.get_untracked().is_none() {
-                    return;
-                }
-                if let Some(png) = render_share_png(&payload)
-                    .await
-                    .ok()
-                    .and_then(|value| value.as_string())
-                    .filter(|png| !png.is_empty())
-                {
-                    cards.update(|list| {
-                        if let Some(card) = list.get_mut(index) {
-                            card.png_base64 = Some(png);
-                        }
-                    });
-                }
-            }
-        });
-    });
-    let request_copy = {
-        let render_cards = Rc::clone(&render_cards);
-        Rc::new(move || {
-        let loc = locale.get_untracked();
-        let messages = draft.get_untracked().unwrap_or_default();
-        let (selected, redact) = selected_share_messages(&messages, &keywords.get_untracked());
-        if selected.is_empty() {
-            error.set(Some(t(loc, "share.none_selected")));
-            return;
-        }
-        if platform.get_untracked() == ShareSocialPlatform::Xiaohongshu {
-            return;
-        }
-        let Some(frame_id) = session_id.get_untracked().filter(|id| !id.is_empty()) else {
-            if !copy_dirty.get_untracked() {
-                edit_body.set(share_fallback_caption(&messages, platform.get_untracked().body_limit()));
-            }
-            return;
-        };
-        let seq = generate_seq.get_untracked().wrapping_add(1);
-        generate_seq.set(seq);
-        generating.set(true);
-        error.set(None);
-        let platform_id = platform.get_untracked();
-        let selected_indexes = selected_draft_indexes(&messages);
-        let rows: Vec<serde_json::Value> = selected
-            .iter()
-            .map(|message| {
-                serde_json::json!({
-                    "role": message.role.tag(),
-                    "text": redact_text(&message.text, &redact),
-                })
-            })
-            .collect();
-        let locale_tag = if loc == Locale::Zh { "zh" } else { "en" };
-        let args = to_value(&serde_json::json!({
-            "sessionId": frame_id,
-            "platform": platform_id.as_str(),
-            "locale": locale_tag,
-            "messages": rows,
-        }))
-        .unwrap();
-        let render_cards = Rc::clone(&render_cards);
-        let messages = messages.clone();
-        spawn_local(async move {
-            let result = invoke_checked("generate_share_social_copy", args).await;
-            if generate_seq.get_untracked() != seq || draft.get_untracked().is_none() {
-                return;
-            }
-            generating.set(false);
-            match result {
-                Ok(value) => match serde_wasm_bindgen::from_value::<ShareSocialCopy>(value) {
-                    Ok(copy) if !copy.variants.is_empty() => {
-                        if !copy_dirty.get_untracked() {
-                            let pack = share_social_pack_text(&copy.variants[0]);
-                            selected_variant.set(0);
-                            edit_body.set(pack);
-                        }
-                        let mapped = share_cards_from_highlights(
-                            &messages,
-                            &selected_indexes,
-                            &copy.highlights,
-                        );
-                        if !mapped.is_empty() {
-                            render_cards(
-                                mapped
-                                    .into_iter()
-                                    .map(ShareCardPreview::from_spec)
-                                    .collect(),
-                            );
-                        }
-                        social_copy.set(Some(copy));
-                    }
-                    _ => {
-                        if !copy_dirty.get_untracked()
-                            && edit_body.get_untracked().trim().is_empty()
-                        {
-                            edit_body.set(share_fallback_caption(
-                                &messages,
-                                platform_id.body_limit(),
-                            ));
-                        }
-                    }
-                },
-                Err(value) => {
-                    if !copy_dirty.get_untracked()
-                        && edit_body.get_untracked().trim().is_empty()
-                    {
-                        edit_body.set(share_fallback_caption(
-                            &messages,
-                            platform_id.body_limit(),
-                        ));
-                    }
-                    error.set(Some(localize_backend(
-                        locale.get_untracked(),
-                        &js_error_text(value),
-                    )));
-                }
-            }
-        });
-        })
-    };
-    let prime_share = {
-        let render_cards = Rc::clone(&render_cards);
-        move || {
-            let messages = draft.get_untracked().unwrap_or_default();
-            let next_platform = default_share_platform(locale.get_untracked());
-            platform.set(next_platform);
-            format.set(ShareExportFormat::Png);
-            social_copy.set(None);
-            selected_variant.set(0);
-            copy_dirty.set(false);
-            error.set(None);
-            edit_body.set(share_fallback_caption(
-                &messages,
-                next_platform.body_limit(),
-            ));
-            render_cards(
-                share_key_cards(&messages)
-                    .into_iter()
-                    .map(ShareCardPreview::from_spec)
-                    .collect(),
-            );
-        }
-    };
     create_effect(move |previous: Option<bool>| {
         let now = open.get();
         if now && previous != Some(true) {
             keywords.set(String::new());
             busy.set(false);
-            generating.set(false);
-            prime_share();
+            error.set(None);
+            format.set(ShareExportFormat::Png);
+            platform.set(None);
         }
         now
     });
@@ -500,35 +293,21 @@ pub(super) fn ShareOverlay(
             }
         });
     };
-    let choose_platform = {
-        let request_copy = Rc::clone(&request_copy);
-        Rc::new(move |next: ShareSocialPlatform| {
-            if platform.get_untracked() == next {
-                return;
-            }
-            platform.set(next);
-            social_copy.set(None);
-            selected_variant.set(0);
-            copy_dirty.set(false);
-            error.set(None);
-            let messages = draft.get_untracked().unwrap_or_default();
-            edit_body.set(share_fallback_caption(&messages, next.body_limit()));
-            if next != ShareSocialPlatform::Xiaohongshu {
-                request_copy();
-            }
-        })
-    };
-    let write_xiaohongshu = move |_| {
+    let write_social = move |_| {
         let loc = locale.get_untracked();
+        let Some(chosen) = platform.get_untracked() else {
+            error.set(Some(t(loc, "share.need_platform")));
+            return;
+        };
         let messages = draft.get_untracked().unwrap_or_default();
         let (selected, redact) = selected_share_messages(&messages, &keywords.get_untracked());
         if selected.is_empty() {
             error.set(Some(t(loc, "share.none_selected")));
             return;
         }
-        let prompt = xiaohongshu_skill_prompt(&selected, &redact);
+        let prompt = social_skill_prompt(&selected, &redact, chosen, loc == Locale::Zh);
         draft.set(None);
-        on_xiaohongshu_skill.call(prompt);
+        on_social_skill.call(prompt);
     };
     let export = move |_| {
         let loc = locale.get_untracked();
@@ -610,92 +389,7 @@ pub(super) fn ShareOverlay(
             }
         });
     };
-    let regenerate = {
-        let request_copy = Rc::clone(&request_copy);
-        Rc::new(move |_| {
-            copy_dirty.set(false);
-            request_copy();
-        })
-    };
-    let copy_caption = move |_| {
-        let loc = locale.get_untracked();
-        let text = edit_body.get_untracked();
-        if text.trim().is_empty() {
-            error.set(Some(t(loc, "share.need_copy")));
-            return;
-        }
-        error.set(None);
-        copy_text(text);
-    };
-    let copy_visual = move |include_text: bool| {
-        let loc = locale.get_untracked();
-        let text = if include_text {
-            let body = edit_body.get_untracked();
-            if body.trim().is_empty() {
-                error.set(Some(t(loc, "share.need_copy")));
-                return;
-            }
-            body
-        } else {
-            String::new()
-        };
-        let cached = cards.with_untracked(|list| {
-            list.get(selected_card.get_untracked())
-                .and_then(|card| card.png_base64.clone())
-        });
-        let fallback_payload = if cached.is_none() {
-            let messages = draft.get_untracked().unwrap_or_default();
-            let (selected, redact) =
-                selected_share_messages(&messages, &keywords.get_untracked());
-            if selected.is_empty() {
-                error.set(Some(t(loc, "share.none_selected")));
-                return;
-            }
-            Some(share_png_payload(
-                "wisp-science",
-                &share_stamp(),
-                &t(loc, "share.image_footer"),
-                &share_png_rows(loc, &selected, &redact),
-            ))
-        } else {
-            None
-        };
-        busy.set(true);
-        error.set(None);
-        spawn_local(async move {
-            let result = async {
-                let png = if let Some(png) = cached {
-                    png
-                } else {
-                    render_share_png(&fallback_payload.unwrap_or_default())
-                        .await?
-                        .as_string()
-                        .unwrap_or_default()
-                };
-                copy_share_pack(&text, &png).await
-            }
-            .await;
-            busy.set(false);
-            match result {
-                Ok(_) => show_toast(&t(
-                    locale.get_untracked(),
-                    if include_text {
-                        "share.copied_pack"
-                    } else {
-                        "share.copied_image"
-                    },
-                )),
-                Err(value) => error.set(Some(localize_backend(
-                    locale.get_untracked(),
-                    &js_error_text(value),
-                ))),
-            }
-        });
-    };
-
     move || {
-        let choose_platform = Rc::clone(&choose_platform);
-        let regenerate = Rc::clone(&regenerate);
         open.get().then(move || view! {
             <div class="overlay">
                 <div class="modal share-modal" role="dialog" aria-modal="true"
@@ -771,14 +465,33 @@ pub(super) fn ShareOverlay(
                     {move || error.get().map(|message| view! {
                         <div class="settings-status fail">{message}</div>
                     })}
+                    <div class="share-skill-row">
+                        <span class="share-format-label">{move || t(locale.get(), "share.platform_label")}</span>
+                        <div class="share-format-seg share-platform-seg" role="group"
+                            aria-label=move || t(locale.get(), "share.platform_label")>
+                            {ShareSocialPlatform::all().into_iter().map(move |item| {
+                                view! {
+                                    <button type="button"
+                                        data-testid=format!("share-platform-{}", item.as_str())
+                                        class:active=move || platform.get() == Some(item)
+                                        on:click=move |_| platform.set(Some(item))>
+                                        {t(locale.get(), item.label_key())}
+                                    </button>
+                                }
+                            }).collect_view()}
+                        </div>
+                        <button type="button" class="linklike" data-testid="share-social-skill"
+                            title=move || t(locale.get(), "share.skill_hint")
+                            disabled=move || {
+                                busy.get() || selected_count.get() == 0 || platform.get().is_none()
+                            }
+                            on:click=write_social>
+                            {move || t(locale.get(), "share.social_skill")}
+                        </button>
+                    </div>
                     <div class="row">
                         <button type="button" disabled=move || busy.get()
                             on:click=move |_| draft.set(None)>{move || t(locale.get(), "share.cancel")}</button>
-                        <button type="button" data-testid="share-xiaohongshu-skill"
-                            disabled=move || busy.get() || selected_count.get() == 0
-                            on:click=write_xiaohongshu>
-                            {move || t(locale.get(), "share.xiaohongshu_skill")}
-                        </button>
                         <button type="button" class="primary" data-testid="share-export"
                             disabled=move || busy.get() || selected_count.get() == 0
                             on:click=export>{move || if busy.get() {
@@ -789,144 +502,6 @@ pub(super) fn ShareOverlay(
                                 t(locale.get(), "share.export")
                             }}</button>
                     </div>
-                    <details class="share-advanced" data-testid="share-social">
-                        <summary>{move || t(locale.get(), "share.advanced")}</summary>
-                    <p class="hint">{move || t(locale.get(), "share.hint_social")}</p>
-                    <div class="share-social">
-                        <div class="share-format">
-                            <span class="share-format-label">{t(locale.get(), "share.platform_label")}</span>
-                            <div class="share-format-seg share-platform-seg" role="group"
-                                aria-label=t(locale.get(), "share.platform_label")>
-                                {ShareSocialPlatform::all().into_iter().map({
-                                    let choose_platform = Rc::clone(&choose_platform);
-                                    move |item| {
-                                        let choose_platform = Rc::clone(&choose_platform);
-                                        view! {
-                                            <button type="button"
-                                                data-testid=format!("share-platform-{}", item.as_str())
-                                                class:active=move || platform.get() == item
-                                                on:click=move |_| choose_platform(item)>
-                                                {t(locale.get(), item.label_key())}
-                                            </button>
-                                        }
-                                    }
-                                }).collect_view()}
-                            </div>
-                        </div>
-                        <label class="share-copy-editor" for="share-copy-input">
-                            {move || if generating.get() {
-                                t(locale.get(), "share.generating")
-                            } else {
-                                t(locale.get(), "share.edit_label")
-                            }}
-                            <textarea id="share-copy-input" data-testid="share-copy-input"
-                                prop:value=move || edit_body.get()
-                                on:input=move |ev| {
-                                    copy_dirty.set(true);
-                                    edit_body.set(event_target_value(&ev));
-                                }>
-                            </textarea>
-                            <span class="share-copy-meta">{move || {
-                                let count = edit_body.get().chars().count();
-                                let limit = platform.get().body_limit();
-                                tf(locale.get(), "share.chars", &[
-                                    ("count", &count.to_string()),
-                                    ("limit", &limit.to_string()),
-                                ])
-                            }}</span>
-                        </label>
-                        {move || {
-                            let regenerate = Rc::clone(&regenerate);
-                            social_copy.get().map(move |copy| view! {
-                            <div class="share-variants" role="group"
-                                aria-label=t(locale.get(), "share.variants")>
-                                {copy.variants.iter().enumerate().map(|(index, _)| {
-                                    view! {
-                                        <button type="button"
-                                            data-testid=format!("share-variant-{index}")
-                                            class:active=move || selected_variant.get() == index
-                                            on:click=move |_| {
-                                                selected_variant.set(index);
-                                                copy_dirty.set(false);
-                                                if let Some(variant) = social_copy
-                                                    .get_untracked()
-                                                    .as_ref()
-                                                    .and_then(|current| current.variants.get(index))
-                                                {
-                                                    edit_body.set(share_social_pack_text(variant));
-                                                }
-                                            }>
-                                            {tf(locale.get(), "share.variant_n",
-                                                &[("n", &format!("{}", index + 1))])}
-                                        </button>
-                                    }
-                                }).collect_view()}
-                                <button type="button" class="share-generate" data-testid="share-generate"
-                                    disabled=move || generating.get() || busy.get() || selected_count.get() == 0
-                                    on:click={
-                                        let regenerate = Rc::clone(&regenerate);
-                                        move |_| regenerate(())
-                                    }>
-                                    {compose_icon("sparkles")}
-                                    {move || t(locale.get(), "share.regenerate")}
-                                </button>
-                            </div>
-                            })
-                        }}
-                        <div class="share-cards" data-testid="share-cards">
-                            <span class="share-format-label">{move || t(locale.get(), "share.cards")}</span>
-                            <div class="share-card-row">
-                                {move || cards.get().into_iter().enumerate().map(|(index, card)| {
-                                    let title = if card.title.is_empty() {
-                                        tf(locale.get(), "share.card_n", &[("n", &format!("{}", index + 1))])
-                                    } else {
-                                        card.title.clone()
-                                    };
-                                    let src = card.png_base64.as_ref().map(|png| {
-                                        format!("data:image/png;base64,{png}")
-                                    });
-                                    view! {
-                                        <button type="button" class="share-card"
-                                            data-testid=format!("share-card-{index}")
-                                            class:active=move || selected_card.get() == index
-                                            on:click=move |_| selected_card.set(index)>
-                                            {match src {
-                                                Some(src) => view! { <img src=src alt=title.clone() /> }.into_view(),
-                                                None => view! {
-                                                    <span class="share-card-placeholder">
-                                                        {t(locale.get(), "share.card_rendering")}
-                                                    </span>
-                                                }.into_view(),
-                                            }}
-                                            <span class="share-card-label">{title}</span>
-                                        </button>
-                                    }
-                                }).collect_view()}
-                            </div>
-                        </div>
-                        <div class="share-social-actions">
-                            <button type="button" class="primary" data-testid="share-copy-pack"
-                                disabled=move || busy.get() || edit_body.get().trim().is_empty()
-                                on:click=move |_| copy_visual(true)>
-                                {compose_icon("clipboard")}
-                                {t(locale.get(), "share.copy_pack")}
-                            </button>
-                            <button type="button" data-testid="share-copy-caption"
-                                disabled=move || busy.get() || edit_body.get().trim().is_empty()
-                                on:click=copy_caption>
-                                {compose_icon("copy")}
-                                {t(locale.get(), "share.copy_caption")}
-                            </button>
-                            <button type="button" data-testid="share-copy-image"
-                                disabled=move || busy.get()
-                                on:click=move |_| copy_visual(false)>
-                                {compose_icon("image")}
-                                {t(locale.get(), "share.copy_image")}
-                            </button>
-                        </div>
-                        <p class="hint share-social-footer">{t(locale.get(), "share.social_footer")}</p>
-                    </div>
-                    </details>
                 </div>
             </div>
         })

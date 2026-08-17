@@ -2181,7 +2181,7 @@ test("/share exports selected, keyword-redacted messages as a PNG", async ({ pag
   await expect(composerInput).toBeVisible();
 });
 
-test("/share Xiaohongshu copy attaches the xiaohongshu-note skill", async ({ page }) => {
+test("/share social copy attaches the social-note skill after a platform is chosen", async ({ page }) => {
   await enterApp(page);
   const composerInput = composer(page);
   const overlay = page.getByTestId("share-overlay");
@@ -2195,18 +2195,24 @@ test("/share Xiaohongshu copy attaches the xiaohongshu-note skill", async ({ pag
   await expect(overlay).toBeVisible();
   await expect(overlay.getByRole("heading", { name: "Share as image" })).toBeVisible();
   await expect(overlay.locator(".share-row")).toHaveCount(3);
-  // Social copy stays folded; Xiaohongshu is a skill turn, not the one-shot generator.
-  await expect(overlay.getByTestId("share-social")).not.toHaveAttribute("open", "");
+  await expect(overlay.getByTestId("share-social")).toHaveCount(0);
   expect(await lastInvokeArgs(page, "generate_share_social_copy")).toBeNull();
+  await expect(overlay.getByTestId("share-social-skill")).toBeDisabled();
+  await expect(overlay.getByTestId("share-platform-xiaohongshu")).not.toHaveClass(/active/);
+  await expect(overlay.getByTestId("share-platform-wechat")).not.toHaveClass(/active/);
 
   await overlay.locator("#share-redact-input").fill("alice");
-  await overlay.getByTestId("share-xiaohongshu-skill").click();
+  await overlay.getByTestId("share-platform-wechat").click();
+  await expect(overlay.getByTestId("share-platform-wechat")).toHaveClass(/active/);
+  await overlay.getByTestId("share-social-skill").click();
   await expect(overlay).toHaveCount(0);
   await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
-    message: expect.stringMatching(/xiaohongshu-note/),
-    references: [{ kind: "skill", name: "xiaohongshu-note" }],
+    message: expect.stringMatching(/social-note/),
+    references: [{ kind: "skill", name: "social-note" }],
   });
   const sent = await lastInvokeArgs(page, "send_message");
+  expect(String(sent.message)).toContain("WeChat (wechat)");
+  expect(String(sent.message)).not.toMatch(/Xiaohongshu/i);
   expect(String(sent.message)).toContain("xxx confirmed");
   expect(String(sent.message)).toContain("[1] user");
 });

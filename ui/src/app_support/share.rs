@@ -1,38 +1,26 @@
 //! `/share` support: turn the transcript into a selectable, redactable list
-//! of messages that the share overlay renders into a long PNG or social pack.
+//! of messages that the share overlay exports as a long PNG or HTML page.
 
-use crate::dto::{ChatItem, ShareSocialHighlight, ShareSocialVariant};
+use crate::dto::{ChatItem, ShareSocialPlatform};
+#[cfg(test)]
+use crate::dto::{ShareSocialHighlight, ShareSocialVariant};
 use serde_json::{json, Value};
 
-/// Skill attached when the share dialog asks for Xiaohongshu copy.
-pub(crate) const XIAOHONGSHU_SHARE_SKILL: &str = "xiaohongshu-note";
+/// Skill attached when the share dialog asks for social copy.
+pub(crate) const SOCIAL_SHARE_SKILL: &str = "social-note";
 /// How many highlight screenshots to prepare when the share dialog opens.
+#[cfg(test)]
 pub(crate) const MAX_SHARE_CARDS: usize = 3;
 /// Pair the previous user turn with an assistant highlight when it is short.
+#[cfg(test)]
 const SHARE_CARD_USER_PAIR_LIMIT: usize = 280;
 
 /// One screenshot card: a small slice of the transcript rendered as a PNG.
+#[cfg(test)]
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct ShareCardSpec {
     pub(crate) title: String,
     pub(crate) indexes: Vec<usize>,
-}
-
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) struct ShareCardPreview {
-    pub(crate) title: String,
-    pub(crate) indexes: Vec<usize>,
-    pub(crate) png_base64: Option<String>,
-}
-
-impl ShareCardPreview {
-    pub(crate) fn from_spec(spec: ShareCardSpec) -> Self {
-        Self {
-            title: spec.title,
-            indexes: spec.indexes,
-            png_base64: None,
-        }
-    }
 }
 
 /// Export target chosen in the share overlay.
@@ -103,15 +91,25 @@ pub(crate) fn share_messages(items: &[ChatItem]) -> Vec<ShareMessage> {
         .collect()
 }
 
-/// Prompt sent with `xiaohongshu-note` so the agent writes from the same
-/// redacted selection the long-image export would use.
-pub(crate) fn xiaohongshu_skill_prompt(
+/// Prompt sent with `social-note` so the agent writes from the same redacted
+/// selection the long-image export would use, for the platform the user picked.
+pub(crate) fn social_skill_prompt(
     selected: &[&ShareMessage],
     redact: &[String],
+    platform: ShareSocialPlatform,
+    zh: bool,
 ) -> String {
-    let mut excerpt = String::from(
-        "请按已附加的 xiaohongshu-note 技能，把下面勾选的对话写成可直接发的小红书笔记。\n\n对话摘录：\n",
-    );
+    let id = platform.as_str();
+    let label = social_skill_platform_label(platform, zh);
+    let mut excerpt = if zh {
+        format!(
+            "请按已附加的 {SOCIAL_SHARE_SKILL} 技能，把下面勾选的对话写成可直接发到{label}（{id}）的文案。不要改发到其他平台。\n\n对话摘录：\n"
+        )
+    } else {
+        format!(
+            "Follow the attached {SOCIAL_SHARE_SKILL} skill. Write paste-ready copy for {label} ({id}) from the selected turns below. Do not switch platforms.\n\nExcerpt:\n"
+        )
+    };
     for (index, message) in selected.iter().enumerate() {
         excerpt.push_str(&format!(
             "[{}] {}\n{}\n\n",
@@ -120,13 +118,31 @@ pub(crate) fn xiaohongshu_skill_prompt(
             redact_text(&message.text, redact)
         ));
     }
-    excerpt.push_str("不要编造摘录里没有的数据、论文或结论。");
+    excerpt.push_str(if zh {
+        "不要编造摘录里没有的数据、论文或结论。"
+    } else {
+        "Do not invent data, papers, or conclusions that are not in the excerpt."
+    });
     excerpt
+}
+
+fn social_skill_platform_label(platform: ShareSocialPlatform, zh: bool) -> &'static str {
+    match (platform, zh) {
+        (ShareSocialPlatform::Xiaohongshu, true) => "小红书",
+        (ShareSocialPlatform::Xiaohongshu, false) => "Xiaohongshu",
+        (ShareSocialPlatform::Wechat, true) => "微信",
+        (ShareSocialPlatform::Wechat, false) => "WeChat",
+        (ShareSocialPlatform::WechatMp, true) => "微信公众号",
+        (ShareSocialPlatform::WechatMp, false) => "WeChat official account",
+        (ShareSocialPlatform::Twitter, true) => "Twitter / X",
+        (ShareSocialPlatform::Twitter, false) => "Twitter / X",
+    }
 }
 
 /// Pick 1–3 screenshot cards from the selected turns so the user does not
 /// have to crop the conversation themselves. Prefers the latest assistant
 /// replies and, when the previous user turn is short, keeps the Q&A pair.
+#[cfg(test)]
 pub(crate) fn share_key_cards(messages: &[ShareMessage]) -> Vec<ShareCardSpec> {
     let assistant: Vec<usize> = messages
         .iter()
@@ -159,14 +175,18 @@ pub(crate) fn share_key_cards(messages: &[ShareMessage]) -> Vec<ShareCardSpec> {
         .into_iter()
         .map(|index| {
             let mut indexes = Vec::new();
-            if let Some(previous) = messages[..index].iter().enumerate().rev().find_map(
-                |(prev_index, message)| {
-                    if message.role == ShareRole::Thinking {
-                        return None;
-                    }
-                    Some((prev_index, message))
-                },
-            ) {
+            if let Some(previous) =
+                messages[..index]
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .find_map(|(prev_index, message)| {
+                        if message.role == ShareRole::Thinking {
+                            return None;
+                        }
+                        Some((prev_index, message))
+                    })
+            {
                 if previous.1.selected
                     && previous.1.role == ShareRole::User
                     && previous.1.text.chars().count() <= SHARE_CARD_USER_PAIR_LIMIT
@@ -185,6 +205,7 @@ pub(crate) fn share_key_cards(messages: &[ShareMessage]) -> Vec<ShareCardSpec> {
 
 /// Map 1-based excerpt indexes (`[1] user` in the model prompt) back onto
 /// the selected rows of the full share draft.
+#[cfg(test)]
 pub(crate) fn map_excerpt_indexes(
     selected_draft_indexes: &[usize],
     excerpt_1based: &[usize],
@@ -199,6 +220,7 @@ pub(crate) fn map_excerpt_indexes(
 }
 
 /// Prefer model-picked highlight slices when they resolve to real rows.
+#[cfg(test)]
 pub(crate) fn share_cards_from_highlights(
     messages: &[ShareMessage],
     selected_draft_indexes: &[usize],
@@ -226,23 +248,20 @@ pub(crate) fn share_cards_from_highlights(
 }
 
 /// Instant caption so the dialog is pasteable before the model returns.
+#[cfg(test)]
 pub(crate) fn share_fallback_caption(messages: &[ShareMessage], limit: usize) -> String {
     let raw = messages
         .iter()
         .rev()
         .find(|message| message.selected && message.role == ShareRole::Assistant)
-        .or_else(|| {
-            messages
-                .iter()
-                .rev()
-                .find(|message| message.selected)
-        })
+        .or_else(|| messages.iter().rev().find(|message| message.selected))
         .map(|message| message.text.as_str())
         .unwrap_or("")
         .trim();
     clamp_share_chars(raw, limit)
 }
 
+#[cfg(test)]
 fn share_card_title(text: &str) -> String {
     let line = text
         .lines()
@@ -254,6 +273,7 @@ fn share_card_title(text: &str) -> String {
     clamp_share_chars(line, 36)
 }
 
+#[cfg(test)]
 fn clamp_share_chars(text: &str, max: usize) -> String {
     if max == 0 {
         return String::new();
@@ -395,6 +415,7 @@ footer { margin-top: 28px; font-size: 11px; color: #8a97a5; }
 /// Join a generated variant into the text the user pastes into a social app.
 /// Title is omitted when it already prefixes the body; hashtags are appended
 /// only when they are not already in the body.
+#[cfg(test)]
 pub(crate) fn share_social_pack_text(variant: &ShareSocialVariant) -> String {
     let title = variant.title.trim();
     let body = variant.body.trim();
@@ -420,6 +441,7 @@ pub(crate) fn share_social_pack_text(variant: &ShareSocialVariant) -> String {
     parts.join("\n\n")
 }
 
+#[cfg(test)]
 pub(crate) fn normalize_share_hashtag(raw: &str) -> String {
     let trimmed = raw.trim().trim_start_matches('#').trim();
     if trimmed.is_empty() {
@@ -869,11 +891,21 @@ mod share_tests {
         assert!(transcript_has_shareable(&items));
         assert!(!transcript_has_shareable(&[]));
         let selected: Vec<&ShareMessage> = rows.iter().filter(|row| row.selected).collect();
-        let prompt = xiaohongshu_skill_prompt(&selected, &parse_redact_keywords("主峰"));
-        assert!(prompt.contains(XIAOHONGSHU_SHARE_SKILL));
+        let prompt = social_skill_prompt(
+            &selected,
+            &parse_redact_keywords("主峰"),
+            ShareSocialPlatform::Wechat,
+            true,
+        );
+        assert!(prompt.contains(SOCIAL_SHARE_SKILL));
+        assert!(prompt.contains("微信（wechat）"));
+        assert!(!prompt.contains("小红书"));
         assert!(prompt.contains("[1] user"));
         assert!(prompt.contains("xxx的解释"));
         assert!(!prompt.contains("先比对参考谱库"));
+        let english = social_skill_prompt(&selected, &[], ShareSocialPlatform::Twitter, false);
+        assert!(english.contains("Twitter / X (twitter)"));
+        assert!(english.contains("Do not switch platforms"));
         assert!(!transcript_has_shareable(&[ChatItem::Tool {
             name: "shell".into(),
             ok: Some(true),
@@ -1115,10 +1147,7 @@ mod share_tests {
                 selected: true,
             },
         ];
-        assert_eq!(
-            share_fallback_caption(&messages, 80),
-            "主峰在 530 nm。"
-        );
+        assert_eq!(share_fallback_caption(&messages, 80), "主峰在 530 nm。");
         assert!(share_fallback_caption(&messages, 6).ends_with('…'));
     }
 }
