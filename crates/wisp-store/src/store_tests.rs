@@ -140,6 +140,22 @@ async fn roundtrip() {
     assert_eq!(sessions[0].1, "Renamed chat");
     store.delete_session("f1", "p1").await.unwrap();
     assert!(store.list_sessions("p1").await.unwrap().is_empty());
+
+    // A message-less draft becomes listable the moment the user names it, so a
+    // rename done before the first turn shows up immediately (#888).
+    store.create_frame("f3", "p1", "OPERON", "m").await.unwrap();
+    assert!(
+        store.list_sessions("p1").await.unwrap().is_empty(),
+        "untitled draft stays hidden"
+    );
+    store
+        .rename_session("f3", "p1", "Named draft")
+        .await
+        .unwrap();
+    let sessions = store.list_sessions("p1").await.unwrap();
+    assert_eq!(sessions.len(), 1, "named draft must be listed");
+    assert_eq!(sessions[0].0, "f3");
+    assert_eq!(sessions[0].1, "Named draft");
     let _ = std::fs::remove_file(&tmp);
 }
 

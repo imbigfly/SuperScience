@@ -14156,7 +14156,17 @@ fn App() -> impl IntoView {
 
         <RenameSessionOverlay
             state=RenameSessionOverlayState { locale, rename_session_target, rename_session_input }
-            on_renamed=Callback::new(move |_: ()| refresh_session_history())
+            on_renamed=Callback::new(move |(id, title): (String, String)| {
+                // Patch the cached row first so a draft session — which the
+                // backend list omits until its first user turn — shows the new
+                // name immediately instead of after the next turn completes.
+                sessions.update(|rows| {
+                    if let Some(row) = rows.iter_mut().find(|row| row.id == id) {
+                        row.title = title;
+                    }
+                });
+                refresh_session_history();
+            })
         />
 
         <FolderModalOverlay

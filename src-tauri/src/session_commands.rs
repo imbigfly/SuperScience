@@ -10,8 +10,9 @@ pub(super) async fn new_session(
     // Create a fresh frame and hand its id to the UI up front, so the UI can
     // route streamed events to the right transcript *before* the first delta
     // arrives. Does NOT cancel any running turn — parallel conversations keep
-    // running. Persisted history still ignores empty frames; the UI keeps the
-    // currently active draft visible until its first user turn is stored.
+    // running. Persisted history still ignores empty untitled frames; the UI
+    // keeps the currently active draft visible until its first user turn is
+    // stored, and an explicit rename makes the draft listable right away (#888).
     let active = state.active(window.label());
     let ap = project_commands::load_active_project(&state, &active.id)
         .await?

@@ -1531,7 +1531,8 @@ impl Store {
                 FROM frames f \
                 WHERE f.project_id = ? AND f.parent_frame_id = f.id \
                   AND f.exploration_id IS NULL \
-                  AND EXISTS (SELECT 1 FROM messages mm WHERE mm.frame_id = f.id AND mm.role = 'user') \
+                  AND (EXISTS (SELECT 1 FROM messages mm WHERE mm.frame_id = f.id AND mm.role = 'user') \
+                       OR TRIM(COALESCE(f.title, '')) <> '') \
              ) sessions \
              WHERE (? IS NULL OR activity_at < ? OR (activity_at = ? AND id < ?)) \
              ORDER BY activity_at DESC, id DESC LIMIT ?",
@@ -1574,7 +1575,8 @@ impl Store {
              FROM frames f \
              WHERE f.project_id = ? AND f.parent_frame_id = f.id AND COALESCE(f.pinned, 0) = 1 \
                AND f.exploration_id IS NULL \
-               AND EXISTS (SELECT 1 FROM messages mm WHERE mm.frame_id = f.id AND mm.role = 'user') \
+               AND (EXISTS (SELECT 1 FROM messages mm WHERE mm.frame_id = f.id AND mm.role = 'user') \
+                    OR TRIM(COALESCE(f.title, '')) <> '') \
              ORDER BY activity_at DESC, f.id DESC",
         )
         .bind(project_id)

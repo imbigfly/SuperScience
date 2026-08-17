@@ -3143,6 +3143,28 @@ test("rename session modal autofocuses so Ctrl+A selects the title", async ({ pa
   )).toBe(true);
 });
 
+test("renaming a fresh session takes effect before its first message (#888)", async ({ page }) => {
+  await page.addInitScript(parallelMock);
+  await page.goto("/");
+  await page.locator(".proj-card-main").first().click();
+  await expect(newSessionButton(page)).toBeVisible();
+
+  await newSessionButton(page).click();
+  const draft = page.locator(".side-item.ses", { hasText: "Untitled session" }).first();
+  await expect(draft).toBeVisible();
+
+  await draft.dblclick();
+  const input = page.locator("#rename-session-input");
+  await expect(input).toBeVisible();
+  await input.fill("Named before first turn");
+  await page.locator(".modal", { has: input }).getByRole("button", { name: "Save" }).click();
+
+  // The rename must show up without sending any message first.
+  await expect(page.locator(".side-item.ses", { hasText: "Named before first turn" })).toBeVisible();
+  await expect(page.locator(".side-item.ses", { hasText: "Untitled session" })).toHaveCount(0);
+  expect((await invokeArgsList(page, "send_message")).length).toBe(0);
+});
+
 test("conversation action button renames, transfers, and deletes sessions (#557)", async ({ page }) => {
   await page.addInitScript(parallelMock);
   await page.goto("/");
