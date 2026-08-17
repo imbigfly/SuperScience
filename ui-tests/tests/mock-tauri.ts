@@ -5343,7 +5343,16 @@ export function parallelMock(): void {
           }
           case "rename_session": {
             const session = sessions.find((entry) => entry.id === arg("id"));
-            if (session) session.title = String(arg("title") ?? session.title);
+            if (session) {
+              session.title = String(arg("title") ?? session.title);
+            } else {
+              // Mirrors the store: naming a message-less draft makes it
+              // listable before its first user turn (#888).
+              sessions.unshift({
+                id: String(arg("id")), title: String(arg("title") ?? ""),
+                ts: Date.now(), folder_id: null,
+              });
+            }
             return null;
           }
           case "delete_session": {

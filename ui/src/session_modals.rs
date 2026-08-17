@@ -132,7 +132,7 @@ pub(crate) struct RenameSessionOverlayState {
 #[component]
 pub(crate) fn RenameSessionOverlay(
     state: RenameSessionOverlayState,
-    on_renamed: Callback<()>,
+    on_renamed: Callback<(String, String)>,
 ) -> impl IntoView {
     let RenameSessionOverlayState {
         locale,
@@ -173,9 +173,9 @@ pub(crate) fn RenameSessionOverlay(
                                     let id = id_key.clone();
                                     rename_session_target.set(None);
                                     spawn_local(async move {
-                                        let arg = to_value(&serde_json::json!({ "id": id, "title": title })).unwrap();
+                                        let arg = to_value(&serde_json::json!({ "id": id.clone(), "title": title.clone() })).unwrap();
                                         if invoke_checked("rename_session", arg).await.is_ok() {
-                                            on_renamed.call(());
+                                            on_renamed.call((id, title));
                                         }
                                     });
                                 }
@@ -190,9 +190,9 @@ pub(crate) fn RenameSessionOverlay(
                             let id = id_btn.clone();
                             rename_session_target.set(None);
                             spawn_local(async move {
-                                let arg = to_value(&serde_json::json!({ "id": id, "title": title })).unwrap();
+                                let arg = to_value(&serde_json::json!({ "id": id.clone(), "title": title.clone() })).unwrap();
                                 if invoke_checked("rename_session", arg).await.is_ok() {
-                                    on_renamed.call(());
+                                    on_renamed.call((id, title));
                                 }
                             });
                         }>{move || t(locale.get(), "settings.save")}</button>
