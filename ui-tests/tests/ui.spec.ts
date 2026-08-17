@@ -4350,6 +4350,42 @@ test("Generated artifacts survive follow-up tool commentary and ignore mentioned
   await expect(preview.locator(".center-file-head > span").first()).toHaveText("results/new.png");
 });
 
+test("links inside the artifact modal preview never navigate the app", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("ARTIFACTATTRIBUTION");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const reply = page.locator(".msg.assistant", {
+    hasText: "I inspected old.csv and created the requested output.",
+  });
+  await reply.locator('a.workspace-path-link[href="notes/FIGURE_LEGEND.md"]').click();
+  const modal = page.locator('.artifact-modal:has(.am-figure[data-file-path="notes/FIGURE_LEGEND.md"])');
+  await expect(modal).toBeVisible();
+
+  const appUrl = page.url();
+  await modal.locator('a[href="https://example.com/paper"]').click();
+  await page.getByTestId("external-link-open").click();
+  await expect.poll(() => lastInvokeArgs(page, "open_external_url")).toMatchObject({
+    url: "https://example.com/paper",
+  });
+  expect(page.url()).toBe(appUrl);
+  await expect(modal).toBeVisible();
+
+  await modal.locator('a[href="results/new.png"]').click();
+  await expect.poll(async () => page.locator(".artifact-modal").count()).toBe(1);
+  expect(page.url()).toBe(appUrl);
+  const openCalls = await page.evaluate(() => {
+    const plain = (value: any): any => {
+      if (value instanceof Map) return Object.fromEntries([...value].map(([k, v]) => [k, plain(v)]));
+      if (Array.isArray(value)) return value.map(plain);
+      if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, plain(v)]));
+      return value;
+    };
+    return ((window as any).__skillInvokeLog ?? []).filter((c: any) => c.cmd === "open_external_url").map((c: any) => plain(c.args));
+  });
+  expect(openCalls).toEqual([{ url: "https://example.com/paper" }]);
+});
+
 test("artifact category headers collapse and expand their tiles", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("make a volcano plot volcano.png");
@@ -10948,6 +10984,30 @@ test("external links open in the system browser, not the app webview (#97)", asy
   // The app itself must still be on screen — the click was intercepted, not
   // followed as a top-level navigation.
   await expect(newSessionButton(page)).toBeVisible();
+});
+
+test("relative paths and hash anchors never navigate the app", async ({ page }) => {
+  await enterApp(page);
+  const appUrl = page.url();
+  await page.evaluate(() => {
+    const rel = document.createElement("a");
+    rel.id = "rel-link-probe";
+    rel.href = "notes/FIGURE_LEGEND.md";
+    rel.textContent = "relative";
+    const hash = document.createElement("a");
+    hash.id = "hash-link-probe";
+    hash.href = "#section";
+    hash.textContent = "anchor";
+    document.body.appendChild(rel);
+    document.body.appendChild(hash);
+  });
+  await page.click("#rel-link-probe");
+  expect(page.url()).toBe(appUrl);
+  await expect(newSessionButton(page)).toBeVisible();
+  await page.click("#hash-link-probe");
+  expect(page.url()).toBe(appUrl);
+  await expect(newSessionButton(page)).toBeVisible();
+  expect(await openedExternalUrls(page)).toEqual([]);
 });
 
 async function openedExternalUrls(page: Page) {

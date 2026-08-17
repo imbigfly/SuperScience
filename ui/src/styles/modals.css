@@ -352,6 +352,10 @@
 }
 
 .exploration-overlay { z-index: 125; }
+/* Must beat the generic `.overlay:has(.confirm-modal)` lift (z-index: 110):
+   equal specificity here would lose to that earlier rule and drop the
+   exploration confirm dialog *below* the diff overlay it confirms, leaving
+   its buttons covered by the diff body and unclickable. */
 .overlay.exploration-confirm-overlay { z-index: 135; }
 .exploration-start-modal { max-width: 520px; }
 .exploration-modal-copy { margin: 0; color: var(--text-muted); font-size: 13px; line-height: 1.55; }

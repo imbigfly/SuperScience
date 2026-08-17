@@ -333,7 +333,8 @@ pub(super) async fn spawn_project_window(
     let mut builder = tauri::WebviewWindowBuilder::new(app, &label, url)
         .title("wisp science")
         .inner_size(1100.0, 760.0)
-        .resizable(true);
+        .resizable(true)
+        .on_navigation(crate::guard_webview_navigation);
     // Center over the requesting window (or the main window on startup
     // restore); otherwise the OS cascades each new window to an arbitrary
     // spot. Sizes/positions are physical, so convert through the anchor's

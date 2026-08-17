@@ -44,6 +44,23 @@ pub(crate) fn refresh_session_execution_contexts(
     });
 }
 
+/// Render-relevant equality for the polled run list. `last_polled_at` is a
+/// backend heartbeat that changes on every remote poll; treating it as a
+/// change republishes every run card each poll cycle — the visible "page
+/// refresh" that flickered cards and yanked the chat scroll back to the top.
+/// `last_poll_error` stays in the comparison: the SSH-retry toast and the
+/// card's error line depend on it.
+fn run_lists_render_eq(current: &[RunSummary], next: &[RunSummary]) -> bool {
+    current.len() == next.len()
+        && current.iter().zip(next.iter()).all(|(a, b)| {
+            let mut a = a.clone();
+            let mut b = b.clone();
+            a.last_polled_at = None;
+            b.last_polled_at = None;
+            a == b
+        })
+}
+
 pub(crate) fn refresh_runtimes(into: RwSignal<Vec<RuntimeInfo>>) {
     spawn_local(async move {
         let value = invoke("list_runtimes", JsValue::UNDEFINED).await;
@@ -84,7 +101,9 @@ pub(crate) fn refresh_runs(into: RwSignal<Vec<RunSummary>>, locale: RwSignal<Loc
             // signal unconditionally rebuilds every run card, which resets the
             // output panel's scroll to the top for a frame — a finished run
             // visibly jumped once per poll with nothing to show for it (#654).
-            if into.with_untracked(|current| current != &list) {
+            // The heartbeat field alone must not count as a change either, or
+            // every remote poll keeps republishing the whole list.
+            if into.with_untracked(|current| !run_lists_render_eq(current, &list)) {
                 into.set(list);
                 schedule_run_output_follow();
             }
@@ -94,6 +113,58 @@ pub(crate) fn refresh_runs(into: RwSignal<Vec<RunSummary>>, locale: RwSignal<Loc
             }
         }
     });
+}
+
+#[cfg(test)]
+mod run_refresh_guard_tests {
+    use super::run_lists_render_eq;
+    use crate::dto::RunSummary;
+
+    fn summary(last_polled_at: Option<i64>) -> RunSummary {
+        RunSummary {
+            id: "run-1".into(),
+            frame_id: None,
+            context_id: "local".into(),
+            title: "job".into(),
+            kind: "shell".into(),
+            status: "running".into(),
+            created_at: 1,
+            started_at: Some(2),
+            ended_at: None,
+            exit_code: None,
+            remote_workdir: None,
+            timeout_secs: None,
+            last_polled_at,
+            last_poll_error: None,
+            progress_json: "{}".into(),
+            harvested_at: None,
+            cleaned_at: None,
+            cleanup_error: None,
+            output_fingerprint: "fp".into(),
+        }
+    }
+
+    #[test]
+    fn heartbeat_only_changes_do_not_republish_the_run_list() {
+        let current = vec![summary(Some(10))];
+        assert!(run_lists_render_eq(&current, &[summary(Some(10))]));
+        assert!(run_lists_render_eq(&current, &[summary(Some(20))]));
+        assert!(run_lists_render_eq(&current, &[summary(None)]));
+
+        let mut changed = summary(Some(10));
+        changed.status = "succeeded".into();
+        assert!(!run_lists_render_eq(&current, &[changed]));
+
+        let mut changed = summary(Some(10));
+        changed.last_poll_error = Some("ssh: connection lost".into());
+        assert!(!run_lists_render_eq(&current, &[changed]));
+
+        assert!(!run_lists_render_eq(&current, &[]));
+        assert!(!run_lists_render_eq(
+            &current,
+            &[summary(Some(10)), summary(Some(11))]
+        ));
+    }
 }
 
 pub(crate) fn show_probe_stopped_toast(value: &JsValue, locale: RwSignal<Locale>) {

@@ -5724,8 +5724,9 @@ fn spawn_deferred_startup(
         }
 
         // Restore the project windows open when the app last quit (#52). The
-        // "main" window comes from tauri.conf; these are the extra per-project
-        // ones. A project that was since deleted simply fails to spawn.
+        // "main" window is built in `run()` so it can carry an `on_navigation`
+        // guard; these are the extra per-project ones. A project that was
+        // since deleted simply fails to spawn.
         for id in project_commands::persisted_windows(&store).await {
             let state = app.state::<AppState>();
             let _ =
@@ -5735,6 +5736,34 @@ fn spawn_deferred_startup(
         update_startup_report(|report| report.deferred_ms = Some(ms));
         tracing::info!(target: "wisp", ms = ms as u64, "deferred startup finished");
     });
+}
+
+/// Webview navigation guard. The app is a single-page UI, so any navigation
+/// away from its own origin means a clicked link slipped past the frontend
+/// click handlers — block it instead of replacing the whole session view
+/// (the "page you cannot get back to" report). Allowed origins: the bundled
+/// app (`tauri://localhost`, `http://tauri.localhost`), the dev server
+/// (`http://localhost:*`), and `about:` pages.
+pub(crate) fn navigation_allowed(url: &tauri::Url) -> bool {
+    match url.scheme() {
+        "tauri" | "about" => true,
+        "http" | "https" => matches!(url.host_str(), Some("tauri.localhost") | Some("localhost")),
+        _ => false,
+    }
+}
+
+/// Last-resort safety net below the frontend click handlers, attached to
+/// every webview via `WebviewWindowBuilder::on_navigation`: a link that
+/// reaches the webview's default navigation must never replace the app UI.
+/// External http/https links go to the system browser instead.
+pub(crate) fn guard_webview_navigation(url: &tauri::Url) -> bool {
+    if navigation_allowed(url) {
+        return true;
+    }
+    if matches!(url.scheme(), "http" | "https") {
+        let _ = tauri_plugin_opener::open_url(url.as_str(), None::<&str>);
+    }
+    false
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -5801,6 +5830,23 @@ pub fn run() {
             }
         })
         .setup(move |app| {
+            // The main window is built in code rather than auto-created from
+            // tauri.conf.json (`windows` stays empty there): a config-created
+            // window cannot take an `on_navigation` guard, and every webview
+            // in the app must carry one.
+            let main_builder = tauri::WebviewWindowBuilder::new(
+                app,
+                "main",
+                tauri::WebviewUrl::App("index.html".into()),
+            )
+            .title("wisp science")
+            .inner_size(1100.0, 760.0)
+            .resizable(true)
+            .disable_drag_drop_handler()
+            .on_navigation(guard_webview_navigation);
+            #[cfg(target_os = "windows")]
+            let main_builder = main_builder.decorations(false).shadow(true);
+            main_builder.build().expect("create main window");
             let mut startup = StartupTimeline::default();
             if let Ok(res) = app.path().resource_dir() {
                 wisp_paths::set_resource_root(res);

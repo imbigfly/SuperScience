@@ -3844,6 +3844,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             if (path.toLowerCase().includes(".png")) {
               return { path, mime: "image/png", text: null, base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z0mAAAAAASUVORK5CYII=" };
             }
+            if (path.toLowerCase().includes("figure_legend")) {
+              return { path, mime: "text/markdown", text: "# Figure legend\n\nSee [the paper](https://example.com/paper) and [the plot](results/new.png).\n", base64: null };
+            }
             if (path.toLowerCase().endsWith(".md")) {
               return { path, mime: "text/markdown", text: "# Draft manuscript\n\nOriginal body paragraph.\n", base64: null };
             }

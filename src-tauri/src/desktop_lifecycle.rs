@@ -129,7 +129,8 @@ fn ensure_pet_window(app: &AppHandle) -> Result<(), String> {
         .always_on_top(true)
         .skip_taskbar(true)
         .focused(false)
-        .visible(false);
+        .visible(false)
+        .on_navigation(crate::guard_webview_navigation);
     if let Some((x, y)) = default_pet_position(app) {
         builder = builder.position(x, y);
     }

@@ -7942,7 +7942,10 @@ fn App() -> impl IntoView {
     // never navigate the app's own webview away from the UI (no way back —
     // issue #97). Every render path (chat markdown, file preview, right pane,
     // review) lands here, so this is also where the destination — usually
-    // model-authored — is confirmed before the OS handler sees it.
+    // model-authored — is confirmed before the OS handler sees it. The app is
+    // a single-page UI: no anchor may ever navigate the webview itself, so
+    // the default is always suppressed. Relative paths, "#", and javascript:
+    // are simply inert.
     window_event_listener(ev::click, move |ev| {
         use wasm_bindgen::JsCast;
         if ev.default_prevented() {
@@ -7954,8 +7957,8 @@ fn App() -> impl IntoView {
         while let Some(n) = el {
             if n.tag_name().eq_ignore_ascii_case("a") {
                 if let Some(href) = n.get_attribute("href") {
+                    ev.prevent_default();
                     if opens_in_system_browser(&href) {
-                        ev.prevent_default();
                         external_link_confirm.set(Some(href));
                     }
                 }

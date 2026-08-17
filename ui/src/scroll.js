@@ -33,6 +33,12 @@ export function attach_chat_scroll(scrollerId, contentId) {
   let follow = true;
   let lastHeight = content.scrollHeight;
   let readingTop = scroller.scrollTop;
+  // The last scrollTop this module set itself. Real scroll events carry any
+  // other value, so `readingTop` can track the user without a gesture-timing
+  // guess — wheel events delayed past the 500ms window by a busy main thread,
+  // held navigation keys, and scrollbar drags included (#61's window stays as
+  // the follow/unfollow guard; it just no longer gatekeeps the bookmark).
+  let programmaticTop = scroller.scrollTop;
   let activeSession = null;
   let restoreGeneration = 0;
   let hidden = false;
@@ -87,7 +93,13 @@ export function attach_chat_scroll(scrollerId, contentId) {
     // thread for a beat, yanking scrollTop up). Scroll events fire before
     // paint, so an instant snap here means the clamped position is never
     // painted — without it the view visibly bounces on every thinking delta.
-    if (follow) snapBottom(scroller);
+    if (follow) {
+      snapBottom(scroller);
+    } else if (scroller.scrollTop !== programmaticTop) {
+      // Parked mid-thread: any position we did not set ourselves is the
+      // user's, so it becomes the bookmark rebuilds restore to.
+      readingTop = scroller.scrollTop;
+    }
     syncPill();
   };
 
@@ -103,8 +115,12 @@ export function attach_chat_scroll(scrollerId, contentId) {
     if (hidden) {
       hidden = false;
       lastHeight = h;
-      if (follow) snapBottom(scroller);
-      else scroller.scrollTop = Math.min(readingTop, scroller.scrollHeight - scroller.clientHeight);
+      if (follow) {
+        snapBottom(scroller);
+      } else {
+        programmaticTop = Math.min(readingTop, scroller.scrollHeight - scroller.clientHeight);
+        scroller.scrollTop = programmaticTop;
+      }
       syncPill();
       return;
     }
@@ -119,7 +135,8 @@ export function attach_chat_scroll(scrollerId, contentId) {
       return;
     }
     if (grew) {
-      scroller.scrollTop = Math.min(readingTop, scroller.scrollHeight - scroller.clientHeight);
+      programmaticTop = Math.min(readingTop, scroller.scrollHeight - scroller.clientHeight);
+      scroller.scrollTop = programmaticTop;
     }
     syncFollow();
   };
@@ -188,7 +205,8 @@ export function attach_chat_scroll(scrollerId, contentId) {
             setFollow(false);
             const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
             readingTop = Math.min(saved.top, max);
-            scroller.scrollTop = readingTop;
+            programmaticTop = readingTop;
+            scroller.scrollTop = programmaticTop;
           }
           lastHeight = content.scrollHeight;
           syncPill();

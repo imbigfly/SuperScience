@@ -5,7 +5,7 @@ use super::session_commands::transcript_page_items;
 use super::{
     begin_queued_cutin, branch_title, client_turn_error, coalesce_live_agent_events,
     copy_dir_recursive, enable_referenced_contexts, events_to_items, limit_persisted_ui_event,
-    merge_pending_ui_event, message_uses_resource_bindings, messages_to_items,
+    merge_pending_ui_event, message_uses_resource_bindings, messages_to_items, navigation_allowed,
     parse_disabled_skills, parse_enabled_skill_names, parse_follow_up_questions, parse_skill_tags,
     persist_ui_events, provenance_ui_file_changes, receive_confirm_decision,
     reclaim_unconsumed_cutin, resolve_acp_artifact_references, resolve_composer_references,
@@ -2058,6 +2058,40 @@ fn startup_report_grows_as_the_launch_progresses() {
         report.summary(),
         "total=120ms store=90ms window_ready=600000ms deferred=4200ms"
     );
+}
+
+#[test]
+fn navigation_guard_allows_only_app_origins() {
+    let allowed = [
+        "tauri://localhost/",
+        "tauri://localhost/index.html",
+        "http://tauri.localhost/",
+        "https://tauri.localhost/",
+        "http://localhost:1421/",
+        "about:blank",
+    ];
+    for url in allowed {
+        assert!(
+            navigation_allowed(&tauri::Url::parse(url).unwrap()),
+            "{url} should be allowed"
+        );
+    }
+
+    let blocked = [
+        "https://example.com/page",
+        "http://evil.example/figures/plot.png",
+        // Host-suffix lookalikes must not pass as the dev server.
+        "http://localhost.evil.example/",
+        "https://not-tauri.localhost/",
+        "file:///etc/passwd",
+        "javascript:alert(1)",
+    ];
+    for url in blocked {
+        assert!(
+            !navigation_allowed(&tauri::Url::parse(url).unwrap()),
+            "{url} should be blocked"
+        );
+    }
 }
 
 #[test]

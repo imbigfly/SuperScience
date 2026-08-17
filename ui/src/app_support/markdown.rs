@@ -986,6 +986,11 @@ pub(crate) fn handle_md_click(
                     }
                     return;
                 }
+                // "#"/"javascript:" and friends: no handler owns them, but the
+                // webview's default navigation must still be suppressed.
+                ev.prevent_default();
+                ev.stop_propagation();
+                return;
             }
         }
         el = n.parent_element();
