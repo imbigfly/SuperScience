@@ -4633,6 +4633,10 @@ test("project settings save opt-in run workspace retention windows", async ({ pa
   await page.getByRole("button", { name: "Project settings" }).click();
 
   const settings = page.locator(".proj-settings-modal");
+  // Each window is a labeled row: the first input's label used to be missing.
+  await expect(settings.getByText("Succeeded runs", { exact: true })).toBeVisible();
+  await expect(settings.getByText("Failed runs", { exact: true })).toBeVisible();
+  await expect(settings.getByText("Orphaned files", { exact: true })).toBeVisible();
   const succeeded = settings.getByTestId("retention-succeeded");
   const failed = settings.getByTestId("retention-failed");
   const orphan = settings.getByTestId("retention-orphan");

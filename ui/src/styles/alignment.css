@@ -83,6 +83,16 @@
 }
 .proj-settings-modal .ps-textarea:focus { border-color: var(--clay); box-shadow: 0 0 0 3px var(--focus-ring); }
 .proj-settings-modal .ps-ctx { min-height: 150px; }
+.proj-settings-modal .ps-label { font-weight: 600; }
+/* Retention windows: one labeled row per window, input right-aligned with a unit suffix. */
+.proj-settings-modal .ps-retention-row { display: flex; flex-direction: column; gap: 6px; }
+.proj-settings-modal .ps-retention-item {
+  display: flex; flex-direction: row; align-items: center; justify-content: space-between;
+  gap: 12px; font-weight: 400; font-size: 12.5px;
+}
+.proj-settings-modal .ps-retention-field { display: inline-flex; align-items: center; gap: 6px; }
+.proj-settings-modal input.ps-retention { width: 84px; padding: 6px 9px; font-size: 13px; text-align: right; }
+.proj-settings-modal .ps-retention-unit { min-width: 24px; color: var(--text-faint); font-size: 12px; }
 
 /* --- Session group headers inside the list (Today / Earlier) --- */
 .side-group-title { font-size: 11px; font-weight: 600; letter-spacing: .02em; color: var(--text-faint); padding: 12px 10px 4px; }

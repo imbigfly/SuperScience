@@ -675,48 +675,64 @@ pub(crate) fn ProjSettingsOverlay(
                             on:click=move |_| show_proj_settings.set(false)>{compose_icon("close")}</button>
                     </div>
                     <label>
-                        {move || t(locale.get(), "proj_settings.name")}
+                        <span class="ps-label">{move || t(locale.get(), "proj_settings.name")}</span>
                         <input prop:value=move || proj_settings.get().name
                             on:input=move |ev| { let v = event_target_value(&ev); proj_settings.update(|s| s.name = v); } />
                     </label>
                     <label>
-                        {move || t(locale.get(), "proj_settings.description")}
+                        <span class="ps-label">{move || t(locale.get(), "proj_settings.description")}</span>
                         <span class="ps-hint">{move || t(locale.get(), "proj_settings.description_hint")}</span>
                         <textarea class="ps-textarea" rows="2"
                             prop:value=move || proj_settings.get().description
                             on:input=move |ev| { let v = event_target_value(&ev); proj_settings.update(|s| s.description = v); }></textarea>
                     </label>
                     <label>
-                        {move || t(locale.get(), "proj_settings.agent_context")}
+                        <span class="ps-label">{move || t(locale.get(), "proj_settings.agent_context")}</span>
                         <span class="ps-hint">{move || t(locale.get(), "proj_settings.agent_context_hint")}</span>
                         <textarea class="ps-textarea ps-ctx" rows="8"
                             prop:value=move || proj_settings.get().agent_context
                             on:input=move |ev| { let v = event_target_value(&ev); proj_settings.update(|s| s.agent_context = v); }></textarea>
                     </label>
                     <label>
-                        {move || t(locale.get(), "proj_settings.retention")}
+                        <span class="ps-label">{move || t(locale.get(), "proj_settings.retention")}</span>
                         <span class="ps-hint">{move || t(locale.get(), "proj_settings.retention_hint")}</span>
                         <div class="ps-retention-row">
-                            <input type="number" min="1" max="3650" inputmode="numeric"
-                                class="ps-retention" data-testid="retention-succeeded"
-                                placeholder=move || t(locale.get(), "proj_settings.retention_off")
-                                prop:value=move || retention_succeeded.get()
-                                on:input=move |ev| retention_succeeded.set(event_target_value(&ev))
-                                on:change=move |_| save_retention() />
-                            <span>{move || t(locale.get(), "proj_settings.retention_failed")}</span>
-                            <input type="number" min="1" max="3650" inputmode="numeric"
-                                class="ps-retention" data-testid="retention-failed"
-                                placeholder=move || t(locale.get(), "proj_settings.retention_off")
-                                prop:value=move || retention_failed.get()
-                                on:input=move |ev| retention_failed.set(event_target_value(&ev))
-                                on:change=move |_| save_retention() />
-                            <span>{move || t(locale.get(), "proj_settings.retention_orphan")}</span>
-                            <input type="number" min="1" max="3650" inputmode="numeric"
-                                class="ps-retention" data-testid="retention-orphan"
-                                placeholder=move || t(locale.get(), "proj_settings.retention_off")
-                                prop:value=move || retention_orphan.get()
-                                on:input=move |ev| retention_orphan.set(event_target_value(&ev))
-                                on:change=move |_| save_retention() />
+                            <div class="ps-retention-item">
+                                <span>{move || t(locale.get(), "proj_settings.retention_succeeded")}</span>
+                                <span class="ps-retention-field">
+                                    <input type="number" min="1" max="3650" inputmode="numeric"
+                                        class="ps-retention" data-testid="retention-succeeded"
+                                        placeholder=move || t(locale.get(), "proj_settings.retention_off")
+                                        prop:value=move || retention_succeeded.get()
+                                        on:input=move |ev| retention_succeeded.set(event_target_value(&ev))
+                                        on:change=move |_| save_retention() />
+                                    <span class="ps-retention-unit">{move || t(locale.get(), "proj_settings.retention_days_unit")}</span>
+                                </span>
+                            </div>
+                            <div class="ps-retention-item">
+                                <span>{move || t(locale.get(), "proj_settings.retention_failed")}</span>
+                                <span class="ps-retention-field">
+                                    <input type="number" min="1" max="3650" inputmode="numeric"
+                                        class="ps-retention" data-testid="retention-failed"
+                                        placeholder=move || t(locale.get(), "proj_settings.retention_off")
+                                        prop:value=move || retention_failed.get()
+                                        on:input=move |ev| retention_failed.set(event_target_value(&ev))
+                                        on:change=move |_| save_retention() />
+                                    <span class="ps-retention-unit">{move || t(locale.get(), "proj_settings.retention_days_unit")}</span>
+                                </span>
+                            </div>
+                            <div class="ps-retention-item">
+                                <span>{move || t(locale.get(), "proj_settings.retention_orphan")}</span>
+                                <span class="ps-retention-field">
+                                    <input type="number" min="1" max="3650" inputmode="numeric"
+                                        class="ps-retention" data-testid="retention-orphan"
+                                        placeholder=move || t(locale.get(), "proj_settings.retention_off")
+                                        prop:value=move || retention_orphan.get()
+                                        on:input=move |ev| retention_orphan.set(event_target_value(&ev))
+                                        on:change=move |_| save_retention() />
+                                    <span class="ps-retention-unit">{move || t(locale.get(), "proj_settings.retention_days_unit")}</span>
+                                </span>
+                            </div>
                         </div>
                     </label>
                     <div class="row">
