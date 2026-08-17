@@ -54,8 +54,8 @@ impl Store {
     }
 
     /// All projects, newest-updated first, each with its session count
-    /// (root frames that have at least one user turn — matches `list_sessions`)
-    /// and artifact count.
+    /// (root frames with a user turn or an explicit title — matches
+    /// `list_sessions_page`, #888) and artifact count.
     pub async fn list_projects(
         &self,
     ) -> Result<Vec<(String, String, String, i64, i64, i64, String, i64)>> {
@@ -65,7 +65,8 @@ impl Store {
                     COALESCE(p.description,'') AS description, \
                     (SELECT COUNT(*) FROM frames f WHERE f.project_id = p.id AND f.parent_frame_id = f.id \
                        AND f.exploration_id IS NULL \
-                       AND EXISTS (SELECT 1 FROM messages m WHERE m.frame_id = f.id AND m.role='user')) AS sessions, \
+                       AND (EXISTS (SELECT 1 FROM messages m WHERE m.frame_id = f.id AND m.role='user') \
+                            OR TRIM(COALESCE(f.title, '')) <> '')) AS sessions, \
                     (SELECT COUNT(*) FROM artifacts a WHERE a.project_id = p.id \
                        AND a.exploration_id IS NULL) AS artifacts \
              FROM projects p \

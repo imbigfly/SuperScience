@@ -545,6 +545,9 @@ impl Store {
     }
 
     /// Recent sessions with last-turn metadata for the projects dashboard.
+    ///
+    /// Deliberately requires a user turn, unlike `list_sessions_page` (#888):
+    /// a named-but-unused draft has no activity to rank as "recent".
     pub async fn list_recent_sessions_detail(
         &self,
         limit: i64,
@@ -591,6 +594,10 @@ impl Store {
 
     /// Last message role and unseen flag per saved session in a project (for
     /// dashboard counts).
+    ///
+    /// Deliberately requires a user turn, unlike `list_sessions_page` (#888):
+    /// a message-less draft has no last role, and `last_role_needs_you(None)`
+    /// is false anyway, so including it could only add noise.
     pub async fn list_session_last_roles(
         &self,
         project_id: &str,
@@ -2281,7 +2288,8 @@ impl Store {
                 WHERE f.parent_frame_id=f.id \
                   AND f.exploration_id IS NULL \
                   AND f.project_id NOT LIKE 'scratch:%' \
-                  AND EXISTS (SELECT 1 FROM messages mm WHERE mm.frame_id=f.id AND mm.role='user') \
+                  AND (EXISTS (SELECT 1 FROM messages mm WHERE mm.frame_id=f.id AND mm.role='user') \
+                       OR TRIM(COALESCE(f.title,'')) <> '') \
                   AND (? IS NULL OR f.project_id=?) \
                   AND (? IS NULL OR f.id=?) \
              ) \
