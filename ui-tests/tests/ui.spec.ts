@@ -8409,7 +8409,7 @@ test("skill manager reloads manually copied skills and shows their scope", async
   await expect(fresh).toContainText("Project");
   await expect(fresh.locator('input[type="checkbox"]')).toBeChecked();
   await expect(fresh.getByRole("button", { name: "Delete skill" })).toHaveCount(0);
-  await expect(page.getByText("Skills reloaded. 4 available.")).toBeVisible();
+  await expect(page.getByText("Skills reloaded. 5 available.")).toBeVisible();
 });
 
 test("skill manager updates and deletes user-added skills", async ({ page }) => {
@@ -11633,7 +11633,7 @@ test("specialist skills whitelist uses a searchable picker instead of a full lis
   const options = page.getByTestId("specialist-skill-option");
   await expect(options).toHaveCount(0);
   const search = page.getByTestId("specialist-skill-search");
-  await expect(page.getByTestId("specialist-skill-results")).toContainText("3 available skills");
+  await expect(page.getByTestId("specialist-skill-results")).toContainText("4 available skills");
 
   await search.fill("narrative");
   await expect(options).toHaveCount(1);
