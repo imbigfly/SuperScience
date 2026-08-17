@@ -26,11 +26,14 @@ cargo tauri dev      # hot-reload: Trunk serves the UI, Tauri opens the window
 cargo tauri build    # installers under target/release/bundle
 ```
 
-Desktop icons come from `src-tauri/icons/app-icon.svg` via
-`src-tauri/gen-icons.ps1` (`cargo tauri icon`). That master is full-bleed with
-the DNA mark inset. Do not regenerate from `ui/logo.svg`: the in-app mark bakes
-a rounded clip and fills the canvas, which macOS Dock/Launchpad then masks
-again so the logo looks oversized compared with Linux/Docker.
+Desktop icons come from two masters via `src-tauri/gen-icons.ps1`
+(`cargo tauri icon`). Both keep the DNA mark inset; do not regenerate from
+`ui/logo.svg`, which fills the canvas and looks oversized on every launcher.
+
+- `src-tauri/icons/app-icon.svg` is full-bleed. macOS Dock/Launchpad apply a
+  squircle, so a baked badge would be double-masked and look small.
+- `src-tauri/icons/app-icon-rounded.svg` clips the same mark to rounded
+  corners. Windows taskbar and most Linux docks draw the bitmap as-is.
 
 Universal macOS binary (Apple Silicon + Intel):
 

@@ -2097,14 +2097,23 @@ fn navigation_guard_allows_only_app_origins() {
 #[test]
 fn desktop_app_icon_is_full_bleed_with_an_inset_mark() {
     let svg = include_str!("../icons/app-icon.svg");
+    let rounded = include_str!("../icons/app-icon-rounded.svg");
     let script = include_str!("../gen-icons.ps1");
     assert!(
         !svg.contains("<clipPath"),
-        "desktop icon must be full-bleed; macOS applies the squircle mask"
+        "macOS master must be full-bleed; Dock applies the squircle mask"
     );
     assert!(
         svg.contains("scale(0.60)"),
         "keep the DNA mark inset so Dock/Launchpad does not fill the tile"
+    );
+    assert!(
+        rounded.contains("<clipPath") && rounded.contains("rx=\"58\""),
+        "Windows/Linux launchers draw the bitmap as-is and need baked rounding"
+    );
+    assert!(
+        rounded.contains("scale(0.60)"),
+        "rounded launcher icon must keep the same inset mark"
     );
     assert!(
         script
@@ -2113,10 +2122,16 @@ fn desktop_app_icon_is_full_bleed_with_an_inset_mark() {
         "icon generation must use the desktop master, not the in-app logo"
     );
     assert!(
+        script
+            .lines()
+            .any(|line| line.contains("Resolve-Path") && line.contains("icons/app-icon-rounded.svg")),
+        "Windows/Linux icons must come from the rounded master"
+    );
+    assert!(
         !script.lines().any(|line| {
             let trimmed = line.trim_start();
             !trimmed.starts_with('#') && line.contains("ui/logo.svg")
         }),
-        "do not pass the in-app logo (baked rounded clip) to cargo tauri icon"
+        "do not pass the in-app logo (canvas-filling badge) to cargo tauri icon"
     );
 }
