@@ -4,6 +4,8 @@
 use crate::dto::{ChatItem, ShareSocialHighlight, ShareSocialVariant};
 use serde_json::{json, Value};
 
+/// Skill attached when the share dialog asks for Xiaohongshu copy.
+pub(crate) const XIAOHONGSHU_SHARE_SKILL: &str = "xiaohongshu-note";
 /// How many highlight screenshots to prepare when the share dialog opens.
 pub(crate) const MAX_SHARE_CARDS: usize = 3;
 /// Pair the previous user turn with an assistant highlight when it is short.
@@ -38,6 +40,7 @@ impl ShareCardPreview {
 pub(crate) enum ShareExportFormat {
     Png,
     Html,
+    #[allow(dead_code)]
     Social,
 }
 
@@ -70,15 +73,27 @@ pub(crate) struct ShareMessage {
 /// content is shareable (user, assistant, and thinking rows); tool calls,
 /// usage rows, and other machinery never appear in the share image. Thinking
 /// rows are present but deselected — hidden from the export by default.
+fn shareable_row(item: &ChatItem) -> Option<(ShareRole, &str, bool)> {
+    match item {
+        ChatItem::User(text) => Some((ShareRole::User, text.as_str(), true)),
+        ChatItem::Assistant { text, .. } => Some((ShareRole::Assistant, text.as_str(), true)),
+        ChatItem::Reasoning(text) => Some((ShareRole::Thinking, text.as_str(), false)),
+        _ => None,
+    }
+}
+
+/// True when the transcript has at least one user, assistant, or thinking
+/// row that `/share` can put in the overlay.
+pub(crate) fn transcript_has_shareable(items: &[ChatItem]) -> bool {
+    items
+        .iter()
+        .any(|item| shareable_row(item).is_some_and(|(_, text, _)| !text.trim().is_empty()))
+}
+
 pub(crate) fn share_messages(items: &[ChatItem]) -> Vec<ShareMessage> {
     items
         .iter()
-        .filter_map(|item| match item {
-            ChatItem::User(text) => Some((ShareRole::User, text.as_str(), true)),
-            ChatItem::Assistant { text, .. } => Some((ShareRole::Assistant, text.as_str(), true)),
-            ChatItem::Reasoning(text) => Some((ShareRole::Thinking, text.as_str(), false)),
-            _ => None,
-        })
+        .filter_map(shareable_row)
         .filter(|(_, text, _)| !text.trim().is_empty())
         .map(|(role, text, selected)| ShareMessage {
             role,
@@ -86,6 +101,27 @@ pub(crate) fn share_messages(items: &[ChatItem]) -> Vec<ShareMessage> {
             selected,
         })
         .collect()
+}
+
+/// Prompt sent with `xiaohongshu-note` so the agent writes from the same
+/// redacted selection the long-image export would use.
+pub(crate) fn xiaohongshu_skill_prompt(
+    selected: &[&ShareMessage],
+    redact: &[String],
+) -> String {
+    let mut excerpt = String::from(
+        "请按已附加的 xiaohongshu-note 技能，把下面勾选的对话写成可直接发的小红书笔记。\n\n对话摘录：\n",
+    );
+    for (index, message) in selected.iter().enumerate() {
+        excerpt.push_str(&format!(
+            "[{}] {}\n{}\n\n",
+            index + 1,
+            message.role.tag(),
+            redact_text(&message.text, redact)
+        ));
+    }
+    excerpt.push_str("不要编造摘录里没有的数据、论文或结论。");
+    excerpt
 }
 
 /// Pick 1–3 screenshot cards from the selected turns so the user does not
@@ -830,6 +866,22 @@ mod share_tests {
         assert!(matches!(rows[0].role, ShareRole::User) && rows[0].selected);
         assert!(matches!(rows[1].role, ShareRole::Thinking) && !rows[1].selected);
         assert!(matches!(rows[2].role, ShareRole::Assistant) && rows[2].selected);
+        assert!(transcript_has_shareable(&items));
+        assert!(!transcript_has_shareable(&[]));
+        let selected: Vec<&ShareMessage> = rows.iter().filter(|row| row.selected).collect();
+        let prompt = xiaohongshu_skill_prompt(&selected, &parse_redact_keywords("主峰"));
+        assert!(prompt.contains(XIAOHONGSHU_SHARE_SKILL));
+        assert!(prompt.contains("[1] user"));
+        assert!(prompt.contains("xxx的解释"));
+        assert!(!prompt.contains("先比对参考谱库"));
+        assert!(!transcript_has_shareable(&[ChatItem::Tool {
+            name: "shell".into(),
+            ok: Some(true),
+            input: "ls".into(),
+            output: "ok".into(),
+            started_at_ms: None,
+            duration_ms: None,
+        }]));
     }
 
     #[test]

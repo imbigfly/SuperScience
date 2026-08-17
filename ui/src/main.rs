@@ -490,6 +490,7 @@ fn App() -> impl IntoView {
     let exploration_busy = create_rw_signal(false);
     let exploration_error = create_rw_signal::<Option<String>>(None);
     let session_has_items = create_memo(move |_| items.with(|rows| !rows.is_empty()));
+    let can_share = create_memo(move |_| items.with(|rows| transcript_has_shareable(rows)));
     let conversation_outline = create_memo(move |_| {
         let Some(id) = active_session.get() else {
             return Vec::new();
@@ -1483,6 +1484,14 @@ fn App() -> impl IntoView {
     let ui_confirm = create_rw_signal::<Option<UiConfirm>>(None);
     // `/share` preview dialog: Some(rows) while open, None when closed.
     let share_draft = create_rw_signal::<Option<Vec<ShareMessage>>>(None);
+    let open_share = Callback::new(move |()| {
+        let rows = items.with_untracked(|list| share_messages(list));
+        if rows.is_empty() {
+            status.set(t(locale.get_untracked(), "composer.cmd_share_empty"));
+        } else {
+            share_draft.set(Some(rows));
+        }
+    });
     // One flag, two backends, exactly like the composer toggle: a built-in
     // session reads its own plan flag, an ACP-bound one reads the agent's
     // mode. `None` = the session is ACP-bound, so the toggle drives the ACP
@@ -1751,7 +1760,8 @@ fn App() -> impl IntoView {
                 // the current session cannot run them (same conditions as the
                 // buttons they mirror: /compact and /rewind are local-session
                 // only, /fork needs a branchable mainline, /review and
-                // /remember need at least one turn).
+                // /remember need at least one turn, /share needs a shareable
+                // user/assistant/thinking row).
                 let acp = active_acp_agent_id.get().is_some();
                 let has_items = session_has_items.get();
                 let branchable =
@@ -1760,7 +1770,8 @@ fn App() -> impl IntoView {
                     "compact" => !acp,
                     "rewind" => !acp && has_items,
                     "fork" => !acp && branchable,
-                    "review" | "remember" | "share" => has_items,
+                    "review" | "remember" => has_items,
+                    "share" => can_share.get(),
                     "context" => active_context_usage.get().is_some(),
                     // Hidden where the agent has no plan mode to switch into
                     // (same condition that drops the agent-menu toggle row).
@@ -5781,14 +5792,7 @@ fn App() -> impl IntoView {
             "upload" => pick_files(()),
             // Open the share preview over the current transcript; thinking
             // rows are listed but deselected (hidden from the export).
-            "share" => {
-                let rows = items.with_untracked(|list| share_messages(list));
-                if rows.is_empty() {
-                    status.set(t(locale.get_untracked(), "composer.cmd_share_empty"));
-                } else {
-                    share_draft.set(Some(rows));
-                }
-            }
+            "share" => open_share.call(()),
             _ => {}
         }
         true
@@ -9497,6 +9501,19 @@ fn App() -> impl IntoView {
                 }}
                 <div class="spacer"></div>
                 <div class="topbar-actions">
+                <button type="button" class="icon-btn" data-testid="share-topbar"
+                    title=move || {
+                        if can_share.get() {
+                            t(locale.get(), "share.topbar")
+                        } else {
+                            t(locale.get(), "composer.cmd_share_empty")
+                        }
+                    }
+                    aria-label=move || t(locale.get(), "share.topbar")
+                    disabled=move || demo_mode.get() || !can_share.get()
+                    on:click=move |_| open_share.call(())>
+                    {compose_icon("share")}
+                </button>
                 <div class="inbox-wrap">
                     <button class="icon-btn"
                         class:active=move || inbox_open.get()
@@ -11369,13 +11386,10 @@ fn App() -> impl IntoView {
                                             </span>
                                             <span class="compose-item-chevron">{compose_icon("chevron")}</span>
                                         </button>
-                                        <button type="button" class="compose-item" disabled=move || !session_has_items.get()
+                                        <button type="button" class="compose-item" disabled=move || !can_share.get()
                                             on:click=move |_| {
                                                 compose_menu_open.set(false);
-                                                let rows = items.with_untracked(|list| share_messages(list));
-                                                if !rows.is_empty() {
-                                                    share_draft.set(Some(rows));
-                                                }
+                                                open_share.call(());
                                             }>
                                             <span class="compose-item-icon">{compose_icon("share")}</span>
                                             <span class="compose-item-text">
@@ -14637,7 +14651,26 @@ fn App() -> impl IntoView {
         />
         <StoragePrefsOverlay locale=locale form=storage_prefs_form />
         <RunReviewOverlay locale=locale modal=run_review_modal runs=run_records />
-        <ShareOverlay locale=locale draft=share_draft session_id=active_session />
+        <ShareOverlay
+            locale=locale
+            draft=share_draft
+            session_id=active_session
+            on_xiaohongshu_skill=Callback::new(move |prompt: String| {
+                composer_references.update(|refs| {
+                    refs.retain(|item| {
+                        !matches!(
+                            item,
+                            ComposerReferenceChip::Skill { name } if name == XIAOHONGSHU_SHARE_SKILL
+                        )
+                    });
+                    refs.push(ComposerReferenceChip::Skill {
+                        name: XIAOHONGSHU_SHARE_SKILL.to_string(),
+                    });
+                });
+                input.set(prompt);
+                send.call(ComposerSendAction::Normal);
+            })
+        />
         <CapabilitiesOverlay
             locale=locale show_capabilities=show_capabilities
             bootstrap=bootstrap caps=caps busy=busy open_settings_section=open_capability_settings

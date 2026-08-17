@@ -2075,7 +2075,9 @@ test("/share exports selected, keyword-redacted messages as a PNG", async ({ pag
   const overlay = page.getByTestId("share-overlay");
 
   // Empty session: /share is hidden from the picker and opens nothing, and
-  // the composer "+" menu entry is disabled.
+  // the composer "+" menu entry and topbar share button are disabled.
+  const topbarShare = page.getByTestId("share-topbar");
+  await expect(topbarShare).toBeDisabled();
   await composerInput.pressSequentially("/sha");
   await expect(page.locator(".mention-menu .mention-item").filter({ hasText: "/share" })).toHaveCount(0);
   await page.keyboard.press("Escape");
@@ -2108,7 +2110,7 @@ test("/share exports selected, keyword-redacted messages as a PNG", async ({ pag
   await composerInput.pressSequentially("/share");
   await page.locator(".mention-menu .mention-item").filter({ hasText: "/share" }).click();
   await expect(overlay).toBeVisible();
-  await overlay.getByTestId("share-advanced").locator("summary").click();
+  await expect(overlay.getByRole("heading", { name: "Share as image" })).toBeVisible();
 
   // User and assistant rows are preselected; thinking is listed but hidden.
   const rows = overlay.locator(".share-row");
@@ -2145,7 +2147,6 @@ test("/share exports selected, keyword-redacted messages as a PNG", async ({ pag
   await composerInput.fill("/share");
   await composerInput.press("Enter");
   await expect(overlay).toBeVisible();
-  await overlay.getByTestId("share-advanced").locator("summary").click();
   await overlay.getByTestId("share-format-html").click();
   await expect(overlay.getByTestId("share-export")).toHaveText("Export HTML");
   await overlay.locator("#share-redact-input").fill("alice");
@@ -2170,9 +2171,17 @@ test("/share exports selected, keyword-redacted messages as a PNG", async ({ pag
   await page.keyboard.press("Escape");
   await expect(overlay).toHaveCount(0);
   await expect(composerInput).toBeVisible();
+
+  // The topbar share icon is the same entry, next to the inbox bell.
+  await expect(topbarShare).toBeEnabled();
+  await topbarShare.click();
+  await expect(overlay).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(overlay).toHaveCount(0);
+  await expect(composerInput).toBeVisible();
 });
 
-test("/share social mode generates platform copy and copies a text+image pack", async ({ page }) => {
+test("/share Xiaohongshu copy attaches the xiaohongshu-note skill", async ({ page }) => {
   await enterApp(page);
   const composerInput = composer(page);
   const overlay = page.getByTestId("share-overlay");
@@ -2184,80 +2193,22 @@ test("/share social mode generates platform copy and copies a text+image pack", 
   await composerInput.fill("/share");
   await composerInput.press("Enter");
   await expect(overlay).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(overlay).toHaveCount(0);
+  await expect(overlay.getByRole("heading", { name: "Share as image" })).toBeVisible();
+  await expect(overlay.locator(".share-row")).toHaveCount(3);
+  // Social copy stays folded; Xiaohongshu is a skill turn, not the one-shot generator.
+  await expect(overlay.getByTestId("share-social")).not.toHaveAttribute("open", "");
+  expect(await lastInvokeArgs(page, "generate_share_social_copy")).toBeNull();
 
-  await composerInput.fill("/share");
-  await composerInput.press("Enter");
-  await expect(overlay).toBeVisible();
-  const social = overlay.getByTestId("share-social");
-  await expect(social).toBeVisible();
-  await expect(overlay.getByTestId("share-platform-twitter")).toHaveClass(/active/);
-  await expect.poll(() => lastInvokeArgs(page, "generate_share_social_copy")).toMatchObject({
-    platform: "twitter",
-    locale: "en",
-  });
-  await expect(overlay.getByTestId("share-copy-input")).toHaveValue(/twitter hook/);
-  await expect(overlay.getByTestId("share-card-0")).toBeVisible();
-
-  await overlay.getByTestId("share-advanced").locator("summary").click();
   await overlay.locator("#share-redact-input").fill("alice");
-  await overlay.getByTestId("share-platform-xiaohongshu").click();
-  await expect(overlay.getByTestId("share-platform-xiaohongshu")).toHaveClass(/active/);
-  await expect.poll(() => lastInvokeArgs(page, "generate_share_social_copy")).toMatchObject({
-    platform: "xiaohongshu",
-    locale: "en",
-  });
-  const generateArgs = await lastInvokeArgs(page, "generate_share_social_copy");
-  expect(JSON.stringify(generateArgs.messages)).toContain("xxx confirmed");
-  await expect(overlay.getByTestId("share-variant-0")).toBeVisible();
-  await expect(overlay.getByTestId("share-copy-input")).toHaveValue(/xiaohongshu hook/);
-
-  await overlay.getByTestId("share-variant-2").click();
-  await expect(overlay.getByTestId("share-copy-input")).toHaveValue(/Ready to share on xiaohongshu/);
-
-  await page.evaluate(() => {
-    const log: Array<Record<string, unknown>> = [];
-    (window as any).__shareClipboard = log;
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: {
-        writeText: async (text: string) => {
-          log.push({ text });
-        },
-        write: async (items: ClipboardItem[]) => {
-          const kinds: string[] = [];
-          let text = "";
-          for (const item of items) {
-            for (const type of item.types) {
-              kinds.push(type);
-              if (type === "text/plain") {
-                text = await (await item.getType(type)).text();
-              }
-            }
-          }
-          log.push({ kinds, text });
-        },
-      },
-    });
-  });
-
-  await overlay.getByTestId("share-copy-caption").click();
-  await expect.poll(() => page.evaluate(() => (window as any).__shareClipboard?.at(-1)?.text ?? "")).toMatch(
-    /Ready to share on xiaohongshu/,
-  );
-
-  await overlay.getByTestId("share-copy-pack").click();
-  await expect.poll(() => page.evaluate(() => (window as any).__shareClipboard?.at(-1)?.kinds ?? [])).toEqual(
-    expect.arrayContaining(["text/plain", "image/png"]),
-  );
-  await expect.poll(() => page.evaluate(() => (window as any).__shareClipboard?.at(-1)?.text ?? "")).toMatch(
-    /Ready to share on xiaohongshu/,
-  );
-
-  await page.keyboard.press("Escape");
+  await overlay.getByTestId("share-xiaohongshu-skill").click();
   await expect(overlay).toHaveCount(0);
-  await expect(composerInput).toBeVisible();
+  await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
+    message: expect.stringMatching(/xiaohongshu-note/),
+    references: [{ kind: "skill", name: "xiaohongshu-note" }],
+  });
+  const sent = await lastInvokeArgs(page, "send_message");
+  expect(String(sent.message)).toContain("xxx confirmed");
+  expect(String(sent.message)).toContain("[1] user");
 });
 
 test("composer / menu layers sections and gives each command its own icon", async ({ page }) => {
@@ -2477,6 +2428,8 @@ test("topbar groups chrome actions and hides an empty status hint", async ({ pag
   await enterApp(page);
   const actions = page.locator(".topbar-actions");
   await expect(actions).toBeVisible();
+  await expect(actions.getByTestId("share-topbar")).toHaveCount(1);
+  await expect(actions.getByTestId("share-topbar")).toBeDisabled();
   await expect(actions.locator(".inbox-wrap")).toHaveCount(1);
   await expect(actions.getByRole("button", { name: "Open terminal" })).toHaveCount(1);
   await expect(actions.getByRole("button", { name: "Toggle panel" })).toHaveCount(1);

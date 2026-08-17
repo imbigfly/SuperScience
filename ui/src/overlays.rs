@@ -2,8 +2,8 @@ use crate::app_support::{
     compose_icon, copy_text, js_error_text, parse_redact_keywords, redact_text,
     refresh_execution_contexts, refresh_runs, refresh_runtimes, share_cards_from_highlights,
     share_fallback_caption, share_html_document, share_key_cards, share_png_payload, share_png_row,
-    share_social_pack_text, show_toast, ShareCardPreview, ShareExportFormat, ShareHtmlRow,
-    ShareMessage, ShareRole,
+    share_social_pack_text, show_toast, xiaohongshu_skill_prompt, ShareCardPreview,
+    ShareExportFormat, ShareHtmlRow, ShareMessage, ShareRole,
 };
 use crate::bindings::{copy_share_pack, invoke_checked, open_external_url, render_share_png};
 use crate::dto::*;
@@ -264,21 +264,22 @@ fn selected_draft_indexes(messages: &[ShareMessage]) -> Vec<usize> {
         .collect()
 }
 
-/// `/share` preview dialog. Opening it prepares paste-ready copy and a few
-/// key screenshots so the user does not have to write or crop anything.
-/// `draft` is root-owned (`None` = closed) so the app-level Escape stack can
-/// dismiss it in visual order.
+/// `/share` preview dialog. Opening it shows the long-image picker. Xiaohongshu
+/// copy is handed to the `xiaohongshu-note` skill instead of the one-shot
+/// caption generator. `draft` is root-owned (`None` = closed) so the app-level
+/// Escape stack can dismiss it in visual order.
 #[component]
 pub(super) fn ShareOverlay(
     locale: RwSignal<Locale>,
     draft: RwSignal<Option<Vec<ShareMessage>>>,
     session_id: RwSignal<Option<String>>,
+    on_xiaohongshu_skill: Callback<String>,
 ) -> impl IntoView {
     let keywords = create_rw_signal(String::new());
     let busy = create_rw_signal(false);
     let generating = create_rw_signal(false);
     let error = create_rw_signal(None::<String>);
-    let format = create_rw_signal(ShareExportFormat::Social);
+    let format = create_rw_signal(ShareExportFormat::Png);
     let platform = create_rw_signal(ShareSocialPlatform::Xiaohongshu);
     let social_copy = create_rw_signal(None::<ShareSocialCopy>);
     let selected_variant = create_rw_signal(0usize);
@@ -356,6 +357,9 @@ pub(super) fn ShareOverlay(
         let (selected, redact) = selected_share_messages(&messages, &keywords.get_untracked());
         if selected.is_empty() {
             error.set(Some(t(loc, "share.none_selected")));
+            return;
+        }
+        if platform.get_untracked() == ShareSocialPlatform::Xiaohongshu {
             return;
         }
         let Some(frame_id) = session_id.get_untracked().filter(|id| !id.is_empty()) else {
@@ -449,24 +453,25 @@ pub(super) fn ShareOverlay(
     };
     let prime_share = {
         let render_cards = Rc::clone(&render_cards);
-        let request_copy = Rc::clone(&request_copy);
         move || {
-        let messages = draft.get_untracked().unwrap_or_default();
-        let next_platform = default_share_platform(locale.get_untracked());
-        platform.set(next_platform);
-        format.set(ShareExportFormat::Social);
-        social_copy.set(None);
-        selected_variant.set(0);
-        copy_dirty.set(false);
-        error.set(None);
-        edit_body.set(share_fallback_caption(&messages, next_platform.body_limit()));
-        render_cards(
-            share_key_cards(&messages)
-                .into_iter()
-                .map(ShareCardPreview::from_spec)
-                .collect(),
-        );
-        request_copy();
+            let messages = draft.get_untracked().unwrap_or_default();
+            let next_platform = default_share_platform(locale.get_untracked());
+            platform.set(next_platform);
+            format.set(ShareExportFormat::Png);
+            social_copy.set(None);
+            selected_variant.set(0);
+            copy_dirty.set(false);
+            error.set(None);
+            edit_body.set(share_fallback_caption(
+                &messages,
+                next_platform.body_limit(),
+            ));
+            render_cards(
+                share_key_cards(&messages)
+                    .into_iter()
+                    .map(ShareCardPreview::from_spec)
+                    .collect(),
+            );
         }
     };
     create_effect(move |previous: Option<bool>| {
@@ -508,8 +513,22 @@ pub(super) fn ShareOverlay(
             error.set(None);
             let messages = draft.get_untracked().unwrap_or_default();
             edit_body.set(share_fallback_caption(&messages, next.body_limit()));
-            request_copy();
+            if next != ShareSocialPlatform::Xiaohongshu {
+                request_copy();
+            }
         })
+    };
+    let write_xiaohongshu = move |_| {
+        let loc = locale.get_untracked();
+        let messages = draft.get_untracked().unwrap_or_default();
+        let (selected, redact) = selected_share_messages(&messages, &keywords.get_untracked());
+        if selected.is_empty() {
+            error.set(Some(t(loc, "share.none_selected")));
+            return;
+        }
+        let prompt = xiaohongshu_skill_prompt(&selected, &redact);
+        draft.set(None);
+        on_xiaohongshu_skill.call(prompt);
     };
     let export = move |_| {
         let loc = locale.get_untracked();
@@ -679,7 +698,7 @@ pub(super) fn ShareOverlay(
         let regenerate = Rc::clone(&regenerate);
         open.get().then(move || view! {
             <div class="overlay">
-                <div class="modal share-modal share-social-modal" role="dialog" aria-modal="true"
+                <div class="modal share-modal" role="dialog" aria-modal="true"
                     aria-labelledby="share-modal-title" data-testid="share-overlay">
                     <div class="ps-head">
                         <h2 id="share-modal-title">{move || t(locale.get(), "share.title")}</h2>
@@ -690,8 +709,90 @@ pub(super) fn ShareOverlay(
                             {compose_icon("close")}
                         </button>
                     </div>
+                    <p class="hint">{move || t(locale.get(), "share.hint")}</p>
+                    <div class="share-select-row">
+                        <button type="button" class="linklike"
+                            on:click=move |_| set_all(true)>{move || t(locale.get(), "share.select_all")}</button>
+                        <button type="button" class="linklike"
+                            on:click=move |_| set_all(false)>{move || t(locale.get(), "share.select_none")}</button>
+                        <span class="share-count">{move || {
+                            let total = draft.with(|value| value.as_ref().map_or(0, Vec::len));
+                            tf(locale.get(), "share.selected",
+                                &[("count", &format!("{}/{}", selected_count.get(), total))])
+                        }}</span>
+                    </div>
+                    <div class="share-list">
+                        {move || {
+                            let loc = locale.get();
+                            let redact = parse_redact_keywords(&keywords.get());
+                            draft.get().unwrap_or_default().into_iter().enumerate().map(|(index, message)| {
+                                let row_class = format!("share-row share-{}", message.role.tag());
+                                let preview = redact_text(&message.text, &redact);
+                                view! {
+                                    <label class=row_class>
+                                        <input type="checkbox" prop:checked=message.selected
+                                            on:change=move |_| draft.update(|value| {
+                                                if let Some(messages) = value {
+                                                    if let Some(row) = messages.get_mut(index) {
+                                                        row.selected = !row.selected;
+                                                    }
+                                                }
+                                            }) />
+                                        <span class="share-row-body">
+                                            <span class="share-role">{t(loc, share_role_key(message.role))}</span>
+                                            <span class="share-text">{preview}</span>
+                                        </span>
+                                    </label>
+                                }
+                            }).collect_view()
+                        }}
+                    </div>
+                    <label class="share-redact" for="share-redact-input">
+                        {move || t(locale.get(), "share.redact_label")}
+                        <input id="share-redact-input" autocomplete="off"
+                            placeholder=move || t(locale.get(), "share.redact_ph")
+                            prop:value=move || keywords.get()
+                            on:input=move |ev| keywords.set(event_target_value(&ev)) />
+                    </label>
+                    <div class="share-format">
+                        <span class="share-format-label">{move || t(locale.get(), "share.format_label")}</span>
+                        <div class="share-format-seg" role="group"
+                            aria-label=move || t(locale.get(), "share.format_label")>
+                            <button type="button" data-testid="share-format-png"
+                                class:active=move || format.get() == ShareExportFormat::Png
+                                on:click=move |_| format.set(ShareExportFormat::Png)>
+                                {move || t(locale.get(), "share.format_png")}</button>
+                            <button type="button" data-testid="share-format-html"
+                                class:active=move || format.get() == ShareExportFormat::Html
+                                on:click=move |_| format.set(ShareExportFormat::Html)>
+                                {move || t(locale.get(), "share.format_html")}</button>
+                        </div>
+                    </div>
+                    {move || error.get().map(|message| view! {
+                        <div class="settings-status fail">{message}</div>
+                    })}
+                    <div class="row">
+                        <button type="button" disabled=move || busy.get()
+                            on:click=move |_| draft.set(None)>{move || t(locale.get(), "share.cancel")}</button>
+                        <button type="button" data-testid="share-xiaohongshu-skill"
+                            disabled=move || busy.get() || selected_count.get() == 0
+                            on:click=write_xiaohongshu>
+                            {move || t(locale.get(), "share.xiaohongshu_skill")}
+                        </button>
+                        <button type="button" class="primary" data-testid="share-export"
+                            disabled=move || busy.get() || selected_count.get() == 0
+                            on:click=export>{move || if busy.get() {
+                                t(locale.get(), "share.exporting")
+                            } else if format.get() == ShareExportFormat::Html {
+                                t(locale.get(), "share.export_html")
+                            } else {
+                                t(locale.get(), "share.export")
+                            }}</button>
+                    </div>
+                    <details class="share-advanced" data-testid="share-social">
+                        <summary>{move || t(locale.get(), "share.advanced")}</summary>
                     <p class="hint">{move || t(locale.get(), "share.hint_social")}</p>
-                    <div class="share-social" data-testid="share-social">
+                    <div class="share-social">
                         <div class="share-format">
                             <span class="share-format-label">{t(locale.get(), "share.platform_label")}</span>
                             <div class="share-format-seg share-platform-seg" role="group"
@@ -825,86 +926,7 @@ pub(super) fn ShareOverlay(
                         </div>
                         <p class="hint share-social-footer">{t(locale.get(), "share.social_footer")}</p>
                     </div>
-                    {move || error.get().map(|message| view! {
-                        <div class="settings-status fail">{message}</div>
-                    })}
-                    <details class="share-advanced" data-testid="share-advanced">
-                        <summary>{move || t(locale.get(), "share.advanced")}</summary>
-                        <p class="hint">{move || t(locale.get(), "share.hint")}</p>
-                        <div class="share-select-row">
-                            <button type="button" class="linklike"
-                                on:click=move |_| set_all(true)>{move || t(locale.get(), "share.select_all")}</button>
-                            <button type="button" class="linklike"
-                                on:click=move |_| set_all(false)>{move || t(locale.get(), "share.select_none")}</button>
-                            <span class="share-count">{move || {
-                                let total = draft.with(|value| value.as_ref().map_or(0, Vec::len));
-                                tf(locale.get(), "share.selected",
-                                    &[("count", &format!("{}/{}", selected_count.get(), total))])
-                            }}</span>
-                        </div>
-                        <div class="share-list share-list-compact">
-                            {move || {
-                                let loc = locale.get();
-                                let redact = parse_redact_keywords(&keywords.get());
-                                draft.get().unwrap_or_default().into_iter().enumerate().map(|(index, message)| {
-                                    let row_class = format!("share-row share-{}", message.role.tag());
-                                    let preview = redact_text(&message.text, &redact);
-                                    view! {
-                                        <label class=row_class>
-                                            <input type="checkbox" prop:checked=message.selected
-                                                on:change=move |_| draft.update(|value| {
-                                                    if let Some(messages) = value {
-                                                        if let Some(row) = messages.get_mut(index) {
-                                                            row.selected = !row.selected;
-                                                        }
-                                                    }
-                                                }) />
-                                            <span class="share-row-body">
-                                                <span class="share-role">{t(loc, share_role_key(message.role))}</span>
-                                                <span class="share-text">{preview}</span>
-                                            </span>
-                                        </label>
-                                    }
-                                }).collect_view()
-                            }}
-                        </div>
-                        <label class="share-redact" for="share-redact-input">
-                            {move || t(locale.get(), "share.redact_label")}
-                            <input id="share-redact-input" autocomplete="off"
-                                placeholder=move || t(locale.get(), "share.redact_ph")
-                                prop:value=move || keywords.get()
-                                on:input=move |ev| keywords.set(event_target_value(&ev)) />
-                        </label>
-                        <div class="share-format">
-                            <span class="share-format-label">{move || t(locale.get(), "share.format_label")}</span>
-                            <div class="share-format-seg" role="group"
-                                aria-label=move || t(locale.get(), "share.format_label")>
-                                <button type="button" data-testid="share-format-png"
-                                    class:active=move || format.get() == ShareExportFormat::Png
-                                    on:click=move |_| format.set(ShareExportFormat::Png)>
-                                    {move || t(locale.get(), "share.format_png")}</button>
-                                <button type="button" data-testid="share-format-html"
-                                    class:active=move || format.get() == ShareExportFormat::Html
-                                    on:click=move |_| format.set(ShareExportFormat::Html)>
-                                    {move || t(locale.get(), "share.format_html")}</button>
-                            </div>
-                        </div>
-                        <div class="row">
-                            <button type="button" class="primary" data-testid="share-export"
-                                disabled=move || busy.get() || selected_count.get() == 0
-                                on:click=export>{move || if busy.get() {
-                                    t(locale.get(), "share.exporting")
-                                } else if format.get() == ShareExportFormat::Html {
-                                    t(locale.get(), "share.export_html")
-                                } else {
-                                    t(locale.get(), "share.export")
-                                }}</button>
-                        </div>
                     </details>
-                    <div class="row">
-                        <button type="button" disabled=move || busy.get()
-                            on:click=move |_| draft.set(None)>{move || t(locale.get(), "share.cancel")}</button>
-                    </div>
                 </div>
             </div>
         })
