@@ -118,7 +118,7 @@ jobs:
           projectPath: src-tauri
           tauriScript: cargo tauri
           tagName: ${{ env.RELEASE_TAG }}
-          releaseName: '${{ env.RELEASE_TAG }}: Memory'
+          releaseName: '${{ env.RELEASE_TAG }}: Server'
           releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: false
           prerelease: false

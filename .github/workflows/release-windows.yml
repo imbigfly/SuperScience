@@ -148,7 +148,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          name: '${{ env.RELEASE_TAG }}: Memory'
+          name: '${{ env.RELEASE_TAG }}: Server'
           body: ${{ steps.notes.outputs.body }}
           draft: false
           prerelease: false
