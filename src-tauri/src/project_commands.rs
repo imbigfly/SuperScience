@@ -535,28 +535,66 @@ pub(super) struct ProjectSettings {
     agent_context: String,
 }
 
-/// Read the active project's editable settings for the Project Settings modal.
-/// Agent Context is `.wisp/WISP.md`, injected into every seeded system prompt.
+fn project_agent_context_path(root: &Path) -> PathBuf {
+    root.join(".wisp").join("WISP.md")
+}
+
+fn read_project_agent_context(root: &Path) -> String {
+    std::fs::read_to_string(project_agent_context_path(root)).unwrap_or_default()
+}
+
+fn write_project_agent_context(root: &Path, agent_context: &str) -> Result<(), String> {
+    let wisp_md = project_agent_context_path(root);
+    let ctx = agent_context.trim();
+    if ctx.is_empty() {
+        let _ = std::fs::remove_file(&wisp_md);
+        return Ok(());
+    }
+    if let Some(parent) = wisp_md.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to write Agent Context: {e}"))?;
+    }
+    std::fs::write(&wisp_md, ctx).map_err(|e| format!("Failed to write Agent Context: {e}"))
+}
+
+/// Resolve the project whose settings should be read or written. An explicit
+/// `id` (home-card configure) must not switch this window's active project.
+async fn settings_project(
+    state: &AppState,
+    window_label: &str,
+    requested_id: Option<&str>,
+) -> Result<(String, PathBuf, String, String), String> {
+    let id = match requested_id.map(str::trim).filter(|id| !id.is_empty()) {
+        Some(id) => id.to_string(),
+        None => state.active(window_label).id,
+    };
+    let (name, description, workspace) = state
+        .store
+        .get_project_meta(&id)
+        .await
+        .map_err(|e| format!("{e}"))?
+        .ok_or_else(|| "Project not found".to_string())?;
+    let root = ensure_writable(PathBuf::from(workspace), &state.app_data);
+    Ok((id, root, name, description))
+}
+
+/// Read a project's editable settings for the Project Settings modal.
+/// `id` targets a specific project (home-card configure). Omit it to use the
+/// window's active project. Agent Context is `.wisp/WISP.md`.
 #[tauri::command]
 pub(super) async fn get_project_settings(
     state: State<'_, AppState>,
     window: tauri::WebviewWindow,
+    id: Option<String>,
 ) -> Result<ProjectSettings, String> {
-    let ap = state.active(window.label());
-    let _project_activity = state.begin_project_activity(&ap.id)?;
-    let (name, description, _ws) = state
-        .store
-        .get_project_meta(&ap.id)
-        .await
-        .map_err(|e| format!("{e}"))?
-        .unwrap_or_default();
-    let agent_context =
-        std::fs::read_to_string(ap.root.join(".wisp").join("WISP.md")).unwrap_or_default();
+    let (project_id, root, name, description) =
+        settings_project(state.inner(), window.label(), id.as_deref()).await?;
+    let _project_activity = state.begin_project_activity(&project_id)?;
     Ok(ProjectSettings {
-        id: ap.id.clone(),
+        id: project_id,
         name,
         description,
-        agent_context,
+        agent_context: read_project_agent_context(&root),
     })
 }
 
@@ -614,13 +652,16 @@ pub(super) async fn set_project_run_retention(
     })
 }
 
-/// Save the active project's name/description (DB) and Agent Context (.wisp/WISP.md).
+/// Save a project's name/description (DB) and Agent Context (.wisp/WISP.md).
+/// `id` targets a specific project (home-card configure). Omit it to use the
+/// window's active project — this does not switch the active project.
 /// An empty Agent Context removes WISP.md so the prompt falls back to "no rules".
 /// Takes effect on the next seeded session; already-running agents keep their prompt.
 #[tauri::command]
 pub(super) async fn update_project(
     state: State<'_, AppState>,
     window: tauri::WebviewWindow,
+    id: Option<String>,
     name: String,
     description: String,
     agent_context: String,
@@ -628,29 +669,22 @@ pub(super) async fn update_project(
     if name.trim().is_empty() {
         return Err("Project name is required".into());
     }
-    let ap = state.active(window.label());
+    let (project_id, root, _, _) =
+        settings_project(state.inner(), window.label(), id.as_deref()).await?;
+    let _project_activity = state.begin_project_activity(&project_id)?;
     exploration_commands::reject_private_exploration_project_mutation(
         &state.store,
-        &ap.id,
+        &project_id,
         "Project settings changes",
     )
     .await?;
     state
         .store
-        .update_project(&ap.id, name.trim(), description.trim())
+        .update_project(&project_id, name.trim(), description.trim())
         .await
         .map_err(|e| format!("{e}"))?;
-    let wisp_dir = ap.root.join(".wisp");
-    let wisp_md = wisp_dir.join("WISP.md");
-    let ctx = agent_context.trim();
-    if ctx.is_empty() {
-        let _ = std::fs::remove_file(&wisp_md);
-    } else {
-        std::fs::create_dir_all(&wisp_dir)
-            .map_err(|e| format!("Failed to write Agent Context: {e}"))?;
-        std::fs::write(&wisp_md, ctx).map_err(|e| format!("Failed to write Agent Context: {e}"))?;
-    }
-    Ok(build_project_summary(&state, &ap.id).await)
+    write_project_agent_context(&root, &agent_context)?;
+    Ok(build_project_summary(&state, &project_id).await)
 }
 
 #[tauri::command]
@@ -663,7 +697,7 @@ pub(super) async fn get_project_info(
 
 #[cfg(test)]
 mod tests {
-    use super::same_workspace_path;
+    use super::{read_project_agent_context, same_workspace_path, write_project_agent_context};
 
     #[test]
     fn workspace_path_match_resolves_equivalent_existing_paths() {
@@ -673,6 +707,26 @@ mod tests {
 
         assert!(same_workspace_path(&root, &root.join(".")));
         assert!(!same_workspace_path(&root, &root.join("other")));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn agent_context_writes_wisp_md_and_empty_clears_it() {
+        let root = std::env::temp_dir().join(format!(
+            "wisp_project_settings_ctx_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+
+        write_project_agent_context(&root, "  Prefer the project UI setting.  ").unwrap();
+        assert_eq!(
+            read_project_agent_context(&root),
+            "Prefer the project UI setting."
+        );
+        write_project_agent_context(&root, "   ").unwrap();
+        assert!(read_project_agent_context(&root).is_empty());
+        assert!(!root.join(".wisp").join("WISP.md").exists());
 
         let _ = std::fs::remove_dir_all(root);
     }

@@ -8333,7 +8333,11 @@ fn App() -> impl IntoView {
     let open_proj_settings = move |_| {
         show_proj_menu.set(false);
         spawn_local(async move {
-            let v = invoke("get_project_settings", JsValue::UNDEFINED).await;
+            let v = invoke(
+                "get_project_settings",
+                to_value(&serde_json::json!({})).unwrap(),
+            )
+            .await;
             if let Ok(s) = serde_wasm_bindgen::from_value::<ProjectSettings>(v) {
                 proj_settings_baseline.set(s.clone());
                 proj_settings.set(s);
@@ -8710,7 +8714,11 @@ fn App() -> impl IntoView {
     });
     let palette_project_settings = Callback::new(move |_: ()| {
         spawn_local(async move {
-            let v = invoke("get_project_settings", JsValue::UNDEFINED).await;
+            let v = invoke(
+                "get_project_settings",
+                to_value(&serde_json::json!({})).unwrap(),
+            )
+            .await;
             if let Ok(s) = serde_wasm_bindgen::from_value::<ProjectSettings>(v) {
                 proj_settings_baseline.set(s.clone());
                 proj_settings.set(s);

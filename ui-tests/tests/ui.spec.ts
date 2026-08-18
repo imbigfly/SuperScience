@@ -10527,6 +10527,69 @@ test("project cards show the workspace path and aligned action icons", async ({ 
   }
 });
 
+test("project cards open settings without entering the project (#905)", async ({ page }) => {
+  await page.goto("/");
+  const otherCard = page.locator(".proj-card:not(.proj-example)", { hasText: "Other project" });
+  await otherCard.getByTestId("project-card-settings").click();
+  const settings = page.getByTestId("project-home-settings");
+  await expect(settings).toBeVisible();
+  await expect(page.locator(".projects-screen")).toBeVisible();
+  await expect.poll(() => lastInvokeArgs(page, "get_project_settings")).toMatchObject({
+    id: "other",
+  });
+  await expect.poll(() => lastInvokeArgs(page, "open_project")).toBeNull();
+
+  await page.keyboard.press("Escape");
+  await expect(settings).toHaveCount(0);
+  await expect(page.locator(".projects-screen")).toBeVisible();
+
+  await otherCard.getByTestId("project-card-settings").click();
+  await expect(settings).toBeVisible();
+  await settings.getByTestId("project-home-settings-name").fill("Formal name");
+  await settings.getByTestId("save-project-home-settings").click();
+  await expect.poll(() => lastInvokeArgs(page, "update_project")).toMatchObject({
+    id: "other",
+    name: "Formal name",
+  });
+  await expect.poll(() => lastInvokeArgs(page, "open_project")).toBeNull();
+  await expect(settings).toHaveCount(0);
+  await expect(page.locator(".proj-card:not(.proj-example)", { hasText: "Formal name" })).toBeVisible();
+  await expect(page.locator(".projects-screen")).toBeVisible();
+});
+
+test("project home settings confirm Escape leaves the settings dialog open", async ({ page }) => {
+  await page.goto("/");
+  await page.locator(".proj-card:not(.proj-example)").first().getByTestId("project-card-settings").click();
+  const settings = page.getByTestId("project-home-settings");
+  await expect(settings).toBeVisible();
+  await settings.locator("textarea.ps-ctx").fill("Prefer the home card setting.");
+  await settings.getByTestId("save-project-home-settings").click();
+  const confirm = page.getByTestId("project-home-settings-confirm");
+  await expect(confirm).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(confirm).toHaveCount(0);
+  await expect(settings).toBeVisible();
+});
+
+test("projects home suppresses the native context menu except in text fields", async ({ page }) => {
+  await page.goto("/");
+  const card = page.locator(".proj-card:not(.proj-example)").first();
+  const cardPrevented = await card.evaluate((el) => {
+    const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    el.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  expect(cardPrevented).toBe(true);
+
+  await card.getByTestId("project-card-settings").click();
+  const namePrevented = await page.getByTestId("project-home-settings-name").evaluate((el) => {
+    const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    el.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  expect(namePrevented).toBe(false);
+});
+
 test("projects sync manually, copy a device code, and join on another device", async ({ page }) => {
   await page.goto("/");
   const projectCard = page.locator(".proj-card:not(.proj-example)").first();
