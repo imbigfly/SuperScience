@@ -147,6 +147,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   const mockLongSession = query.get("mockLongSession") === "1" || mockLongPages > 0;
   const mockResourceSession = query.get("mockResourceSession") === "1";
   const mockMcpAppSession = query.get("mockMcpAppSession") === "1";
+  const mockBrowserRestore = query.get("mockBrowserRestore") === "1";
   const mockOAuthPending = query.get("mockOAuthPending") === "1";
   const mockOnboarding = query.get("mockOnboarding") === "1";
   const mockSyncUnconfigured = query.get("mockSyncUnconfigured") === "1";
@@ -187,6 +188,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       ? [{ id: "long-session", title: "Long transcript", ts: 2000, running: false }]
       : mockMcpAppSession
         ? [{ id: "mcp-app-session", title: "Saved MCP App", ts: 2000, running: false }]
+      : mockBrowserRestore
+        ? [{ id: "browser-restore-session", title: "Live PubMed retrieval", ts: 2000, running: false }]
       : query.has("mockAgentWorkflow")
         ? [{ id: "s-current", title: "Agent workflow conversation", ts: 2000, running: false }]
         : query.get("mockSessionModels") === "1"
@@ -1969,6 +1972,39 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 ],
                 next_before_seq: null,
                 user_offset: 0,
+              };
+            }
+            if (mockBrowserRestore && String(arg("id") ?? "") === "browser-restore-session") {
+              return {
+                items: [
+                  { role: "user", text: "CLEC12A PubMed", tool_name: null, ok: null },
+                  {
+                    role: "tool",
+                    text: "{\n  \"status\": \"disconnected\",\n  \"live_retrieval\": false\n}",
+                    tool_name: "browser_setup",
+                    ok: true,
+                  },
+                  {
+                    role: "tool",
+                    text: "{\n  \"status\": \"connected\",\n  \"live_retrieval\": true,\n  \"connected_tabs\": 1\n}",
+                    tool_name: "browser_setup",
+                    ok: true,
+                  },
+                  {
+                    role: "tool",
+                    text: "{\"tabs\":[{\"title\":\"PubMed CLEC12A\",\"url\":\"https://pubmed.ncbi.nlm.nih.gov\"}]}",
+                    tool_name: "web_scan",
+                    ok: true,
+                  },
+                  { role: "assistant", text: "PubMed currently lists live hits for CLEC12A.", tool_name: null, ok: null },
+                ],
+                next_before_seq: null,
+                user_offset: 0,
+                presentations: [{
+                  presentation_id: "",
+                  presentation_kind: "browser_disconnected",
+                  payload: { code: "browser_extension_disconnected", live_retrieval: false },
+                }],
               };
             }
             if (mockMcpAppSession) {

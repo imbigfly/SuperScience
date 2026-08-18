@@ -35,6 +35,7 @@ use crate::browser_url_filters::{self, BrowserUrlFilters};
 const BRIDGE_ADDR: &str = "127.0.0.1:18765";
 const EXTENSION_ORIGIN: &str = "chrome-extension://gnkjgagleagkgdlkkcianolobfdoocnp";
 const BROWSER_DISCONNECTED_KIND: &str = "browser_disconnected";
+const BROWSER_CONNECTED_KIND: &str = "browser_connected";
 const BROWSER_DISCONNECTED_CODE: &str = "browser_extension_disconnected";
 const BROWSER_DISCONNECTED_MARKER: &str = "WISP_BROWSER_DISCONNECTED";
 const DISCONNECTED_ASSISTANT_INSTRUCTION: &str = "Live web retrieval is unavailable. Do not answer live, latest, current, or URL-specific questions from prior knowledge. Tell the user this turn contains no live web retrieval, relay the install steps, and wait until status is connected. Only continue from memory if they explicitly ask for a knowledge-only answer.";
@@ -431,6 +432,16 @@ async fn emit_disconnected(env: &dyn ToolEnv) {
     .await;
 }
 
+async fn emit_live_retrieval(env: &dyn ToolEnv) {
+    env.emit(ToolEvent::Presentation {
+        kind: BROWSER_CONNECTED_KIND.into(),
+        payload: json!({
+            "live_retrieval": true,
+        }),
+    })
+    .await;
+}
+
 async fn fail_bridge(env: &dyn ToolEnv, error: String) -> ToolResult {
     if is_bridge_unavailable(&error) {
         emit_disconnected(env).await;
@@ -672,6 +683,8 @@ impl Tool for BrowserSetupTool {
         });
         if info["status"] != "connected" {
             emit_disconnected(env).await;
+        } else {
+            emit_live_retrieval(env).await;
         }
         ToolResult::ok(render_json(&info))
     }
@@ -733,7 +746,10 @@ impl Tool for WebScanTool {
             .unwrap_or(false)
         {
             return match self.bridge.tabs().await {
-                Ok(tabs) => ToolResult::ok(render_json(&json!({ "tabs": tabs }))),
+                Ok(tabs) => {
+                    emit_live_retrieval(env).await;
+                    ToolResult::ok(render_json(&json!({ "tabs": tabs })))
+                }
                 Err(error) => fail_bridge(env, error).await,
             };
         }
@@ -759,6 +775,7 @@ impl Tool for WebScanTool {
             .await
         {
             Ok(execution) => {
+                emit_live_retrieval(env).await;
                 let handoff = human_verification_handoff(&execution.value);
                 ToolResult::ok(render_json(&json!({
                     "human_intervention": handoff,
@@ -855,10 +872,13 @@ impl Tool for WebExecuteJsTool {
             .execute(tab_id, script, Duration::from_millis(timeout_ms))
             .await
         {
-            Ok(execution) => ToolResult::ok(render_json(&json!({
-                "tab_id": execution.tab_id,
-                "result": execution.value
-            }))),
+            Ok(execution) => {
+                emit_live_retrieval(env).await;
+                ToolResult::ok(render_json(&json!({
+                    "tab_id": execution.tab_id,
+                    "result": execution.value
+                })))
+            }
             Err(error) => fail_bridge(env, error).await,
         }
     }
@@ -923,7 +943,10 @@ impl Tool for WebOpenTabTool {
         }
         let active = args.get("active").and_then(Value::as_bool).unwrap_or(false);
         match self.bridge.open_tab(url, active).await {
-            Ok(tab) => ToolResult::ok(render_json(&open_tab_result(tab, url, &filters))),
+            Ok(tab) => {
+                emit_live_retrieval(env).await;
+                ToolResult::ok(render_json(&open_tab_result(tab, url, &filters)))
+            }
             Err(error) => fail_bridge(env, error).await,
         }
     }
@@ -1005,6 +1028,7 @@ impl Tool for WebScreenshotTool {
                 data.len()
             ));
         }
+        emit_live_retrieval(env).await;
         ToolResult::image(ImageData {
             mime: "image/jpeg".into(),
             data_url: format!("data:image/jpeg;base64,{data}"),
@@ -1426,6 +1450,32 @@ mod tests {
                 assert_eq!(payload["live_retrieval"], false);
             }
             other => panic!("expected one disconnected presentation, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn live_retrieval_presentation_replaces_a_prior_disconnect() {
+        let env = RecordingEnv {
+            root: PathBuf::from("."),
+            events: std::sync::Mutex::new(Vec::new()),
+        };
+        emit_disconnected(&env).await;
+        emit_live_retrieval(&env).await;
+        let events = env.events.lock().unwrap();
+        match events.as_slice() {
+            [ToolEvent::Presentation {
+                kind: first,
+                payload: first_payload,
+            }, ToolEvent::Presentation {
+                kind: second,
+                payload: second_payload,
+            }] => {
+                assert_eq!(first, BROWSER_DISCONNECTED_KIND);
+                assert_eq!(first_payload["live_retrieval"], false);
+                assert_eq!(second, BROWSER_CONNECTED_KIND);
+                assert_eq!(second_payload["live_retrieval"], true);
+            }
+            other => panic!("expected disconnect then connect presentations, got {other:?}"),
         }
     }
 }

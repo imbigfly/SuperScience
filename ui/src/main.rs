@@ -2442,7 +2442,7 @@ fn App() -> impl IntoView {
                         frame_id: frame_id.clone(),
                         retry_text,
                     }));
-                } else if browser_retrieval_restored(&name, ok) {
+                } else if browser_retrieval_restored(&name, ok, &content) {
                     browser_offline_cb.update(|notice| {
                         if notice.as_ref().is_some_and(|row| row.frame_id == frame_id) {
                             *notice = None;
@@ -2493,6 +2493,12 @@ fn App() -> impl IntoView {
                         frame_id,
                         retry_text,
                     }));
+                } else if presentation_kind == BROWSER_CONNECTED_KIND {
+                    browser_offline_cb.update(|notice| {
+                        if notice.as_ref().is_some_and(|row| row.frame_id == frame_id) {
+                            *notice = None;
+                        }
+                    });
                 }
             }
             AgentEvent::Usage {
@@ -5180,15 +5186,18 @@ fn App() -> impl IntoView {
                 // unguarded set would clobber the newer view with stale rows (#53).
                 if active_session.get().as_deref() == Some(&id) {
                     items.set(chats.clone());
+                    // Tool rows are the last word. A leftover disconnected
+                    // presentation from earlier in the session must not cover a
+                    // later successful scan when the stream ends or the page
+                    // reloads (#887).
                     if let Some(notice) = browser_offline_notice_from_items(&id, &chats) {
                         browser_offline_notice.set(Some(notice));
-                    } else if presentations.iter().any(|presentation| {
-                        presentation.presentation_kind == BROWSER_DISCONNECTED_KIND
-                    }) {
-                        browser_offline_notice.set(Some(BrowserOfflineNotice {
-                            frame_id: id.clone(),
-                            retry_text: last_user_composer_text(&chats),
-                        }));
+                    } else {
+                        browser_offline_notice.update(|notice| {
+                            if notice.as_ref().is_some_and(|row| row.frame_id == id) {
+                                *notice = None;
+                            }
+                        });
                     }
                     for presentation in presentations {
                         if presentation.presentation_kind == "mcp_app" {

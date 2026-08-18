@@ -225,9 +225,74 @@ mod review_jump_tests {
         });
         assert!(browser_offline_notice_from_items("s1", &items).is_none());
     }
+
+    fn setup_item(live: bool) -> ChatItem {
+        ChatItem::Tool {
+            name: "browser_setup".into(),
+            ok: Some(true),
+            input: String::new(),
+            output: format!(
+                "{{\n  \"status\": \"{}\",\n  \"live_retrieval\": {}\n}}",
+                if live { "connected" } else { "disconnected" },
+                live
+            ),
+            started_at_ms: None,
+            duration_ms: None,
+        }
+    }
+
+    #[test]
+    fn browser_setup_json_is_the_block_and_restore_signal() {
+        let blocked = vec![ChatItem::User("latest rustc".into()), setup_item(false)];
+        assert!(browser_offline_notice_from_items("s1", &blocked).is_some());
+
+        let restored = vec![
+            ChatItem::User("latest rustc".into()),
+            setup_item(false),
+            setup_item(true),
+        ];
+        assert!(
+            browser_offline_notice_from_items("s1", &restored).is_none(),
+            "connected browser_setup must clear an earlier disconnect"
+        );
+    }
+
+    #[test]
+    fn successful_live_tools_override_an_earlier_disconnected_setup() {
+        let items = vec![
+            ChatItem::User("CLEC12A pubmed".into()),
+            setup_item(false),
+            ChatItem::Tool {
+                name: "web_scan".into(),
+                ok: Some(true),
+                input: "tabs".into(),
+                output: "{\"tabs\":[{\"title\":\"PubMed\"}]}".into(),
+                started_at_ms: None,
+                duration_ms: None,
+            },
+            ChatItem::Tool {
+                name: "web_execute_js".into(),
+                ok: Some(true),
+                input: "Date()".into(),
+                output: "{\"result\":\"ok\"}".into(),
+                started_at_ms: None,
+                duration_ms: None,
+            },
+            ChatItem::Assistant {
+                text: "PubMed currently lists hits for CLEC12A.".into(),
+                model: None,
+                resources: Vec::new(),
+            },
+        ];
+        assert!(
+            browser_offline_notice_from_items("s1", &items).is_none(),
+            "a later successful scan must not keep the offline banner (#887)"
+        );
+    }
 }
 
 pub(crate) const BROWSER_DISCONNECTED_KIND: &str = "browser_disconnected";
+pub(crate) const BROWSER_CONNECTED_KIND: &str = "browser_connected";
 pub(crate) const BROWSER_DISCONNECTED_MARKER: &str = "WISP_BROWSER_DISCONNECTED";
 
 #[derive(Clone, PartialEq, Eq)]
@@ -254,11 +319,29 @@ fn is_browser_retrieval_tool(name: &str) -> bool {
     )
 }
 
+pub(crate) fn browser_setup_live_retrieval(content: &str) -> Option<bool> {
+    let value = serde_json::from_str::<serde_json::Value>(content).ok()?;
+    if let Some(live) = value.get("live_retrieval").and_then(|v| v.as_bool()) {
+        return Some(live);
+    }
+    match value.get("status").and_then(|v| v.as_str()) {
+        Some("connected") => Some(true),
+        Some(_) => Some(false),
+        None => None,
+    }
+}
+
 pub(crate) fn browser_retrieval_blocked(name: &str, ok: bool, content: &str) -> bool {
+    if name == "browser_setup" {
+        return browser_setup_live_retrieval(content) == Some(false);
+    }
     is_browser_retrieval_tool(name) && !ok && content.contains(BROWSER_DISCONNECTED_MARKER)
 }
 
-pub(crate) fn browser_retrieval_restored(name: &str, ok: bool) -> bool {
+pub(crate) fn browser_retrieval_restored(name: &str, ok: bool, content: &str) -> bool {
+    if name == "browser_setup" {
+        return browser_setup_live_retrieval(content) == Some(true);
+    }
     matches!(
         name,
         "web_scan" | "web_open_tab" | "web_execute_js" | "web_screenshot"
@@ -278,7 +361,7 @@ pub(crate) fn browser_offline_notice_from_items(
             ..
         } = item
         {
-            if browser_retrieval_restored(name, *ok) {
+            if browser_retrieval_restored(name, *ok, output) {
                 blocked = false;
             } else if browser_retrieval_blocked(name, *ok, output) {
                 blocked = true;
