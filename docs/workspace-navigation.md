@@ -1,8 +1,9 @@
 # Workspace navigation
 
-By default, opening a workspace restores its most recently active conversation.
-Opening a specific conversation from Recent sessions or search still takes
-priority.
+By default, opening a workspace restores its most recently **used** conversation
+(one that already has a user message). A named but unused draft stays visible
+in the sidebar, but it is not treated as the last conversation. Opening a
+specific conversation from Recent sessions or search still takes priority.
 
 Choose another workspace from the sidebar workspace menu to switch the current
 window in place. A separate window is opened only by an action explicitly

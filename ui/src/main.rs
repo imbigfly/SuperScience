@@ -8241,14 +8241,7 @@ fn App() -> impl IntoView {
                 let session_id = match session_id {
                     Some(session_id) => Some(session_id),
                     None if settings.get_untracked().resume_last_session => {
-                        let args = to_value(&serde_json::json!({ "cursor": null })).unwrap();
-                        invoke_checked("list_sessions_page", args)
-                            .await
-                            .ok()
-                            .and_then(|value| {
-                                serde_wasm_bindgen::from_value::<SessionPage>(value).ok()
-                            })
-                            .and_then(|page| page.items.into_iter().next().map(|item| item.id))
+                        invoke_latest_used_session().await
                     }
                     None => None,
                 };
@@ -14157,9 +14150,10 @@ fn App() -> impl IntoView {
         <RenameSessionOverlay
             state=RenameSessionOverlayState { locale, rename_session_target, rename_session_input }
             on_renamed=Callback::new(move |(id, title): (String, String)| {
-                // Patch the cached row first so a draft session — which the
-                // backend list omits until its first user turn — shows the new
-                // name immediately instead of after the next turn completes.
+                // Patch the cached row before the async list refresh so the
+                // sidebar does not flash the old title. After #888 the backend
+                // list already includes a named draft; this is only the
+                // immediate paint.
                 sessions.update(|rows| {
                     if let Some(row) = rows.iter_mut().find(|row| row.id == id) {
                         row.title = title;

@@ -790,6 +790,23 @@ pub(super) async fn set_session_pinned(
 /// How many sessions appear on the Projects landing "Recent sessions" column.
 pub(super) const RECENT_SESSIONS_LIMIT: i64 = 5;
 
+/// Most recently used conversation in the active project, if any.
+///
+/// Named unused drafts are listable (#888) but are not a conversation to
+/// resume: the settings copy promises a used chat, not a blank titled draft.
+#[tauri::command]
+pub(super) async fn latest_used_session(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+) -> Result<Option<String>, String> {
+    let ap = state.active(window.label());
+    state
+        .store
+        .latest_used_session_id(&ap.id)
+        .await
+        .map_err(|e| format!("{e}"))
+}
+
 #[tauri::command]
 pub(super) async fn list_recent_sessions(
     state: State<'_, AppState>,

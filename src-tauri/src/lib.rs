@@ -6209,6 +6209,7 @@ pub fn run() {
             session_commands::delete_folder,
             session_commands::move_session,
             session_commands::list_recent_sessions,
+            session_commands::latest_used_session,
             project_commands::list_projects,
             app_commands::pick_directory,
             app_commands::pick_executable_file,
