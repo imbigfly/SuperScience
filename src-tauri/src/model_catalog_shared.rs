@@ -136,6 +136,7 @@ pub fn namespace_candidates(provider: &str, api_url: &str) -> Vec<&'static str> 
     let by_host = match host.as_str() {
         "api.anthropic.com" => Some("anthropic"),
         "api.openai.com" => Some("openai"),
+        "api.x.ai" => Some("xai"),
         "api.deepseek.com" => Some("deepseek"),
         "api.moonshot.ai" | "api.moonshot.cn" => Some("moonshotai"),
         // Kimi Code managed models live in their own namespace; the same host
@@ -207,6 +208,14 @@ mod tests {
             }
         }"#;
         serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn xai_host_maps_to_xai_namespace() {
+        assert_eq!(
+            namespace_candidates("openai", "https://api.x.ai/v1"),
+            vec!["xai", "openai"]
+        );
     }
 
     #[test]

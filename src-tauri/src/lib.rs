@@ -3810,13 +3810,14 @@ fn build_provider_config(
 
 fn add_configured_image_generation_tool(
     agent: &mut Agent,
-    config: Option<(String, String, String)>,
+    config: Option<(String, String, String, models::ImageGenerationOptions)>,
     proxy: Option<String>,
 ) {
-    if let Some((api_url, model, api_key)) = config {
-        agent.add_tool(Box::new(image_generation_tool::GenerateImageTool::new(
-            api_url, api_key, model, proxy,
-        )));
+    if let Some((api_url, model, api_key, options)) = config {
+        agent.add_tool(Box::new(
+            image_generation_tool::GenerateImageTool::new(api_url, api_key, model, proxy)
+                .with_options(options),
+        ));
     }
 }
 

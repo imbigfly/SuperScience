@@ -28,7 +28,7 @@ async fn validate_provider_config(
 ) -> Result<(), String> {
     if models::is_image_generation_model(&cfg.model) {
         if !models::supports_image_generation(provider_name, &cfg.model) {
-            return Err("Image generation currently supports only OpenAI gpt-image-2.".into());
+            return Err(models::IMAGE_GENERATION_UNSUPPORTED.into());
         }
         return super::image_generation_tool::GenerateImageTool::new(
             cfg.base_url,

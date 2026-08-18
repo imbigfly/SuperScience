@@ -1159,6 +1159,10 @@ mod session_context_window_tests {
             supports_vision: false,
             use_for_vision: false,
             use_for_image_generation: false,
+            image_size: String::new(),
+            image_quality: String::new(),
+            image_aspect_ratio: String::new(),
+            image_resolution: String::new(),
         }
     }
 
@@ -2597,11 +2601,43 @@ pub struct ModelProfile {
     pub use_for_vision: bool,
     #[serde(default)]
     pub use_for_image_generation: bool,
+    #[serde(default)]
+    pub image_size: String,
+    #[serde(default)]
+    pub image_quality: String,
+    #[serde(default)]
+    pub image_aspect_ratio: String,
+    #[serde(default)]
+    pub image_resolution: String,
 }
+
+/// Raster image-generation model IDs. Gateway `vendor/model` ids match on the
+/// last path segment. Exact IDs only — a shorter family id must not absorb a
+/// longer sibling.
+pub fn is_image_generation_model(model: &str) -> bool {
+    let model = model.trim();
+    let tail = model.rsplit('/').next().unwrap_or(model);
+    tail.eq_ignore_ascii_case("gpt-image-2") || tail.eq_ignore_ascii_case("grok-imagine-image-2.0")
+}
+
+pub fn is_grok_imagine_model(model: &str) -> bool {
+    let model = model.trim();
+    let tail = model.rsplit('/').next().unwrap_or(model);
+    tail.eq_ignore_ascii_case("grok-imagine-image-2.0")
+}
+
+pub const OPENAI_IMAGE_SIZES: &[&str] = &["auto", "1024x1024", "1536x1024", "1024x1536"];
+pub const OPENAI_IMAGE_QUALITIES: &[&str] = &["auto", "low", "medium", "high"];
+pub const GROK_IMAGE_ASPECT_RATIOS: &[&str] = &[
+    "auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "2:1", "1:2", "19.5:9", "9:19.5",
+    "20:9", "9:20",
+];
+pub const GROK_IMAGE_RESOLUTIONS: &[&str] = &["1k", "2k"];
+pub const GROK_IMAGE_QUALITIES: &[&str] = &["medium", "low"];
 
 impl ModelProfile {
     pub fn is_chat_model(&self) -> bool {
-        !self.model.trim().eq_ignore_ascii_case("gpt-image-2")
+        !is_image_generation_model(&self.model)
     }
 }
 
@@ -2822,7 +2858,55 @@ pub struct ModelFormEntry {
 
 impl ModelFormEntry {
     pub fn is_image_model(&self) -> bool {
-        self.use_for_image_generation || self.model.trim().eq_ignore_ascii_case("gpt-image-2")
+        self.use_for_image_generation || is_image_generation_model(&self.model)
+    }
+}
+
+#[cfg(test)]
+mod image_generation_model_tests {
+    use super::{is_image_generation_model, ModelFormEntry, ModelProfile};
+
+    fn profile(model: &str) -> ModelProfile {
+        ModelProfile {
+            id: "image".into(),
+            label: "image".into(),
+            provider: String::new(),
+            api_url: String::new(),
+            endpoint_suffix: String::new(),
+            model: model.into(),
+            has_api_key: false,
+            active: false,
+            max_tokens: 0,
+            context_window: 128_000,
+            reasoning_effort: String::new(),
+            supports_vision: false,
+            use_for_vision: false,
+            use_for_image_generation: false,
+            image_size: String::new(),
+            image_quality: String::new(),
+            image_aspect_ratio: String::new(),
+            image_resolution: String::new(),
+        }
+    }
+
+    #[test]
+    fn known_image_ids_are_not_chat_models() {
+        for model in [
+            "gpt-image-2",
+            "GPT-IMAGE-2",
+            "grok-imagine-image-2.0",
+            "xai/grok-imagine-image-2.0",
+        ] {
+            assert!(is_image_generation_model(model), "{model}");
+            assert!(!profile(model).is_chat_model(), "{model}");
+        }
+        assert!(!is_image_generation_model("grok-imagine-image"));
+        assert!(!is_image_generation_model("gpt-5.5"));
+        assert!(ModelFormEntry {
+            model: "grok-imagine-image-2.0".into(),
+            ..ModelFormEntry::default()
+        }
+        .is_image_model());
     }
 }
 
@@ -2840,6 +2924,10 @@ pub struct ModelForm {
     pub supports_vision: bool,
     pub use_for_vision: bool,
     pub use_for_image_generation: bool,
+    pub image_size: String,
+    pub image_quality: String,
+    pub image_aspect_ratio: String,
+    pub image_resolution: String,
     /// Used only when adding a provider (`id` is `None`): one row per model
     /// that should be created with the shared API URL and key.
     pub entries: Vec<ModelFormEntry>,

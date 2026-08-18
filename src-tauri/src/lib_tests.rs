@@ -214,6 +214,7 @@ fn configured_image_generation_tool_is_available_without_a_specialist() {
             "https://api.openai.com/v1".into(),
             "gpt-image-2".into(),
             "sk-image-test".into(),
+            super::models::ImageGenerationOptions::default(),
         )),
         Some("none".into()),
     );

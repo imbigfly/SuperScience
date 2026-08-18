@@ -73,33 +73,41 @@ does not delete or rewrite the saved conversation. A new image attached after
 the switch is analyzed through the assigned vision model. Without an assigned
 vision model, Wisp rejects that new image before starting the main model turn.
 
-Image generation is a separate model role. Create an OpenAI profile with model
-ID `gpt-image-2`, then enable **Use for image generation**. The built-in
-**Scientific Illustrator** calls OpenAI's Image API and saves a PNG under
-`figures/` when that role is assigned and PNG or image-model generation is
-requested. An explicit SVG/vector/editable request always uses the specialist's
-direct-SVG path, even when `gpt-image-2` is configured: it writes SVG, renders
-that exact SVG to a PNG preview, inspects the preview, and iterates on the SVG.
+Image generation is a separate model role. Create an OpenAI-compatible profile
+with model ID `gpt-image-2` or `grok-imagine-image-2.0`, then enable **Use for
+image generation**. The edit form for those models hides chat-only fields
+(max output tokens, context window, reasoning effort, and vision) and shows
+image defaults instead: size and quality for `gpt-image-2`, or aspect ratio,
+resolution, and quality for `grok-imagine-image-2.0`. `generate_image` uses
+those defaults when a request does not specify size or quality. For xAI, use
+Base URL `https://api.x.ai` and the OpenAI Chat Completions protocol. The built-in **Scientific Illustrator** calls the
+provider's Image API (`/images/generations`) and saves a PNG under `figures/`
+when that role is assigned and PNG or image-model generation is requested. An
+explicit SVG/vector/editable request always uses the specialist's direct-SVG
+path, even when an image model is configured: it writes SVG, renders that
+exact SVG to a PNG preview, inspects the preview, and iterates on the SVG.
 An explicit PNG request requires the configured image-generation model; it is
 not silently replaced with SVG. The configured generation tool is also
 available in ordinary built-in-agent
-conversations, so a direct request for the Scientific Illustrator or
-`gpt-image-2` can generate the image without preselecting the specialist. While
-the request runs, the conversation shows an image placeholder and replaces it
-with the generated PNG. When the user does not specify a format, the specialist
-uses the assigned image-generation profile to create PNG if present. Otherwise
-it uses the same SVG -> PNG preview -> SVG correction workflow and delivers SVG
-under `figures/`. Image-only profiles do not appear in chat, Reviewer,
-specialist, delegation, or side-chat model pickers.
+conversations, so a direct request for the Scientific Illustrator, `gpt-image-2`,
+or `grok-imagine-image-2.0` can generate the image without preselecting the
+specialist. While the request runs, the conversation shows an image placeholder
+and replaces it with the generated PNG. When the user does not specify a
+format, the specialist uses the assigned image-generation profile to create
+PNG if present. Otherwise it uses the same SVG -> PNG preview -> SVG
+correction workflow and delivers SVG under `figures/`. Image-only profiles do
+not appear in chat, Reviewer, specialist, delegation, or side-chat model
+pickers.
 
 An image-generation assignment does not also provide image analysis.
-`gpt-image-2` may consume an input image for editing, but its Image API returns
-generated pixels rather than the textual observations required by `view_image`
-and a non-visual chat model. Configure a chat/Responses profile with **Supports
-image input** and **Use for image analysis** for that role; it may use the same
-provider credentials, but it remains a separate API capability.
+These image models may consume an input image for editing, but their Image API
+returns generated pixels rather than the textual observations required by
+`view_image` and a non-visual chat model. Configure a chat/Responses profile
+with **Supports image input** and **Use for image analysis** for that role; it
+may use the same provider credentials, but it remains a separate API
+capability.
 
-The **Validate** action checks `gpt-image-2` access through OpenAI's model
+The **Validate** action checks image-model access through the provider's model
 metadata endpoint. If a compatible gateway does not implement the single-model
 route and returns `404` or `405`, Wisp checks its model-list endpoint instead.
 It does not send the image-only model to Responses/Chat Completions and does not

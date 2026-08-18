@@ -60,6 +60,10 @@ fn model_profile_contract() {
         supports_vision: true,
         use_for_vision: true,
         use_for_image_generation: false,
+        image_size: String::new(),
+        image_quality: String::new(),
+        image_aspect_ratio: String::new(),
+        image_resolution: String::new(),
     };
     let dto: wisp_dto::ModelProfile = roundtrip(&backend);
     assert_eq!(dto.id, "p1");

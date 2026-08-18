@@ -77,6 +77,10 @@ mod provider_form_tests {
             supports_vision: false,
             use_for_vision: false,
             use_for_image_generation: false,
+            image_size: String::new(),
+            image_quality: String::new(),
+            image_aspect_ratio: String::new(),
+            image_resolution: String::new(),
         }
     }
 
@@ -89,6 +93,21 @@ mod provider_form_tests {
             .map(|entry| entry.model.as_str())
             .collect();
         assert_eq!(models, [DEEPSEEK_FLASH_MODEL, DEEPSEEK_PRO_MODEL]);
+    }
+
+    #[test]
+    fn xai_base_url_suggests_chat_and_imagine_image() {
+        let models: Vec<_> = suggested_base_url_models("https://api.x.ai/v1")
+            .into_iter()
+            .map(|entry| (entry.provider, entry.model, entry.use_for_image_generation))
+            .collect();
+        assert_eq!(
+            models,
+            vec![
+                ("openai".into(), "grok-4.6".into(), false),
+                ("openai".into(), "grok-imagine-image-2.0".into(), true),
+            ]
+        );
     }
 
     #[test]
@@ -748,6 +767,10 @@ pub(crate) fn profile_to_form(m: &ModelProfile) -> ModelForm {
         supports_vision: m.supports_vision,
         use_for_vision: m.use_for_vision,
         use_for_image_generation: m.use_for_image_generation,
+        image_size: m.image_size.clone(),
+        image_quality: m.image_quality.clone(),
+        image_aspect_ratio: m.image_aspect_ratio.clone(),
+        image_resolution: m.image_resolution.clone(),
         entries: Vec::new(),
     }
 }
@@ -770,7 +793,7 @@ pub(crate) fn model_form_entry(
     endpoint_suffix: &str,
     image: bool,
 ) -> ModelFormEntry {
-    let image = image || model.trim().eq_ignore_ascii_case("gpt-image-2");
+    let image = image || crate::dto::is_image_generation_model(model);
     ModelFormEntry {
         row_id: next_model_row_id(),
         provider: provider_value(provider).into(),
@@ -795,6 +818,10 @@ pub(crate) fn suggested_base_url_models(api_url: &str) -> Vec<ModelFormEntry> {
         host if host.contains("api.openai.com") => vec![
             model_form_entry("openai_responses", "gpt-5.5", "", false),
             model_form_entry("openai_responses", "gpt-image-2", "", true),
+        ],
+        host if host.contains("api.x.ai") => vec![
+            model_form_entry("openai", "grok-4.6", "", false),
+            model_form_entry("openai", "grok-imagine-image-2.0", "", true),
         ],
         host if host.contains("deepseek.com") || host.is_empty() => vec![
             model_form_entry("openai", DEEPSEEK_FLASH_MODEL, "", false),
