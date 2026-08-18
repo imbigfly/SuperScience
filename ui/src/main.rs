@@ -421,15 +421,17 @@ fn App() -> impl IntoView {
     // Configured model profiles + the composer's bottom-right picker state.
     let models = create_rw_signal::<Vec<ModelProfile>>(vec![]);
     let active_session = create_rw_signal::<Option<String>>(None);
-    // The stopping toast is foreground UI owned by the session where Stop was
-    // clicked. The backend cancellation may continue after navigation, but its
-    // modal state must not follow the user into another conversation or block
-    // that conversation's own Stop action.
+    // The stopping banner belongs to the session where Stop was clicked, and
+    // only while that session is still running. Switching conversations must
+    // not carry it over; a missed or late Done must not leave it over Send.
     create_effect(move |_| {
-        let active = active_session.get();
-        let stopping = stopping_session.get();
-        if stopping.is_some() && active != stopping {
-            stopping_session.set(None);
+        let next = next_stopping_session(
+            stopping_session.get(),
+            active_session.get().as_deref(),
+            &running.get(),
+        );
+        if stopping_session.get() != next {
+            stopping_session.set(next);
         }
     });
     let sessions = create_rw_signal::<Vec<SessionInfo>>(vec![]);
@@ -10980,9 +10982,12 @@ fn App() -> impl IntoView {
                         {t(locale.get(), "projects.example_read_only")}
                     </div>
                 })}
-                {move || (active_session.get().is_some()
-                    && active_session.get() == stopping_session.get()).then(|| view! {
-                    <div class="stopping-toast">
+                {move || next_stopping_session(
+                    stopping_session.get(),
+                    active_session.get().as_deref(),
+                    &running.get(),
+                ).is_some().then(|| view! {
+                    <div class="stopping-toast" data-testid="stopping-toast" role="status">
                         <span class="stopping-spinner"></span>
                         <div class="stopping-text">
                             <strong>{move || t(locale.get(), "composer.stopping")}</strong>

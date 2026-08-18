@@ -1581,8 +1581,63 @@ test("ACP cancellation is scoped to the active bound frame", async ({ page }) =>
   await page.getByRole("button", { name: "Stop" }).click();
   await expect.poll(() => lastInvokeArgs(page, "stop_agent")).toMatchObject({ sessionId: expect.any(String) });
   await expect(page.getByRole("button", { name: "Send" })).toBeVisible();
+  await expect(page.getByTestId("stopping-toast")).toHaveCount(0);
   await page.waitForTimeout(100);
   expect(await invokeArgsList(page, "propose_turn_memory")).toHaveLength(0);
+});
+
+test("an idle composer dismisses a leftover stopping banner", async ({ page }) => {
+  await enterApp(page);
+  await newSessionButton(page).click();
+  await page.locator(".model-picker-btn").click();
+  await page.getByRole("button", { name: /Test ACP Agent/ }).click();
+  await composer(page).fill("ACP LONG");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByRole("button", { name: "Stop" })).toBeVisible();
+
+  await page.evaluate(() => { (window as any).__holdStopAgent = true; });
+  await page.getByRole("button", { name: "Stop" }).click();
+  const toast = page.getByTestId("stopping-toast");
+  await expect(toast).toBeVisible();
+  const composerInner = page.locator(".composer-inner");
+  const toastBox = await toast.boundingBox();
+  const innerBox = await composerInner.boundingBox();
+  expect(toastBox).not.toBeNull();
+  expect(innerBox).not.toBeNull();
+  expect(toastBox!.y + toastBox!.height).toBeLessThanOrEqual(innerBox!.y + 1);
+
+  // The turn can become idle (Send returns) without another Done. The banner
+  // must not stay over the composer once the session is no longer running.
+  await page.evaluate(() => { (window as any).__finishAcpLong(); });
+  await expect(page.getByRole("button", { name: "Send" })).toBeVisible();
+  await expect(toast).toHaveCount(0);
+});
+
+test("stopping after a late Done does not leave the banner over Send", async ({ page }) => {
+  await enterApp(page);
+  await newSessionButton(page).click();
+  await page.locator(".model-picker-btn").click();
+  await page.getByRole("button", { name: /Test ACP Agent/ }).click();
+  await composer(page).fill("ACP LONG");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByRole("button", { name: "Stop" })).toBeVisible();
+
+  const sessionId = await page.locator(".side-item.ses.active").getAttribute("data-session-id");
+  expect(sessionId).toBeTruthy();
+  // Done can land while send_message is still in flight, so Stop is still
+  // clickable. That click must not pin the banner after the turn goes idle.
+  await emitTauriEvent(page, "agent", {
+    kind: "Done",
+    frame_id: sessionId,
+    stop_reason: "end_turn",
+  });
+  await page.evaluate(() => { (window as any).__holdStopAgent = true; });
+  await page.getByRole("button", { name: "Stop" }).click();
+  await expect(page.getByTestId("stopping-toast")).toBeVisible();
+
+  await page.evaluate(() => { (window as any).__finishAcpLong(); });
+  await expect(page.getByRole("button", { name: "Send" })).toBeVisible();
+  await expect(page.getByTestId("stopping-toast")).toHaveCount(0);
 });
 
 test("switching conversations dismisses the previous conversation's stopping modal", async ({ page }) => {

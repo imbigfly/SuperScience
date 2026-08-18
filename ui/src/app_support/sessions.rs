@@ -120,6 +120,18 @@ pub(crate) fn rebuilt_running_set(
     set
 }
 
+/// Keep the stopping banner only while that session is still the active
+/// running turn. A Stop click after Done (or a missed terminal event) must
+/// not leave "Stopping…" over an idle Send button.
+pub(crate) fn next_stopping_session(
+    stopping: Option<String>,
+    active: Option<&str>,
+    running: &HashSet<String>,
+) -> Option<String> {
+    let sid = stopping?;
+    (active == Some(sid.as_str()) && running.contains(&sid)).then_some(sid)
+}
+
 #[cfg(test)]
 mod rebuilt_running_set_tests {
     use super::*;
@@ -132,6 +144,26 @@ mod rebuilt_running_set_tests {
         assert!(set.contains("a"), "server-running kept");
         assert!(!set.contains("b"), "stale local state dropped");
         assert!(set.contains("c"), "local pending send kept");
+    }
+
+    #[test]
+    fn stopping_banner_clears_when_the_session_is_idle() {
+        let running = HashSet::from(["s1".to_string()]);
+        assert_eq!(
+            next_stopping_session(Some("s1".into()), Some("s1"), &running).as_deref(),
+            Some("s1")
+        );
+        assert_eq!(
+            next_stopping_session(Some("s1".into()), Some("s1"), &HashSet::new()),
+            None,
+            "idle session must not keep Stopping over Send"
+        );
+        assert_eq!(
+            next_stopping_session(Some("s1".into()), Some("s2"), &running),
+            None,
+            "another conversation must not inherit the banner"
+        );
+        assert_eq!(next_stopping_session(None, Some("s1"), &running), None);
     }
 }
 
