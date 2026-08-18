@@ -115,6 +115,10 @@ impl ModelSettingsState {
                     "supports_vision": profile.supports_vision,
                     "use_for_vision": profile.use_for_vision,
                     "use_for_image_generation": profile.use_for_image_generation,
+                    "image_size": profile.image_size,
+                    "image_quality": profile.image_quality,
+                    "image_aspect_ratio": profile.image_aspect_ratio,
+                    "image_resolution": profile.image_resolution,
                 },
                 // No key field: the backend keeps the stored key.
                 "key": Option::<String>::None,
@@ -175,8 +179,10 @@ impl ModelSettingsState {
             model_form_msg.set(Some((false, text)));
             return;
         }
-        // A catalog-known model has a documented output ceiling; saving a
+        // A catalog-known chat model has a documented output ceiling; saving a
         // larger max_tokens only ever surfaces as a provider 400 mid-turn.
+        // Image models do not take token limits.
+        if !is_image_generation_model(&form.model) {
         if let Some(dto) = model_catalog_limits.get() {
             if form.max_tokens > dto.max_tokens {
                 let text = tf(
@@ -190,6 +196,7 @@ impl ModelSettingsState {
                 model_form_msg.set(Some((false, text)));
                 return;
             }
+        }
         }
         settings_busy.set(true);
         model_form_msg.set(Some((true, t(loc, "status.saving_settings").into())));
@@ -207,6 +214,10 @@ impl ModelSettingsState {
             "supports_vision": form.supports_vision,
             "use_for_vision": form.use_for_vision,
             "use_for_image_generation": form.use_for_image_generation,
+            "image_size": form.image_size.trim(),
+            "image_quality": form.image_quality.trim(),
+            "image_aspect_ratio": form.image_aspect_ratio.trim(),
+            "image_resolution": form.image_resolution.trim(),
         });
         let key_arg = if key.is_empty() { None } else { Some(key) };
         spawn_local(async move {
@@ -343,6 +354,10 @@ impl ModelSettingsState {
                     "supports_vision": entry.supports_vision && !image,
                     "use_for_vision": entry.use_for_vision && !image,
                     "use_for_image_generation": image,
+                    "image_size": "",
+                    "image_quality": "",
+                    "image_aspect_ratio": "",
+                    "image_resolution": "",
                 });
                 let arg = to_value(&serde_json::json!({
                     "profile": profile,

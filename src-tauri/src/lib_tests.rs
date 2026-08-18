@@ -214,6 +214,7 @@ fn configured_image_generation_tool_is_available_without_a_specialist() {
             "https://api.openai.com/v1".into(),
             "gpt-image-2".into(),
             "sk-image-test".into(),
+            super::models::ImageGenerationOptions::default(),
         )),
         Some("none".into()),
     );
@@ -2122,9 +2123,9 @@ fn desktop_app_icon_is_full_bleed_with_an_inset_mark() {
         "icon generation must use the desktop master, not the in-app logo"
     );
     assert!(
-        script
-            .lines()
-            .any(|line| line.contains("Resolve-Path") && line.contains("icons/app-icon-rounded.svg")),
+        script.lines().any(
+            |line| line.contains("Resolve-Path") && line.contains("icons/app-icon-rounded.svg")
+        ),
         "Windows/Linux icons must come from the rounded master"
     );
     assert!(

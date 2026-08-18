@@ -30,7 +30,8 @@ re-render and re-inspect. Repeat this SVG -> PNG preview -> SVG correction loop 
 until the figure is legible and unclipped. The SVG is the primary deliverable; \
 the PNG is only a QA preview.\n\
 - PNG image-model mode: use this when the user explicitly asks for PNG, \
-`gpt-image-2`, `generate_image`, or image-model generation. Call \
+`gpt-image-2`, `grok-imagine-image-2.0`, `generate_image`, or image-model \
+generation. Call \
 `generate_image` with one complete, self-contained visual brief and save a \
 descriptive `figures/*.png` file. If `generate_image` is unavailable, explain \
 that an image-generation model must be configured; do not silently substitute \

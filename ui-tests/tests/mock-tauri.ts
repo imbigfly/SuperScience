@@ -4074,9 +4074,14 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return null;
           case "validate_settings": {
             const validationSettings = plain(arg("settings") ?? {});
-            return String(validationSettings.model ?? "") === "gpt-image-2"
-              ? "Validated openai_responses with gpt-image-2"
-              : "Validated openai with deepseek-v4-pro";
+            const validatedModel = String(validationSettings.model ?? "");
+            if (validatedModel === "gpt-image-2") {
+              return "Validated openai_responses with gpt-image-2";
+            }
+            if (validatedModel === "grok-imagine-image-2.0") {
+              return "Validated openai with grok-imagine-image-2.0";
+            }
+            return "Validated openai with deepseek-v4-pro";
           }
           case "get_memory_view":
             return memoryViewFor(resolveMemoryProjectId(args, arg));

@@ -52,6 +52,26 @@ pub struct ModelProfile {
     /// to the Scientific Illustrator's raster image-generation tool.
     #[serde(default)]
     pub use_for_image_generation: bool,
+    /// OpenAI image size (`auto`, `1024x1024`, …). Empty means the tool default.
+    #[serde(default)]
+    pub image_size: String,
+    /// Image quality (`auto`/`low`/`medium`/`high`, or Grok `low`/`medium`).
+    #[serde(default)]
+    pub image_quality: String,
+    /// Grok Imagine aspect ratio (`auto`, `1:1`, `16:9`, …).
+    #[serde(default)]
+    pub image_aspect_ratio: String,
+    /// Grok Imagine resolution (`1k` or `2k`).
+    #[serde(default)]
+    pub image_resolution: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ImageGenerationOptions {
+    pub size: String,
+    pub quality: String,
+    pub aspect_ratio: String,
+    pub resolution: String,
 }
 
 const PROFILES_KEY: &str = "model_profiles";
@@ -608,6 +628,10 @@ async fn ensure(store: &wisp_store::Store) -> Vec<ModelProfile> {
         supports_vision: false,
         use_for_vision: false,
         use_for_image_generation: false,
+        image_size: String::new(),
+        image_quality: String::new(),
+        image_aspect_ratio: String::new(),
+        image_resolution: String::new(),
     };
     let profiles = vec![default];
     let _ = save_raw(store, &profiles).await;
@@ -713,8 +737,80 @@ pub async fn active_config(store: &wisp_store::Store) -> (String, String, String
     (p.provider, api_url, p.model, key_for(&p.id))
 }
 
+pub(crate) const IMAGE_GENERATION_UNSUPPORTED: &str =
+    "Image generation currently supports OpenAI gpt-image-2 and xAI grok-imagine-image-2.0.";
+
+pub(crate) fn model_id_tail(model: &str) -> &str {
+    let model = model.trim();
+    model.rsplit('/').next().unwrap_or(model)
+}
+
+/// Raster image-generation model IDs. Gateway `vendor/model` ids match on the
+/// last path segment. Exact IDs only.
 pub(crate) fn is_image_generation_model(model: &str) -> bool {
-    model.trim().eq_ignore_ascii_case("gpt-image-2")
+    let tail = model_id_tail(model);
+    tail.eq_ignore_ascii_case("gpt-image-2") || tail.eq_ignore_ascii_case("grok-imagine-image-2.0")
+}
+
+pub(crate) fn is_grok_imagine_model(model: &str) -> bool {
+    model_id_tail(model).eq_ignore_ascii_case("grok-imagine-image-2.0")
+}
+
+fn normalize_image_options(profile: &mut ModelProfile) -> Result<(), String> {
+    if !is_image_generation_model(&profile.model) {
+        profile.image_size.clear();
+        profile.image_quality.clear();
+        profile.image_aspect_ratio.clear();
+        profile.image_resolution.clear();
+        return Ok(());
+    }
+    let size = profile.image_size.trim();
+    let quality = profile.image_quality.trim();
+    let aspect = profile.image_aspect_ratio.trim();
+    let resolution = profile.image_resolution.trim();
+    if is_grok_imagine_model(&profile.model) {
+        if !matches!(
+            aspect,
+            "" | "auto"
+                | "1:1"
+                | "16:9"
+                | "9:16"
+                | "4:3"
+                | "3:4"
+                | "3:2"
+                | "2:3"
+                | "2:1"
+                | "1:2"
+                | "19.5:9"
+                | "9:19.5"
+                | "20:9"
+                | "9:20"
+        ) {
+            return Err("Unsupported image aspect ratio.".into());
+        }
+        if !matches!(resolution, "" | "1k" | "2k") {
+            return Err("Unsupported image resolution.".into());
+        }
+        if !matches!(quality, "" | "low" | "medium") {
+            return Err("Unsupported image quality.".into());
+        }
+        profile.image_size.clear();
+        profile.image_aspect_ratio = aspect.to_string();
+        profile.image_resolution = resolution.to_string();
+        profile.image_quality = quality.to_string();
+    } else {
+        if !matches!(size, "" | "auto" | "1024x1024" | "1536x1024" | "1024x1536") {
+            return Err("Unsupported image size.".into());
+        }
+        if !matches!(quality, "" | "auto" | "low" | "medium" | "high") {
+            return Err("Unsupported image quality.".into());
+        }
+        profile.image_size = size.to_string();
+        profile.image_quality = quality.to_string();
+        profile.image_aspect_ratio.clear();
+        profile.image_resolution.clear();
+    }
+    Ok(())
 }
 
 pub(crate) fn supports_image_generation(provider: &str, model: &str) -> bool {
@@ -785,16 +881,26 @@ pub async fn vision_config(
     ))
 }
 
-/// The explicitly assigned OpenAI image profile's `(api_url, model, api_key)`.
+/// The explicitly assigned image-generation profile.
 /// Unlike vision, image generation has no implicit fallback: no assignment
 /// means the Scientific Illustrator deliberately uses SVG.
 pub async fn image_generation_config(
     store: &wisp_store::Store,
-) -> Option<(String, String, String)> {
+) -> Option<(String, String, String, ImageGenerationOptions)> {
     let profiles = ensure(store).await;
     let id = image_generation_id(store, &profiles).await?;
     let p = profiles.iter().find(|p| p.id == id)?;
-    Some((effective_api_url(p), p.model.clone(), key_for(&p.id)))
+    Some((
+        effective_api_url(p),
+        p.model.clone(),
+        key_for(&p.id),
+        ImageGenerationOptions {
+            size: p.image_size.clone(),
+            quality: p.image_quality.clone(),
+            aspect_ratio: p.image_aspect_ratio.clone(),
+            resolution: p.image_resolution.clone(),
+        },
+    ))
 }
 
 /// Update the active profile's provider/api_url/model/label. The classic Settings
@@ -1102,8 +1208,9 @@ pub async fn save_model(
         return Err("Image analysis requires an API model marked as vision-capable.".into());
     }
     if assign_image_generation && !can_generate_images(&profile) {
-        return Err("Image generation currently supports only OpenAI gpt-image-2.".into());
+        return Err(IMAGE_GENERATION_UNSUPPORTED.into());
     }
+    normalize_image_options(&mut profile)?;
     clamp_to_catalog(&mut profile);
     if profile.label.trim().is_empty() {
         profile.label = profile.model.clone();
@@ -1344,6 +1451,10 @@ mod tests {
             supports_vision: false,
             use_for_vision: false,
             use_for_image_generation: false,
+            image_size: String::new(),
+            image_quality: String::new(),
+            image_aspect_ratio: String::new(),
+            image_resolution: String::new(),
         }
     }
 
@@ -1612,9 +1723,15 @@ mod tests {
     }
 
     #[test]
-    fn image_generation_accepts_only_openai_gpt_image_2() {
+    fn image_generation_accepts_openai_and_xai_models() {
         let mut profile = test_profile("image", "image", "gpt-image-2");
         profile.provider = "openai_responses".into();
+        assert!(can_generate_images(&profile));
+
+        profile.model = "grok-imagine-image-2.0".into();
+        profile.provider = "openai".into();
+        assert!(can_generate_images(&profile));
+        profile.model = "xai/grok-imagine-image-2.0".into();
         assert!(can_generate_images(&profile));
 
         profile.provider = "anthropic".into();
@@ -1622,6 +1739,37 @@ mod tests {
         profile.provider = "openai".into();
         profile.model = "gpt-image-1".into();
         assert!(!can_generate_images(&profile));
+        profile.model = "grok-imagine-image".into();
+        assert!(!can_generate_images(&profile));
+        assert!(!is_chat_model(&test_profile(
+            "image",
+            "image",
+            "grok-imagine-image-2.0"
+        )));
+    }
+
+    #[test]
+    fn image_generation_options_are_normalized_per_family() {
+        let mut grok = test_profile("image", "image", "grok-imagine-image-2.0");
+        grok.image_aspect_ratio = "16:9".into();
+        grok.image_resolution = "2k".into();
+        grok.image_quality = "low".into();
+        grok.image_size = "1024x1024".into();
+        normalize_image_options(&mut grok).unwrap();
+        assert!(grok.image_size.is_empty());
+        assert_eq!(grok.image_aspect_ratio, "16:9");
+        assert_eq!(grok.image_resolution, "2k");
+
+        grok.image_aspect_ratio = "square".into();
+        assert!(normalize_image_options(&mut grok).is_err());
+
+        let mut openai = test_profile("image", "image", "gpt-image-2");
+        openai.image_size = "1536x1024".into();
+        openai.image_quality = "high".into();
+        openai.image_aspect_ratio = "16:9".into();
+        normalize_image_options(&mut openai).unwrap();
+        assert_eq!(openai.image_size, "1536x1024");
+        assert!(openai.image_aspect_ratio.is_empty());
     }
 
     #[tokio::test]
@@ -1639,7 +1787,8 @@ mod tests {
             .set_setting(IMAGE_GENERATION_KEY, "image")
             .await
             .unwrap();
-        let (url, model, _key) = image_generation_config(&store).await.unwrap();
+        let (url, model, _key, options) = image_generation_config(&store).await.unwrap();
+        assert_eq!(options, ImageGenerationOptions::default());
         assert_eq!(url, "u");
         assert_eq!(model, "gpt-image-2");
 

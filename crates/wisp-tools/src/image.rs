@@ -11,6 +11,7 @@ const MAX_SOURCE_BYTES: usize = 50 * 1024 * 1024;
 const MAX_DIMENSION: u32 = 2048;
 const MAX_DECODE_DIMENSION: u32 = 32_768;
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
+const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 
 pub fn is_supported_image(path: &Path) -> bool {
     path.extension()
@@ -103,6 +104,30 @@ fn view_image_inner(path: &str, resize_oversized: bool) -> ToolResult {
     })
 }
 
+/// Keep the Scientific Illustrator contract on PNG even when a provider
+/// returns JPEG (xAI Grok Imagine) or another raster format.
+pub fn encode_as_png(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    if bytes.starts_with(PNG_SIGNATURE) {
+        return Ok(bytes.to_vec());
+    }
+    let mut reader = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| format!("cannot detect generated image format: {e}"))?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_DECODE_DIMENSION);
+    limits.max_image_height = Some(MAX_DECODE_DIMENSION);
+    limits.max_alloc = Some(256 * 1024 * 1024);
+    reader.limits(limits);
+    let image = reader
+        .decode()
+        .map_err(|e| format!("cannot decode generated image: {e}"))?;
+    let mut output = Cursor::new(Vec::new());
+    image
+        .write_to(&mut output, ImageFormat::Png)
+        .map_err(|e| format!("cannot encode generated PNG: {e}"))?;
+    Ok(output.into_inner())
+}
+
 fn resize_for_model(bytes: &[u8]) -> Result<(Vec<u8>, &'static str, Option<String>), String> {
     let mut reader = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
@@ -144,7 +169,7 @@ fn resize_for_model(bytes: &[u8]) -> Result<(Vec<u8>, &'static str, Option<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::{ImageBuffer, Rgba};
+    use image::{ImageBuffer, Rgb, Rgba};
 
     #[test]
     fn oversized_image_is_resized_to_bounded_model_input() {
@@ -164,5 +189,15 @@ mod tests {
         assert!(decoded.width() <= MAX_DIMENSION && decoded.height() <= MAX_DIMENSION);
         assert!(resized.len() <= MAX_BYTES);
         assert!(note.unwrap().contains("resized for model input"));
+    }
+
+    #[test]
+    fn jpeg_is_reencoded_as_png() {
+        let source = ImageBuffer::from_pixel(1, 1, Rgb([10u8, 20, 30]));
+        let mut jpeg = Cursor::new(Vec::new());
+        source.write_to(&mut jpeg, ImageFormat::Jpeg).unwrap();
+        let png = encode_as_png(jpeg.get_ref()).unwrap();
+        assert!(png.starts_with(PNG_SIGNATURE));
+        assert_eq!(encode_as_png(&png).unwrap(), png);
     }
 }

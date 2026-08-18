@@ -7947,6 +7947,17 @@ test("onboarding key setup lands on flash after adding pro", async ({ page }) =>
     }))).toEqual([{ id: "reader", model_id: "m2" }]);
 });
 
+test("API access on xAI suggests grok chat and imagine image", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Models");
+  await page.getByRole("button", { name: /Add API access/i }).click();
+  await page.getByLabel("Base URL").fill("https://api.x.ai");
+  await expect(page.getByTestId("provider-model-row")).toHaveCount(2);
+  await expect(page.getByTestId("provider-model-row").nth(0).getByLabel("Model ID")).toHaveValue("grok-4.6");
+  await expect(page.getByTestId("provider-model-row").nth(1).getByLabel("Model ID")).toHaveValue("grok-imagine-image-2.0");
+  await expect(page.getByTestId("provider-model-row").nth(1).getByTestId("provider-use-for-image")).toBeChecked();
+});
+
 test("gpt-image-2 can be assigned for generation but not selected for chat", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Models");
@@ -7956,8 +7967,13 @@ test("gpt-image-2 can be assigned for generation but not selected for chat", asy
   await providerSelect(page).selectOption("openai_responses");
   await page.getByLabel("Base URL").fill("https://api.openai.com/v1");
   await page.getByLabel("Model").fill("gpt-image-2");
-  await expect(page.getByLabel("Supports image input")).not.toBeChecked();
-  await page.getByLabel("Use for image generation").check();
+  await expect(page.getByLabel("Max output tokens")).toHaveCount(0);
+  await expect(page.getByLabel("Supports image input")).toHaveCount(0);
+  await expect(page.getByTestId("image-size")).toBeVisible();
+  await expect(page.getByTestId("image-quality")).toBeVisible();
+  await page.getByTestId("image-size").selectOption("1536x1024");
+  await page.getByTestId("image-quality").selectOption("high");
+  await expect(page.getByTestId("use-for-image-generation")).toBeChecked();
   await page.getByRole("button", { name: "Valid" }).click();
   await expect(page.locator(".settings-status")).toHaveText(
     "Validated openai_responses with gpt-image-2",
@@ -7971,6 +7987,8 @@ test("gpt-image-2 can be assigned for generation but not selected for chat", asy
       provider: "openai_responses",
       model: "gpt-image-2",
       use_for_image_generation: true,
+      image_size: "1536x1024",
+      image_quality: "high",
     },
   });
 
@@ -7982,6 +8000,55 @@ test("gpt-image-2 can be assigned for generation but not selected for chat", asy
   await page.locator(".settings-head-close").click();
   await page.locator(".model-picker-btn").click();
   await expect(page.locator(".model-menu")).not.toContainText("gpt-image-2");
+  await expect(page.locator(".model-menu")).toContainText("deepseek-v4-pro");
+});
+
+test("grok-imagine-image-2.0 can be assigned for generation but not selected for chat", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Models");
+  const opus = page.locator(".settings-list-row", { hasText: "opus-4.8" });
+  await opus.click();
+
+  await providerSelect(page).selectOption("openai");
+  await page.getByLabel("Base URL").fill("https://api.x.ai");
+  await page.getByLabel("Model").fill("grok-imagine-image-2.0");
+  await expect(page.getByLabel("Max output tokens")).toHaveCount(0);
+  await expect(page.getByLabel("Supports image input")).toHaveCount(0);
+  await expect(page.getByTestId("image-aspect-ratio")).toBeVisible();
+  await expect(page.getByTestId("image-resolution")).toBeVisible();
+  await expect(page.getByTestId("image-quality")).toBeVisible();
+  await expect(page.getByTestId("image-size")).toHaveCount(0);
+  await page.getByTestId("image-aspect-ratio").selectOption("16:9");
+  await page.getByTestId("image-resolution").selectOption("2k");
+  await page.getByTestId("image-quality").selectOption("low");
+  await expect(page.getByTestId("use-for-image-generation")).toBeChecked();
+  await page.getByRole("button", { name: "Valid" }).click();
+  await expect(page.locator(".settings-status")).toHaveText(
+    "Validated openai with grok-imagine-image-2.0",
+  );
+  await page.getByRole("button", { name: "Save" }).click();
+
+  await expect.poll(() => lastInvokeArgs(page, "save_model")).toMatchObject({
+    useForImageGeneration: true,
+    profile: {
+      id: "opus",
+      provider: "openai",
+      model: "grok-imagine-image-2.0",
+      use_for_image_generation: true,
+      image_aspect_ratio: "16:9",
+      image_resolution: "2k",
+      image_quality: "low",
+    },
+  });
+
+  const imageModel = page.locator(".settings-list-row", { hasText: "opus-4.8" });
+  await expect(imageModel).toContainText("grok-imagine-image-2.0");
+  await expect(imageModel).toContainText("image gen");
+  await expect(imageModel.getByRole("button", { name: "Use" })).toHaveCount(0);
+
+  await page.locator(".settings-head-close").click();
+  await page.locator(".model-picker-btn").click();
+  await expect(page.locator(".model-menu")).not.toContainText("grok-imagine-image-2.0");
   await expect(page.locator(".model-menu")).toContainText("deepseek-v4-pro");
 });
 
