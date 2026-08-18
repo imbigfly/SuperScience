@@ -135,6 +135,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     has_api_key: true,
   };
   let projectAgentContext = "";
+  const projectNames: Record<string, string> = { default: project.name, other: "Other project" };
+  const projectDescriptions: Record<string, string> = { default: "", other: "" };
+  const projectAgentContexts: Record<string, string> = { default: "", other: "" };
   const query = new URLSearchParams(window.location.search);
   const mockPlanFlow = query.get("mockPlanFlow");
   const mockPublication = query.get("mockPublication");
@@ -2338,8 +2341,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return null;
           case "list_projects":
             return [
-              { id: "default", name: project.name, workspace_dir: project.root, session_count: 0, updated_at: 1, running_count: 0, needs_you_count: 0, sync_configured: syncedProjects.has("default"), last_synced_at: syncedProjects.has("default") ? Math.floor(Date.now() / 1000) : null },
-              { id: "other", name: "Other project", workspace_dir: "/mock/other", session_count: 1, updated_at: 1, running_count: 0, needs_you_count: 0, sync_configured: syncedProjects.has("other"), last_synced_at: syncedProjects.has("other") ? Math.floor(Date.now() / 1000) : null },
+              { id: "default", name: projectNames.default ?? project.name, workspace_dir: project.root, session_count: 0, updated_at: 1, running_count: 0, needs_you_count: 0, sync_configured: syncedProjects.has("default"), last_synced_at: syncedProjects.has("default") ? Math.floor(Date.now() / 1000) : null },
+              { id: "other", name: projectNames.other ?? "Other project", workspace_dir: "/mock/other", session_count: 1, updated_at: 1, running_count: 0, needs_you_count: 0, sync_configured: syncedProjects.has("other"), last_synced_at: syncedProjects.has("other") ? Math.floor(Date.now() / 1000) : null },
             ];
           case "list_recent_sessions":
             return [
@@ -2373,7 +2376,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             }
             activeProjectId = openingProjectId;
             ((window as any).__projectOpenCompletions ??= []).push(activeProjectId);
-            return { id: activeProjectId, name: activeProjectId === "other" ? "Other project" : project.name, workspace_dir: activeProjectId === "other" ? "/mock/other" : project.root, session_count: 0, updated_at: 1, running_count: 0, needs_you_count: 0 };
+            return { id: activeProjectId, name: projectNames[activeProjectId] ?? (activeProjectId === "other" ? "Other project" : project.name), workspace_dir: activeProjectId === "other" ? "/mock/other" : project.root, session_count: 0, updated_at: 1, running_count: 0, needs_you_count: 0 };
           }
           case "create_project":
             activeProjectId = "default";
@@ -3472,12 +3475,31 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             };
             return projectRunRetention;
           }
-          case "get_project_settings":
-            return { name: project.name, description: "", agent_context: projectAgentContext };
+          case "get_project_settings": {
+            const settingsId = String(arg("id") ?? activeProjectId ?? "default");
+            return {
+              id: settingsId,
+              name: projectNames[settingsId] ?? (settingsId === "other" ? "Other project" : project.name),
+              description: projectDescriptions[settingsId] ?? "",
+              agent_context: projectAgentContexts[settingsId] ?? (settingsId === "default" ? projectAgentContext : ""),
+            };
+          }
           case "update_project": {
-            const nextName = String(arg("name") ?? project.name);
-            if (nextName.trim()) project.name = nextName.trim();
-            projectAgentContext = String(arg("agentContext") ?? arg("agent_context") ?? "");
+            const settingsId = String(arg("id") ?? activeProjectId ?? "default");
+            const nextName = String(arg("name") ?? projectNames[settingsId] ?? project.name);
+            if (nextName.trim()) {
+              projectNames[settingsId] = nextName.trim();
+              if (settingsId === "default" || settingsId === activeProjectId) {
+                project.name = nextName.trim();
+              }
+            }
+            const nextDescription = String(arg("description") ?? "");
+            projectDescriptions[settingsId] = nextDescription;
+            const nextContext = String(arg("agentContext") ?? arg("agent_context") ?? "");
+            projectAgentContexts[settingsId] = nextContext;
+            if (settingsId === "default" || settingsId === activeProjectId) {
+              projectAgentContext = nextContext;
+            }
             return null;
           }
           case "get_onboarding_state":

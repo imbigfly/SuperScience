@@ -54,6 +54,11 @@ pub(crate) fn ProjectsScreen(
     // did nothing — use an in-app modal instead.
     let pending_delete = create_rw_signal(None::<String>);
     let confirm_delete_data = create_rw_signal(false);
+    let settings_project_id = create_rw_signal(None::<String>);
+    let settings_form = create_rw_signal(ProjectSettings::default());
+    let settings_baseline = create_rw_signal(ProjectSettings::default());
+    let settings_busy = create_rw_signal(false);
+    let settings_confirm_context = create_rw_signal(false);
     let delete_data_countdown = create_rw_signal(0_u8);
     let delete_data_unlock_at = Rc::new(Cell::new(0_f64));
 
@@ -134,6 +139,12 @@ pub(crate) fn ProjectsScreen(
     create_effect(move |_| {
         if creating.get() {
             focus_and_select_soon("new-project-name");
+        }
+    });
+
+    create_effect(move |_| {
+        if settings_project_id.get().is_some() && !settings_confirm_context.get() {
+            focus_and_select_soon("project-home-settings-name");
         }
     });
 
@@ -334,6 +345,49 @@ pub(crate) fn ProjectsScreen(
     });
     let delete_confirmed = delete; // used by the confirm modal below
 
+    let save_home_settings = Callback::new(move |_: ()| {
+        if settings_busy.get() {
+            return;
+        }
+        let Some(id) = settings_project_id.get() else {
+            return;
+        };
+        let form = settings_form.get();
+        if form.name.trim().is_empty() {
+            return;
+        }
+        let baseline = settings_baseline.get();
+        if form.agent_context.trim() != baseline.agent_context.trim()
+            && !settings_confirm_context.get()
+        {
+            settings_confirm_context.set(true);
+            return;
+        }
+        settings_busy.set(true);
+        spawn_local(async move {
+            let arg = to_value(&serde_json::json!({
+                "id": id,
+                "name": form.name,
+                "description": form.description,
+                "agentContext": form.agent_context,
+            }))
+            .unwrap();
+            match invoke_checked("update_project", arg).await {
+                Ok(_) => {
+                    settings_busy.set(false);
+                    settings_confirm_context.set(false);
+                    settings_project_id.set(None);
+                    reload();
+                }
+                Err(error) => {
+                    settings_busy.set(false);
+                    let message = localize_backend(locale.get_untracked(), &js_error_text(error));
+                    open_error.set(Some(message));
+                }
+            }
+        });
+    });
+
     let import_archive = Callback::new(move |_: ()| {
         import_options_open.set(false);
         if project_transfer
@@ -463,6 +517,17 @@ pub(crate) fn ProjectsScreen(
             delete_data_countdown.set(0);
             return;
         }
+        if settings_confirm_context.get() {
+            ev.prevent_default();
+            settings_confirm_context.set(false);
+            return;
+        }
+        if settings_project_id.get().is_some() {
+            ev.prevent_default();
+            settings_confirm_context.set(false);
+            settings_project_id.set(None);
+            return;
+        }
         if import_options_open.get() {
             ev.prevent_default();
             import_options_open.set(false);
@@ -492,7 +557,12 @@ pub(crate) fn ProjectsScreen(
     on_cleanup(move || escape_listener.remove());
 
     view! {
-        <div class="projects-screen">
+        <div class="projects-screen" on:contextmenu=move |ev| {
+            if crate::context_menu::uses_native_text_menu(&ev) {
+                return;
+            }
+            ev.prevent_default();
+        }>
             <div class="projects-head">
                 <div class="projects-brand">
                     <span class="projects-brand-mark" aria-hidden="true"></span>
@@ -814,6 +884,81 @@ pub(crate) fn ProjectsScreen(
                     </div>
                 </div>
             })}
+            {move || settings_project_id.get().map(|_| {
+                view! {
+                    <div class="overlay" data-testid="project-home-settings">
+                        <div class="modal proj-settings-modal" role="dialog" aria-modal="true"
+                            aria-label=move || t(locale.get(), "proj_settings.title")>
+                            <div class="ps-head">
+                                <h2>{move || t(locale.get(), "proj_settings.title")}</h2>
+                                <button type="button" class="ps-close"
+                                    title=move || t(locale.get(), "settings.cancel")
+                                    on:click=move |_| {
+                                        settings_confirm_context.set(false);
+                                        settings_project_id.set(None);
+                                    }>{compose_icon("close")}</button>
+                            </div>
+                            <label>
+                                <span class="ps-label">{move || t(locale.get(), "proj_settings.name")}</span>
+                                <input id="project-home-settings-name" data-testid="project-home-settings-name"
+                                    prop:value=move || settings_form.get().name
+                                    on:input=move |ev| {
+                                        let v = event_target_value(&ev);
+                                        settings_form.update(|s| s.name = v);
+                                    } />
+                            </label>
+                            <label>
+                                <span class="ps-label">{move || t(locale.get(), "proj_settings.description")}</span>
+                                <span class="ps-hint">{move || t(locale.get(), "proj_settings.description_hint")}</span>
+                                <textarea class="ps-textarea" rows="2"
+                                    prop:value=move || settings_form.get().description
+                                    on:input=move |ev| {
+                                        let v = event_target_value(&ev);
+                                        settings_form.update(|s| s.description = v);
+                                    }></textarea>
+                            </label>
+                            <label>
+                                <span class="ps-label">{move || t(locale.get(), "proj_settings.agent_context")}</span>
+                                <span class="ps-hint">{move || t(locale.get(), "proj_settings.agent_context_hint")}</span>
+                                <textarea class="ps-textarea ps-ctx" rows="8"
+                                    prop:value=move || settings_form.get().agent_context
+                                    on:input=move |ev| {
+                                        let v = event_target_value(&ev);
+                                        settings_form.update(|s| s.agent_context = v);
+                                    }></textarea>
+                            </label>
+                            <div class="row">
+                                <button type="button" disabled=move || settings_busy.get()
+                                    on:click=move |_| {
+                                        settings_confirm_context.set(false);
+                                        settings_project_id.set(None);
+                                    }>{move || t(locale.get(), "settings.cancel")}</button>
+                                <button type="button" class="primary" data-testid="save-project-home-settings"
+                                    disabled=move || settings_busy.get() || settings_form.get().name.trim().is_empty()
+                                    on:click=move |_| save_home_settings.call(())>
+                                    {move || t(locale.get(), "settings.save")}</button>
+                            </div>
+                        </div>
+                    </div>
+                }
+            })}
+            {move || settings_confirm_context.get().then(|| view! {
+                <div class="overlay" data-testid="project-home-settings-confirm">
+                    <div class="modal confirm-modal" role="dialog" aria-modal="true"
+                        aria-label=move || t(locale.get(), "proj_settings.agent_context_confirm_action")>
+                        <h2>{move || t(locale.get(), "proj_settings.agent_context_confirm_action")}</h2>
+                        <div class="hint">{move || t(locale.get(), "proj_settings.agent_context_confirm")}</div>
+                        <div class="row">
+                            <button type="button" on:click=move |_| settings_confirm_context.set(false)>
+                                {move || t(locale.get(), "settings.cancel")}</button>
+                            <button type="button" class="primary"
+                                on:click=move |_| save_home_settings.call(())>
+                                {move || t(locale.get(), "proj_settings.agent_context_confirm_action")}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            })}
             <div class="projects-cols">
                 <div class="projects-col">
                     <h2>{move || t(locale.get(), "projects.title")}</h2>
@@ -847,6 +992,8 @@ pub(crate) fn ProjectsScreen(
                             let id_win = p.id.clone();
                             let id_win_locked = p.id.clone();
                             let id_export = p.id.clone();
+                            let id_settings = p.id.clone();
+                            let id_settings_locked = p.id.clone();
                             let workspace_export = p.workspace_dir.clone();
                             let workspace_path = p.workspace_dir.clone();
                             let id_sync = p.id.clone();
@@ -904,6 +1051,36 @@ pub(crate) fn ProjectsScreen(
                                     </div>
                                     </button>
                                     <div class="pc-actions">
+                                    <button type="button" class="pc-settings" data-testid="project-card-settings"
+                                        title=t(loc, "projects.settings")
+                                        aria-label=t(loc, "projects.settings")
+                                        disabled=move || project_transfer.get().is_some_and(|transfer| transfer.is_exporting_project(&id_settings_locked))
+                                        on:click=move |e| {
+                                            e.stop_propagation();
+                                            let id = id_settings.clone();
+                                            settings_confirm_context.set(false);
+                                            settings_busy.set(false);
+                                            open_error.set(None);
+                                            spawn_local(async move {
+                                                let arg = to_value(&serde_json::json!({ "id": id.clone() })).unwrap();
+                                                match invoke_checked("get_project_settings", arg).await {
+                                                    Ok(value) => {
+                                                        if let Ok(settings) = serde_wasm_bindgen::from_value::<ProjectSettings>(value) {
+                                                            settings_baseline.set(settings.clone());
+                                                            settings_form.set(settings);
+                                                            settings_project_id.set(Some(id));
+                                                        }
+                                                    }
+                                                    Err(error) => {
+                                                        let message = localize_backend(
+                                                            locale.get_untracked(),
+                                                            &js_error_text(error),
+                                                        );
+                                                        open_error.set(Some(message));
+                                                    }
+                                                }
+                                            });
+                                        }>{compose_icon("gear")}</button>
                                     {show_sync_actions.then(|| view! {
                                         <button class="pc-sync" title=t(loc, "projects.sync.now")
                                             aria-label=t(loc, "projects.sync.now")

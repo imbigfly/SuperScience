@@ -105,16 +105,16 @@ button.proj-card { width: 100%; padding: 16px 18px; color: var(--text); font: in
 /* Card actions share one uniform 28px box with a 16px compose_icon glyph so the
    cluster reads as a single aligned row (previously padding-sized boxes made the
    icons look uneven). */
-.proj-card .pc-del, .proj-card .pc-window, .proj-card .pc-export, .proj-card .pc-sync, .proj-card .pc-sync-code {
+.proj-card .pc-del, .proj-card .pc-window, .proj-card .pc-export, .proj-card .pc-settings, .proj-card .pc-sync, .proj-card .pc-sync-code {
   display: inline-flex; align-items: center; justify-content: center;
   width: 28px; height: 28px; padding: 0; flex: 0 0 auto;
   opacity: .58; color: var(--text-faint); background: none; border: 0; border-radius: var(--radius-xs); cursor: pointer;
 }
 .proj-card .pc-actions button svg { width: 16px; height: 16px; }
-.proj-card:hover .pc-del, .proj-card:hover .pc-window, .proj-card:hover .pc-export, .proj-card:hover .pc-sync, .proj-card:hover .pc-sync-code, .proj-card:focus-within .pc-del, .proj-card:focus-within .pc-window, .proj-card:focus-within .pc-export, .proj-card:focus-within .pc-sync, .proj-card:focus-within .pc-sync-code { opacity: 1; }
-.proj-card .pc-window:hover, .proj-card .pc-export:hover, .proj-card .pc-sync:hover, .proj-card .pc-sync-code:hover, .proj-card .pc-del:hover { color: var(--clay); background: var(--surface-hover); }
+.proj-card:hover .pc-del, .proj-card:hover .pc-window, .proj-card:hover .pc-export, .proj-card:hover .pc-settings, .proj-card:hover .pc-sync, .proj-card:hover .pc-sync-code, .proj-card:focus-within .pc-del, .proj-card:focus-within .pc-window, .proj-card:focus-within .pc-export, .proj-card:focus-within .pc-settings, .proj-card:focus-within .pc-sync, .proj-card:focus-within .pc-sync-code { opacity: 1; }
+.proj-card .pc-window:hover, .proj-card .pc-export:hover, .proj-card .pc-settings:hover, .proj-card .pc-sync:hover, .proj-card .pc-sync-code:hover, .proj-card .pc-del:hover { color: var(--clay); background: var(--surface-hover); }
 .proj-card .pc-sync:disabled { cursor: wait; opacity: .45; }
-.proj-card .pc-del:disabled, .proj-card .pc-window:disabled, .proj-card .pc-export:disabled { cursor: not-allowed; opacity: .35; }
+.proj-card .pc-del:disabled, .proj-card .pc-window:disabled, .proj-card .pc-export:disabled, .proj-card .pc-settings:disabled { cursor: not-allowed; opacity: .35; }
 .projects-sync-notice { position: fixed; right: 24px; bottom: 24px; z-index: 80; max-width: min(440px, calc(100vw - 48px)); padding: 10px 14px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg-elev); color: var(--text); box-shadow: var(--shadow); font-size: 13px; }
 .projects-sync-notice.ok { border-color: color-mix(in srgb, var(--ok) 45%, var(--border)); }
 .project-sync-join-overlay { background: hsl(215 25% 14% / 0.34); backdrop-filter: blur(5px); }
