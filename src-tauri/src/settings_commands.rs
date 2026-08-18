@@ -263,7 +263,9 @@ pub(super) async fn set_settings(
         .map_err(|e| format!("{e}"))?;
     #[cfg(target_os = "macos")]
     super::install_macos_app_menu(&app, locale)?;
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    desktop_lifecycle::apply_windows_tray_locale(&app, locale)?;
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let _ = app;
     state
         .store

@@ -28,6 +28,9 @@ pub(crate) fn should_activate_workspace_window(window_label: &str) -> bool {
     window_label != "pet"
 }
 
+#[cfg(target_os = "windows")]
+const TRAY_ID: &str = "wisp-tray";
+
 #[cfg(any(target_os = "windows", test))]
 #[derive(Debug, PartialEq, Eq)]
 enum TrayAction {
@@ -44,6 +47,58 @@ fn tray_action(id: &str) -> Option<TrayAction> {
         "tray-quit" => Some(TrayAction::Quit),
         _ => None,
     }
+}
+
+#[cfg(any(target_os = "windows", test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TrayLocale {
+    En,
+    Zh,
+}
+
+#[cfg(any(target_os = "windows", test))]
+impl TrayLocale {
+    fn from_tag(tag: &str) -> Self {
+        match tag.trim() {
+            "zh" | "zh-CN" | "zh-TW" => Self::Zh,
+            _ => Self::En,
+        }
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+struct TrayLabels {
+    show: &'static str,
+    restart: &'static str,
+    quit: &'static str,
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn tray_labels(locale: TrayLocale) -> TrayLabels {
+    match locale {
+        TrayLocale::Zh => TrayLabels {
+            show: "打开 Wisp Science",
+            restart: "重启",
+            quit: "退出",
+        },
+        TrayLocale::En => TrayLabels {
+            show: "Open Wisp Science",
+            restart: "Restart",
+            quit: "Quit",
+        },
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn build_tray_menu<M: Manager<tauri::Wry>>(
+    app: &M,
+    locale: TrayLocale,
+) -> tauri::Result<Menu<tauri::Wry>> {
+    let labels = tray_labels(locale);
+    let show = MenuItemBuilder::with_id("tray-show", labels.show).build(app)?;
+    let restart = MenuItemBuilder::with_id("tray-restart", labels.restart).build(app)?;
+    let quit = MenuItemBuilder::with_id("tray-quit", labels.quit).build(app)?;
+    Menu::with_items(app, &[&show, &restart, &quit])
 }
 
 pub(crate) fn activate_workspace(app: &AppHandle) {
@@ -177,12 +232,19 @@ pub(crate) fn set_pet_window_visible(app: tauri::AppHandle, visible: bool) -> Re
 }
 
 #[cfg(target_os = "windows")]
-pub(crate) fn install_windows_shell(app: &mut App) -> tauri::Result<()> {
-    let show = MenuItemBuilder::with_id("tray-show", "Open Wisp Science").build(app)?;
-    let restart = MenuItemBuilder::with_id("tray-restart", "Restart").build(app)?;
-    let quit = MenuItemBuilder::with_id("tray-quit", "Quit").build(app)?;
-    let menu = Menu::with_items(app, &[&show, &restart, &quit])?;
-    let mut tray = TrayIconBuilder::with_id("wisp-tray")
+pub(crate) fn apply_windows_tray_locale(app: &AppHandle, locale_tag: &str) -> Result<(), String> {
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        return Ok(());
+    };
+    let menu = build_tray_menu(app, TrayLocale::from_tag(locale_tag)).map_err(|e| e.to_string())?;
+    tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn install_windows_shell(app: &mut App, locale_tag: &str) -> tauri::Result<()> {
+    let menu = build_tray_menu(app.handle(), TrayLocale::from_tag(locale_tag))?;
+    let mut tray = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
         .tooltip("Wisp Science")
         .show_menu_on_left_click(false)
@@ -232,7 +294,7 @@ pub(crate) fn install_windows_shell(app: &mut App) -> tauri::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{tray_action, TrayAction};
+    use super::{tray_action, tray_labels, TrayAction, TrayLocale};
 
     #[test]
     fn windows_tray_actions_include_restart() {
@@ -240,5 +302,23 @@ mod tests {
         assert_eq!(tray_action("tray-restart"), Some(TrayAction::Restart));
         assert_eq!(tray_action("tray-quit"), Some(TrayAction::Quit));
         assert_eq!(tray_action("unknown"), None);
+    }
+
+    #[test]
+    fn windows_tray_labels_follow_saved_locale() {
+        let zh = tray_labels(TrayLocale::from_tag("zh-CN"));
+        assert_eq!(zh.show, "打开 Wisp Science");
+        assert_eq!(zh.restart, "重启");
+        assert_eq!(zh.quit, "退出");
+
+        let en = tray_labels(TrayLocale::from_tag("en"));
+        assert_eq!(en.show, "Open Wisp Science");
+        assert_eq!(en.restart, "Restart");
+        assert_eq!(en.quit, "Quit");
+
+        assert_eq!(TrayLocale::from_tag("zh"), TrayLocale::Zh);
+        assert_eq!(TrayLocale::from_tag("zh-TW"), TrayLocale::Zh);
+        assert_eq!(TrayLocale::from_tag(""), TrayLocale::En);
+        assert_eq!(TrayLocale::from_tag("fr"), TrayLocale::En);
     }
 }
