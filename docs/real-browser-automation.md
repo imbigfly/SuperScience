@@ -38,9 +38,11 @@ instead of answering from memory. After Chrome is open and the popup shows
 request again.
 
 The unpacked extension remains installed in that browser profile across Wisp
-and browser restarts. It reconnects to `ws://127.0.0.1:18765` when Wisp is
-running. Only loopback connections whose WebSocket origin is a Chrome extension
-with Wisp's bundled, stable extension ID are accepted.
+and browser restarts. After updating Wisp, click **Reload** on the extension
+card in `chrome://extensions` so the service worker picks up `wait_tab.js`.
+It reconnects to `ws://127.0.0.1:18765` when Wisp is running. Only loopback
+connections whose WebSocket origin is a Chrome extension with Wisp's bundled,
+stable extension ID are accepted.
 
 ## Human-verification handoff
 
@@ -94,21 +96,27 @@ These settings must be changed manually because internal settings pages such as
   one-time installation steps, and the user's URL filter lists (`url_filters`).
   It does not read browser page content and does not require approval.
 - `web_scan`: list real browser tabs, extract page text, or return a compact
-  snapshot of visible actionable elements and selectors.
+  snapshot of visible actionable elements and selectors. It waits until the
+  tab's document is `complete` (or the tool timeout) before reading. The result
+  includes `ready` and `page.ready_state`; if `ready` is false, scan again
+  instead of acting on a partial page.
 - `web_execute_js`: execute JavaScript in the selected real tab. It also accepts
   a JSON `{ "cmd": "cdp", ... }` request for a single Chrome DevTools Protocol
   method when trusted browser input or another CDP-only action is required.
-  Navigational JSON/JS that targets a blocked host is refused.
-- `web_open_tab`: open an HTTP(S) tab. Blocked hosts from
-  **Settings → Browser** are refused before the tab opens. When a prefer list
-  is set, a successful result includes `preferred` so literature tasks can stay
-  on those sites.
+  Navigational JSON/JS that targets a blocked host is refused. The extension
+  waits for document `complete` before running the script, and waits again if
+  the script navigates or the tab returns to `loading`.
+- `web_open_tab`: open an HTTP(S) tab. The call waits until that tab's document
+  is `complete` (or times out) and returns `ready` plus the real URL/title.
+  Blocked hosts from **Settings → Browser** are refused before the tab opens.
+  When a prefer list is set, a successful result includes `preferred` so
+  literature tasks can stay on those sites.
 - `web_screenshot`: capture the visible viewport of the selected real tab as a
   JPEG and read it with the configured vision model, for rendered layout,
-  charts, canvas/WebGL pages, QR codes, or a page that looks wrong. It captures
-  the viewport only; scroll with `web_execute_js` to reach content below the
-  fold. It needs a vision-capable model configured in
-  **Settings → Models**, like `view_image`.
+  charts, canvas/WebGL pages, QR codes, or a page that looks wrong. It waits
+  for document `complete` before capturing. It captures the viewport only;
+  scroll with `web_execute_js` to reach content below the fold. It needs a
+  vision-capable model configured in **Settings → Models**, like `view_image`.
 
 Both tools normally require at least one Wisp approval. The approval can be
 granted once, for the session, for the project, or globally through the existing
