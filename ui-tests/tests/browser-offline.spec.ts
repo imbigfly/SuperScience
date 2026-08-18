@@ -91,3 +91,72 @@ test("browser offline banner stays under Settings in the Escape stack and can re
     message: "latest rustc version",
   });
 });
+
+test("a later connected browser_setup clears the offline banner", async ({ page }) => {
+  await enterApp(page);
+  const sessionId = await startLiveRetrievalTurn(page);
+
+  await emitTauriEvent(page, "agent", {
+    kind: "ToolPresentation",
+    frame_id: sessionId,
+    presentation_kind: "browser_disconnected",
+    payload: { code: "browser_extension_disconnected", live_retrieval: false },
+  });
+  const banner = page.getByTestId("browser-offline-banner");
+  await expect(banner).toBeVisible();
+
+  await emitTauriEvent(page, "agent", {
+    kind: "ToolResult",
+    frame_id: sessionId,
+    name: "browser_setup",
+    ok: true,
+    content: JSON.stringify({ status: "connected", live_retrieval: true, connected_tabs: 1 }),
+  });
+  await expect(banner).toHaveCount(0);
+});
+
+test("successful live retrieval survives a stream disconnect error", async ({ page }) => {
+  await enterApp(page);
+  const sessionId = await startLiveRetrievalTurn(page);
+
+  await emitTauriEvent(page, "agent", {
+    kind: "ToolPresentation",
+    frame_id: sessionId,
+    presentation_kind: "browser_disconnected",
+    payload: { code: "browser_extension_disconnected", live_retrieval: false },
+  });
+  await expect(page.getByTestId("browser-offline-banner")).toBeVisible();
+
+  await emitTauriEvent(page, "agent", {
+    kind: "ToolResult",
+    frame_id: sessionId,
+    name: "web_scan",
+    ok: true,
+    content: JSON.stringify({ tabs: [{ title: "PubMed CLEC12A" }] }),
+  });
+  await emitTauriEvent(page, "agent", {
+    kind: "ToolPresentation",
+    frame_id: sessionId,
+    presentation_kind: "browser_connected",
+    payload: { live_retrieval: true },
+  });
+  await expect(page.getByTestId("browser-offline-banner")).toHaveCount(0);
+
+  await emitTauriEvent(page, "agent", {
+    kind: "Error",
+    frame_id: sessionId,
+    message: "api: 200 stream error: stream disconnected before completion: stream closed before response.completed",
+  });
+  await expect(page.getByText(/stream disconnected before completion/)).toBeVisible();
+  await expect(page.getByTestId("browser-offline-banner")).toHaveCount(0);
+});
+
+test("reopening a session does not revive a stale disconnected presentation", async ({ page }) => {
+  await page.goto("/?mockBrowserRestore=1");
+  await page.locator(".proj-card-main").first().click();
+  const session = page.locator('[data-session-id="browser-restore-session"]');
+  await expect(session).toBeVisible();
+  await session.click();
+  await expect(page.getByText("PubMed currently lists live hits for CLEC12A.")).toBeVisible();
+  await expect(page.getByTestId("browser-offline-banner")).toHaveCount(0);
+});
