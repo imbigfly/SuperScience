@@ -10020,10 +10020,6 @@ test("Windows uses the integrated title bar without covering the project landing
   await expect(page.locator("#titlebar-maximize")).toHaveAttribute("aria-label", "Maximize");
   await expect(page.locator(".window-titlebar [data-tauri-drag-region]")).toHaveCount(0);
   await expect(page.getByTestId("window-snap-drag")).toHaveCount(2);
-  await page.getByTestId("window-snap-drag").nth(1).dispatchEvent("mousedown", { button: 0 });
-  await expect.poll(async () => page.evaluate(() =>
-    ((window as any).__skillInvokeLog ?? []).some((call: any) => call.cmd === "start_window_move")
-  )).toBeTruthy();
   await expect.poll(async () => page.locator(".projects-screen").evaluate((el) =>
     Math.round(el.getBoundingClientRect().top)
   )).toBe(38);
@@ -10117,6 +10113,43 @@ test("Windows uses the integrated title bar without covering the project landing
       .filter((c: any) => c.cmd === "open_external_url")
       .map((c: any) => (c.args instanceof Map ? c.args.get("url") : c.args?.url))
   )).toContain("https://github.com/xuzhougeng/wisp-science#readme");
+
+  await context.close();
+});
+
+test("Windows titlebar double-click maximizes and drag waits for movement", async ({ browser }) => {
+  const context = await browser.newContext({
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136 Safari/537.36",
+  });
+  const page = await context.newPage();
+  await page.addInitScript(tauriMock);
+  await page.goto("/");
+
+  const drag = page.getByTestId("window-snap-drag").nth(1);
+  const box = await drag.boundingBox();
+  expect(box).not.toBeNull();
+  const x = box!.x + box!.width / 2;
+  const y = box!.y + box!.height / 2;
+
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  expect(await page.evaluate(() =>
+    ((window as any).__skillInvokeLog ?? []).some((call: any) => call.cmd === "start_window_move")
+  )).toBe(false);
+  await page.mouse.move(x + 8, y);
+  await expect.poll(() => page.evaluate(() =>
+    ((window as any).__skillInvokeLog ?? []).some((call: any) => call.cmd === "start_window_move")
+  )).toBeTruthy();
+  await page.mouse.up();
+
+  await page.evaluate(() => { (window as any).__skillInvokeLog = []; });
+  await drag.dblclick();
+  await expect.poll(() => page.evaluate(() =>
+    ((window as any).__skillInvokeLog ?? []).some((call: any) => call.cmd === "toggle-maximize")
+  )).toBeTruthy();
+  expect(await page.evaluate(() =>
+    ((window as any).__skillInvokeLog ?? []).some((call: any) => call.cmd === "start_window_move")
+  )).toBe(false);
 
   await context.close();
 });
