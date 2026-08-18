@@ -200,6 +200,15 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               },
             ]
       : [];
+  if (query.get("mockNamedUnusedDraft") === "1") {
+    mockSessions.unshift({
+      id: "named-unused-draft",
+      title: "Named unused draft",
+      ts: 9000,
+      running: false,
+      has_user_turn: false,
+    });
+  }
   let activeMockFrame = mockExplorationFlow ? "exploration-mainline" : "";
   let mockBranchMergedSummary = "";
   let mockMainlineAdvanced = query.get("mockMainlineAdvanced") === "1";
@@ -2125,6 +2134,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               running_ids: mockSessions.filter((item) => item.running).map((item) => item.id),
             };
           }
+          case "latest_used_session":
+            return mockSessions.find((session) => session.has_user_turn !== false)?.id ?? null;
           case "list_project_explorations":
             return mockExplorations.filter((item) =>
               !mockExplorationRoundResolved || item.exploration.status !== "discarded").map((item) => ({
@@ -5218,6 +5229,8 @@ export function parallelMock(): void {
             next_cursor: null,
             running_ids: sessions.filter((item: any) => item.running).map((item) => item.id),
           };
+          case "latest_used_session":
+            return sessions.find((session) => session.has_user_turn !== false)?.id ?? null;
           case "list_folders": return folders.slice();
           case "create_folder": {
             const folder = { id: `folder-${folders.length + 1}`, name: String(arg("name") ?? "") };
@@ -5351,6 +5364,7 @@ export function parallelMock(): void {
               sessions.unshift({
                 id: String(arg("id")), title: String(arg("title") ?? ""),
                 ts: Date.now(), folder_id: null,
+                has_user_turn: false,
               });
             }
             return null;

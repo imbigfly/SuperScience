@@ -14,6 +14,18 @@ pub(crate) async fn invoke_new_session() -> Result<String, String> {
     invoke_string_id("new_session", JsValue::UNDEFINED).await
 }
 
+/// Conversation `resume_last_session` should reopen. Named unused drafts stay
+/// out of this path — they are sidebar rows, not "the last conversation".
+pub(crate) async fn invoke_latest_used_session() -> Option<String> {
+    let value = invoke_checked("latest_used_session", JsValue::UNDEFINED)
+        .await
+        .ok()?;
+    serde_wasm_bindgen::from_value::<Option<String>>(value)
+        .ok()
+        .flatten()
+        .filter(|id| !id.is_empty())
+}
+
 pub(crate) fn refresh_sessions(
     sessions: RwSignal<Vec<SessionInfo>>,
     pending: RwSignal<HashMap<String, usize>>,

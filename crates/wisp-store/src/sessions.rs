@@ -9,6 +9,19 @@ use sqlx::{Row, Sqlite, Transaction};
 use std::collections::{HashMap, HashSet};
 use wisp_llm::Message;
 
+/// Sidebar, project-card count, and search (#888): a root frame is visible
+/// once it has a user turn **or** an explicit title. Untitled empty drafts stay
+/// hidden. Keep this in lockstep with every list/count/search query that
+/// should match `list_sessions_page`.
+pub(crate) const SESSION_IS_LISTABLE_SQL: &str = "(\
+EXISTS (SELECT 1 FROM messages mm WHERE mm.frame_id = f.id AND mm.role = 'user') \
+OR TRIM(COALESCE(f.title, '')) <> '')";
+
+/// Recent, last-role, and resume: a conversation that has actually been used.
+/// A named unused draft is listable but has nothing to rank or reopen.
+pub(crate) const SESSION_HAS_USER_TURN_SQL: &str =
+    "EXISTS (SELECT 1 FROM messages mm WHERE mm.frame_id = f.id AND mm.role = 'user')";
+
 /// Token totals for one root session, folded from the persisted per-round
 /// `Usage` transcript events (the `frames` token columns are never updated).
 #[derive(serde::Serialize)]
@@ -552,7 +565,7 @@ impl Store {
         &self,
         limit: i64,
     ) -> Result<Vec<RecentSessionDetail>> {
-        let rows = sqlx::query(
+        let sql = format!(
             "SELECT f.id AS id, f.project_id AS pid, f.created_at AS created_at, f.title AS custom_title, \
                 (SELECT content FROM messages m WHERE m.frame_id = f.id AND m.role='user' ORDER BY m.seq ASC LIMIT 1) AS first_user, \
                 (SELECT role FROM messages m WHERE m.frame_id = f.id ORDER BY m.seq DESC LIMIT 1) AS last_role, \
@@ -562,12 +575,10 @@ impl Store {
              WHERE f.parent_frame_id = f.id \
                AND f.exploration_id IS NULL \
                AND f.project_id NOT LIKE 'scratch:%' \
-               AND EXISTS (SELECT 1 FROM messages mm WHERE mm.frame_id = f.id AND mm.role='user') \
-             ORDER BY activity_at DESC, f.rowid DESC LIMIT ?",
-        )
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
+               AND {used} ORDER BY activity_at DESC, f.rowid DESC LIMIT ?",
+            used = SESSION_HAS_USER_TURN_SQL,
+        );
+        let rows = sqlx::query(&sql).bind(limit).fetch_all(&self.pool).await?;
         let mut out = vec![];
         for row in rows {
             let id: String = row.try_get("id")?;
@@ -602,17 +613,19 @@ impl Store {
         &self,
         project_id: &str,
     ) -> Result<Vec<(String, Option<String>, bool)>> {
-        let rows = sqlx::query(
+        let sql = format!(
             "SELECT f.id AS id, \
                 (SELECT role FROM messages m WHERE m.frame_id = f.id ORDER BY m.seq DESC LIMIT 1) AS last_role, \
                 (SELECT COALESCE(MAX(ts), f.updated_at) FROM messages m WHERE m.frame_id = f.id) > f.seen_at AS unseen \
              FROM frames f \
              WHERE f.project_id = ? AND f.parent_frame_id = f.id \
-               AND EXISTS (SELECT 1 FROM messages mm WHERE mm.frame_id = f.id AND mm.role='user')",
-        )
-        .bind(project_id)
-        .fetch_all(&self.pool)
-        .await?;
+               AND {used}",
+            used = SESSION_HAS_USER_TURN_SQL,
+        );
+        let rows = sqlx::query(&sql)
+            .bind(project_id)
+            .fetch_all(&self.pool)
+            .await?;
         rows.into_iter()
             .map(|r| {
                 Ok((
@@ -1507,10 +1520,10 @@ impl Store {
         Ok(row.0)
     }
 
-    /// Root frames that have at least one user turn, most recently active first,
-    /// each with a title derived from its first user message. Used to populate
-    /// the UI's session-history sidebar. Returns
-    /// `(frame_id, title, activity_at, folder_id, branched_from)`.
+    /// Root frames the sidebar should show, most recently active first, each
+    /// with a title from the custom name or the first user message. Untitled
+    /// empty drafts stay hidden; a named unused draft is included (#888).
+    /// Returns `(frame_id, title, activity_at, folder_id, branched_from)`.
     pub async fn list_sessions(
         &self,
         project_id: &str,
@@ -1529,7 +1542,7 @@ impl Store {
     ) -> Result<Vec<(String, String, i64, Option<String>, Option<String>)>> {
         let cursor_ts = cursor.map(|value| value.0);
         let cursor_id = cursor.map(|value| value.1);
-        let rows = sqlx::query(
+        let sql = format!(
             "SELECT * FROM ( \
                 SELECT f.id AS id, \
                     COALESCE((SELECT MAX(NULLIF(m.ts, 0)) FROM messages m WHERE m.frame_id = f.id), f.updated_at) AS activity_at, \
@@ -1538,20 +1551,21 @@ impl Store {
                 FROM frames f \
                 WHERE f.project_id = ? AND f.parent_frame_id = f.id \
                   AND f.exploration_id IS NULL \
-                  AND (EXISTS (SELECT 1 FROM messages mm WHERE mm.frame_id = f.id AND mm.role = 'user') \
-                       OR TRIM(COALESCE(f.title, '')) <> '') \
+                  AND {listable} \
              ) sessions \
              WHERE (? IS NULL OR activity_at < ? OR (activity_at = ? AND id < ?)) \
              ORDER BY activity_at DESC, id DESC LIMIT ?",
-        )
-        .bind(project_id)
-        .bind(cursor_ts)
-        .bind(cursor_ts)
-        .bind(cursor_ts)
-        .bind(cursor_id)
-        .bind(i64::try_from(limit).unwrap_or(i64::MAX))
-        .fetch_all(&self.pool)
-        .await?;
+            listable = SESSION_IS_LISTABLE_SQL,
+        );
+        let rows = sqlx::query(&sql)
+            .bind(project_id)
+            .bind(cursor_ts)
+            .bind(cursor_ts)
+            .bind(cursor_ts)
+            .bind(cursor_id)
+            .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+            .fetch_all(&self.pool)
+            .await?;
         let mut out = vec![];
         for row in rows {
             let id: String = row.try_get("id")?;
@@ -1566,6 +1580,25 @@ impl Store {
         Ok(out)
     }
 
+    /// Most recently active used conversation in a project. Named unused drafts
+    /// stay out: they are listable (#888) but `resume_last_session` should not
+    /// reopen a blank chat just because it was renamed last.
+    pub async fn latest_used_session_id(&self, project_id: &str) -> Result<Option<String>> {
+        let sql = format!(
+            "SELECT f.id FROM frames f \
+             WHERE f.project_id = ? AND f.parent_frame_id = f.id \
+               AND f.exploration_id IS NULL \
+               AND {used} ORDER BY COALESCE(\
+                (SELECT MAX(NULLIF(m.ts, 0)) FROM messages m WHERE m.frame_id = f.id), \
+                f.updated_at) DESC, f.id DESC LIMIT 1",
+            used = SESSION_HAS_USER_TURN_SQL,
+        );
+        Ok(sqlx::query_scalar(&sql)
+            .bind(project_id)
+            .fetch_optional(&self.pool)
+            .await?)
+    }
+
     /// Pinned root frames for a project, newest first. Returned as
     /// `(frame_id, title, activity_at, folder_id, branched_from)` like `list_sessions_page`,
     /// but unpaginated so the sidebar's "Pinned" section is complete regardless
@@ -1574,7 +1607,7 @@ impl Store {
         &self,
         project_id: &str,
     ) -> Result<Vec<(String, String, i64, Option<String>, Option<String>)>> {
-        let rows = sqlx::query(
+        let sql = format!(
             "SELECT f.id AS id, \
                 COALESCE((SELECT MAX(NULLIF(m.ts, 0)) FROM messages m WHERE m.frame_id = f.id), f.updated_at) AS activity_at, \
                 f.title AS custom_title, f.folder_id AS folder_id, f.branched_from AS branched_from, \
@@ -1582,13 +1615,13 @@ impl Store {
              FROM frames f \
              WHERE f.project_id = ? AND f.parent_frame_id = f.id AND COALESCE(f.pinned, 0) = 1 \
                AND f.exploration_id IS NULL \
-               AND (EXISTS (SELECT 1 FROM messages mm WHERE mm.frame_id = f.id AND mm.role = 'user') \
-                    OR TRIM(COALESCE(f.title, '')) <> '') \
-             ORDER BY activity_at DESC, f.id DESC",
-        )
-        .bind(project_id)
-        .fetch_all(&self.pool)
-        .await?;
+               AND {listable} ORDER BY activity_at DESC, f.id DESC",
+            listable = SESSION_IS_LISTABLE_SQL,
+        );
+        let rows = sqlx::query(&sql)
+            .bind(project_id)
+            .fetch_all(&self.pool)
+            .await?;
         let mut out = vec![];
         for row in rows {
             let id: String = row.try_get("id")?;
@@ -2275,7 +2308,7 @@ impl Store {
     ) -> Result<Vec<SessionSearchResult>> {
         let q = query.trim().to_lowercase();
         let pattern = format!("%{q}%");
-        let rows = sqlx::query(
+        let sql = format!(
             "WITH searchable_sessions AS ( \
                 SELECT f.rowid AS frame_rowid, f.id AS id, f.project_id AS project_id, \
                     COALESCE(p.name,'') AS project_name, f.created_at AS created_at, \
@@ -2288,8 +2321,7 @@ impl Store {
                 WHERE f.parent_frame_id=f.id \
                   AND f.exploration_id IS NULL \
                   AND f.project_id NOT LIKE 'scratch:%' \
-                  AND (EXISTS (SELECT 1 FROM messages mm WHERE mm.frame_id=f.id AND mm.role='user') \
-                       OR TRIM(COALESCE(f.title,'')) <> '') \
+                  AND {listable} \
                   AND (? IS NULL OR f.project_id=?) \
                   AND (? IS NULL OR f.id=?) \
              ) \
@@ -2300,21 +2332,23 @@ impl Store {
              ORDER BY CASE WHEN ? IS NOT NULL AND s.project_id=? THEN 0 ELSE 1 END, \
                 CASE WHEN ?='' OR lower(COALESCE(NULLIF(s.custom_title,''), s.first_user, '')) LIKE ? THEN 0 ELSE 1 END, \
                 s.activity_at DESC, s.frame_rowid DESC LIMIT ?",
-        )
-        .bind(project_id)
-        .bind(project_id)
-        .bind(session_id)
-        .bind(session_id)
-        .bind(&q)
-        .bind(&pattern)
-        .bind(&pattern)
-        .bind(preferred_project_id)
-        .bind(preferred_project_id)
-        .bind(&q)
-        .bind(&pattern)
-        .bind(limit.clamp(1, 100))
-        .fetch_all(&self.pool)
-        .await?;
+            listable = SESSION_IS_LISTABLE_SQL,
+        );
+        let rows = sqlx::query(&sql)
+            .bind(project_id)
+            .bind(project_id)
+            .bind(session_id)
+            .bind(session_id)
+            .bind(&q)
+            .bind(&pattern)
+            .bind(&pattern)
+            .bind(preferred_project_id)
+            .bind(preferred_project_id)
+            .bind(&q)
+            .bind(&pattern)
+            .bind(limit.clamp(1, 100))
+            .fetch_all(&self.pool)
+            .await?;
         rows.into_iter()
             .map(|row| {
                 Ok(SessionSearchResult {

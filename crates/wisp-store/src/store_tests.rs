@@ -122,7 +122,8 @@ async fn roundtrip() {
     assert_eq!(msgs[1].content.as_text(), "hello");
 
     // list_sessions derives a title from the first user message and skips
-    // frames with no user turn.
+    // untitled frames with no user turn. Named unused drafts are covered in
+    // `named_draft_is_listable_but_not_resumable`.
     store.create_frame("f2", "p1", "OPERON", "m").await.unwrap();
     store
         .append_message("f2", 0, &Message::system("only system"))
@@ -140,43 +141,100 @@ async fn roundtrip() {
     assert_eq!(sessions[0].1, "Renamed chat");
     store.delete_session("f1", "p1").await.unwrap();
     assert!(store.list_sessions("p1").await.unwrap().is_empty());
+    let _ = std::fs::remove_file(&tmp);
+}
 
-    // A message-less draft becomes listable the moment the user names it, so a
-    // rename done before the first turn shows up immediately (#888).
-    store.create_frame("f3", "p1", "OPERON", "m").await.unwrap();
-    assert!(
-        store.list_sessions("p1").await.unwrap().is_empty(),
-        "untitled draft stays hidden"
-    );
+#[tokio::test]
+async fn named_draft_is_listable_but_not_resumable() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_store_named_draft_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p1", "proj", "").await.unwrap();
     store
-        .rename_session("f3", "p1", "Named draft")
+        .create_frame("used", "p1", "OPERON", "m")
+        .await
+        .unwrap();
+    store
+        .append_message("used", 0, &Message::user("hello"))
+        .await
+        .unwrap();
+
+    store
+        .create_frame("untitled", "p1", "OPERON", "m")
+        .await
+        .unwrap();
+    store
+        .append_message("untitled", 0, &Message::system("only system"))
+        .await
+        .unwrap();
+    assert_eq!(
+        store.list_sessions("p1").await.unwrap().len(),
+        1,
+        "untitled empty draft stays hidden"
+    );
+    assert_eq!(
+        store.latest_used_session_id("p1").await.unwrap().as_deref(),
+        Some("used")
+    );
+
+    store
+        .create_frame("draft", "p1", "OPERON", "m")
+        .await
+        .unwrap();
+    store
+        .rename_session("draft", "p1", "Named draft")
         .await
         .unwrap();
     let sessions = store.list_sessions("p1").await.unwrap();
-    assert_eq!(sessions.len(), 1, "named draft must be listed");
-    assert_eq!(sessions[0].0, "f3");
-    assert_eq!(sessions[0].1, "Named draft");
+    assert_eq!(sessions.len(), 2, "named draft joins the used session");
+    assert!(sessions
+        .iter()
+        .any(|row| row.0 == "draft" && row.1 == "Named draft"));
+    assert!(sessions.iter().any(|row| row.0 == "used"));
 
-    // The named draft is a real session everywhere the sidebar predicate
-    // reaches: it counts on the project card and is findable by search, while
-    // the untitled message-less f2 stays excluded from both (#888).
     let projs = store.list_projects().await.unwrap();
     let p1 = projs.iter().find(|p| p.0 == "p1").unwrap();
-    assert_eq!(p1.5, 1, "named draft counts; untitled empty f2 does not");
+    assert_eq!(p1.5, 2, "named draft counts; untitled empty does not");
+
     let found = store
         .search_sessions(None, "named draft", 10, None, None)
         .await
         .unwrap();
     assert_eq!(found.len(), 1, "named draft must be searchable by title");
-    assert_eq!(found[0].id, "f3");
+    assert_eq!(found[0].id, "draft");
     let all = store
         .search_sessions(None, "", 10, None, None)
         .await
         .unwrap();
     assert!(
-        all.iter().all(|s| s.id != "f2"),
+        all.iter().all(|s| s.id != "untitled"),
         "untitled message-less frame stays unsearchable"
     );
+
+    assert!(
+        store
+            .list_recent_sessions_detail(10)
+            .await
+            .unwrap()
+            .iter()
+            .all(|row| row.id != "draft"),
+        "named unused draft is not recent activity"
+    );
+    assert_eq!(
+        store.latest_used_session_id("p1").await.unwrap().as_deref(),
+        Some("used"),
+        "rename must not steal resume from a used conversation"
+    );
+
+    store.delete_session("used", "p1").await.unwrap();
+    assert_eq!(
+        store.latest_used_session_id("p1").await.unwrap(),
+        None,
+        "a project that only has a named unused draft has nothing to resume"
+    );
+
     let _ = std::fs::remove_file(&tmp);
 }
 

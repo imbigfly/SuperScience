@@ -10175,6 +10175,15 @@ test("opening a workspace resumes its most recent conversation by default", asyn
   await expect(page.getByText("Newest page first question")).toBeVisible();
 });
 
+test("opening a workspace skips a newer named unused draft when resuming", async ({ page }) => {
+  await page.goto("/?mockLongSession=1&mockNamedUnusedDraft=1");
+  await page.locator(".proj-card-main").first().click();
+  await expect(page.getByRole("tablist").getByRole("button", { name: "Long transcript" })).toBeVisible();
+  await expect(page.getByText("Newest page first question")).toBeVisible();
+  await expect(page.locator(".side-item.ses", { hasText: "Named unused draft" })).toBeVisible();
+  await expect(page.locator(".side-item.ses.active", { hasText: "Long transcript" })).toBeVisible();
+});
+
 test("default workspace keeps history labels and compact navigation keeps hover labels", async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 800 });
   await enterApp(page);
