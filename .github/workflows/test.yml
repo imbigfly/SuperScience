@@ -63,10 +63,38 @@ jobs:
 
       # src-tauri (workspace member) pulls in webkit2gtk/gtk3 on Linux; these
       # aren't preinstalled on ubuntu-latest. See tauri.app/start/prerequisites.
+      # Cache the .debs: azure.archive.ubuntu.com often crawls (~80 kB/s) or
+      # hangs for hours on libwebkit2gtk-4.1-0 (~25 MB).
+      - name: Cache Tauri apt packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/apt-archives
+          key: apt-tauri-${{ runner.os }}-${{ runner.arch }}-webkit4.1-v1
+
       - name: Install Tauri Linux dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+          set -euo pipefail
+          CACHE="${HOME}/.cache/apt-archives"
+          mkdir -p "${CACHE}/partial"
+          cleanup() {
+            sudo chown -R "$(id -u):$(id -g)" "${CACHE}" 2>/dev/null || true
+            rm -rf "${CACHE}/partial" "${CACHE}/lock"
+          }
+          trap cleanup EXIT
+          APT_OPTS=(
+            -o "Dir::Cache::archives=${CACHE}"
+            -o Acquire::Retries=3
+            -o Acquire::http::Timeout=30
+            -o Acquire::https::Timeout=30
+          )
+          sudo timeout 2m apt-get "${APT_OPTS[@]}" update
+          sudo timeout 20m apt-get "${APT_OPTS[@]}" install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev
 
       - name: cargo test --workspace
         run: cargo test --workspace
