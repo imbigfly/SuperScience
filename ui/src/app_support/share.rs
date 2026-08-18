@@ -1,5 +1,7 @@
 //! `/share` support: turn the transcript into a selectable, redactable list
 //! of messages that the share overlay exports as a long PNG or HTML page.
+//! Both formats reuse the live chat CSS (tokens + `.msg` / `.thread` / `.md`)
+//! so the export matches what the user sees.
 
 use crate::dto::{ChatItem, ShareSocialPlatform};
 #[cfg(test)]
@@ -365,6 +367,19 @@ pub(crate) struct ShareHtmlRow {
     pub(crate) text: String,
 }
 
+/// Live theme captured from the running app so the standalone HTML matches
+/// the current palette, font size, and conversation CSS instead of a second
+/// skin. Empty harvested CSS falls back to `share-export.css`.
+#[derive(Clone, Default, serde::Deserialize)]
+pub(crate) struct ShareHtmlTheme {
+    #[serde(default)]
+    pub(crate) lang: String,
+    #[serde(default)]
+    pub(crate) root_css: String,
+    #[serde(default)]
+    pub(crate) harvested_css: String,
+}
+
 /// Minimal escaping for plain-text rows and metadata; assistant Markdown goes
 /// through `md_to_html`, which is trusted the same way chat rendering is.
 fn escape_html(text: &str) -> String {
@@ -374,43 +389,14 @@ fn escape_html(text: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// Inline stylesheet mirroring the PNG long-image design: quiet page, right
-/// accent bubbles for the user, white cards for assistant Markdown, muted
-/// italic bubbles for thinking.
-const SHARE_HTML_CSS: &str = "\
-:root { color-scheme: light; }
-* { box-sizing: border-box; }
-body { margin: 0; background: #f5f6f8; color: #1d2733;
-  font: 15px/1.6 system-ui, \"Segoe UI\", \"PingFang SC\", \"Microsoft YaHei\", sans-serif; }
-.page { max-width: 720px; margin: 0 auto; padding: 32px 28px 24px; }
-header h1 { margin: 0; font-size: 19px; font-weight: 600; }
-header .date { margin: 2px 0 6px; font-size: 11px; color: #8a97a5; }
-header .bar { width: 34px; height: 3px; border-radius: 2px; background: #2f6fed; }
-.msg { margin-top: 18px; }
-.label { display: block; font-size: 11px; color: #8a97a5; margin-bottom: 4px; }
-.msg.user { text-align: right; }
-.msg.user .bubble { display: inline-block; text-align: left; background: #2f6fed; color: #fff;
-  border-radius: 12px; padding: 10px 14px; white-space: pre-line; overflow-wrap: anywhere; }
-.msg.assistant .card { background: #fff; border: 1px solid rgba(29,39,51,.08);
-  border-radius: 12px; padding: 14px 16px; overflow-wrap: anywhere; }
-.msg.thinking .bubble { display: inline-block; background: #eef0f3; border: 1px solid #dfe3e8;
-  color: #71808f; font-style: italic; border-radius: 12px; padding: 10px 14px;
-  white-space: pre-line; overflow-wrap: anywhere; }
-.card > :first-child { margin-top: 0; }
-.card > :last-child { margin-bottom: 0; }
-.card h1, .card h2, .card h3 { line-height: 1.35; }
-.card code { background: #e9edf1; border-radius: 4px; padding: 1px 5px;
-  font: 13.5px ui-monospace, \"Cascadia Mono\", Consolas, monospace; }
-.card pre { background: #f1f3f5; border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
-.card pre code { background: none; padding: 0; }
-.card blockquote { margin: 8px 0; padding: 2px 0 2px 12px; border-left: 3px solid #d8dee4;
-  color: #66727f; }
-.card table { border-collapse: collapse; }
-.card th, .card td { border: 1px solid #d8dee4; padding: 4px 10px; }
-.card a { color: #2f6fed; }
-.card img { max-width: 100%; }
-footer { margin-top: 28px; font-size: 11px; color: #8a97a5; }
-";
+/// Fallback conversation stylesheet. Keep message/markdown declarations in
+/// lockstep with `chat.css` / `base.css`; live export overlays harvested rules.
+const SHARE_EXPORT_CSS: &str = include_str!("../styles/share-export.css");
+
+/// Prevent a harvested rule from closing the inline `<style>` block.
+fn sanitize_css(css: &str) -> String {
+    css.replace("</", "<\\/")
+}
 
 /// Join a generated variant into the text the user pastes into a social app.
 /// Title is omitted when it already prefixes the body; hashtags are appended
@@ -482,54 +468,87 @@ pub(crate) fn share_png_row(role: ShareRole, label: &str, text: &str) -> Value {
     row
 }
 
-/// Build a self-contained HTML document of the selected conversation: inline
-/// CSS, no external assets, assistant messages rendered as Markdown.
+/// Build a self-contained HTML document of the selected conversation using
+/// the same DOM as chat (`.thread` / `.msg` / `.body.md`). Assistant Markdown
+/// is rendered the same way as the live thread. `theme` freezes live `:root`
+/// tokens and can append harvested chat/md rules.
 pub(crate) fn share_html_document(
     title: &str,
     subtitle: &str,
     footer: &str,
     messages: &[ShareHtmlRow],
+    theme: &ShareHtmlTheme,
 ) -> String {
     use std::fmt::Write;
-    let mut out = String::with_capacity(4096);
+    let lang = if theme.lang.trim().is_empty() {
+        "en"
+    } else {
+        theme.lang.trim()
+    };
+    let mut out = String::with_capacity(8192);
     let _ = write!(
         out,
-        "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n\
+        "<!doctype html>\n<html lang=\"{}\">\n<head>\n<meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
-         <title>{}</title>\n<style>{SHARE_HTML_CSS}</style>\n</head>\n<body>\n<main class=\"page\">\n\
-         <header>\n<h1>{}</h1>\n<p class=\"date\">{}</p>\n<div class=\"bar\"></div>\n</header>\n",
+         <title>{}</title>\n<style>\n{}\n",
+        escape_html(lang),
         escape_html(title),
+        SHARE_EXPORT_CSS,
+    );
+    if !theme.root_css.trim().is_empty() {
+        let _ = write!(
+            out,
+            "\n:root {{ {} }}\n",
+            sanitize_css(theme.root_css.trim())
+        );
+    }
+    if !theme.harvested_css.trim().is_empty() {
+        out.push('\n');
+        out.push_str(&sanitize_css(theme.harvested_css.trim()));
+        out.push('\n');
+    }
+    let _ = write!(
+        out,
+        "</style>\n</head>\n<body>\n<main class=\"share-page\">\n\
+         <header class=\"share-head\">\n<h1>{}</h1>\n<p class=\"share-date\">{}</p>\n</header>\n\
+         <div class=\"thread\">\n",
         escape_html(title),
         escape_html(subtitle),
     );
     for message in messages {
-        let tag = message.role.tag();
-        let _ = write!(
-            out,
-            "<section class=\"msg {tag}\">\n<span class=\"label\">{}</span>\n",
-            escape_html(&message.label),
-        );
         match message.role {
+            ShareRole::User => {
+                let _ = write!(
+                    out,
+                    "<article class=\"msg user\">\n<div class=\"role\">{}</div>\n\
+                     <div class=\"user-bubble\"><div class=\"body\">{}</div></div>\n</article>\n",
+                    escape_html(&message.label),
+                    escape_html(&message.text),
+                );
+            }
             ShareRole::Assistant => {
                 let _ = write!(
                     out,
-                    "<div class=\"card\">{}</div>\n",
-                    crate::text::md_to_html(&message.text)
+                    "<article class=\"msg assistant\">\n<div class=\"role\"><span class=\"role-brand\">{}</span></div>\n\
+                     <div class=\"assistant-wrap\"><div class=\"body md\">{}</div></div>\n</article>\n",
+                    escape_html(&message.label),
+                    crate::text::md_to_html(&message.text),
                 );
             }
-            _ => {
+            ShareRole::Thinking => {
                 let _ = write!(
                     out,
-                    "<div class=\"bubble\">{}</div>\n",
-                    escape_html(&message.text)
+                    "<article class=\"msg reasoning\">\n<div class=\"role\">{}</div>\n\
+                     <div class=\"body\">{}</div>\n</article>\n",
+                    escape_html(&message.label),
+                    escape_html(&message.text),
                 );
             }
         }
-        out.push_str("</section>\n");
     }
     let _ = write!(
         out,
-        "<footer>{}</footer>\n</main>\n</body>\n</html>\n",
+        "</div>\n<footer class=\"share-foot\">{}</footer>\n</main>\n</body>\n</html>\n",
         escape_html(footer),
     );
     out
@@ -1004,18 +1023,65 @@ mod share_tests {
                 text: "a & b".into(),
             },
         ];
-        let html = share_html_document("wisp-science", "2026-08-14", "Shared", &rows);
+        let html = share_html_document(
+            "wisp-science",
+            "2026-08-14",
+            "Shared",
+            &rows,
+            &ShareHtmlTheme::default(),
+        );
         assert!(html.contains("<title>wisp-science</title>"));
-        assert!(html.contains("<section class=\"msg user\">"));
+        assert!(html.contains("<html lang=\"en\">"));
+        assert!(html.contains("<article class=\"msg user\">"));
+        assert!(html.contains("user-bubble"));
         assert!(html.contains("&lt;script&gt;"));
         assert!(!html.contains("<script>"));
-        assert!(html.contains("<section class=\"msg assistant\">"));
+        assert!(html.contains("<article class=\"msg assistant\">"));
+        assert!(html.contains("body md"));
         assert!(html.contains("<strong>加粗</strong>"));
         assert!(html.contains("<h2>小结</h2>"));
         assert!(html.contains("<li>一项</li>"));
-        assert!(html.contains("<section class=\"msg thinking\">"));
+        assert!(html.contains("<article class=\"msg reasoning\">"));
         assert!(html.contains("a &amp; b"));
-        assert!(html.contains("<footer>Shared</footer>"));
+        assert!(html.contains("<footer class=\"share-foot\">Shared</footer>"));
+        assert!(html.contains("--bg-panel"));
+        assert!(html.contains("18px 18px 6px 18px"));
+        assert!(!html.contains("#2f6fed"));
+        assert!(!html.contains("class=\"card\""));
+        assert!(!html.contains("class=\"bubble\""));
+        let themed = share_html_document(
+            "wisp-science",
+            "2026-08-14",
+            "Shared",
+            &rows,
+            &ShareHtmlTheme {
+                lang: "zh".into(),
+                root_css: "--bg-app: rgb(23, 22, 20)".into(),
+                harvested_css: ".thread { gap: 20px; }".into(),
+            },
+        );
+        assert!(themed.contains("<html lang=\"zh\">"));
+        assert!(themed.contains("--bg-app: rgb(23, 22, 20)"));
+        assert!(themed.contains(".thread { gap: 20px; }"));
+    }
+
+    #[test]
+    fn share_export_css_tracks_chat_message_rules() {
+        let chat = include_str!("../styles/chat.css");
+        let share = include_str!("../styles/share-export.css");
+        for needle in [
+            "background: var(--bg-panel); border: 0; padding: 10px 15px;",
+            "border-radius: 18px 18px 6px 18px; box-shadow: inset 0 0 0 1px var(--border);",
+            "border-left: 2px solid var(--border-strong); padding-left: 12px;",
+            "font-family: var(--font-response);",
+            "font-size: calc(var(--ui-font-size, 14px) + 1px); line-height: 1.62;",
+        ] {
+            assert!(chat.contains(needle), "chat.css missing {needle}");
+            assert!(
+                share.contains(needle),
+                "share-export.css drifted from chat.css: {needle}"
+            );
+        }
     }
 
     #[test]

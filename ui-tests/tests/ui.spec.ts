@@ -2160,6 +2160,51 @@ test("/share exports selected, keyword-redacted messages as a PNG", async ({ pag
   expect(html).toContain("<h2>Fit summary</h2>");
   expect(html).toContain("<li>peak A at 530 nm</li>");
   expect(html).toContain("fit(spectrum)");
+  expect(html).toContain("user-bubble");
+  expect(html).toContain("body md");
+  expect(html).toContain("--bg-panel");
+  expect(html).not.toContain("#2f6fed");
+  expect(html).not.toContain("class=\"card\"");
+  const live = await page.evaluate(() => {
+    const read = (el) => {
+      if (!el) return { bg: "", color: "" };
+      const style = getComputedStyle(el);
+      return { bg: style.backgroundColor, color: style.color };
+    };
+    return {
+      user: read(document.querySelector(".msg.user .body")),
+      assistant: read(document.querySelector(".msg.assistant .body.md")),
+      app: read(document.querySelector(".center")),
+    };
+  });
+  const exported = await page.evaluate(async (documentHtml) => {
+    const iframe = document.createElement("iframe");
+    iframe.style.cssText = "position:fixed;left:-9999px;width:880px;height:640px;border:0";
+    document.body.appendChild(iframe);
+    const done = new Promise((resolve) => {
+      iframe.addEventListener("load", () => resolve(), { once: true });
+    });
+    iframe.srcdoc = documentHtml;
+    await done;
+    const doc = iframe.contentDocument;
+    const win = iframe.contentWindow;
+    const read = (el) => {
+      if (!el || !win) return { bg: "", color: "" };
+      const style = win.getComputedStyle(el);
+      return { bg: style.backgroundColor, color: style.color };
+    };
+    const result = {
+      user: read(doc && doc.querySelector(".msg.user .body")),
+      assistant: read(doc && doc.querySelector(".msg.assistant .body.md")),
+      page: read(doc && doc.body),
+    };
+    iframe.remove();
+    return result;
+  }, html);
+  expect(exported.user.bg).toBe(live.user.bg);
+  expect(exported.user.color).toBe(live.user.color);
+  expect(exported.assistant.color).toBe(live.assistant.color);
+  expect(exported.page.bg).toBe(live.app.bg);
   await expect(overlay).toHaveCount(0);
 
   // The composer "+" menu offers the same entry once the session has content.

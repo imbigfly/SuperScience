@@ -1,9 +1,10 @@
 use crate::app_support::{
     compose_icon, js_error_text, parse_redact_keywords, redact_text, refresh_execution_contexts,
     refresh_runs, refresh_runtimes, share_html_document, share_png_payload, share_png_row,
-    show_toast, social_skill_prompt, ShareExportFormat, ShareHtmlRow, ShareMessage, ShareRole,
+    show_toast, social_skill_prompt, ShareExportFormat, ShareHtmlRow, ShareHtmlTheme, ShareMessage,
+    ShareRole,
 };
-use crate::bindings::{invoke_checked, open_external_url, render_share_png};
+use crate::bindings::{invoke_checked, open_external_url, render_share_png, snapshot_share_theme};
 use crate::dto::*;
 use crate::i18n::{localize_backend, t, tf, Locale};
 use crate::text::{dom_value, event_target_value, file_kind, format_bytes};
@@ -231,6 +232,10 @@ fn selected_share_messages<'a>(
     (selected, redact)
 }
 
+fn live_share_theme() -> ShareHtmlTheme {
+    serde_json::from_str(&snapshot_share_theme()).unwrap_or_default()
+}
+
 fn share_png_rows(
     loc: Locale,
     selected: &[&ShareMessage],
@@ -333,7 +338,8 @@ pub(super) fn ShareOverlay(
                     text: redact_text(&message.text, &redact),
                 })
                 .collect();
-            let html = share_html_document("wisp-science", &stamp, &footer, &rows);
+            let html =
+                share_html_document("wisp-science", &stamp, &footer, &rows, &live_share_theme());
             let args = to_value(&serde_json::json!({
                 "html": html,
                 "defaultName": format!("wisp-share-{stamp}.html"),
