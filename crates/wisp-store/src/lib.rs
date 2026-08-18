@@ -695,6 +695,134 @@ impl Store {
             .await?;
             Self::record_migration(pool, ORPHAN_FILE_RETENTION_MIGRATION).await?;
         }
+        // Re-apply additive DDL even when a migration marker is already
+        // recorded. Jumping many releases can leave a table/column that was
+        // later folded into 0000_init.sql (or into an already-shipped apply_*
+        // body) missing, and the next query then fails with "no such column".
+        Self::ensure_schema_compat(pool).await?;
+        Ok(())
+    }
+
+    /// Idempotent repair for schema objects that numbered migrations can miss
+    /// after a large version skip. Only CREATE IF NOT EXISTS / ADD COLUMN.
+    async fn ensure_schema_compat(pool: &SqlitePool) -> Result<()> {
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS folders (\
+             id TEXT PRIMARY KEY, \
+             project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, \
+             name TEXT NOT NULL, \
+             created_at INTEGER NOT NULL, \
+             updated_at INTEGER NOT NULL)",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS ix_folders_project ON folders(project_id)")
+            .execute(pool)
+            .await?;
+
+        Self::add_columns_if_missing(
+            pool,
+            "projects",
+            &[
+                ("workspace_dir", "TEXT NOT NULL DEFAULT ''"),
+                ("run_retention_days", "INTEGER"),
+                ("failed_run_retention_days", "INTEGER"),
+                ("orphan_file_retention_days", "INTEGER"),
+            ],
+        )
+        .await?;
+        Self::add_columns_if_missing(pool, "messages", &[("model_name", "TEXT")]).await?;
+        Self::add_columns_if_missing(
+            pool,
+            "frames",
+            &[
+                ("title", "TEXT"),
+                ("folder_id", "TEXT"),
+                ("seen_at", "INTEGER NOT NULL DEFAULT 0"),
+                ("pinned", "INTEGER NOT NULL DEFAULT 0"),
+                ("branched_from", "TEXT"),
+                ("reasoning_effort", "TEXT"),
+                ("branch_point_user_index", "INTEGER"),
+                ("branch_point_kind", "TEXT"),
+                ("exploration_id", "TEXT"),
+            ],
+        )
+        .await?;
+        Self::add_columns_if_missing(
+            pool,
+            "artifacts",
+            &[
+                ("latest_version_id", "TEXT"),
+                ("logical_key", "TEXT"),
+                ("exploration_id", "TEXT"),
+            ],
+        )
+        .await?;
+        Self::add_columns_if_missing(
+            pool,
+            "artifact_versions",
+            &[
+                ("materialization", "TEXT NOT NULL DEFAULT 'reference'"),
+                ("capture_timing", "TEXT NOT NULL DEFAULT 'unknown'"),
+                ("source_discarded_at", "INTEGER"),
+            ],
+        )
+        .await?;
+        Self::add_columns_if_missing(
+            pool,
+            "artifact_dependencies",
+            &[
+                ("basis", "TEXT NOT NULL DEFAULT 'inferred'"),
+                ("confidence", "TEXT NOT NULL DEFAULT 'uncertain'"),
+            ],
+        )
+        .await?;
+        Self::add_columns_if_missing(
+            pool,
+            "env_snapshots",
+            &[
+                ("snapshot_json", "TEXT NOT NULL DEFAULT '{}'"),
+                ("hash_algorithm", "TEXT NOT NULL DEFAULT 'legacy'"),
+            ],
+        )
+        .await?;
+        Self::add_columns_if_missing(
+            pool,
+            "runs",
+            &[
+                ("remote_handle_json", "TEXT"),
+                ("timeout_secs", "INTEGER"),
+                ("last_polled_at", "INTEGER"),
+                ("last_poll_error", "TEXT"),
+                ("lifecycle_owner", "TEXT"),
+                ("lifecycle_lease_until", "INTEGER"),
+                ("progress_json", "TEXT NOT NULL DEFAULT '{}'"),
+                ("harvested_at", "INTEGER"),
+                ("cleaned_at", "INTEGER"),
+                ("cleanup_error", "TEXT"),
+                ("logs_path", "TEXT"),
+                ("exploration_id", "TEXT"),
+            ],
+        )
+        .await?;
+        for table in ["research_nodes", "research_edges", "external_resources"] {
+            Self::add_columns_if_missing(pool, table, &[("exploration_id", "TEXT")]).await?;
+        }
+        Self::add_columns_if_missing(
+            pool,
+            "message_resource_links",
+            &[
+                ("created_artifact", "INTEGER NOT NULL DEFAULT 0"),
+                ("created_version", "INTEGER NOT NULL DEFAULT 0"),
+            ],
+        )
+        .await?;
+        Self::add_columns_if_missing(
+            pool,
+            "method_search_runs",
+            &[("control_state", "TEXT NOT NULL DEFAULT 'run'")],
+        )
+        .await?;
         Ok(())
     }
 

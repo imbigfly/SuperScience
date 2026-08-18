@@ -137,6 +137,7 @@ enum AgentEvent {
     },
     Resources {
         frame_id: String,
+        #[serde(default)]
         seq: i64,
         resources: Vec<resource_refs::UiMessageResource>,
     },
@@ -158,6 +159,8 @@ enum AgentEvent {
         name: String,
         ok: bool,
         content: String,
+        /// Added after UI events started being persisted; older rows omit it.
+        #[serde(default)]
         duration_ms: u64,
     },
     ToolPresentation {
@@ -169,6 +172,7 @@ enum AgentEvent {
     },
     Usage {
         frame_id: String,
+        #[serde(default)]
         round: u64,
         #[serde(default)]
         model: String,
@@ -176,7 +180,9 @@ enum AgentEvent {
         created_at: i64,
         input: u64,
         output: u64,
+        #[serde(default)]
         reasoning: u64,
+        #[serde(default)]
         cached: u64,
         ctx_tokens: usize,
         max_context: usize,
@@ -191,6 +197,7 @@ enum AgentEvent {
     },
     CompactionStarted {
         frame_id: String,
+        #[serde(default)]
         strategy: String,
     },
     /// The context estimate crossed the warning threshold and remains high.

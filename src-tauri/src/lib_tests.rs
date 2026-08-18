@@ -1292,6 +1292,43 @@ fn transcript_page_reconstructs_legacy_prefix_before_persisted_events() {
 }
 
 #[test]
+fn persisted_ui_events_from_older_builds_keep_the_transcript() {
+    let page = wisp_store::SessionTranscriptPage {
+        messages: vec![(1, wisp_llm::Message::user("hello"))],
+        branch_merges: vec![],
+        reviews: vec![],
+        resources: vec![],
+        ui_events: vec![
+            r#"{"kind":"User","frame_id":"f","text":"hello"}"#.into(),
+            // Pre-duration ToolResult (v0 shape).
+            r#"{"kind":"ToolResult","frame_id":"f","name":"python","ok":true,"content":"ok"}"#
+                .into(),
+            // Usage before reasoning/cached/round became required on read.
+            r#"{"kind":"Usage","frame_id":"f","input":10,"output":4,"ctx_tokens":20,"max_context":128000}"#
+                .into(),
+            // Completely unknown later/corrupt kind must not abort the page.
+            r#"{"kind":"FutureKind","frame_id":"f","mystery":true}"#.into(),
+            r#"{"kind":"MessageBoundary","frame_id":"f","seq":1}"#.into(),
+        ],
+        next_before_seq: None,
+        user_offset: 0,
+        latest_seq: 1,
+    };
+
+    let items = transcript_page_items(&page).expect("legacy UI events must not fail load_session");
+    assert!(
+        items
+            .iter()
+            .any(|item| item.role == "user" && item.text == "hello"),
+        "user turn survived a version skip"
+    );
+    assert!(
+        items.iter().any(|item| item.role == "usage"),
+        "old Usage without reasoning/cached must still fold"
+    );
+}
+
+#[test]
 fn branch_merge_projection_never_relabels_the_previous_answer() {
     let page = wisp_store::SessionTranscriptPage {
         messages: vec![

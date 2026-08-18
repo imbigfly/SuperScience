@@ -19,6 +19,7 @@ fn default_context_window() -> u64 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelProfile {
     pub id: String,
+    #[serde(default)]
     pub label: String,
     pub provider: String,
     /// Shared credential root. Protocol-specific paths live in
@@ -1636,6 +1637,17 @@ mod tests {
             "use_for_image_generation dropped on deserialize"
         );
         assert_eq!(p.context_window, DEFAULT_CONTEXT_WINDOW);
+    }
+
+    #[test]
+    fn older_profiles_without_label_still_load() {
+        let profiles: Vec<ModelProfile> = serde_json::from_str(
+            r#"[{"id":"m1","provider":"openai","api_url":"https://api.deepseek.com","model":"deepseek-v4-flash"}]"#,
+        )
+        .unwrap();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].id, "m1");
+        assert!(profiles[0].label.is_empty());
     }
 
     #[test]
