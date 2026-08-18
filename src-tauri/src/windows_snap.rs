@@ -75,6 +75,7 @@ fn start_caption_move(window: &WebviewWindow) -> Result<(), String> {
     let hwnd_bits = hwnd.0 as isize;
     let window = window.clone();
     window
+        .clone()
         .run_on_main_thread(move || {
             // Native caption drag from a maximized window restores first so
             // the user can pull it off the screen edge.

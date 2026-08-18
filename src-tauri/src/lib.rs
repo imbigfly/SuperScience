@@ -5892,9 +5892,10 @@ pub fn run() {
                     vec![],
                 ),
             ));
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            let locale = tauri::async_runtime::block_on(load_locale(&store));
             #[cfg(target_os = "macos")]
             {
-                let locale = tauri::async_runtime::block_on(load_locale(&store));
                 install_macos_app_menu(app.handle(), &locale).expect("install macOS app menu");
             }
 
@@ -6037,7 +6038,7 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             {
                 startup.record("windows_shell", || {
-                    desktop_lifecycle::install_windows_shell(app)
+                    desktop_lifecycle::install_windows_shell(app, &locale)
                 })?;
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.set_decorations(false);
