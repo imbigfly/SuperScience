@@ -40,6 +40,39 @@ export async function start_window_move() {
   }
 }
 
+/** Typical Windows `SM_CXDRAG` / `SM_CYDRAG`. Keep in sync with `window_titlebar.rs`. */
+export const CAPTION_DRAG_THRESHOLD_PX = 4;
+
+/**
+ * Wait for the pointer to move past the drag threshold before starting a
+ * caption move. A bare mousedown must not send `SC_MOVE`, or Windows eats the
+ * second click of a title-bar double-click (maximize / restore).
+ */
+export async function arm_caption_drag(startX, startY) {
+  await new Promise((resolve) => {
+    let settled = false;
+    const finish = (startMove) => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      if (startMove) void start_window_move();
+      resolve();
+    };
+    const onMove = (event) => {
+      if (
+        Math.abs(event.clientX - startX) >= CAPTION_DRAG_THRESHOLD_PX
+        || Math.abs(event.clientY - startY) >= CAPTION_DRAG_THRESHOLD_PX
+      ) {
+        finish(true);
+      }
+    };
+    const onUp = () => finish(false);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  });
+}
+
 function missingBridgeError(cmd) {
   return new Error(`Tauri bridge is not available while calling ${cmd}. Open the app with 'cargo tauri dev', not the raw Trunk URL.`);
 }

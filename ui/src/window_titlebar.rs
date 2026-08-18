@@ -1,6 +1,6 @@
 //! Windows integrated title bar: brand, File/Edit/View/Help menus, window controls.
 
-use crate::bindings::{open_external_url, start_window_move, window_control};
+use crate::bindings::{arm_caption_drag, open_external_url, window_control};
 use crate::i18n::{t, Locale};
 use leptos::{ev, window_event_listener, *};
 use wasm_bindgen::JsCast;
@@ -202,10 +202,80 @@ pub(super) fn WindowTitlebar(
     }
 }
 
-fn begin_window_move(ev: web_sys::MouseEvent) {
-    if ev.button() != 0 {
-        return;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaptionPointerDown {
+    Ignore,
+    ToggleMaximize,
+    ArmDrag,
+}
+
+fn caption_pointer_down(button: i16, detail: i32) -> CaptionPointerDown {
+    if button != 0 {
+        return CaptionPointerDown::Ignore;
     }
-    ev.prevent_default();
-    spawn_local(async { start_window_move().await });
+    if detail >= 2 {
+        CaptionPointerDown::ToggleMaximize
+    } else {
+        CaptionPointerDown::ArmDrag
+    }
+}
+
+fn begin_window_move(ev: web_sys::MouseEvent) {
+    match caption_pointer_down(ev.button(), ev.detail()) {
+        CaptionPointerDown::Ignore => {}
+        CaptionPointerDown::ToggleMaximize => {
+            ev.prevent_default();
+            spawn_local(async { window_control("toggle-maximize").await });
+        }
+        CaptionPointerDown::ArmDrag => {
+            ev.prevent_default();
+            let start_x = f64::from(ev.client_x());
+            let start_y = f64::from(ev.client_y());
+            spawn_local(async move { arm_caption_drag(start_x, start_y).await });
+        }
+    }
+}
+
+#[cfg(test)]
+mod caption_gesture_tests {
+    use super::*;
+
+    /// Typical Windows `SM_CXDRAG` / `SM_CYDRAG`. Keep in sync with `api.js`.
+    const CAPTION_DRAG_THRESHOLD_PX: f64 = 4.0;
+
+    fn caption_drag_ready(dx: f64, dy: f64) -> bool {
+        dx.abs() >= CAPTION_DRAG_THRESHOLD_PX || dy.abs() >= CAPTION_DRAG_THRESHOLD_PX
+    }
+
+    #[test]
+    fn left_click_arms_drag_instead_of_starting_a_move() {
+        assert_eq!(caption_pointer_down(0, 1), CaptionPointerDown::ArmDrag);
+    }
+
+    #[test]
+    fn double_click_toggles_maximize() {
+        assert_eq!(
+            caption_pointer_down(0, 2),
+            CaptionPointerDown::ToggleMaximize
+        );
+        assert_eq!(
+            caption_pointer_down(0, 3),
+            CaptionPointerDown::ToggleMaximize
+        );
+    }
+
+    #[test]
+    fn other_buttons_are_ignored() {
+        assert_eq!(caption_pointer_down(1, 1), CaptionPointerDown::Ignore);
+        assert_eq!(caption_pointer_down(2, 2), CaptionPointerDown::Ignore);
+    }
+
+    #[test]
+    fn drag_starts_only_after_the_windows_threshold() {
+        assert!(!caption_drag_ready(3.0, 0.0));
+        assert!(!caption_drag_ready(0.0, -3.0));
+        assert!(caption_drag_ready(4.0, 0.0));
+        assert!(caption_drag_ready(0.0, -4.0));
+        assert!(caption_drag_ready(3.0, 4.0));
+    }
 }

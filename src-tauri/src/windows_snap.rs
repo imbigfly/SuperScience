@@ -5,7 +5,9 @@
 //! moves the window without a caption-style `SC_MOVE`.
 //!
 //! This module:
-//! - starts a caption move (`SC_MOVE | HTCAPTION`) so drag-to-edge snap works;
+//! - starts a caption move (`SC_MOVE | HTCAPTION`) so drag-to-edge snap works
+//!   (the UI arms that move only after the pointer travels `SM_CXDRAG`, so a
+//!   title-bar double-click can still maximize / restore);
 //! - places a transparent native child over the maximize button that returns
 //!   `HTMAXBUTTON`, which is what Windows 11 uses for the Snap Layouts flyout.
 //!
@@ -71,8 +73,14 @@ fn start_caption_move(window: &WebviewWindow) -> Result<(), String> {
 
     let hwnd = window.hwnd().map_err(|error| error.to_string())?;
     let hwnd_bits = hwnd.0 as isize;
+    let window = window.clone();
     window
         .run_on_main_thread(move || {
+            // Native caption drag from a maximized window restores first so
+            // the user can pull it off the screen edge.
+            if window.is_maximized().unwrap_or(false) {
+                let _ = window.unmaximize();
+            }
             let hwnd = HWND(hwnd_bits as *mut core::ffi::c_void);
             unsafe {
                 let _ = ReleaseCapture();

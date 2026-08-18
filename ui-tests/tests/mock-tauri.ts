@@ -5153,6 +5153,15 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
         startDragging: async () => {
           (window as any).__petDragStarted = true;
         },
+        toggleMaximize: async () => {
+          ((window as any).__skillInvokeLog ??= []).push({ cmd: "toggle-maximize" });
+        },
+        minimize: async () => {
+          ((window as any).__skillInvokeLog ??= []).push({ cmd: "minimize" });
+        },
+        close: async () => {
+          ((window as any).__skillInvokeLog ??= []).push({ cmd: "close" });
+        },
       }),
     },
   };
