@@ -1059,6 +1059,13 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   const acpLongResolvers: Record<string, (value: string) => void> = {};
   const nativeConfirmResolvers: Record<string, (value: string) => void> = {};
   (window as any).__nativeConfirmPending = {};
+  (window as any).__finishAcpLong = (frameId?: string) => {
+    const ids = frameId ? [frameId] : Object.keys(acpLongResolvers);
+    for (const id of ids) {
+      acpLongResolvers[id]?.(id);
+      delete acpLongResolvers[id];
+    }
+  };
   let mockCredentials: Record<string, boolean> = {
     openalex_api_key: false,
     infinisynapse_api_key: false,

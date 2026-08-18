@@ -1576,12 +1576,15 @@ button.stop:disabled { opacity: .6; cursor: default; }
 .sidechat-send:disabled { opacity: .45; cursor: default; }
 .sidechat-send:hover:not(:disabled) { background: var(--clay-strong); }
 
-/* Non-blocking "stopping…" toast — interrupting the kernel isn't instant, so
-   this reassures the user the click landed. Anchored above the composer column. */
-.stopping-toast { position: absolute; z-index: 55; left: 50%; bottom: calc(100% + 10px); transform: translateX(-50%);
-  display: flex; align-items: center; gap: 12px; width: min(420px, calc(100% - 32px)); padding: 12px 16px;
-  background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
-  box-shadow: 0 8px 28px hsl(215 25% 14% / 0.18); pointer-events: none; }
+/* In-flow "stopping…" banner — interrupting the kernel isn't instant, so this
+   reassures the user the click landed. It sits in the composer column instead
+   of floating over follow-ups / the last thread rows. */
+.stopping-toast { position: relative; z-index: 2;
+  display: flex; align-items: flex-start; gap: 12px;
+  max-width: var(--chat-col-max); width: 100%; box-sizing: border-box;
+  margin: 0 auto 10px; padding: 12px 16px;
+  background: var(--bg-elev); border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-sm); }
 .stopping-text { display: flex; flex-direction: column; gap: 3px; }
 .stopping-text strong { font-size: 13.5px; color: var(--text); }
 .stopping-text span { font-size: 12px; color: var(--text-muted); line-height: 1.4; }
