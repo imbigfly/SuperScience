@@ -113,6 +113,27 @@ route and returns `404` or `405`, Wisp checks its model-list endpoint instead.
 It does not send the image-only model to Responses/Chat Completions and does not
 generate a billable validation image.
 
+Video generation is another separate model role. Create an OpenAI-compatible
+profile with model ID `grok-imagine-video`, `grok-imagine-video-1.5`, or
+`grok-imagine-video-1.5-preview`, then enable **Use for video generation**.
+The edit form shows video defaults instead of chat-only fields: duration
+(1–15 seconds, default 5), aspect ratio (`16:9`, `9:16`, `1:1`, `4:3`, `3:4`,
+default `16:9`), and resolution (`480p`, `720p`, `1080p`, default `720p`).
+A call without overrides uses those profile defaults.
+
+Video generation is asynchronous. The `generate_video` tool submits the job to
+the provider's `/v1/videos/generations` endpoint, receives a `request_id`,
+then polls `/v1/videos/{request_id}` every 5 seconds (up to 10 minutes) until
+the status is `done`, and downloads the temporary `video.url` immediately
+before it expires. A `failed` or `expired` status surfaces as a tool error.
+Transient `auth_unavailable` / `503` submission failures are retried up to
+three times. The finished MP4 is saved under `media/` (for example
+`media/clip.mp4`) and the tool result references that path so the final answer
+can link to it. Generation usually takes 1–2 minutes. Video-only profiles do
+not appear in chat, Reviewer, specialist, delegation, or side-chat model
+pickers, and the **Validate** action probes them through the same model
+metadata endpoint as image models — no billable video is generated.
+
 ## API protocols
 
 | Protocol | Use when | Per-model fields |

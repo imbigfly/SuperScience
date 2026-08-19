@@ -517,6 +517,11 @@ pub(crate) async fn send_message_inner(
             models::image_generation_config(&state.store).await,
             llm_proxy(),
         );
+        add_configured_video_generation_tool(
+            &mut agent,
+            models::video_generation_config(&state.store).await,
+            llm_proxy(),
+        );
         agent.add_tool(Box::new(browser_bridge::BrowserSetupTool::new(
             state.browser_bridge.clone(),
             state.store.clone(),

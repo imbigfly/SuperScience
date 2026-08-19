@@ -81,6 +81,10 @@ mod provider_form_tests {
             image_quality: String::new(),
             image_aspect_ratio: String::new(),
             image_resolution: String::new(),
+            use_for_video_generation: false,
+            video_duration_secs: None,
+            video_aspect_ratio: None,
+            video_resolution: None,
         }
     }
 
@@ -771,6 +775,10 @@ pub(crate) fn profile_to_form(m: &ModelProfile) -> ModelForm {
         image_quality: m.image_quality.clone(),
         image_aspect_ratio: m.image_aspect_ratio.clone(),
         image_resolution: m.image_resolution.clone(),
+        use_for_video_generation: m.use_for_video_generation,
+        video_duration_secs: m.video_duration_secs,
+        video_aspect_ratio: m.video_aspect_ratio.clone(),
+        video_resolution: m.video_resolution.clone(),
         entries: Vec::new(),
     }
 }
@@ -794,6 +802,7 @@ pub(crate) fn model_form_entry(
     image: bool,
 ) -> ModelFormEntry {
     let image = image || crate::dto::is_image_generation_model(model);
+    let video = !image && crate::dto::is_video_generation_model(model);
     ModelFormEntry {
         row_id: next_model_row_id(),
         provider: provider_value(provider).into(),
@@ -803,6 +812,7 @@ pub(crate) fn model_form_entry(
         supports_vision: false,
         use_for_vision: false,
         use_for_image_generation: image,
+        use_for_video_generation: video,
     }
 }
 

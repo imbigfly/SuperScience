@@ -32,6 +32,9 @@ pub(crate) fn class_for(item: &ChatItem) -> &'static str {
         ChatItem::Tool { name, .. } if is_image_generation_tool(name) => {
             "tool-wrap image-generation-wrap"
         }
+        ChatItem::Tool { name, .. } if is_video_generation_tool(name) => {
+            "tool-wrap video-generation-wrap"
+        }
         ChatItem::Tool { .. } => "tool-wrap",
         ChatItem::FileChanged(_) => "artifact-write-marker",
         ChatItem::ApprovalPending { .. } => "tool-wrap approval-wrap-row",
@@ -1507,6 +1510,13 @@ pub(crate) fn render_item(
                 ok=*ok
                 output=output.clone()
                 on_file=on_file
+            />
+        }.into_view(),
+        ChatItem::Tool { name, ok, input, output, .. } if is_video_generation_tool(name) => view! {
+            <VideoGenerationCard
+                path=input.trim().to_string()
+                ok=*ok
+                output=output.clone()
             />
         }.into_view(),
         ChatItem::Reasoning(s) => {
