@@ -1216,6 +1216,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "approval.plan_hint") => Some("Approve to start, reject to have the agent revise the plan, or choose Other to send specific feedback."),
         (Locale::En, "settings.title") => Some("Settings"),
         (Locale::En, "settings.nav.general") => Some("General"),
+        (Locale::En, "settings.nav.session") => Some("Session"),
         (Locale::En, "settings.nav.appearance") => Some("Appearance"),
         (Locale::En, "settings.nav.pet") => Some("Pet"),
         (Locale::En, "settings.nav.capabilities") => Some("Capabilities"),
@@ -1901,7 +1902,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "err.hint.model_name") => Some("The provider does not recognize the configured model name. Check the model name in Settings → Models."),
         (Locale::En, "err.hint.rate") => Some("Rate limited by the provider. Wait a moment and retry."),
         (Locale::En, "err.hint.server") => Some("The provider is temporarily overloaded or down. Retry in a bit."),
-        (Locale::En, "err.hint.network") => Some("Could not reach the API server. Check your network, API URL, and proxy settings."),
+        (Locale::En, "err.hint.network") => Some("Could not reach the model API. Check your network, API URL, and Settings → Models → Model API proxy. If a local proxy app is closed, leftover HTTP_PROXY/HTTPS_PROXY can still intercept requests — set the field to `none` to connect directly."),
         (Locale::En, "err.hint.bad_request") => Some("The provider rejected the request. Common causes: the conversation is too long, or a message contains content this model does not support (e.g. images). Try /compact or another model."),
         (Locale::En, "err.hint.tool_pairing") => Some("A tool call is missing its result in the conversation history (often after an interrupted or timed-out tool). Click Resume again after updating, or send /compact to repair the history."),
         (Locale::En, "outline.title") => Some("Conversation outline"),
@@ -3548,6 +3549,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "approval.plan_hint") => Some("批准即开始执行，拒绝则让智能体修改计划，也可以选择「其他」发送具体意见。"),
         (Locale::Zh, "settings.title") => Some("设置"),
         (Locale::Zh, "settings.nav.general") => Some("常规"),
+        (Locale::Zh, "settings.nav.session") => Some("对话"),
         (Locale::Zh, "settings.nav.appearance") => Some("外观"),
         (Locale::Zh, "settings.nav.pet") => Some("宠物"),
         (Locale::Zh, "settings.nav.capabilities") => Some("能力"),
@@ -4230,7 +4232,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "err.hint.model_name") => Some("服务商不识别所配置的模型名。请在 设置 → 模型 中核对模型名。"),
         (Locale::Zh, "err.hint.rate") => Some("请求过于频繁，被服务商限流。稍等片刻再重试。"),
         (Locale::Zh, "err.hint.server") => Some("服务商暂时过载或故障。请稍后重试。"),
-        (Locale::Zh, "err.hint.network") => Some("无法连接到 API 服务器。请检查网络、API 地址和代理设置。"),
+        (Locale::Zh, "err.hint.network") => Some("无法连接到模型 API。请检查网络、API 地址，以及 设置 → 模型 → 模型 API 代理。本机代理软件关闭后，残留的 HTTP_PROXY/HTTPS_PROXY 仍会拦截请求；将该项填为 `none` 可强制直连。"),
         (Locale::Zh, "err.hint.bad_request") => Some("请求被服务商拒绝。常见原因：对话过长，或消息包含该模型不支持的内容（如图片）。可尝试 /compact 或更换模型。"),
         (Locale::Zh, "err.hint.tool_pairing") => Some("对话历史里有一条工具调用缺少对应结果（常见于工具中断或超时后）。更新后请再点「继续执行」，或发送 /compact 修复历史。"),
         (Locale::Zh, "outline.title") => Some("对话目录"),
@@ -5215,6 +5217,13 @@ mod api_error_hint_tests {
         let out = localize_backend(Locale::Zh, msg);
         assert!(out.starts_with(msg), "raw error must stay visible");
         assert!(out.contains(&t(Locale::Zh, "err.hint.balance")));
+    }
+
+    #[test]
+    fn network_hint_points_at_models_proxy() {
+        assert!(t(Locale::En, "err.hint.network").contains("Settings → Models"));
+        assert!(t(Locale::Zh, "err.hint.network").contains("设置 → 模型"));
+        assert!(t(Locale::Zh, "err.hint.network").contains("模型 API 代理"));
     }
 
     #[test]

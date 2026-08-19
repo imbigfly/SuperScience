@@ -934,6 +934,7 @@ pub(crate) fn model_form_to_settings(form: &ModelForm, has_api_key: bool) -> Set
 
 pub(crate) fn settings_section_label(loc: Locale, section: &str) -> String {
     match section {
+        "session" => t(loc, "settings.nav.session"),
         "appearance" => t(loc, "settings.nav.appearance"),
         "pet" => t(loc, "settings.nav.pet"),
         "environments" => t(loc, "settings.nav.environments"),
@@ -954,6 +955,18 @@ pub(crate) fn settings_section_label(loc: Locale, section: &str) -> String {
         _ => t(loc, "settings.title"),
     }
     .into()
+}
+
+#[cfg(test)]
+mod settings_section_label_tests {
+    use super::*;
+    use crate::i18n::Locale;
+
+    #[test]
+    fn session_nav_has_its_own_label() {
+        assert_eq!(settings_section_label(Locale::En, "session"), "Session");
+        assert_eq!(settings_section_label(Locale::Zh, "session"), "对话");
+    }
 }
 
 /// A field within a credential service group: (credential id, i18n label key,

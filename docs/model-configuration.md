@@ -157,7 +157,7 @@ HTTP status at 200 or appends a `[DONE]` marker. Partial output is not committed
 as a final answer, completed tool results remain available, and follow-up
 questions are not generated for that interrupted turn.
 
-**Settings → General → Automatically compact long conversations** is enabled by
+**Settings → Session → Automatically compact long conversations** is enabled by
 default. Following mangopi-cli's model-boundary approach, Wisp checks the
 estimated context before every native-agent model call, including later calls
 after large tool results and ephemeral host/reviewer injections. At 80% it
