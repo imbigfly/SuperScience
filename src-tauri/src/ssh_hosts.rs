@@ -639,7 +639,9 @@ compute when they fit the task. Submit remote discovery, real work, and all long
 `nohup`, background `&`, or polling loops to monitor work. After submission, \
 observe or cancel it through the Runs control plane. Remote paths are not local \
 paths. To watch a submitted Run or wait for its result, call `monitor_run` \
-exactly once instead of repeatedly calling `get_run`. For persistent interactive analysis, call `python` or `r` with the \
+instead of repeatedly calling `get_run`. If `monitor_run` returns `wait_interrupted`, \
+the Run is still running: answer the user, then call `monitor_run` again with the same id. \
+Do not resubmit. For persistent interactive analysis, call `python` or `r` with the \
 matching `context_id`; omitting it uses the default analysis environment below when one is \
 configured, otherwise `local`. Interpreter paths come from \
 the execution context's saved settings or probe result, not shell environment \

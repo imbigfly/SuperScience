@@ -131,6 +131,9 @@ pub struct ToolEnvAdapter<'a> {
     root: std::path::PathBuf,
     out: &'a dyn Output,
     cancel: Option<&'a std::sync::atomic::AtomicBool>,
+    /// Mid-turn guidance queue (`GuidanceQueue`). Typed as the mutex so this
+    /// module does not depend on `agent`.
+    guidance: Option<&'a std::sync::Mutex<Vec<(u64, String)>>>,
 }
 
 impl<'a> ToolEnvAdapter<'a> {
@@ -139,6 +142,7 @@ impl<'a> ToolEnvAdapter<'a> {
             root,
             out,
             cancel: None,
+            guidance: None,
         }
     }
     /// Like `new`, but tools can poll `is_cancelled()` to stop mid-execution.
@@ -151,7 +155,15 @@ impl<'a> ToolEnvAdapter<'a> {
             root,
             out,
             cancel: Some(cancel),
+            guidance: None,
         }
+    }
+    /// Let long-running tools see that the host has queued mid-turn guidance
+    /// without draining it. The agent loop still injects at the iteration
+    /// boundary.
+    pub fn with_guidance(mut self, queue: &'a std::sync::Mutex<Vec<(u64, String)>>) -> Self {
+        self.guidance = Some(queue);
+        self
     }
 }
 
@@ -194,6 +206,11 @@ impl<'a> wisp_tools::ToolEnv for ToolEnvAdapter<'a> {
     fn is_cancelled(&self) -> bool {
         self.cancel
             .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+    }
+    fn guidance_pending(&self) -> bool {
+        self.guidance
+            .and_then(|queue| queue.lock().ok())
+            .is_some_and(|pending| !pending.is_empty())
     }
     fn cancel_flag(&self) -> Option<&std::sync::atomic::AtomicBool> {
         self.cancel
@@ -328,5 +345,29 @@ mod tests {
             !output.sync_called.load(Ordering::SeqCst),
             "the adapter must not fall back to the runtime-blocking sync hook"
         );
+    }
+
+    #[test]
+    fn tool_env_adapter_reports_pending_guidance_without_draining() {
+        let out = NullOutput;
+        let queue = std::sync::Mutex::new(Vec::<(u64, String)>::new());
+        let env = ToolEnvAdapter::new(std::path::PathBuf::from("."), &out).with_guidance(&queue);
+        assert!(
+            !wisp_tools::ToolEnv::guidance_pending(&env),
+            "empty queue is not pending"
+        );
+        queue.lock().unwrap().push((1, "how far?".into()));
+        assert!(
+            wisp_tools::ToolEnv::guidance_pending(&env),
+            "queued guidance must be visible to long waits"
+        );
+        assert_eq!(
+            queue.lock().unwrap().len(),
+            1,
+            "peeking must not drain the queue; the agent loop injects at the iteration boundary"
+        );
+        assert!(!wisp_tools::ToolEnv::guidance_pending(
+            &ToolEnvAdapter::new(std::path::PathBuf::from("."), &out)
+        ));
     }
 }

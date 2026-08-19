@@ -36,7 +36,7 @@ impl Tool for RunInContextTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "run_in_context",
-            "Submit a persisted background Run in an execution context (`local`, `ssh:<alias>`, or `wsl:<distro>`). For Python/R work, declare a preflight to check the interpreter, explicit import modules/packages, project-relative files, and syntax before submission. Preflight never installs packages or executes the requested command as a dry run. Set wait_for_completion=true for direct model-free waiting, or submit normally and call monitor_run exactly once with the returned Run id to show an inline live card. Never poll with get_run.",
+            "Submit a persisted background Run in an execution context (`local`, `ssh:<alias>`, or `wsl:<distro>`). For Python/R work, declare a preflight to check the interpreter, explicit import modules/packages, project-relative files, and syntax before submission. Preflight never installs packages or executes the requested command as a dry run. Set wait_for_completion=true for direct model-free waiting, or submit normally and call monitor_run with the returned Run id to show an inline live card. If monitor_run returns wait_interrupted, the Run is still running: respond, then call monitor_run again with the same id. Do not resubmit. Never poll with get_run.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -44,7 +44,7 @@ impl Tool for RunInContextTool {
                     "command": { "type": "string", "description": "Command to execute in that context" },
                     "title": { "type": "string", "description": "Short run title" },
                     "timeout_secs": { "type": "integer", "description": "Job wall timeout in seconds: 1s..7d (default 4h) for local, WSL, and SSH" },
-                    "wait_for_completion": { "type": "boolean", "description": "Suspend this tool until the Run reaches a terminal state, without consuming model tokens or repeatedly calling get_run (default false)" },
+                    "wait_for_completion": { "type": "boolean", "description": "Suspend this tool until the Run reaches a terminal state or mid-turn user guidance arrives, without consuming model tokens or repeatedly calling get_run (default false). If wait_interrupted, respond then call monitor_run to resume waiting." },
                     "preflight": {
                         "type": "object",
                         "description": "Safe declarative Python/R environment checks performed before Run submission",
@@ -276,7 +276,7 @@ impl Tool for RunInContextTool {
         match submission {
             Ok(res) if wait_for_completion => {
                 match wait_for_terminal(&self.store, &res.run_id, env).await {
-                    Ok((run, detached)) => run_wait_result(run, detached),
+                    Ok((run, outcome)) => run_wait_result(run, outcome),
                     Err(error) => ToolResult::fail(format!("run_in_context wait error: {error}")),
                 }
             }
@@ -333,7 +333,7 @@ impl Tool for GetRunTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "get_run",
-            "Read one immediate status snapshot for a Run. Never call this repeatedly to wait; call monitor_run exactly once for live monitoring until completion.",
+            "Read one immediate status snapshot for a Run. Never call this repeatedly to wait; call monitor_run for live monitoring until completion or mid-turn guidance.",
             serde_json::json!({
                 "type": "object",
                 "properties": { "run_id": { "type": "string" } },
@@ -364,7 +364,7 @@ impl Tool for GetRunTool {
                 let mut value = serde_json::to_value(run).unwrap_or_default();
                 if active {
                     value["next_action"] = serde_json::Value::String(
-                        "Do not call get_run again. Call monitor_run exactly once with this run_id."
+                        "Do not poll with get_run. Call monitor_run with this run_id to wait; if wait_interrupted, respond then call monitor_run again."
                             .into(),
                     );
                 }
@@ -403,7 +403,7 @@ impl Tool for MonitorRunTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "monitor_run",
-            "Monitor one existing long-running Run until it finishes. Call this exactly once instead of repeatedly calling get_run. Wisp shows a live Run card, suspends the agent without model calls or token use, and resumes it with the terminal result.",
+            "Monitor one existing long-running Run until it finishes or mid-turn user guidance arrives. Call this instead of repeatedly calling get_run. Wisp shows a live Run card and suspends without model calls or token use. If the result has wait_interrupted=true, the Run is still running: answer the user from this snapshot, then call monitor_run again with the same run_id. Do not resubmit the Run. Use cancel_run only when the user asked to stop.",
             serde_json::json!({
                 "type": "object",
                 "properties": { "run_id": { "type": "string" } },
@@ -429,17 +429,29 @@ impl Tool for MonitorRunTool {
             Err(error) => return ToolResult::fail(format!("monitor_run error: {error}")),
         }
         match wait_for_terminal(&self.store, run_id, env).await {
-            Ok((run, detached)) => run_wait_result(run, detached),
+            Ok((run, outcome)) => run_wait_result(run, outcome),
             Err(error) => ToolResult::fail(format!("monitor_run error: {error}")),
         }
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WaitOutcome {
+    Terminal,
+    Detached,
+    GuidanceInterrupt,
+}
+
+const WAIT_INTERRUPTED_NEXT_ACTION: &str = "The Run is still executing and was not cancelled or \
+     resubmitted. Respond to the user's mid-turn message using this snapshot (status, heartbeat, \
+     log tails). Then call monitor_run again with the same run_id to resume waiting. Call \
+     cancel_run only if the user asked to stop the Run.";
+
 async fn wait_for_terminal(
     store: &wisp_store::Store,
     run_id: &str,
     env: &dyn ToolEnv,
-) -> Result<(wisp_store::RunRecord, bool), String> {
+) -> Result<(wisp_store::RunRecord, WaitOutcome), String> {
     loop {
         let run = store
             .get_run(run_id)
@@ -447,10 +459,13 @@ async fn wait_for_terminal(
             .map_err(|error| error.to_string())?
             .ok_or_else(|| format!("Run not found: {run_id}"))?;
         if run.status.is_terminal() {
-            return Ok((run, false));
+            return Ok((run, WaitOutcome::Terminal));
         }
         if env.is_cancelled() {
-            return Ok((run, true));
+            return Ok((run, WaitOutcome::Detached));
+        }
+        if env.guidance_pending() {
+            return Ok((run, WaitOutcome::GuidanceInterrupt));
         }
         tokio::time::sleep(if cfg!(test) {
             std::time::Duration::from_millis(10)
@@ -461,28 +476,36 @@ async fn wait_for_terminal(
     }
 }
 
-fn run_wait_result(run: wisp_store::RunRecord, detached: bool) -> ToolResult {
+fn run_wait_result(run: wisp_store::RunRecord, outcome: WaitOutcome) -> ToolResult {
     let succeeded = run.status == wisp_store::RunStatus::Succeeded;
-    let cleanable = run.status.is_terminal()
+    let cleanable = outcome == WaitOutcome::Terminal
+        && run.status.is_terminal()
         && run.remote_workdir.is_some()
         && run.cleaned_at.is_none()
         && run.kind != "file_transfer";
     let mut value = serde_json::to_value(run).unwrap_or_default();
-    if detached {
-        value["wait_detached"] = serde_json::Value::Bool(true);
-    }
-    if cleanable && !detached {
-        value["next_action"] = serde_json::Value::String(
-            "When the server workspace is no longer needed, call cleanup_run_workspace to \
-             reclaim it (harvested outputs and logs stay in the project)."
-                .into(),
-        );
+    match outcome {
+        WaitOutcome::Detached => {
+            value["wait_detached"] = serde_json::Value::Bool(true);
+        }
+        WaitOutcome::GuidanceInterrupt => {
+            value["wait_interrupted"] = serde_json::Value::Bool(true);
+            value["next_action"] = serde_json::Value::String(WAIT_INTERRUPTED_NEXT_ACTION.into());
+        }
+        WaitOutcome::Terminal if cleanable => {
+            value["next_action"] = serde_json::Value::String(
+                "When the server workspace is no longer needed, call cleanup_run_workspace to \
+                 reclaim it (harvested outputs and logs stay in the project)."
+                    .into(),
+            );
+        }
+        WaitOutcome::Terminal => {}
     }
     let content = value.to_string();
-    if detached || succeeded {
-        ToolResult::ok(content)
-    } else {
-        ToolResult::fail(content)
+    match outcome {
+        WaitOutcome::Detached | WaitOutcome::GuidanceInterrupt => ToolResult::ok(content),
+        WaitOutcome::Terminal if succeeded => ToolResult::ok(content),
+        WaitOutcome::Terminal => ToolResult::fail(content),
     }
 }
 

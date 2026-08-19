@@ -1059,7 +1059,7 @@ async fn submit_transfer(
             "transport": transport_label(transport),
             "source_path": source_path,
             "destination_path": destination_path,
-            "next_action": "Call monitor_run exactly once to wait for completion."
+            "next_action": "Call monitor_run to wait for completion; if wait_interrupted, respond then call it again with the same run_id. Do not resubmit."
         }));
     }
 
@@ -1096,7 +1096,7 @@ async fn submit_transfer(
             "route": "local",
             "transport": transport_label(transport),
             "destination_path": destination,
-            "next_action": "Call monitor_run exactly once to wait for completion."
+            "next_action": "Call monitor_run to wait for completion; if wait_interrupted, respond then call it again with the same run_id. Do not resubmit."
         }));
     }
 
@@ -1202,7 +1202,7 @@ async fn submit_transfer(
         "status": response.status,
         "route": route,
         "transport": if route == "relay" { "scp" } else { request.transport.as_str() },
-        "next_action": "Call monitor_run exactly once to wait for completion."
+        "next_action": "Call monitor_run to wait for completion; if wait_interrupted, respond then call it again with the same run_id. Do not resubmit."
     }))
 }
 
