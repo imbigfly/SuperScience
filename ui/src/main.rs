@@ -6200,10 +6200,12 @@ fn App() -> impl IntoView {
                         "supports_vision": false,
                         "use_for_vision": false,
                         "use_for_image_generation": false,
+                        "use_for_video_generation": false,
                     },
                     "key": Some(key.clone()),
                     "useForVision": false,
                     "useForImageGeneration": false,
+                    "useForVideoGeneration": false,
                 }))
                 .unwrap();
                 if let Ok(v) = invoke_checked("save_model", arg).await {

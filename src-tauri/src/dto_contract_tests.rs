@@ -64,6 +64,10 @@ fn model_profile_contract() {
         image_quality: String::new(),
         image_aspect_ratio: String::new(),
         image_resolution: String::new(),
+        use_for_video_generation: true,
+        video_duration_secs: Some(8),
+        video_aspect_ratio: Some("9:16".into()),
+        video_resolution: Some("720p".into()),
     };
     let dto: wisp_dto::ModelProfile = roundtrip(&backend);
     assert_eq!(dto.id, "p1");
@@ -80,6 +84,20 @@ fn model_profile_contract() {
     assert!(dto.supports_vision);
     assert!(dto.use_for_vision);
     assert!(!dto.use_for_image_generation);
+    assert!(dto.use_for_video_generation);
+    assert_eq!(dto.video_duration_secs, Some(8));
+    assert_eq!(dto.video_aspect_ratio.as_deref(), Some("9:16"));
+    assert_eq!(dto.video_resolution.as_deref(), Some("720p"));
+    assert!(wisp_dto::is_video_generation_model(
+        "xai/grok-imagine-video-1.5-preview"
+    ));
+    assert!(!wisp_dto::is_video_generation_model(
+        "grok-imagine-video-2.0"
+    ));
+    assert_eq!(wisp_dto::VIDEO_ASPECT_RATIOS.len(), 5);
+    assert_eq!(wisp_dto::VIDEO_RESOLUTIONS.len(), 3);
+    assert_eq!(wisp_dto::VIDEO_DURATION_MIN_SECS, 1);
+    assert_eq!(wisp_dto::VIDEO_DURATION_MAX_SECS, 15);
 }
 
 #[test]

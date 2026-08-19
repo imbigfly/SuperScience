@@ -56,7 +56,7 @@ const MAX_ENTRIES: usize = 20_000;
 pub fn is_producing(tool: &str) -> bool {
     matches!(
         tool,
-        "python" | "r" | "shell" | "write" | "edit" | "generate_image"
+        "python" | "r" | "shell" | "write" | "edit" | "generate_image" | "generate_video"
     )
 }
 
@@ -73,7 +73,7 @@ pub fn language_of(tool: &str) -> String {
 pub fn source_of(tool: &str, args: &serde_json::Value) -> String {
     let key = match tool {
         "python" | "r" => "code",
-        "write" | "edit" | "generate_image" => "path",
+        "write" | "edit" | "generate_image" | "generate_video" => "path",
         _ => "cmd",
     };
     args.get(key)
@@ -357,7 +357,7 @@ pub fn augment_written_paths(
             }
         }
     }
-    if success && matches!(tool, "write" | "edit" | "generate_image") {
+    if success && matches!(tool, "write" | "edit" | "generate_image" | "generate_video") {
         let source_path = Path::new(source);
         let path = if source_path.is_absolute() {
             source_path.to_path_buf()
@@ -494,7 +494,7 @@ mod tests {
 
     #[test]
     fn file_mutation_tools_are_producing_with_path_source() {
-        for tool in ["write", "edit", "generate_image"] {
+        for tool in ["write", "edit", "generate_image", "generate_video"] {
             assert!(is_producing(tool));
             assert_eq!(
                 source_of(tool, &serde_json::json!({"path": "results/table.csv"})),

@@ -6481,6 +6481,26 @@ test("image generation shows a placeholder and replaces it with the PNG", async 
   await expect(card.locator(".image-generation-spinner")).toHaveCount(0);
 });
 
+test("video generation shows a placeholder and replaces it with the MP4", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("VIDEOGENPLACEHOLDER");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const card = page.getByTestId("video-generation-card");
+  await expect(card).toHaveAttribute("data-status", "running");
+  await expect(card.locator(".video-generation-spinner")).toBeVisible();
+  await expect(card.locator("video")).toHaveCount(0);
+  await expect(card).toContainText("media/demo.mp4");
+  await expect(page.locator('.step-name:text-is("generate_video")')).toHaveCount(0);
+
+  await expect(card).toHaveAttribute("data-status", "completed", { timeout: 3_000 });
+  const video = card.locator("video");
+  await expect(video).toBeVisible();
+  await expect(video).toHaveAttribute("src", /^data:video\/mp4;base64,/);
+  await expect(video).toHaveAttribute("preload", "metadata");
+  await expect(card.locator(".video-generation-spinner")).toHaveCount(0);
+});
+
 test("SSH failures show that automatic retry was stopped", async ({ page }) => {
   await enterApp(page);
   await selectRemoteContext(page);
@@ -8104,6 +8124,55 @@ test("grok-imagine-image-2.0 can be assigned for generation but not selected for
   await page.locator(".settings-head-close").click();
   await page.locator(".model-picker-btn").click();
   await expect(page.locator(".model-menu")).not.toContainText("grok-imagine-image-2.0");
+  await expect(page.locator(".model-menu")).toContainText("deepseek-v4-pro");
+});
+
+test("grok-imagine-video can be assigned for generation but not selected for chat", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Models");
+  const opus = page.locator(".settings-list-row", { hasText: "opus-4.8" });
+  await opus.click();
+
+  await providerSelect(page).selectOption("openai");
+  await page.getByLabel("Base URL").fill("https://api.x.ai");
+  await page.getByLabel("Model").fill("grok-imagine-video");
+  await expect(page.getByLabel("Max output tokens")).toHaveCount(0);
+  await expect(page.getByLabel("Supports image input")).toHaveCount(0);
+  await expect(page.getByTestId("video-duration")).toBeVisible();
+  await expect(page.getByTestId("video-aspect-ratio")).toBeVisible();
+  await expect(page.getByTestId("video-resolution")).toBeVisible();
+  await expect(page.getByTestId("image-size")).toHaveCount(0);
+  await page.getByTestId("video-duration").fill("8");
+  await page.getByTestId("video-aspect-ratio").selectOption("9:16");
+  await page.getByTestId("video-resolution").selectOption("1080p");
+  await expect(page.getByTestId("use-for-video-generation")).toBeChecked();
+  await page.getByRole("button", { name: "Valid" }).click();
+  await expect(page.locator(".settings-status")).toHaveText(
+    "Validated openai with grok-imagine-video",
+  );
+  await page.getByRole("button", { name: "Save" }).click();
+
+  await expect.poll(() => lastInvokeArgs(page, "save_model")).toMatchObject({
+    useForVideoGeneration: true,
+    profile: {
+      id: "opus",
+      provider: "openai",
+      model: "grok-imagine-video",
+      use_for_video_generation: true,
+      video_duration_secs: 8,
+      video_aspect_ratio: "9:16",
+      video_resolution: "1080p",
+    },
+  });
+
+  const videoModel = page.locator(".settings-list-row", { hasText: "opus-4.8" });
+  await expect(videoModel).toContainText("grok-imagine-video");
+  await expect(videoModel).toContainText("video gen");
+  await expect(videoModel.getByRole("button", { name: "Use" })).toHaveCount(0);
+
+  await page.locator(".settings-head-close").click();
+  await page.locator(".model-picker-btn").click();
+  await expect(page.locator(".model-menu")).not.toContainText("grok-imagine-video");
   await expect(page.locator(".model-menu")).toContainText("deepseek-v4-pro");
 });
 

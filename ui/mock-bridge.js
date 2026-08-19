@@ -76,6 +76,7 @@
       supports_vision: true,
       use_for_vision: true,
       use_for_image_generation: false,
+      use_for_video_generation: false,
     },
   ];
   // Preview fixtures, keyed by extension, so the file-preview kinds (#307:
@@ -464,13 +465,20 @@
                 ? args.get("useForImageGeneration")
                 : args?.useForImageGeneration) ?? p?.use_for_image_generation,
             );
+            const useForVideoGeneration = Boolean(
+              (args instanceof Map
+                ? args.get("useForVideoGeneration")
+                : args?.useForVideoGeneration) ?? p?.use_for_video_generation,
+            );
             for (const model of mockModels) {
               if (model.id === p?.id) {
                 Object.assign(model, p, {
                   use_for_image_generation: useForImageGeneration,
+                  use_for_video_generation: useForVideoGeneration,
                 });
-              } else if (useForImageGeneration) {
-                model.use_for_image_generation = false;
+              } else {
+                if (useForImageGeneration) model.use_for_image_generation = false;
+                if (useForVideoGeneration) model.use_for_video_generation = false;
               }
             }
             return mockModels;

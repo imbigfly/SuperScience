@@ -235,6 +235,7 @@ pub(crate) fn compose_icon(kind: &str) -> impl IntoView {
         "edit" => view! { <path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/> }.into_view(),
         "doc" => view! { <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/> }.into_view(),
         "image" => view! { <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/> }.into_view(),
+        "video" => view! { <path d="m22 8-6 4 6 4V8Z"/><rect x="2" y="6" width="14" height="12" rx="2"/> }.into_view(),
         "review" => view! { <circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor" stroke="none"/> }.into_view(),
         "memory" => view! { <path d="M12 2a7 7 0 0 0-7 7v2a4 4 0 0 0-2 3.46V18a2 2 0 0 0 2 2h3"/><path d="M12 2a7 7 0 0 1 7 7v2a4 4 0 0 1 2 3.46V18a2 2 0 0 1-2 2h-3"/><path d="M9 9h6"/><path d="M9 13h6"/><path d="M12 17v5"/> }.into_view(),
         "gauge" => view! { <path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/> }.into_view(),
@@ -379,6 +380,103 @@ pub(crate) fn ImageGenerationCard(
                 }}
             </div>
             <footer class="image-generation-meta">
+                <strong>{move || t(locale.get(), title_key)}</strong>
+                <code>{display_path}</code>
+            </footer>
+        </article>
+    }
+}
+
+/// A `generate_video` call owns a stable media slot in the transcript, same
+/// pattern as the image card: ToolCall paints the placeholder, ToolResult
+/// remounts and streams the MP4 into an inline player.
+#[component]
+pub(crate) fn VideoGenerationCard(path: String, ok: Option<bool>, output: String) -> impl IntoView {
+    let locale = use_locale();
+    let source = create_rw_signal(None::<String>);
+    let preview_failed = create_rw_signal(false);
+    if ok == Some(true) {
+        let load_path = path.clone();
+        let loc = locale.get_untracked();
+        spawn_local(async move {
+            match load_file_content(&load_path, loc, Some(64 * 1024 * 1024)).await {
+                Ok(file) => match file.base64 {
+                    Some(base64) => source.set(Some(format!("data:{};base64,{base64}", file.mime))),
+                    None => preview_failed.set(true),
+                },
+                Err(_) => preview_failed.set(true),
+            }
+        });
+    }
+
+    let status = match ok {
+        None => "running",
+        Some(true) => "completed",
+        Some(false) => "failed",
+    };
+    let title_key = match ok {
+        None => "chat.video_generating",
+        Some(true) => "chat.video_generated",
+        Some(false) => "chat.video_failed",
+    };
+    let display_path = path.clone();
+    let filename = attachment_name(&path);
+    let failure_detail = output.trim().to_string();
+
+    view! {
+        <article
+            class="video-generation-card"
+            data-testid="video-generation-card"
+            data-status=status
+            data-path=path
+        >
+            <div class="video-generation-media">
+                {move || match ok {
+                    None => view! {
+                        <div class="video-generation-state" role="status" aria-live="polite">
+                            <span class="video-generation-spinner" aria-hidden="true"></span>
+                            <span>{move || t(locale.get(), "chat.video_generating")}</span>
+                        </div>
+                    }.into_view(),
+                    Some(false) => view! {
+                        <div class="video-generation-state failed">
+                            <span class="video-generation-failed-mark" aria-hidden="true">"!"</span>
+                            <span>{move || t(locale.get(), "chat.video_failed")}</span>
+                            {(!failure_detail.is_empty()).then(|| view! {
+                                <small title=failure_detail.clone()>{failure_detail.clone()}</small>
+                            })}
+                        </div>
+                    }.into_view(),
+                    Some(true) => match source.get() {
+                        Some(src) => view! {
+                            <video
+                                class="video-generation-player"
+                                controls
+                                preload="metadata"
+                                src=src
+                                aria-label=filename.clone()
+                                on:error=move |_| {
+                                    source.set(None);
+                                    preview_failed.set(true);
+                                }
+                            ></video>
+                        }.into_view(),
+                        None if preview_failed.get() => view! {
+                            <div class="video-generation-state failed">
+                                <span class="video-generation-failed-mark" aria-hidden="true">"!"</span>
+                                <span>{move || t(locale.get(), "chat.video_preview_unavailable")}</span>
+                            </div>
+                        }.into_view(),
+                        None => view! {
+                            <div class="video-generation-state" role="status" aria-live="polite">
+                                <span class="video-generation-spinner" aria-hidden="true"></span>
+                                <span>{move || t(locale.get(), "chat.video_loading")}</span>
+                            </div>
+                        }.into_view(),
+                    },
+                }}
+            </div>
+            <footer class="video-generation-meta">
                 <strong>{move || t(locale.get(), title_key)}</strong>
                 <code>{display_path}</code>
             </footer>

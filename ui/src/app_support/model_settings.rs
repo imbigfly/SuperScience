@@ -119,11 +119,16 @@ impl ModelSettingsState {
                     "image_quality": profile.image_quality,
                     "image_aspect_ratio": profile.image_aspect_ratio,
                     "image_resolution": profile.image_resolution,
+                    "use_for_video_generation": profile.use_for_video_generation,
+                    "video_duration_secs": profile.video_duration_secs,
+                    "video_aspect_ratio": profile.video_aspect_ratio,
+                    "video_resolution": profile.video_resolution,
                 },
                 // No key field: the backend keeps the stored key.
                 "key": Option::<String>::None,
                 "useForVision": profile.use_for_vision,
                 "useForImageGeneration": profile.use_for_image_generation,
+                "useForVideoGeneration": profile.use_for_video_generation,
             }))
             .unwrap();
             match invoke_checked("save_model", arg).await {
@@ -181,22 +186,22 @@ impl ModelSettingsState {
         }
         // A catalog-known chat model has a documented output ceiling; saving a
         // larger max_tokens only ever surfaces as a provider 400 mid-turn.
-        // Image models do not take token limits.
-        if !is_image_generation_model(&form.model) {
-        if let Some(dto) = model_catalog_limits.get() {
-            if form.max_tokens > dto.max_tokens {
-                let text = tf(
-                    loc,
-                    "err.max_tokens_ceiling",
-                    &[
-                        ("model", form.model.trim()),
-                        ("max", &dto.max_tokens.to_string()),
-                    ],
-                );
-                model_form_msg.set(Some((false, text)));
-                return;
+        // Image and video models do not take token limits.
+        if !is_image_generation_model(&form.model) && !is_video_generation_model(&form.model) {
+            if let Some(dto) = model_catalog_limits.get() {
+                if form.max_tokens > dto.max_tokens {
+                    let text = tf(
+                        loc,
+                        "err.max_tokens_ceiling",
+                        &[
+                            ("model", form.model.trim()),
+                            ("max", &dto.max_tokens.to_string()),
+                        ],
+                    );
+                    model_form_msg.set(Some((false, text)));
+                    return;
+                }
             }
-        }
         }
         settings_busy.set(true);
         model_form_msg.set(Some((true, t(loc, "status.saving_settings").into())));
@@ -218,6 +223,10 @@ impl ModelSettingsState {
             "image_quality": form.image_quality.trim(),
             "image_aspect_ratio": form.image_aspect_ratio.trim(),
             "image_resolution": form.image_resolution.trim(),
+            "use_for_video_generation": form.use_for_video_generation,
+            "video_duration_secs": form.video_duration_secs,
+            "video_aspect_ratio": form.video_aspect_ratio,
+            "video_resolution": form.video_resolution,
         });
         let key_arg = if key.is_empty() { None } else { Some(key) };
         spawn_local(async move {
@@ -226,6 +235,7 @@ impl ModelSettingsState {
                 "key": key_arg,
                 "useForVision": form.use_for_vision,
                 "useForImageGeneration": form.use_for_image_generation,
+                "useForVideoGeneration": form.use_for_video_generation,
             }))
             .unwrap();
             match invoke_checked("save_model", arg).await {
@@ -285,7 +295,9 @@ impl ModelSettingsState {
             return;
         }
         let existing = models.get();
-        let has_chat = entries.iter().any(|entry| !entry.is_image_model())
+        let has_chat = entries
+            .iter()
+            .any(|entry| !entry.is_image_model() && !entry.is_video_model())
             || existing.iter().any(|profile| profile.is_chat_model());
         if !has_chat {
             model_form_msg.set(Some((false, t(loc, "models.need_chat").into())));
@@ -299,22 +311,24 @@ impl ModelSettingsState {
             )));
             return;
         }
-        // Image models first, then extra chat models, first chat last so
-        // `save_model` leaves the cheaper/default chat profile active.
-        let first_chat = entries.iter().position(|entry| !entry.is_image_model());
+        // Image and video models first, then extra chat models, first chat
+        // last so `save_model` leaves the cheaper/default chat profile active.
+        let first_chat = entries
+            .iter()
+            .position(|entry| !entry.is_image_model() && !entry.is_video_model());
         let mut ordered = Vec::with_capacity(entries.len());
         if let Some(first) = first_chat {
             let default_chat = entries.remove(first);
-            let mut images = Vec::new();
+            let mut media = Vec::new();
             let mut other = Vec::new();
             for entry in entries {
-                if entry.is_image_model() {
-                    images.push(entry);
+                if entry.is_image_model() || entry.is_video_model() {
+                    media.push(entry);
                 } else {
                     other.push(entry);
                 }
             }
-            ordered.append(&mut images);
+            ordered.append(&mut media);
             ordered.append(&mut other);
             ordered.push(default_chat);
         } else {
@@ -341,6 +355,8 @@ impl ModelSettingsState {
                 )
                 .await;
                 let image = entry.is_image_model();
+                let video = entry.is_video_model();
+                let media = image || video;
                 let profile = serde_json::json!({
                     "id": "",
                     "label": entry.label.trim(),
@@ -351,19 +367,24 @@ impl ModelSettingsState {
                     "max_tokens": max_tokens,
                     "context_window": context_window,
                     "reasoning_effort": "",
-                    "supports_vision": entry.supports_vision && !image,
-                    "use_for_vision": entry.use_for_vision && !image,
+                    "supports_vision": entry.supports_vision && !media,
+                    "use_for_vision": entry.use_for_vision && !media,
                     "use_for_image_generation": image,
                     "image_size": "",
                     "image_quality": "",
                     "image_aspect_ratio": "",
                     "image_resolution": "",
+                    "use_for_video_generation": video,
+                    "video_duration_secs": Option::<u32>::None,
+                    "video_aspect_ratio": Option::<String>::None,
+                    "video_resolution": Option::<String>::None,
                 });
                 let arg = to_value(&serde_json::json!({
                     "profile": profile,
                     "key": key_arg,
-                    "useForVision": entry.use_for_vision && !image,
+                    "useForVision": entry.use_for_vision && !media,
                     "useForImageGeneration": image,
+                    "useForVideoGeneration": video,
                 }))
                 .unwrap();
                 match invoke_checked("save_model", arg).await {
@@ -435,6 +456,7 @@ impl ModelSettingsState {
             probe.supports_vision = entry.supports_vision;
             probe.use_for_vision = entry.use_for_vision;
             probe.use_for_image_generation = entry.use_for_image_generation;
+            probe.use_for_video_generation = entry.use_for_video_generation;
             let has_key = endpoint_has_stored_key(&listed, &form.api_url);
             let profile_id = sibling_profile_id(&listed, &form.api_url).map(str::to_string);
             (probe, has_key, profile_id)

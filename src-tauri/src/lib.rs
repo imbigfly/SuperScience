@@ -105,6 +105,7 @@ mod storage_prefs;
 mod terminal_sessions;
 mod turn_memory;
 mod turn_undo;
+mod video_generation_tool;
 mod windows_snap;
 mod workspace_manifest;
 mod workspace_scan;
@@ -3823,6 +3824,19 @@ fn add_configured_image_generation_tool(
     if let Some((api_url, model, api_key, options)) = config {
         agent.add_tool(Box::new(
             image_generation_tool::GenerateImageTool::new(api_url, api_key, model, proxy)
+                .with_options(options),
+        ));
+    }
+}
+
+fn add_configured_video_generation_tool(
+    agent: &mut Agent,
+    config: Option<(String, String, String, models::VideoGenerationOptions)>,
+    proxy: Option<String>,
+) {
+    if let Some((api_url, model, api_key, options)) = config {
+        agent.add_tool(Box::new(
+            video_generation_tool::GenerateVideoTool::new(api_url, api_key, model, proxy)
                 .with_options(options),
         ));
     }

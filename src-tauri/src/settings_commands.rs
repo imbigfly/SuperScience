@@ -39,6 +39,19 @@ async fn validate_provider_config(
         .validate_model_access()
         .await;
     }
+    if models::is_video_generation_model(&cfg.model) {
+        if !models::supports_video_generation(provider_name, &cfg.model) {
+            return Err(models::VIDEO_GENERATION_UNSUPPORTED.into());
+        }
+        return super::video_generation_tool::GenerateVideoTool::new(
+            cfg.base_url,
+            cfg.api_key,
+            cfg.model,
+            cfg.proxy,
+        )
+        .validate_model_access()
+        .await;
+    }
 
     // Keep the ping cheap but respect API minimum (Responses API needs >= 16).
     cfg.max_tokens = cfg.max_tokens.min(64).max(16);
