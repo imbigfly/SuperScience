@@ -37,6 +37,14 @@ instead of answering from memory. After Chrome is open and the popup shows
 **Connected to Wisp**, use **Retry after connecting** to run the same
 request again.
 
+The banner describes the answer on screen, not the session. It is derived from
+the browser tool results of the latest turn only, and a single successful
+`web_scan`, `web_open_tab`, `web_execute_js`, or `web_screenshot` clears it: the
+extension's service worker sleeps and reconnects on a one-minute alarm, so a
+turn can mix refused attempts with successful ones and still be a live answer.
+A connected extension also counts as connected even when a build cannot verify
+its own bundled `browser-extension/` copy.
+
 The unpacked extension remains installed in that browser profile across Wisp
 and browser restarts. After updating Wisp, click **Reload** on the extension
 card in `chrome://extensions` so the service worker picks up `wait_tab.js`.
