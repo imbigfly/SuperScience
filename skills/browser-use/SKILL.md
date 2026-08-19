@@ -25,6 +25,12 @@ this turn contains no live web retrieval and wait until the popup shows
 *Connected to Wisp*. Only continue from memory if they explicitly ask
 for a knowledge-only answer. Never invent the path.
 
+One exception: the user says the extension is already installed. Chrome
+suspends its service worker when idle and reconnects on a one-minute
+alarm, so `disconnected` can just be a sleeping worker. Try `web_open_tab`
+or `web_scan` once — a successful call proves the bridge is live — and
+relay the install steps only if that call fails too.
+
 ## The loop
 
 1. **`web_open_tab`** `{url}` — open the page (works even with no tab

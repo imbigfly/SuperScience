@@ -28,14 +28,12 @@ use tokio_tungstenite::{accept_hdr_async, WebSocketStream};
 use uuid::Uuid;
 use wisp_llm::ToolSchema;
 use wisp_store::Store;
-use wisp_tools::{Approval, ImageData, Tool, ToolEnv, ToolEvent, ToolResult};
+use wisp_tools::{Approval, ImageData, Tool, ToolEnv, ToolResult};
 
 use crate::browser_url_filters::{self, BrowserUrlFilters};
 
 const BRIDGE_ADDR: &str = "127.0.0.1:18765";
 const EXTENSION_ORIGIN: &str = "chrome-extension://gnkjgagleagkgdlkkcianolobfdoocnp";
-const BROWSER_DISCONNECTED_KIND: &str = "browser_disconnected";
-const BROWSER_CONNECTED_KIND: &str = "browser_connected";
 const BROWSER_DISCONNECTED_CODE: &str = "browser_extension_disconnected";
 const BROWSER_DISCONNECTED_MARKER: &str = "WISP_BROWSER_DISCONNECTED";
 const DISCONNECTED_ASSISTANT_INSTRUCTION: &str = "Live web retrieval is unavailable. Do not answer live, latest, current, or URL-specific questions from prior knowledge. Tell the user this turn contains no live web retrieval, relay the install steps, and wait until status is connected. Only continue from memory if they explicitly ask for a knowledge-only answer.";
@@ -121,12 +119,17 @@ impl BrowserBridge {
         let state = self.state.lock().await;
         let extension_path = self.verified_extension_path();
         let extension_ready = extension_path.is_some();
-        let status = if state.startup_error.is_some() {
+        // A live extension connection is the only proof that live retrieval
+        // works. It outranks an unverifiable bundled copy: a user who loaded the
+        // extension from another folder still browses fine, and reporting
+        // extension_missing there told the model and the UI "no live retrieval"
+        // on every turn (#921).
+        let status = if state.client.is_some() {
+            "connected"
+        } else if state.startup_error.is_some() {
             "error"
         } else if !extension_ready {
             "extension_missing"
-        } else if state.client.is_some() {
-            "connected"
         } else {
             "disconnected"
         };
@@ -426,38 +429,6 @@ impl BrowserBridge {
     }
 }
 
-fn is_bridge_unavailable(error: &str) -> bool {
-    error.contains(BROWSER_DISCONNECTED_MARKER) || error.contains("real-browser bridge unavailable")
-}
-
-async fn emit_disconnected(env: &dyn ToolEnv) {
-    env.emit(ToolEvent::Presentation {
-        kind: BROWSER_DISCONNECTED_KIND.into(),
-        payload: json!({
-            "code": BROWSER_DISCONNECTED_CODE,
-            "live_retrieval": false,
-        }),
-    })
-    .await;
-}
-
-async fn emit_live_retrieval(env: &dyn ToolEnv) {
-    env.emit(ToolEvent::Presentation {
-        kind: BROWSER_CONNECTED_KIND.into(),
-        payload: json!({
-            "live_retrieval": true,
-        }),
-    })
-    .await;
-}
-
-async fn fail_bridge(env: &dyn ToolEnv, error: String) -> ToolResult {
-    if is_bridge_unavailable(&error) {
-        emit_disconnected(env).await;
-    }
-    ToolResult::fail(error)
-}
-
 fn allowed_extension_origin(origin: Option<&str>) -> bool {
     origin == Some(EXTENSION_ORIGIN)
 }
@@ -721,7 +692,7 @@ impl Tool for BrowserSetupTool {
         "show real-browser setup status and extension path".into()
     }
 
-    async fn run(&self, _args: &Value, env: &dyn ToolEnv) -> ToolResult {
+    async fn run(&self, _args: &Value, _env: &dyn ToolEnv) -> ToolResult {
         let mut info = self.bridge.setup_info().await;
         let filters = browser_url_filters::load(&self.store).await;
         info["url_filters"] = json!({
@@ -729,11 +700,6 @@ impl Tool for BrowserSetupTool {
             "prefer": filters.prefer,
             "matching": "host and subdomains; block is enforced; prefer is advisory for literature and similar tasks"
         });
-        if info["status"] != "connected" {
-            emit_disconnected(env).await;
-        } else {
-            emit_live_retrieval(env).await;
-        }
         ToolResult::ok(render_json(&info))
     }
 }
@@ -787,18 +753,15 @@ impl Tool for WebScanTool {
         }
     }
 
-    async fn run(&self, args: &Value, env: &dyn ToolEnv) -> ToolResult {
+    async fn run(&self, args: &Value, _env: &dyn ToolEnv) -> ToolResult {
         if args
             .get("tabs_only")
             .and_then(Value::as_bool)
             .unwrap_or(false)
         {
             return match self.bridge.tabs().await {
-                Ok(tabs) => {
-                    emit_live_retrieval(env).await;
-                    ToolResult::ok(render_json(&json!({ "tabs": tabs })))
-                }
-                Err(error) => fail_bridge(env, error).await,
+                Ok(tabs) => ToolResult::ok(render_json(&json!({ "tabs": tabs }))),
+                Err(error) => ToolResult::fail(error),
             };
         }
         let tab_id = match tab_id_arg(args) {
@@ -823,7 +786,6 @@ impl Tool for WebScanTool {
             .await
         {
             Ok(execution) => {
-                emit_live_retrieval(env).await;
                 let handoff = human_verification_handoff(&execution.value);
                 ToolResult::ok(render_json(&merge_ready_wait(
                     json!({
@@ -835,7 +797,7 @@ impl Tool for WebScanTool {
                     execution.wait,
                 )))
             }
-            Err(error) => fail_bridge(env, error).await,
+            Err(error) => ToolResult::fail(error),
         }
     }
 }
@@ -886,7 +848,7 @@ impl Tool for WebExecuteJsTool {
         preview
     }
 
-    async fn run(&self, args: &Value, env: &dyn ToolEnv) -> ToolResult {
+    async fn run(&self, args: &Value, _env: &dyn ToolEnv) -> ToolResult {
         let Some(script) = args
             .get("script")
             .and_then(Value::as_str)
@@ -924,18 +886,15 @@ impl Tool for WebExecuteJsTool {
             .execute(tab_id, script, Duration::from_millis(timeout_ms))
             .await
         {
-            Ok(execution) => {
-                emit_live_retrieval(env).await;
-                ToolResult::ok(render_json(&merge_ready_wait(
-                    json!({
-                        "tab_id": execution.tab_id,
-                        "result": execution.value
-                    }),
-                    execution.ready,
-                    execution.wait,
-                )))
-            }
-            Err(error) => fail_bridge(env, error).await,
+            Ok(execution) => ToolResult::ok(render_json(&merge_ready_wait(
+                json!({
+                    "tab_id": execution.tab_id,
+                    "result": execution.value
+                }),
+                execution.ready,
+                execution.wait,
+            ))),
+            Err(error) => ToolResult::fail(error),
         }
     }
 }
@@ -981,7 +940,7 @@ impl Tool for WebOpenTabTool {
         format!("open real-browser tab at {url}")
     }
 
-    async fn run(&self, args: &Value, env: &dyn ToolEnv) -> ToolResult {
+    async fn run(&self, args: &Value, _env: &dyn ToolEnv) -> ToolResult {
         let Some(url) = args
             .get("url")
             .and_then(Value::as_str)
@@ -999,11 +958,8 @@ impl Tool for WebOpenTabTool {
         }
         let active = args.get("active").and_then(Value::as_bool).unwrap_or(false);
         match self.bridge.open_tab(url, active).await {
-            Ok(reply) => {
-                emit_live_retrieval(env).await;
-                ToolResult::ok(render_json(&open_tab_result(reply, url, &filters)))
-            }
-            Err(error) => fail_bridge(env, error).await,
+            Ok(reply) => ToolResult::ok(render_json(&open_tab_result(reply, url, &filters))),
+            Err(error) => ToolResult::fail(error),
         }
     }
 }
@@ -1048,7 +1004,7 @@ impl Tool for WebScreenshotTool {
             .unwrap_or_else(|| "screenshot selected real-browser tab".into())
     }
 
-    async fn run(&self, args: &Value, env: &dyn ToolEnv) -> ToolResult {
+    async fn run(&self, args: &Value, _env: &dyn ToolEnv) -> ToolResult {
         let tab_id = match tab_id_arg(args) {
             Ok(tab_id) => tab_id,
             Err(error) => return ToolResult::fail(error),
@@ -1068,7 +1024,7 @@ impl Tool for WebScreenshotTool {
             .await
         {
             Ok(execution) => execution,
-            Err(error) => return fail_bridge(env, error).await,
+            Err(error) => return ToolResult::fail(error),
         };
         let Some(data) = execution
             .value
@@ -1084,7 +1040,6 @@ impl Tool for WebScreenshotTool {
                 data.len()
             ));
         }
-        emit_live_retrieval(env).await;
         ToolResult::image(ImageData {
             mime: "image/jpeg".into(),
             data_url: format!("data:image/jpeg;base64,{data}"),
@@ -1590,19 +1545,26 @@ mod tests {
         assert!(rendered.ends_with("browser result truncated"));
     }
 
-    #[test]
-    fn unavailable_errors_are_marked_for_the_ui() {
-        assert!(is_bridge_unavailable(
-            "real-browser bridge unavailable: browser extension is not connected. WISP_BROWSER_DISCONNECTED. stop"
-        ));
-        assert!(!is_bridge_unavailable(
-            "blocked by user URL filter: blocked.test"
-        ));
+    #[tokio::test]
+    async fn only_bridge_unavailability_carries_the_disconnect_marker() {
+        let bridge = Arc::new(BrowserBridge::new(PathBuf::from("extension")));
+        assert!(bridge
+            .unavailable_message("browser extension is not connected")
+            .contains(BROWSER_DISCONNECTED_MARKER));
+        // A tab-level failure is not a disconnect and must not raise the
+        // "no live retrieval" banner.
+        let (tx, _rx) = mpsc::unbounded_channel();
+        bridge.install_client(1, tx).await;
+        let result = WebScanTool::new(bridge)
+            .run(&json!({ "switch_tab_id": 9 }), &NoEnv(PathBuf::from(".")))
+            .await;
+        assert!(!result.success);
+        assert!(!result.content.contains(BROWSER_DISCONNECTED_MARKER));
     }
 
     struct RecordingEnv {
         root: PathBuf,
-        events: std::sync::Mutex<Vec<ToolEvent>>,
+        events: std::sync::Mutex<Vec<wisp_tools::ToolEvent>>,
     }
 
     #[async_trait]
@@ -1615,13 +1577,16 @@ mod tests {
             true
         }
 
-        async fn emit(&self, event: ToolEvent) {
+        async fn emit(&self, event: wisp_tools::ToolEvent) {
             self.events.lock().unwrap().push(event);
         }
     }
 
+    /// The tool result itself is the live-retrieval record the UI reads. A
+    /// separate presentation event outlived the turn it described and revived a
+    /// stale "no live retrieval" banner (#887, #921), so browser tools emit none.
     #[tokio::test]
-    async fn disconnected_tools_emit_a_browser_disconnected_presentation() {
+    async fn disconnected_tools_mark_the_result_without_a_presentation() {
         let bridge = Arc::new(BrowserBridge::new(PathBuf::from("extension")));
         let env = RecordingEnv {
             root: PathBuf::from("."),
@@ -1632,40 +1597,23 @@ mod tests {
             .await;
         assert!(!result.success);
         assert!(result.content.contains(BROWSER_DISCONNECTED_MARKER));
-        let events = env.events.lock().unwrap();
-        match events.as_slice() {
-            [ToolEvent::Presentation { kind, payload }] => {
-                assert_eq!(kind, BROWSER_DISCONNECTED_KIND);
-                assert_eq!(payload["code"], BROWSER_DISCONNECTED_CODE);
-                assert_eq!(payload["live_retrieval"], false);
-            }
-            other => panic!("expected one disconnected presentation, got {other:?}"),
-        }
+        assert!(env.events.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn live_retrieval_presentation_replaces_a_prior_disconnect() {
-        let env = RecordingEnv {
-            root: PathBuf::from("."),
-            events: std::sync::Mutex::new(Vec::new()),
-        };
-        emit_disconnected(&env).await;
-        emit_live_retrieval(&env).await;
-        let events = env.events.lock().unwrap();
-        match events.as_slice() {
-            [ToolEvent::Presentation {
-                kind: first,
-                payload: first_payload,
-            }, ToolEvent::Presentation {
-                kind: second,
-                payload: second_payload,
-            }] => {
-                assert_eq!(first, BROWSER_DISCONNECTED_KIND);
-                assert_eq!(first_payload["live_retrieval"], false);
-                assert_eq!(second, BROWSER_CONNECTED_KIND);
-                assert_eq!(second_payload["live_retrieval"], true);
-            }
-            other => panic!("expected disconnect then connect presentations, got {other:?}"),
-        }
+    async fn a_connected_extension_outranks_an_unverifiable_bundled_copy() {
+        let missing = std::env::temp_dir().join(format!(
+            "wisp-browser-extension-connected-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let bridge = Arc::new(BrowserBridge::new(missing));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        bridge.install_client(1, tx).await;
+        let info = bridge.setup_info().await;
+
+        assert_eq!(info["status"], "connected");
+        assert_eq!(info["live_retrieval"], true);
+        assert!(info["code"].is_null());
+        assert_eq!(info["extension_path_verified"], false);
     }
 }

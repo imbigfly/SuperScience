@@ -137,8 +137,8 @@ pub(crate) fn review_message_ui_index(items: &[ChatItem], message_index: usize) 
 #[cfg(test)]
 mod review_jump_tests {
     use super::{
-        browser_offline_notice_from_items, composer_text_from_user_message,
-        last_user_composer_text, review_message_ui_index,
+        browser_offline_notice_from_items, browser_setup_live_retrieval,
+        composer_text_from_user_message, last_user_composer_text, review_message_ui_index,
     };
     use crate::dto::{ChatItem, ContextUsage, ReviewTransitionPhase};
 
@@ -262,14 +262,7 @@ mod review_jump_tests {
         let items = vec![
             ChatItem::User("CLEC12A pubmed".into()),
             setup_item(false),
-            ChatItem::Tool {
-                name: "web_scan".into(),
-                ok: Some(true),
-                input: "tabs".into(),
-                output: "{\"tabs\":[{\"title\":\"PubMed\"}]}".into(),
-                started_at_ms: None,
-                duration_ms: None,
-            },
+            scan_item(true),
             ChatItem::Tool {
                 name: "web_execute_js".into(),
                 ok: Some(true),
@@ -289,16 +282,94 @@ mod review_jump_tests {
             "a later successful scan must not keep the offline banner (#887)"
         );
     }
+
+    fn scan_item(ok: bool) -> ChatItem {
+        ChatItem::Tool {
+            name: "web_scan".into(),
+            ok: Some(ok),
+            input: "tabs".into(),
+            output: if ok {
+                "{\"tabs\":[{\"title\":\"PubMed\"}]}".into()
+            } else {
+                "real-browser bridge unavailable. WISP_BROWSER_DISCONNECTED".to_string()
+            },
+            started_at_ms: None,
+            duration_ms: None,
+        }
+    }
+
+    #[test]
+    fn a_reconnecting_extension_after_a_successful_scan_keeps_the_turn_live() {
+        let items = vec![
+            ChatItem::User("latest rustc".into()),
+            setup_item(false),
+            scan_item(true),
+            scan_item(false),
+        ];
+        assert!(
+            browser_offline_notice_from_items("s1", &items).is_none(),
+            "one successful retrieval means the answer has live results (#921)"
+        );
+    }
+
+    #[test]
+    fn the_notice_describes_the_latest_turn_only() {
+        let mut items = vec![
+            ChatItem::User("latest rustc".into()),
+            scan_item(false),
+            ChatItem::Assistant {
+                text: "Connect the extension first.".into(),
+                model: None,
+                resources: Vec::new(),
+            },
+        ];
+        assert!(browser_offline_notice_from_items("s1", &items).is_some());
+
+        items.push(ChatItem::User("read this page".into()));
+        assert!(
+            browser_offline_notice_from_items("s1", &items).is_none(),
+            "a new turn starts without an offline verdict"
+        );
+    }
+
+    #[test]
+    fn a_truncated_setup_dump_still_reports_live_retrieval() {
+        let truncated = format!(
+            "{{\n  \"status\": \"disconnected\",\n  \"live_retrieval\": false,\n  \"steps\": [\"{}",
+            "x".repeat(64)
+        );
+        assert_eq!(browser_setup_live_retrieval(&truncated), Some(false));
+        assert_eq!(
+            browser_setup_live_retrieval("{\"status\":\"connected\"}"),
+            Some(true)
+        );
+        assert_eq!(browser_setup_live_retrieval("not json"), None);
+    }
 }
 
-pub(crate) const BROWSER_DISCONNECTED_KIND: &str = "browser_disconnected";
-pub(crate) const BROWSER_CONNECTED_KIND: &str = "browser_connected";
 pub(crate) const BROWSER_DISCONNECTED_MARKER: &str = "WISP_BROWSER_DISCONNECTED";
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct BrowserOfflineNotice {
     pub frame_id: String,
     pub retry_text: String,
+}
+
+/// Apply a recomputed verdict for one session without disturbing another
+/// session's banner.
+pub(crate) fn set_browser_offline_notice(
+    notice: RwSignal<Option<BrowserOfflineNotice>>,
+    frame_id: &str,
+    next: Option<BrowserOfflineNotice>,
+) {
+    match next {
+        Some(next) => notice.set(Some(next)),
+        None => notice.update(|current| {
+            if current.as_ref().is_some_and(|row| row.frame_id == frame_id) {
+                *current = None;
+            }
+        }),
+    }
 }
 
 pub(crate) fn last_user_composer_text(items: &[ChatItem]) -> String {
@@ -312,18 +383,30 @@ pub(crate) fn last_user_composer_text(items: &[ChatItem]) -> String {
         .unwrap_or_default()
 }
 
-fn is_browser_retrieval_tool(name: &str) -> bool {
+fn is_live_retrieval_tool(name: &str) -> bool {
     matches!(
         name,
-        "web_scan" | "web_open_tab" | "web_execute_js" | "web_screenshot" | "browser_setup"
+        "web_scan" | "web_open_tab" | "web_execute_js" | "web_screenshot"
     )
 }
 
+pub(crate) fn is_browser_retrieval_tool(name: &str) -> bool {
+    name == "browser_setup" || is_live_retrieval_tool(name)
+}
+
+/// `browser_setup` returns a long JSON dump that the transcript bounds, so read
+/// the flag as text: a truncated copy still carries the head fields.
 pub(crate) fn browser_setup_live_retrieval(content: &str) -> Option<bool> {
-    let value = serde_json::from_str::<serde_json::Value>(content).ok()?;
-    if let Some(live) = value.get("live_retrieval").and_then(|v| v.as_bool()) {
-        return Some(live);
+    if let Some((_, tail)) = content.split_once("\"live_retrieval\"") {
+        let value = tail.trim_start().trim_start_matches(':').trim_start();
+        if value.starts_with("true") {
+            return Some(true);
+        }
+        if value.starts_with("false") {
+            return Some(false);
+        }
     }
+    let value = serde_json::from_str::<serde_json::Value>(content).ok()?;
     match value.get("status").and_then(|v| v.as_str()) {
         Some("connected") => Some(true),
         Some(_) => Some(false),
@@ -331,41 +414,51 @@ pub(crate) fn browser_setup_live_retrieval(content: &str) -> Option<bool> {
     }
 }
 
-pub(crate) fn browser_retrieval_blocked(name: &str, ok: bool, content: &str) -> bool {
+/// A refused live-retrieval attempt: `browser_setup` reports it as data, the
+/// retrieval tools fail with the bridge's disconnect marker.
+fn browser_retrieval_blocked(name: &str, ok: bool, content: &str) -> bool {
     if name == "browser_setup" {
         return browser_setup_live_retrieval(content) == Some(false);
     }
-    is_browser_retrieval_tool(name) && !ok && content.contains(BROWSER_DISCONNECTED_MARKER)
+    is_live_retrieval_tool(name) && !ok && content.contains(BROWSER_DISCONNECTED_MARKER)
 }
 
-pub(crate) fn browser_retrieval_restored(name: &str, ok: bool, content: &str) -> bool {
-    if name == "browser_setup" {
-        return browser_setup_live_retrieval(content) == Some(true);
-    }
-    matches!(
-        name,
-        "web_scan" | "web_open_tab" | "web_execute_js" | "web_screenshot"
-    ) && ok
+/// Live page data actually reached this turn. The disconnect marker is checked
+/// because a replayed transcript reports every persisted tool row as ok.
+fn browser_retrieval_succeeded(name: &str, ok: bool, content: &str) -> bool {
+    is_live_retrieval_tool(name) && ok && !content.contains(BROWSER_DISCONNECTED_MARKER)
 }
 
+/// The banner speaks about the answer on screen, so only the latest turn counts.
+/// The extension's service worker sleeps and reconnects on a one-minute alarm, so
+/// a turn routinely mixes refused attempts with successful ones; one success
+/// means the answer does contain live results (#887, #921).
 pub(crate) fn browser_offline_notice_from_items(
     frame_id: &str,
     items: &[ChatItem],
 ) -> Option<BrowserOfflineNotice> {
+    let turn_start = items
+        .iter()
+        .rposition(|item| matches!(item, ChatItem::User(_)))
+        .map_or(0, |index| index + 1);
     let mut blocked = false;
-    for item in items {
-        if let ChatItem::Tool {
+    for item in &items[turn_start..] {
+        let ChatItem::Tool {
             name,
             ok: Some(ok),
             output,
             ..
         } = item
-        {
-            if browser_retrieval_restored(name, *ok, output) {
-                blocked = false;
-            } else if browser_retrieval_blocked(name, *ok, output) {
-                blocked = true;
-            }
+        else {
+            continue;
+        };
+        if browser_retrieval_succeeded(name, *ok, output) {
+            return None;
+        }
+        if browser_retrieval_blocked(name, *ok, output) {
+            blocked = true;
+        } else if name == "browser_setup" && browser_setup_live_retrieval(output) == Some(true) {
+            blocked = false;
         }
     }
     blocked.then(|| BrowserOfflineNotice {

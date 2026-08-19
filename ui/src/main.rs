@@ -2244,6 +2244,8 @@ fn App() -> impl IntoView {
             }
             AgentEvent::User { frame_id, text } => {
                 dismiss_follow_up_questions(follow_up_questions, follow_up_generation, &frame_id);
+                // The banner judges the answer on screen; a new turn has none yet.
+                set_browser_offline_notice(browser_offline_cb, &frame_id, None);
                 set_pet_activity(&frame_id, "running");
                 flush_now();
                 let outline_text = text.clone();
@@ -2428,28 +2430,24 @@ fn App() -> impl IntoView {
                         promote_assistant_text(v, &content);
                     }
                 });
-                if browser_retrieval_blocked(&name, ok, &content) {
-                    let retry_text =
+                // The tool rows of the running turn are the whole verdict, so
+                // recompute from them instead of latching one event: a refused
+                // attempt after a successful scan must not claim the answer has
+                // no live results (#921).
+                if is_browser_retrieval_tool(&name) {
+                    let notice =
                         if active_cb.get_untracked().as_deref() == Some(frame_id.as_str()) {
-                            items_cb.with_untracked(|rows| last_user_composer_text(rows))
+                            items_cb.with_untracked(|rows| {
+                                browser_offline_notice_from_items(&frame_id, rows)
+                            })
                         } else {
                             transcripts_cb.with_untracked(|cache| {
-                                cache
-                                    .get(&frame_id)
-                                    .map(|rows| last_user_composer_text(rows))
-                                    .unwrap_or_default()
+                                cache.get(&frame_id).and_then(|rows| {
+                                    browser_offline_notice_from_items(&frame_id, rows)
+                                })
                             })
                         };
-                    browser_offline_cb.set(Some(BrowserOfflineNotice {
-                        frame_id: frame_id.clone(),
-                        retry_text,
-                    }));
-                } else if browser_retrieval_restored(&name, ok, &content) {
-                    browser_offline_cb.update(|notice| {
-                        if notice.as_ref().is_some_and(|row| row.frame_id == frame_id) {
-                            *notice = None;
-                        }
-                    });
+                    set_browser_offline_notice(browser_offline_cb, &frame_id, notice);
                 }
                 refresh_transcript_projections(&frame_id);
             }
@@ -2479,28 +2477,6 @@ fn App() -> impl IntoView {
                     && active_cb.get_untracked().as_deref() == Some(frame_id.as_str())
                 {
                     show_mcp_app.call((frame_id, presentation_id, payload, true));
-                } else if presentation_kind == BROWSER_DISCONNECTED_KIND {
-                    let retry_text =
-                        if active_cb.get_untracked().as_deref() == Some(frame_id.as_str()) {
-                            items_cb.with_untracked(|rows| last_user_composer_text(rows))
-                        } else {
-                            transcripts_cb.with_untracked(|cache| {
-                                cache
-                                    .get(&frame_id)
-                                    .map(|rows| last_user_composer_text(rows))
-                                    .unwrap_or_default()
-                            })
-                        };
-                    browser_offline_cb.set(Some(BrowserOfflineNotice {
-                        frame_id,
-                        retry_text,
-                    }));
-                } else if presentation_kind == BROWSER_CONNECTED_KIND {
-                    browser_offline_cb.update(|notice| {
-                        if notice.as_ref().is_some_and(|row| row.frame_id == frame_id) {
-                            *notice = None;
-                        }
-                    });
                 }
             }
             AgentEvent::Usage {
@@ -5188,19 +5164,14 @@ fn App() -> impl IntoView {
                 // unguarded set would clobber the newer view with stale rows (#53).
                 if active_session.get().as_deref() == Some(&id) {
                     items.set(chats.clone());
-                    // Tool rows are the last word. A leftover disconnected
-                    // presentation from earlier in the session must not cover a
-                    // later successful scan when the stream ends or the page
-                    // reloads (#887).
-                    if let Some(notice) = browser_offline_notice_from_items(&id, &chats) {
-                        browser_offline_notice.set(Some(notice));
-                    } else {
-                        browser_offline_notice.update(|notice| {
-                            if notice.as_ref().is_some_and(|row| row.frame_id == id) {
-                                *notice = None;
-                            }
-                        });
-                    }
+                    // The latest turn's tool rows are the whole verdict, so a
+                    // reload cannot revive an offline banner the turn's own
+                    // successful retrieval already answered (#887).
+                    set_browser_offline_notice(
+                        browser_offline_notice,
+                        &id,
+                        browser_offline_notice_from_items(&id, &chats),
+                    );
                     for presentation in presentations {
                         if presentation.presentation_kind == "mcp_app" {
                             show_mcp_app.call((
