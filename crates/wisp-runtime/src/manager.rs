@@ -29,6 +29,12 @@ pub struct RuntimeKey {
     pub project_id: String,
     #[serde(default = "default_runtime_scope")]
     pub scope_key: String,
+    /// Conversation (frame) that owns this interpreter. Parallel sessions in
+    /// one project must not share in-memory Python/R state (#911), so agent
+    /// tool calls key their runtime by session. Empty means scope-shared:
+    /// user-started runtimes without an owning conversation.
+    #[serde(default)]
+    pub session_id: String,
     pub context_id: String,
     pub language: RuntimeLanguage,
 }
@@ -38,6 +44,7 @@ impl RuntimeKey {
         Self {
             project_id: project_id.into(),
             scope_key: MAINLINE_RUNTIME_SCOPE.into(),
+            session_id: String::new(),
             context_id: context_id.into(),
             language: RuntimeLanguage::Python,
         }
@@ -51,6 +58,7 @@ impl RuntimeKey {
         Self {
             project_id: project_id.into(),
             scope_key: scope_key.into(),
+            session_id: String::new(),
             context_id: context_id.into(),
             language: RuntimeLanguage::Python,
         }
@@ -64,6 +72,7 @@ impl RuntimeKey {
         Self {
             project_id: project_id.into(),
             scope_key: MAINLINE_RUNTIME_SCOPE.into(),
+            session_id: String::new(),
             context_id: context_id.into(),
             language: RuntimeLanguage::R,
         }
@@ -77,9 +86,16 @@ impl RuntimeKey {
         Self {
             project_id: project_id.into(),
             scope_key: scope_key.into(),
+            session_id: String::new(),
             context_id: context_id.into(),
             language: RuntimeLanguage::R,
         }
+    }
+
+    /// Bind this key to one conversation so its interpreter state is private.
+    pub fn with_session(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = session_id.into();
+        self
     }
 }
 
@@ -387,6 +403,7 @@ impl RuntimeManager {
                 .project_id
                 .cmp(&b.key.project_id)
                 .then_with(|| a.key.scope_key.cmp(&b.key.scope_key))
+                .then_with(|| a.key.session_id.cmp(&b.key.session_id))
                 .then_with(|| a.key.context_id.cmp(&b.key.context_id))
                 .then_with(|| a.key.language.cmp(&b.key.language))
         });
@@ -423,6 +440,40 @@ impl RuntimeManager {
                 .sessions
                 .iter()
                 .filter(|(key, _)| key.project_id == project_id)
+                .map(|(key, session)| (key.clone(), session.clone()))
+                .collect::<Vec<_>>()
+        };
+        for (_, session) in &sessions {
+            session.request_stop();
+        }
+        for (_, session) in &sessions {
+            session.wait_dead().await;
+        }
+        let mut registry = self.registry();
+        for (key, session) in sessions {
+            if registry
+                .sessions
+                .get(&key)
+                .is_some_and(|current| Arc::ptr_eq(current, &session))
+            {
+                registry.sessions.remove(&key);
+            }
+        }
+    }
+
+    /// Stop every runtime owned by one conversation, e.g. when the session is
+    /// deleted or a delegated subagent completes. Scope-shared runtimes
+    /// (empty session) are never matched.
+    pub async fn stop_session(&self, project_id: &str, session_id: &str) {
+        if session_id.is_empty() {
+            return;
+        }
+        let sessions = {
+            let registry = self.registry();
+            registry
+                .sessions
+                .iter()
+                .filter(|(key, _)| key.project_id == project_id && key.session_id == session_id)
                 .map(|(key, session)| (key.clone(), session.clone()))
                 .collect::<Vec<_>>()
         };
@@ -1031,6 +1082,86 @@ mod tests {
         assert_eq!(mainline_value.stdout, "3");
         assert_eq!(exploration_value.stdout, "7");
         assert_eq!(launcher.launches.load(Ordering::SeqCst), 2);
+        manager.shutdown_all().await;
+    }
+
+    #[tokio::test]
+    async fn parallel_sessions_in_one_scope_keep_independent_runtime_state() {
+        let launcher = FakeLauncher::default();
+        let manager = manager(&launcher);
+        let session_a = RuntimeKey::local_python("project-a").with_session("frame-a");
+        let session_b = RuntimeKey::local_python("project-a").with_session("frame-b");
+        let cwd = PathBuf::from("project-a");
+
+        finished(manager.execute(&session_a, &cwd, "set:3").await.unwrap())
+            .await
+            .unwrap();
+        finished(manager.execute(&session_b, &cwd, "set:7").await.unwrap())
+            .await
+            .unwrap();
+
+        let value_a = finished(manager.execute(&session_a, &cwd, "get").await.unwrap())
+            .await
+            .unwrap();
+        let value_b = finished(manager.execute(&session_b, &cwd, "get").await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(value_a.stdout, "3");
+        assert_eq!(value_b.stdout, "7");
+        assert_eq!(launcher.launches.load(Ordering::SeqCst), 2);
+        manager.shutdown_all().await;
+    }
+
+    #[tokio::test]
+    async fn stopping_a_session_keeps_sibling_and_scope_shared_runtimes() {
+        let launcher = FakeLauncher::default();
+        let manager = manager(&launcher);
+        let shared = RuntimeKey::local_python("project-a");
+        let session_a = RuntimeKey::local_python("project-a").with_session("frame-a");
+        let session_b = RuntimeKey::local_python("project-a").with_session("frame-b");
+        let cwd = PathBuf::from("project-a");
+        for key in [&shared, &session_a, &session_b] {
+            manager.start(key.clone(), cwd.clone()).await.unwrap();
+        }
+
+        manager.stop_session("project-a", "frame-a").await;
+        let remaining = manager
+            .list()
+            .into_iter()
+            .map(|runtime| runtime.key)
+            .collect::<Vec<_>>();
+        assert!(remaining.contains(&shared));
+        assert!(remaining.contains(&session_b));
+        assert!(!remaining.contains(&session_a));
+
+        // An empty session id must never match the scope-shared runtime.
+        manager.stop_session("project-a", "").await;
+        assert_eq!(manager.list().len(), 2);
+        manager.shutdown_all().await;
+    }
+
+    #[tokio::test]
+    async fn stopping_a_scope_stops_its_session_runtimes_too() {
+        let launcher = FakeLauncher::default();
+        let manager = manager(&launcher);
+        let mainline_session = RuntimeKey::local_python("project-a").with_session("frame-a");
+        let exploration_session =
+            RuntimeKey::python_in_scope("project-a", "exploration-a", LOCAL_CONTEXT_ID)
+                .with_session("frame-b");
+        let cwd = PathBuf::from("project-a");
+        for key in [&mainline_session, &exploration_session] {
+            manager.start(key.clone(), cwd.clone()).await.unwrap();
+        }
+
+        manager
+            .stop_scope("project-a", MAINLINE_RUNTIME_SCOPE)
+            .await;
+        let remaining = manager
+            .list()
+            .into_iter()
+            .map(|runtime| runtime.key)
+            .collect::<Vec<_>>();
+        assert_eq!(remaining, vec![exploration_session]);
         manager.shutdown_all().await;
     }
 

@@ -11,6 +11,7 @@ pub struct SetRuntimeInterpreterTool {
     runtime_manager: RuntimeManager,
     project_id: String,
     scope_key: String,
+    session_id: String,
 }
 
 #[derive(Deserialize)]
@@ -21,17 +22,19 @@ struct SetRuntimeInterpreterArgs {
 }
 
 impl SetRuntimeInterpreterTool {
-    pub fn new_in_scope(
+    pub fn new_in_session(
         store: Store,
         runtime_manager: RuntimeManager,
         project_id: impl Into<String>,
         scope_key: impl Into<String>,
+        session_id: impl Into<String>,
     ) -> Self {
         Self {
             store,
             runtime_manager,
             project_id: project_id.into(),
             scope_key: scope_key.into(),
+            session_id: session_id.into(),
         }
     }
 }
@@ -127,6 +130,7 @@ impl Tool for SetRuntimeInterpreterTool {
         let key = RuntimeKey {
             project_id: self.project_id.clone(),
             scope_key: self.scope_key.clone(),
+            session_id: self.session_id.clone(),
             context_id: context_id.to_string(),
             language: args.language,
         };
@@ -147,7 +151,7 @@ impl Tool for SetRuntimeInterpreterTool {
             .await
         {
             Ok(_) => ToolResult::ok(format!(
-                "Saved the {label} interpreter for context '{context_id}' as '{executable}' and restarted this project's {label} runtime. Its previous in-memory variables were cleared."
+                "Saved the {label} interpreter for context '{context_id}' as '{executable}' and restarted this conversation's {label} runtime. Its previous in-memory variables were cleared; other conversations keep the old interpreter until their runtimes restart."
             )),
             Err(error) => ToolResult::fail(format!(
                 "Saved the {label} interpreter for context '{context_id}' as '{executable}', but the runtime failed to restart: {error}"
@@ -199,11 +203,12 @@ mod tests {
         })
         .to_string();
         store.upsert_execution_context(&context).await.unwrap();
-        let tool = SetRuntimeInterpreterTool::new_in_scope(
+        let tool = SetRuntimeInterpreterTool::new_in_session(
             store.clone(),
             manager(),
             "project-1",
             wisp_runtime::MAINLINE_RUNTIME_SCOPE,
+            "frame-1",
         );
 
         let result = tool
@@ -241,11 +246,12 @@ mod tests {
         let context = wisp_store::ExecutionContext::new("local", "Local").unwrap();
         let original = context.config_json.clone();
         store.upsert_execution_context(&context).await.unwrap();
-        let tool = SetRuntimeInterpreterTool::new_in_scope(
+        let tool = SetRuntimeInterpreterTool::new_in_session(
             store.clone(),
             manager(),
             "project-1",
             wisp_runtime::MAINLINE_RUNTIME_SCOPE,
+            "frame-1",
         );
 
         let result = tool
@@ -273,11 +279,12 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let store = Store::open(&db).await.unwrap();
-        let tool = SetRuntimeInterpreterTool::new_in_scope(
+        let tool = SetRuntimeInterpreterTool::new_in_session(
             store,
             manager(),
             "project-1",
             wisp_runtime::MAINLINE_RUNTIME_SCOPE,
+            "frame-1",
         );
         assert_eq!(tool.name(), "set_runtime_interpreter");
         assert_eq!(

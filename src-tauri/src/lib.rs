@@ -3978,11 +3978,12 @@ async fn wire_runtimes_and_mcp(
         registry.add(Box::new(
             session_context_tool::SessionExecutionContextTool::new(
                 Box::new(
-                    runtime_config_tool::SetRuntimeInterpreterTool::new_in_scope(
+                    runtime_config_tool::SetRuntimeInterpreterTool::new_in_session(
                         store.clone(),
                         runtime_manager.clone(),
                         project_id,
                         scope_key,
+                        frame_id,
                     ),
                 ),
                 store.clone(),
@@ -4018,10 +4019,13 @@ async fn wire_runtimes_and_mcp(
     if runtime_granted("python") && worker_path.is_file() {
         registry.add(Box::new(
             session_context_tool::SessionExecutionContextTool::new(
-                Box::new(wisp_runtime::ReplTool::new_in_scope(
+                // Keyed by conversation: parallel sessions of one project must
+                // never share interpreter state (#911).
+                Box::new(wisp_runtime::ReplTool::new_in_session(
                     runtime_manager.clone(),
                     project_id,
                     scope_key,
+                    frame_id,
                 )),
                 store.clone(),
                 frame_id,
@@ -4039,10 +4043,11 @@ async fn wire_runtimes_and_mcp(
     if runtime_granted("r") && r_worker_path.is_file() {
         registry.add(Box::new(
             session_context_tool::SessionExecutionContextTool::new(
-                Box::new(wisp_runtime::RTool::new_in_scope(
+                Box::new(wisp_runtime::RTool::new_in_session(
                     runtime_manager.clone(),
                     project_id,
                     scope_key,
+                    frame_id,
                 )),
                 store.clone(),
                 frame_id,
