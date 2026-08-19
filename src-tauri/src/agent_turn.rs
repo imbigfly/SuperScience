@@ -1175,7 +1175,11 @@ pub(crate) async fn send_message_inner(
             Ok(frame_id)
         }
         Err(e) => {
-            let message = format!("{e}");
+            let message = wisp_llm::annotate_transport_error(
+                &format!("{e}"),
+                llm_proxy().as_deref(),
+                &wisp_llm::ambient_proxy_env(),
+            );
             persist_and_emit_terminal_event(
                 state,
                 &app,

@@ -10818,6 +10818,25 @@ test("context-limit recovery can continue in a new session with the old one atta
   });
 });
 
+test("a leftover proxy connect error points at Model API proxy", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("hello");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+  const frameId = String((await lastInvokeArgs(page, "send_message")).sessionId);
+
+  await emitTauriEvent(page, "agent", {
+    kind: "Error",
+    frame_id: frameId,
+    message: "http: error sending request: tcp connect error: Connection refused (os error 111) (via leftover HTTPS_PROXY=http://127.0.0.1:7890)",
+  });
+
+  const card = page.locator(".finding.err");
+  await expect(card).toBeVisible();
+  await expect(card.locator(".finding-body")).toContainText("Model API proxy");
+  await expect(card.locator(".finding-body")).toContainText("none");
+});
+
 test("pet stays off until the user explicitly configures its directory", async ({ page }) => {
   await page.goto("/");
   await openSettingsSection(page, "Pet");

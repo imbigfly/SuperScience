@@ -1657,7 +1657,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "settings.resume_last_session") => Some("Resume the last conversation when opening a workspace"),
         (Locale::En, "settings.resume_last_session_hint") => Some("Enabled by default. Reopen the last conversation that has a user message, not a named unused draft or a blank session."),
         (Locale::En, "settings.proxy_url") => Some("Model API proxy"),
-        (Locale::En, "settings.proxy_url_hint") => Some("Empty follows the system proxy. Enter `none` to force a direct connection, or a proxy URL like http://127.0.0.1:7890 or socks5://127.0.0.1:1080. Applies to model API requests after saving."),
+        (Locale::En, "settings.proxy_url_hint") => Some("Empty follows the system proxy, including leftover HTTP_PROXY/HTTPS_PROXY. Enter `none` to force a direct connection, or a proxy URL like http://127.0.0.1:7890 or socks5://127.0.0.1:1080. Applies to model API requests after saving."),
         (Locale::En, "settings.send_shortcut") => Some("Send and newline shortcuts"),
         (Locale::En, "settings.send_shortcut.enter") => Some("Enter sends · Shift+Enter inserts a newline"),
         (Locale::En, "settings.send_shortcut.modifier_enter") => Some("{modifier}+Enter sends · Enter inserts a newline"),
@@ -1901,7 +1901,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "err.hint.model_name") => Some("The provider does not recognize the configured model name. Check the model name in Settings → Models."),
         (Locale::En, "err.hint.rate") => Some("Rate limited by the provider. Wait a moment and retry."),
         (Locale::En, "err.hint.server") => Some("The provider is temporarily overloaded or down. Retry in a bit."),
-        (Locale::En, "err.hint.network") => Some("Could not reach the API server. Check your network, API URL, and proxy settings."),
+        (Locale::En, "err.hint.network") => Some("Could not reach the model API. A leftover system proxy (HTTP_PROXY/HTTPS_PROXY) often intercepts requests after the proxy app has been closed. Open Settings → Model API proxy and set it to `none` to connect directly, or enter a proxy that is still running."),
         (Locale::En, "err.hint.bad_request") => Some("The provider rejected the request. Common causes: the conversation is too long, or a message contains content this model does not support (e.g. images). Try /compact or another model."),
         (Locale::En, "err.hint.tool_pairing") => Some("A tool call is missing its result in the conversation history (often after an interrupted or timed-out tool). Click Resume again after updating, or send /compact to repair the history."),
         (Locale::En, "outline.title") => Some("Conversation outline"),
@@ -3989,7 +3989,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "settings.resume_last_session") => Some("打开工作区时继续上次对话"),
         (Locale::Zh, "settings.resume_last_session_hint") => Some("默认开启。打开工作区时恢复最近有过对话的会话，不会进入仅改了名、还没发过消息的草稿。"),
         (Locale::Zh, "settings.proxy_url") => Some("模型 API 代理"),
-        (Locale::Zh, "settings.proxy_url_hint") => Some("留空＝跟随系统代理；填 none＝强制直连（忽略系统代理）；或填代理地址，如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080。保存后对模型 API 请求生效。"),
+        (Locale::Zh, "settings.proxy_url_hint") => Some("留空＝跟随系统代理，也包括残留的 HTTP_PROXY/HTTPS_PROXY。填 none＝强制直连；或填代理地址，如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080。保存后对模型 API 请求生效。"),
         (Locale::Zh, "settings.send_shortcut") => Some("发送与换行快捷键"),
         (Locale::Zh, "settings.send_shortcut.enter") => Some("Enter 发送 · Shift+Enter 换行"),
         (Locale::Zh, "settings.send_shortcut.modifier_enter") => Some("{modifier}+Enter 发送 · Enter 换行"),
@@ -4230,7 +4230,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "err.hint.model_name") => Some("服务商不识别所配置的模型名。请在 设置 → 模型 中核对模型名。"),
         (Locale::Zh, "err.hint.rate") => Some("请求过于频繁，被服务商限流。稍等片刻再重试。"),
         (Locale::Zh, "err.hint.server") => Some("服务商暂时过载或故障。请稍后重试。"),
-        (Locale::Zh, "err.hint.network") => Some("无法连接到 API 服务器。请检查网络、API 地址和代理设置。"),
+        (Locale::Zh, "err.hint.network") => Some("无法连接到模型 API。常见原因是本机代理软件已关闭，但系统仍残留 HTTP_PROXY/HTTPS_PROXY。请打开 设置 → 模型 API 代理：填 `none` 强制直连，或填入仍在运行的代理地址。"),
         (Locale::Zh, "err.hint.bad_request") => Some("请求被服务商拒绝。常见原因：对话过长，或消息包含该模型不支持的内容（如图片）。可尝试 /compact 或更换模型。"),
         (Locale::Zh, "err.hint.tool_pairing") => Some("对话历史里有一条工具调用缺少对应结果（常见于工具中断或超时后）。更新后请再点「继续执行」，或发送 /compact 修复历史。"),
         (Locale::Zh, "outline.title") => Some("对话目录"),
@@ -5102,7 +5102,16 @@ fn api_error_hint_key(msg: &str) -> Option<&'static str> {
     } else if m.contains("api: 5") || m.contains("overloaded") {
         "err.hint.server"
     } else if m.contains("http: ")
-        && (m.contains("connect") || m.contains("timed out") || m.contains("dns"))
+        && (m.contains("connect")
+            || m.contains("timed out")
+            || m.contains("deadline has elapsed")
+            || m.contains("dns")
+            || m.contains("refused")
+            || m.contains("via leftover")
+            || m.contains("via model api proxy")
+            || m.contains("socks")
+            || m.contains("tunnel")
+            || m.contains("unreachable"))
     {
         "err.hint.network"
     } else if m.contains("no tool output found for tool call")
@@ -5170,6 +5179,14 @@ mod api_error_hint_tests {
                 "http: error sending request: tcp connect error",
                 "err.hint.network",
             ),
+            (
+                "http: error sending request: Connection refused (os error 111) (via leftover HTTPS_PROXY=http://127.0.0.1:7890)",
+                "err.hint.network",
+            ),
+            (
+                "http: error sending request for url (https://api.example.com/v1/chat/completions): client error (Connect): tcp connect error: deadline has elapsed",
+                "err.hint.network",
+            ),
         ];
         for (msg, key) in cases {
             assert_eq!(hint_key(msg), Some(t(Locale::En, key)), "for: {msg}");
@@ -5215,6 +5232,20 @@ mod api_error_hint_tests {
         let out = localize_backend(Locale::Zh, msg);
         assert!(out.starts_with(msg), "raw error must stay visible");
         assert!(out.contains(&t(Locale::Zh, "err.hint.balance")));
+    }
+
+    #[test]
+    fn leftover_proxy_connect_points_at_model_api_proxy() {
+        let msg = "http: error sending request: tcp connect error: Connection refused (os error 111) (via leftover HTTPS_PROXY=http://127.0.0.1:7890)";
+        assert_eq!(
+            hint_key(msg),
+            Some(t(Locale::En, "err.hint.network"))
+        );
+        let zh = localize_backend(Locale::Zh, msg);
+        assert!(zh.contains("模型 API 代理"), "{zh}");
+        assert!(zh.contains("none"), "{zh}");
+        let en = localize_backend(Locale::En, msg);
+        assert!(en.contains("Model API proxy"), "{en}");
     }
 
     #[test]
