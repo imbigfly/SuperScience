@@ -540,6 +540,18 @@ pub(crate) async fn send_message_inner(
         agent.add_tool(Box::new(browser_bridge::WebScreenshotTool::new(
             state.browser_bridge.clone(),
         )));
+        agent.add_tool(Box::new(browser_bridge::WebSaveAssetsTool::new(
+            state.browser_bridge.clone(),
+        )));
+        agent.add_tool(Box::new(browser_bridge::WebAgentSendTool::new(
+            state.browser_bridge.clone(),
+        )));
+        agent.add_tool(Box::new(browser_bridge::WebAgentWaitTool::new(
+            state.browser_bridge.clone(),
+        )));
+        agent.add_tool(Box::new(browser_bridge::WebAgentReadTool::new(
+            state.browser_bridge.clone(),
+        )));
         agent.add_tool(Box::new(run_context::RunInContextTool::new(
             state.store.clone(),
             state.run_manager.clone(),
