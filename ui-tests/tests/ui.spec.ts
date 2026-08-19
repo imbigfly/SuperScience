@@ -2222,6 +2222,71 @@ test("/share exports selected, keyword-redacted messages as a PNG", async ({ pag
   }).toBe(1200);
   await expect(overlay).toHaveCount(0);
 
+  // HTML format: same dialog exports a self-contained rendered document.
+  await composerInput.fill("/share");
+  await composerInput.press("Enter");
+  await expect(overlay).toBeVisible();
+  await overlay.getByTestId("share-format-html").click();
+  await expect(overlay.getByTestId("share-export")).toHaveText("Export HTML");
+  await expect(overlay.getByTestId("share-width-input")).toHaveCount(0);
+  await overlay.locator("#share-redact-input").fill("alice");
+  await overlay.getByTestId("share-export").click();
+  await expect.poll(() => lastInvokeArgs(page, "save_share_html")).toMatchObject({
+    defaultName: expect.stringMatching(/^wisp-share-\d{4}-\d{2}-\d{2}\.html$/),
+  });
+  const html = String((await lastInvokeArgs(page, "save_share_html")).html);
+  expect(html).toContain("<!doctype html>");
+  expect(html).toContain("xxx confirmed the <strong>spectrum</strong>");
+  expect(html).toContain("<h2>Fit summary</h2>");
+  expect(html).toContain("<li>peak A at 530 nm</li>");
+  expect(html).toContain("fit(spectrum)");
+  expect(html).toContain("user-bubble");
+  expect(html).toContain("body md");
+  expect(html).toContain("--bg-panel");
+  expect(html).not.toContain("#2f6fed");
+  expect(html).not.toContain("class=\"card\"");
+  const live = await page.evaluate(() => {
+    const read = (el) => {
+      if (!el) return { bg: "", color: "" };
+      const style = getComputedStyle(el);
+      return { bg: style.backgroundColor, color: style.color };
+    };
+    return {
+      user: read(document.querySelector(".msg.user .body")),
+      assistant: read(document.querySelector(".msg.assistant .body.md")),
+      app: read(document.querySelector(".center")),
+    };
+  });
+  const exported = await page.evaluate(async (documentHtml) => {
+    const iframe = document.createElement("iframe");
+    iframe.style.cssText = "position:fixed;left:-9999px;width:880px;height:640px;border:0";
+    document.body.appendChild(iframe);
+    const done = new Promise((resolve) => {
+      iframe.addEventListener("load", () => resolve(), { once: true });
+    });
+    iframe.srcdoc = documentHtml;
+    await done;
+    const doc = iframe.contentDocument;
+    const win = iframe.contentWindow;
+    const read = (el) => {
+      if (!el || !win) return { bg: "", color: "" };
+      const style = win.getComputedStyle(el);
+      return { bg: style.backgroundColor, color: style.color };
+    };
+    const result = {
+      user: read(doc && doc.querySelector(".msg.user .body")),
+      assistant: read(doc && doc.querySelector(".msg.assistant .body.md")),
+      page: read(doc && doc.body),
+    };
+    iframe.remove();
+    return result;
+  }, html);
+  expect(exported.user.bg).toBe(live.user.bg);
+  expect(exported.user.color).toBe(live.user.color);
+  expect(exported.assistant.color).toBe(live.assistant.color);
+  expect(exported.page.bg).toBe(live.app.bg);
+  await expect(overlay).toHaveCount(0);
+
   // The composer "+" menu offers the same entry once the session has content.
   await page.locator(".composer-plus").click();
   await expect(shareItem).toBeEnabled();
@@ -2241,7 +2306,7 @@ test("/share exports selected, keyword-redacted messages as a PNG", async ({ pag
   await expect(composerInput).toBeVisible();
 });
 
-test("/share hides the social copy flow and exports only the long image", async ({ page }) => {
+test("/share hides the social copy flow and keeps PNG plus HTML export", async ({ page }) => {
   await enterApp(page);
   const composerInput = composer(page);
   const overlay = page.getByTestId("share-overlay");
@@ -2255,13 +2320,16 @@ test("/share hides the social copy flow and exports only the long image", async 
   await expect(overlay).toBeVisible();
   await expect(overlay.getByRole("heading", { name: "Share as image" })).toBeVisible();
   await expect(overlay.locator(".share-row")).toHaveCount(3);
-  // The platform picker, the skill-copy button, and the HTML format toggle
-  // are hidden while sharing is limited to the long PNG.
+  // The platform picker and the skill-copy button stay hidden; HTML export
+  // is available again next to the long PNG.
   await expect(overlay.getByTestId("share-social-skill")).toHaveCount(0);
   await expect(overlay.getByTestId("share-platform-xiaohongshu")).toHaveCount(0);
   await expect(overlay.getByTestId("share-platform-wechat")).toHaveCount(0);
-  await expect(overlay.getByTestId("share-format-html")).toHaveCount(0);
+  await expect(overlay.getByTestId("share-format-png")).toBeVisible();
+  await expect(overlay.getByTestId("share-format-html")).toBeVisible();
   await expect(overlay.getByTestId("share-export")).toHaveText("Export PNG");
+  await overlay.getByTestId("share-format-html").click();
+  await expect(overlay.getByTestId("share-export")).toHaveText("Export HTML");
 });
 
 test("composer / menu layers sections and gives each command its own icon", async ({ page }) => {

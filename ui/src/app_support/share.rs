@@ -96,8 +96,7 @@ pub(crate) fn share_messages(items: &[ChatItem]) -> Vec<ShareMessage> {
 
 /// Prompt sent with `social-note` so the agent writes from the same redacted
 /// selection the long-image export would use, for the platform the user picked.
-/// Currently only reachable from tests: the social-copy flow is hidden while
-/// the share dialog exports only the long image.
+/// Currently only reachable from tests: the social-copy flow stays hidden.
 #[cfg(test)]
 pub(crate) fn social_skill_prompt(
     selected: &[&ShareMessage],

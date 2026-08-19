@@ -253,9 +253,8 @@ fn share_png_rows(
         .collect()
 }
 
-/// `/share` preview dialog. Opening it shows the long-image picker; the only
-/// export is the long PNG (social copy via the `social-note` skill and the
-/// HTML format are temporarily hidden, their code kept for a later return).
+/// `/share` preview dialog. Opening it shows the long-image picker with PNG
+/// and HTML export. Social copy via the `social-note` skill stays hidden.
 /// `draft` is root-owned (`None` = closed) so the app-level Escape stack can
 /// dismiss it in visual order.
 #[component]
@@ -440,13 +439,29 @@ pub(super) fn ShareOverlay(
                             prop:value=move || keywords.get()
                             on:input=move |ev| keywords.set(event_target_value(&ev)) />
                     </label>
-                    <label class="share-redact" for="share-width-input">
-                        {move || t(locale.get(), "share.width_label")}
-                        <input id="share-width-input" data-testid="share-width-input"
-                            autocomplete="off" inputmode="numeric" placeholder="840"
-                            prop:value=move || width.get()
-                            on:input=move |ev| width.set(event_target_value(&ev)) />
-                    </label>
+                    <div class="share-format">
+                        <span class="share-format-label">{move || t(locale.get(), "share.format_label")}</span>
+                        <div class="share-format-seg" role="group"
+                            aria-label=move || t(locale.get(), "share.format_label")>
+                            <button type="button" data-testid="share-format-png"
+                                class:active=move || format.get() == ShareExportFormat::Png
+                                on:click=move |_| format.set(ShareExportFormat::Png)>
+                                {move || t(locale.get(), "share.format_png")}</button>
+                            <button type="button" data-testid="share-format-html"
+                                class:active=move || format.get() == ShareExportFormat::Html
+                                on:click=move |_| format.set(ShareExportFormat::Html)>
+                                {move || t(locale.get(), "share.format_html")}</button>
+                        </div>
+                    </div>
+                    {move || (format.get() == ShareExportFormat::Png).then(|| view! {
+                        <label class="share-redact" for="share-width-input">
+                            {move || t(locale.get(), "share.width_label")}
+                            <input id="share-width-input" data-testid="share-width-input"
+                                autocomplete="off" inputmode="numeric" placeholder="840"
+                                prop:value=move || width.get()
+                                on:input=move |ev| width.set(event_target_value(&ev)) />
+                        </label>
+                    })}
                     {move || error.get().map(|message| view! {
                         <div class="settings-status fail">{message}</div>
                     })}
