@@ -41,8 +41,9 @@ you opt into Full Permission.
 
 **Compute from laptop to remote servers**
 
-Persistent Python and R kernels keep variables across cells, conversations, and
-restarts. Register local, WSL, and SSH hosts once; probe hardware; submit
+Persistent Python and R kernels keep variables across cells and turns; each
+conversation gets its own isolated kernel, so parallel sessions never share
+state. Register local, WSL, and SSH hosts once; probe hardware; submit
 long **Runs** with live logs. Keys live in the OS keyring, never in SQLite.
 
 **Built for science**

@@ -671,6 +671,9 @@ pub(super) async fn transfer_session_to_project(
         if state.active_frame(window.label()).as_deref() == Some(id.as_str()) {
             state.set_active_frame(window.label(), None);
         }
+        // The moved conversation gets a new frame id in the target project;
+        // its old interpreters point at the source workspace and must go.
+        state.runtime_manager.stop_session(&source.id, &id).await;
     } else {
         state
             .store
@@ -745,6 +748,9 @@ pub(super) async fn delete_session(
     if state.active_frame(window.label()).as_deref() == Some(id.as_str()) {
         state.set_active_frame(window.label(), None);
     }
+    // Interpreters are keyed per conversation; a deleted conversation's
+    // Python/R workers must not linger until project close.
+    state.runtime_manager.stop_session(&ap.id, &id).await;
     state
         .store
         .delete_session(&id, &ap.id)
