@@ -14678,21 +14678,6 @@ fn App() -> impl IntoView {
         <ShareOverlay
             locale=locale
             draft=share_draft
-            on_social_skill=Callback::new(move |prompt: String| {
-                composer_references.update(|refs| {
-                    refs.retain(|item| {
-                        !matches!(
-                            item,
-                            ComposerReferenceChip::Skill { name } if name == SOCIAL_SHARE_SKILL
-                        )
-                    });
-                    refs.push(ComposerReferenceChip::Skill {
-                        name: SOCIAL_SHARE_SKILL.to_string(),
-                    });
-                });
-                input.set(prompt);
-                send.call(ComposerSendAction::Normal);
-            })
         />
         <CapabilitiesOverlay
             locale=locale show_capabilities=show_capabilities

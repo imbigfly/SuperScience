@@ -2203,68 +2203,23 @@ test("/share exports selected, keyword-redacted messages as a PNG", async ({ pag
   expect(String(args.pngBase64).length).toBeGreaterThan(10000);
   await expect(overlay).toHaveCount(0);
 
-  // HTML format: same dialog exports a self-contained rendered document.
+  // PNG width is the canvas width (IHDR bytes 16..20) at 2× scale: the
+  // default is 840 px, and the width field overrides it.
+  const pngWidth = (b64: string) =>
+    page.evaluate((raw) => {
+      const bytes = Uint8Array.from(atob(raw), (c) => c.charCodeAt(0));
+      return new DataView(bytes.buffer).getUint32(16, false);
+    }, b64);
+  expect(await pngWidth(String(args.pngBase64))).toBe(1680);
   await composerInput.fill("/share");
   await composerInput.press("Enter");
   await expect(overlay).toBeVisible();
-  await overlay.getByTestId("share-format-html").click();
-  await expect(overlay.getByTestId("share-export")).toHaveText("Export HTML");
-  await overlay.locator("#share-redact-input").fill("alice");
+  await overlay.getByTestId("share-width-input").fill("600");
   await overlay.getByTestId("share-export").click();
-  await expect.poll(() => lastInvokeArgs(page, "save_share_html")).toMatchObject({
-    defaultName: expect.stringMatching(/^wisp-share-\d{4}-\d{2}-\d{2}\.html$/),
-  });
-  const html = String((await lastInvokeArgs(page, "save_share_html")).html);
-  expect(html).toContain("<!doctype html>");
-  expect(html).toContain("xxx confirmed the <strong>spectrum</strong>");
-  expect(html).toContain("<h2>Fit summary</h2>");
-  expect(html).toContain("<li>peak A at 530 nm</li>");
-  expect(html).toContain("fit(spectrum)");
-  expect(html).toContain("user-bubble");
-  expect(html).toContain("body md");
-  expect(html).toContain("--bg-panel");
-  expect(html).not.toContain("#2f6fed");
-  expect(html).not.toContain("class=\"card\"");
-  const live = await page.evaluate(() => {
-    const read = (el) => {
-      if (!el) return { bg: "", color: "" };
-      const style = getComputedStyle(el);
-      return { bg: style.backgroundColor, color: style.color };
-    };
-    return {
-      user: read(document.querySelector(".msg.user .body")),
-      assistant: read(document.querySelector(".msg.assistant .body.md")),
-      app: read(document.querySelector(".center")),
-    };
-  });
-  const exported = await page.evaluate(async (documentHtml) => {
-    const iframe = document.createElement("iframe");
-    iframe.style.cssText = "position:fixed;left:-9999px;width:880px;height:640px;border:0";
-    document.body.appendChild(iframe);
-    const done = new Promise((resolve) => {
-      iframe.addEventListener("load", () => resolve(), { once: true });
-    });
-    iframe.srcdoc = documentHtml;
-    await done;
-    const doc = iframe.contentDocument;
-    const win = iframe.contentWindow;
-    const read = (el) => {
-      if (!el || !win) return { bg: "", color: "" };
-      const style = win.getComputedStyle(el);
-      return { bg: style.backgroundColor, color: style.color };
-    };
-    const result = {
-      user: read(doc && doc.querySelector(".msg.user .body")),
-      assistant: read(doc && doc.querySelector(".msg.assistant .body.md")),
-      page: read(doc && doc.body),
-    };
-    iframe.remove();
-    return result;
-  }, html);
-  expect(exported.user.bg).toBe(live.user.bg);
-  expect(exported.user.color).toBe(live.user.color);
-  expect(exported.assistant.color).toBe(live.assistant.color);
-  expect(exported.page.bg).toBe(live.app.bg);
+  await expect.poll(async () => {
+    const latest = await lastInvokeArgs(page, "save_share_image");
+    return latest ? pngWidth(String(latest.pngBase64)) : 0;
+  }).toBe(1200);
   await expect(overlay).toHaveCount(0);
 
   // The composer "+" menu offers the same entry once the session has content.
@@ -2286,7 +2241,7 @@ test("/share exports selected, keyword-redacted messages as a PNG", async ({ pag
   await expect(composerInput).toBeVisible();
 });
 
-test("/share social copy attaches the social-note skill after a platform is chosen", async ({ page }) => {
+test("/share hides the social copy flow and exports only the long image", async ({ page }) => {
   await enterApp(page);
   const composerInput = composer(page);
   const overlay = page.getByTestId("share-overlay");
@@ -2300,26 +2255,13 @@ test("/share social copy attaches the social-note skill after a platform is chos
   await expect(overlay).toBeVisible();
   await expect(overlay.getByRole("heading", { name: "Share as image" })).toBeVisible();
   await expect(overlay.locator(".share-row")).toHaveCount(3);
-  await expect(overlay.getByTestId("share-social")).toHaveCount(0);
-  expect(await lastInvokeArgs(page, "generate_share_social_copy")).toBeNull();
-  await expect(overlay.getByTestId("share-social-skill")).toBeDisabled();
-  await expect(overlay.getByTestId("share-platform-xiaohongshu")).not.toHaveClass(/active/);
-  await expect(overlay.getByTestId("share-platform-wechat")).not.toHaveClass(/active/);
-
-  await overlay.locator("#share-redact-input").fill("alice");
-  await overlay.getByTestId("share-platform-wechat").click();
-  await expect(overlay.getByTestId("share-platform-wechat")).toHaveClass(/active/);
-  await overlay.getByTestId("share-social-skill").click();
-  await expect(overlay).toHaveCount(0);
-  await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
-    message: expect.stringMatching(/social-note/),
-    references: [{ kind: "skill", name: "social-note" }],
-  });
-  const sent = await lastInvokeArgs(page, "send_message");
-  expect(String(sent.message)).toContain("WeChat (wechat)");
-  expect(String(sent.message)).not.toMatch(/Xiaohongshu/i);
-  expect(String(sent.message)).toContain("xxx confirmed");
-  expect(String(sent.message)).toContain("[1] user");
+  // The platform picker, the skill-copy button, and the HTML format toggle
+  // are hidden while sharing is limited to the long PNG.
+  await expect(overlay.getByTestId("share-social-skill")).toHaveCount(0);
+  await expect(overlay.getByTestId("share-platform-xiaohongshu")).toHaveCount(0);
+  await expect(overlay.getByTestId("share-platform-wechat")).toHaveCount(0);
+  await expect(overlay.getByTestId("share-format-html")).toHaveCount(0);
+  await expect(overlay.getByTestId("share-export")).toHaveText("Export PNG");
 });
 
 test("composer / menu layers sections and gives each command its own icon", async ({ page }) => {
