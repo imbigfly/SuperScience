@@ -1,9 +1,10 @@
 //! Best-effort artifact provenance: snapshot the workspace around a producing
 //! tool call and diff to learn which files it wrote and read.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 
@@ -85,6 +86,141 @@ pub fn source_of(tool: &str, args: &serde_json::Value) -> String {
 /// Recursive path→mtime map of the workspace, skipping heavy dirs, capped.
 pub fn snapshot(root: &Path) -> BTreeMap<PathBuf, SystemTime> {
     snapshot_capped(root, MAX_ENTRIES)
+}
+
+/// Parallel conversations of one project run producing tools concurrently
+/// against the same workspace root, so the pre/post mtime diff alone would
+/// credit every overlapping call with every file another session wrote (#911).
+/// Each producing call registers a window here and, on completion, learns
+/// which other windows overlapped it.
+#[derive(Default)]
+struct RootWindows {
+    next_id: u64,
+    /// window id → start time of every producing call still in flight.
+    active: HashMap<u64, SystemTime>,
+    /// Windows that already ended but may still overlap an active window.
+    ended: Vec<(SystemTime, SystemTime)>,
+}
+
+static WINDOWS: OnceLock<Mutex<HashMap<String, RootWindows>>> = OnceLock::new();
+
+fn windows() -> &'static Mutex<HashMap<String, RootWindows>> {
+    WINDOWS.get_or_init(Default::default)
+}
+
+/// One producing tool call's registration in the per-root window registry.
+/// Dropping without `finish` still deregisters, so a cancelled call cannot
+/// poison attribution for the rest of the process lifetime.
+pub struct ProducingWindow {
+    root_key: String,
+    id: u64,
+    started: SystemTime,
+    closed: bool,
+}
+
+/// Register a producing tool call against `root` before its pre-snapshot.
+pub fn begin_window(root: &Path) -> ProducingWindow {
+    let root_key = path_identity(root);
+    let started = SystemTime::now();
+    let mut map = windows()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let entry = map.entry(root_key.clone()).or_default();
+    let id = entry.next_id;
+    entry.next_id += 1;
+    entry.active.insert(id, started);
+    ProducingWindow {
+        root_key,
+        id,
+        started,
+        closed: false,
+    }
+}
+
+impl ProducingWindow {
+    /// Close this window after the post-snapshot and return the span of every
+    /// other producing window (still active or already ended) that overlapped
+    /// it. Still-active windows are clamped to now, which covers every mtime
+    /// this call can have observed.
+    pub fn finish(mut self) -> Vec<(SystemTime, SystemTime)> {
+        self.close()
+    }
+
+    fn close(&mut self) -> Vec<(SystemTime, SystemTime)> {
+        if self.closed {
+            return Vec::new();
+        }
+        self.closed = true;
+        let ended_at = SystemTime::now();
+        let mut map = windows()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(entry) = map.get_mut(&self.root_key) else {
+            return Vec::new();
+        };
+        entry.active.remove(&self.id);
+        let mut overlapping: Vec<(SystemTime, SystemTime)> = entry
+            .active
+            .values()
+            .map(|start| (*start, ended_at))
+            .collect();
+        overlapping.extend(
+            entry
+                .ended
+                .iter()
+                .filter(|(_, end)| *end >= self.started)
+                .copied(),
+        );
+        if entry.active.is_empty() {
+            map.remove(&self.root_key);
+        } else {
+            entry.ended.push((self.started, ended_at));
+            let oldest_active = entry.active.values().min().copied().unwrap_or(ended_at);
+            entry.ended.retain(|(_, end)| *end >= oldest_active);
+        }
+        overlapping
+    }
+}
+
+impl Drop for ProducingWindow {
+    fn drop(&mut self) {
+        let _ = self.close();
+    }
+}
+
+/// Widen other windows when checking whether an mtime falls inside them, so
+/// coarse filesystem timestamp truncation cannot leak a neighbor's write past
+/// the interval check.
+const OVERLAP_MTIME_SLACK: Duration = Duration::from_secs(2);
+
+/// Drop written paths whose authorship is ambiguous because another producing
+/// tool call overlapped this one. A path is kept only when this call's source
+/// names it, or when the file's mtime falls when no other call was in flight.
+/// Wrong attribution is worse than missing attribution.
+pub fn retain_unambiguous_writes(
+    written: &mut Vec<String>,
+    after: &BTreeMap<PathBuf, SystemTime>,
+    root: &Path,
+    source: &str,
+    overlapping: &[(SystemTime, SystemTime)],
+) {
+    if overlapping.is_empty() {
+        return;
+    }
+    written.retain(|relative| {
+        let path = root.join(relative);
+        if source_mentions_path(source, root, &path) {
+            return true;
+        }
+        let Some(mtime) = after.get(&path) else {
+            return false;
+        };
+        overlapping.iter().all(|(start, end)| {
+            let start = start.checked_sub(OVERLAP_MTIME_SLACK).unwrap_or(UNIX_EPOCH);
+            let end = end.checked_add(OVERLAP_MTIME_SLACK).unwrap_or(*end);
+            *mtime < start || *mtime > end
+        })
+    });
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -551,6 +687,83 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("not captured"));
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn overlapping_producing_windows_see_each_other() {
+        let root = unique_tmp("windows_overlap");
+        let first = begin_window(&root);
+        let second = begin_window(&root);
+
+        assert_eq!(second.finish().len(), 1);
+        // The ended second window still overlapped the first one.
+        assert_eq!(first.finish().len(), 1);
+
+        // With everything closed, a later window starts clean.
+        assert!(begin_window(&root).finish().is_empty());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn windows_on_different_roots_never_overlap() {
+        let root_a = unique_tmp("windows_root_a");
+        let root_b = unique_tmp("windows_root_b");
+        let a = begin_window(&root_a);
+        let b = begin_window(&root_b);
+        assert!(a.finish().is_empty());
+        assert!(b.finish().is_empty());
+        std::fs::remove_dir_all(&root_a).ok();
+        std::fs::remove_dir_all(&root_b).ok();
+    }
+
+    #[test]
+    fn dropping_a_window_without_finish_deregisters_it() {
+        let root = unique_tmp("windows_drop");
+        let abandoned = begin_window(&root);
+        let survivor = begin_window(&root);
+        drop(abandoned);
+        assert_eq!(survivor.finish().len(), 1);
+        assert!(begin_window(&root).finish().is_empty());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn concurrent_overlap_keeps_only_provable_writes() {
+        let tmp = unique_tmp("overlap_filter");
+        std::fs::write(tmp.join("named.txt"), b"mine").unwrap();
+        std::fs::write(tmp.join("foreign.png"), b"theirs").unwrap();
+        std::fs::write(tmp.join("old_plot.png"), b"mine too").unwrap();
+        let after = snapshot(&tmp);
+        let mtime = after[&tmp.join("foreign.png")];
+
+        // No overlap: everything survives.
+        let mut written = vec![
+            "foreign.png".to_string(),
+            "named.txt".to_string(),
+            "old_plot.png".to_string(),
+        ];
+        retain_unambiguous_writes(&mut written, &after, &tmp, "open('named.txt','w')", &[]);
+        assert_eq!(written.len(), 3);
+
+        // Another call was in flight when these files changed: only the
+        // source-named file and the file changed outside every foreign
+        // window survive.
+        let inside = vec![(
+            mtime - Duration::from_secs(1),
+            mtime + Duration::from_secs(1),
+        )];
+        let mut written = vec!["foreign.png".to_string(), "named.txt".to_string()];
+        retain_unambiguous_writes(&mut written, &after, &tmp, "open('named.txt','w')", &inside);
+        assert_eq!(written, vec!["named.txt".to_string()]);
+
+        let outside = vec![(
+            mtime + Duration::from_secs(60),
+            mtime + Duration::from_secs(120),
+        )];
+        let mut written = vec!["old_plot.png".to_string()];
+        retain_unambiguous_writes(&mut written, &after, &tmp, "print('hi')", &outside);
+        assert_eq!(written, vec!["old_plot.png".to_string()]);
         std::fs::remove_dir_all(&tmp).ok();
     }
 
