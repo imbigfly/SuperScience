@@ -524,6 +524,40 @@ pub(super) async fn download_run_files(
         .await
 }
 
+/// Whether the results-review modal is worth auto-opening for this Run: an
+/// unresolved product decision exists (unharvested declared outputs, or no
+/// declared outputs but files present in the workspace) and the user has not
+/// dismissed the prompt. The UI asks this once per candidate at turn end.
+#[tauri::command]
+pub(super) async fn should_prompt_run_review(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    run_id: String,
+) -> Result<bool, String> {
+    scoped_run(&state, &window, &run_id).await?;
+    state
+        .run_manager
+        .should_prompt_run_review(&state.store, &run_id)
+        .await
+}
+
+/// Persist that the user closed this Run's results-review prompt so it never
+/// auto-opens again. Manual review from the run card stays available.
+#[tauri::command]
+pub(super) async fn dismiss_run_review(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    run_id: String,
+) -> Result<(), String> {
+    scoped_run(&state, &window, &run_id).await?;
+    state
+        .store
+        .mark_run_review_dismissed(&run_id)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 /// Delete the user's selection inside a finished Run's workspace.
 #[tauri::command]
 pub(super) async fn delete_run_files(

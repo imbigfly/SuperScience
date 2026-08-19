@@ -6219,6 +6219,8 @@ pub fn run() {
             runtime_commands::list_run_workspace_files,
             runtime_commands::download_run_files,
             runtime_commands::delete_run_files,
+            runtime_commands::should_prompt_run_review,
+            runtime_commands::dismiss_run_review,
             runtime_commands::list_remote_files,
             runtime_commands::remove_remote_files,
             runtime_commands::context_disposal_report,

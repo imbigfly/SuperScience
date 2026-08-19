@@ -1506,6 +1506,52 @@ impl RunManager {
         Ok(remote)
     }
 
+    /// Whether the results-review modal is worth auto-opening for this Run.
+    /// The prompt is reserved for submitted-task Runs with an unresolved
+    /// product decision: declared outputs that were never harvested (data at
+    /// risk on the server), or no declared outputs but files present in the
+    /// workspace. Exploratory command Runs, harvested Runs, cleaned Runs, and
+    /// Runs whose prompt the user already closed all return false.
+    pub async fn should_prompt_run_review(
+        &self,
+        store: &wisp_store::Store,
+        run_id: &str,
+    ) -> Result<bool, String> {
+        let run = store
+            .get_run(run_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Run not found: {run_id}"))?;
+        if run.kind != "ssh_direct"
+            || run.status != wisp_store::RunStatus::Succeeded
+            || run.cleaned_at.is_some()
+            || run.remote_workdir.is_none()
+        {
+            return Ok(false);
+        }
+        if store
+            .run_review_dismissed(run_id)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(false);
+        }
+        let has_output_specs = !matches!(run.output_specs_json.trim(), "" | "[]");
+        if has_output_specs {
+            // Harvest already registered the declared products locally; the
+            // remaining cleanup decision is not worth an interruption. An
+            // unharvested Run means results only exist on the server.
+            return Ok(run.harvested_at.is_none());
+        }
+        // No declared products: interrupt only when the workspace actually
+        // holds files to review. Listing errors (host unreachable) suppress
+        // the prompt rather than surfacing a modal that cannot browse.
+        let listing = self
+            .list_run_workspace_files(store, run_id, "", "", 0, 1)
+            .await?;
+        Ok(!listing.entries.is_empty())
+    }
+
     /// One page of one directory level of a finished Run's server workspace.
     /// Ephemeral data — nothing here is persisted.
     pub async fn list_run_workspace_files(

@@ -1237,6 +1237,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       ],
     },
   };
+  const runReviewDismissed = new Set<string>();
   let defaultExecutionContext: string | null = null;
   let runtimeInfos: any[] = [
     {
@@ -1379,6 +1380,20 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     });
   }
   (window as any).__mockRuns = runs;
+  (window as any).__mockRunWorkspaceFiles = runWorkspaceFiles;
+  // Finish a pending MONITORRUN turn without changing the run's state: the
+  // test drives the run's status itself, then ends the turn to observe the
+  // deferred review prompt.
+  (window as any).__finishMonitorRun = () => {
+    if (!monitorRunFrameId) return;
+    const frameId = monitorRunFrameId;
+    const run = runs.find((item) => item.id === "run-local-002");
+    emit("agent", { kind: "ToolResult", frame_id: frameId, name: "monitor_run", ok: true, content: JSON.stringify(run) });
+    emit("agent", { kind: "Done", frame_id: frameId, stop_reason: "end_turn" });
+    resolveMonitorRun?.(frameId);
+    resolveMonitorRun = null;
+    monitorRunFrameId = null;
+  };
   const mockMethodSearchDetails = () => ({
     run: runs.find((item) => item.id === "method-search-001"),
     state: {
@@ -3310,6 +3325,26 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             for (const p of paths) delete levels[p];
             return null;
           }
+          case "should_prompt_run_review": {
+            const runId = String(arg("runId") ?? "");
+            const run = runs.find((item) => item.id === runId);
+            if (!run) throw new Error("Run not found");
+            if (
+              run.kind !== "ssh_direct" ||
+              run.status !== "succeeded" ||
+              run.cleaned_at ||
+              runReviewDismissed.has(runId)
+            ) {
+              return false;
+            }
+            const specs = JSON.parse(String(run.output_specs_json ?? "[]"));
+            if (Array.isArray(specs) && specs.length > 0) return !run.harvested_at;
+            return ((runWorkspaceFiles[runId] ?? {})[""] ?? []).length > 0;
+          }
+          case "dismiss_run_review": {
+            runReviewDismissed.add(String(arg("runId") ?? ""));
+            return null;
+          }
           case "cleanup_run_workspace": {
             const run = runs.find((item) => item.id === String(arg("runId") ?? ""));
             if (!run) throw new Error("Run not found");
@@ -4614,6 +4649,10 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               return await new Promise<string>((resolve) => {
                 monitorRunFrameId = fid;
                 resolveMonitorRun = resolve;
+                // The monitored run belongs to the session that submitted it,
+                // like the real backend records frame_id at submission.
+                const monitored = runs.find((item) => item.id === "run-local-002");
+                if (monitored) monitored.frame_id = fid;
                 setTimeout(() => {
                   emit("agent", { kind: "User", frame_id: fid, text: msg });
                   emit("agent", { kind: "Reasoning", frame_id: fid, delta: "Attach the existing Run monitor." });
