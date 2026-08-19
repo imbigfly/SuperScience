@@ -3,12 +3,13 @@
 //! Both formats reuse the live chat CSS (tokens + `.msg` / `.thread` / `.md`)
 //! so the export matches what the user sees.
 
-use crate::dto::{ChatItem, ShareSocialPlatform};
+use crate::dto::ChatItem;
 #[cfg(test)]
-use crate::dto::{ShareSocialHighlight, ShareSocialVariant};
+use crate::dto::{ShareSocialHighlight, ShareSocialPlatform, ShareSocialVariant};
 use serde_json::{json, Value};
 
 /// Skill attached when the share dialog asks for social copy.
+#[cfg(test)]
 pub(crate) const SOCIAL_SHARE_SKILL: &str = "social-note";
 /// How many highlight screenshots to prepare when the share dialog opens.
 #[cfg(test)]
@@ -95,6 +96,9 @@ pub(crate) fn share_messages(items: &[ChatItem]) -> Vec<ShareMessage> {
 
 /// Prompt sent with `social-note` so the agent writes from the same redacted
 /// selection the long-image export would use, for the platform the user picked.
+/// Currently only reachable from tests: the social-copy flow is hidden while
+/// the share dialog exports only the long image.
+#[cfg(test)]
 pub(crate) fn social_skill_prompt(
     selected: &[&ShareMessage],
     redact: &[String],
@@ -128,6 +132,7 @@ pub(crate) fn social_skill_prompt(
     excerpt
 }
 
+#[cfg(test)]
 fn social_skill_platform_label(platform: ShareSocialPlatform, zh: bool) -> &'static str {
     match (platform, zh) {
         (ShareSocialPlatform::Xiaohongshu, true) => "小红书",
@@ -437,17 +442,33 @@ pub(crate) fn normalize_share_hashtag(raw: &str) -> String {
     }
 }
 
+/// Default canvas width for the long PNG and the accepted input range.
+pub(crate) const SHARE_PNG_DEFAULT_WIDTH: u32 = 840;
+pub(crate) const SHARE_PNG_MIN_WIDTH: u32 = 320;
+pub(crate) const SHARE_PNG_MAX_WIDTH: u32 = 2400;
+
+/// Parse the width field in the share dialog: blank or unparsable input falls
+/// back to the default; numbers are clamped to the supported range.
+pub(crate) fn share_png_width(raw: &str) -> u32 {
+    raw.trim()
+        .parse::<u32>()
+        .unwrap_or(SHARE_PNG_DEFAULT_WIDTH)
+        .clamp(SHARE_PNG_MIN_WIDTH, SHARE_PNG_MAX_WIDTH)
+}
+
 /// JSON payload consumed by the JS canvas renderer for the long PNG.
 pub(crate) fn share_png_payload(
     title: &str,
     subtitle: &str,
     footer: &str,
     rows: &[Value],
+    width: u32,
 ) -> String {
     json!({
         "title": title,
         "subtitle": subtitle,
         "footer": footer,
+        "width": width,
         "messages": rows,
     })
     .to_string()
@@ -964,6 +985,31 @@ mod share_tests {
     fn empty_keywords_leave_text_untouched() {
         assert_eq!(redact_text("nothing to hide", &[]), "nothing to hide");
         assert!(parse_redact_keywords(" ,，\n").is_empty());
+    }
+
+    #[test]
+    fn png_width_falls_back_and_clamps() {
+        assert_eq!(share_png_width(""), SHARE_PNG_DEFAULT_WIDTH);
+        assert_eq!(share_png_width("  "), SHARE_PNG_DEFAULT_WIDTH);
+        assert_eq!(share_png_width("abc"), SHARE_PNG_DEFAULT_WIDTH);
+        assert_eq!(share_png_width("640"), 640);
+        assert_eq!(share_png_width(" 640 "), 640);
+        assert_eq!(share_png_width("10"), SHARE_PNG_MIN_WIDTH);
+        assert_eq!(share_png_width("99999"), SHARE_PNG_MAX_WIDTH);
+    }
+
+    #[test]
+    fn png_payload_carries_the_requested_width() {
+        let payload: Value = serde_json::from_str(&share_png_payload(
+            "wisp-science",
+            "2026-08-19",
+            "footer",
+            &[share_png_row(ShareRole::User, "You", "hi")],
+            640,
+        ))
+        .unwrap();
+        assert_eq!(payload["width"], json!(640));
+        assert_eq!(payload["messages"][0]["kind"], json!("user"));
     }
 
     #[test]
