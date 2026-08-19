@@ -33,10 +33,18 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
 
+      # Load the waiter from this workflow revision, not the tagged app tree.
+      # workflow_dispatch can rebuild an older tag that does not contain the action.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: .github/actions/wait-for-release
+          path: _release_ci
+
       - name: Wait for GitHub release
         if: github.event_name != 'workflow_dispatch' || inputs.publish
         id: release
-        uses: ./.github/actions/wait-for-release
+        uses: ./_release_ci/.github/actions/wait-for-release
         with:
           tag: ${{ env.RELEASE_TAG }}
 

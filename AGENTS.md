@@ -99,6 +99,12 @@ When asked to release, follow this section. Create the GitHub Release with `gh` 
 
 Do not `git push origin vX.Y.Z` after `gh release create` — the tag already exists on GitHub. To fix notes on an existing release, edit the notes file and run the Create Release workflow with `overwrite_notes`, or `gh release edit`. Never use `tauri-action` / `action-gh-release` with a body on a published release.
 
+To rebuild one platform for an existing tag, dispatch that workflow **from `main`** (so the upload-only YAML is used) with the tag input. Do not `gh run rerun` a tag-push job whose workflow still rewrites the release body:
+
+```bash
+gh workflow run "Windows Release" --ref main -f tag=vX.Y.Z -f signing_policy=release-signing -f publish=true
+```
+
 Details: [docs/app-updates.md](docs/app-updates.md).
 
 ## PR Expectations
