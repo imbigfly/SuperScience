@@ -7,6 +7,13 @@ on:
     branches: [main]
 
 jobs:
+  release-notes-helper:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check release-notes title helper
+        run: bash scripts/github_release_notes.sh --self-test
+
   headless-agent-eval:
     name: Headless agent eval (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
