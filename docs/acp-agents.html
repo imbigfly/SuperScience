@@ -1,10 +1,25 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-page="acp">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="Wisp Science ACP Agent 配置说明：在 Settings → Models → ACP Agents 下接入 Codex / Claude 等本地 ACP v1 agent。">
   <title>ACP Agent 配置 | Wisp Science</title>
+  <script>
+    (function () {
+      var lang = "zh";
+      try {
+        var q = new URLSearchParams(location.search).get("lang");
+        if (q === "en" || q === "zh") lang = q;
+        else {
+          var s = localStorage.getItem("wisp-pages-lang");
+          if (s === "en" || s === "zh") lang = s;
+        }
+      } catch (e) {}
+      document.documentElement.lang = lang === "en" ? "en" : "zh-CN";
+      document.documentElement.dataset.lang = lang;
+    })();
+  </script>
   <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -18,18 +33,22 @@
         <img src="assets/logo.svg" alt="" width="28" height="28">
         <span class="brand-name">Wisp Science</span>
       </a>
-      <nav class="nav-links" aria-label="页面导航">
-        <a href="index.html#features">功能</a>
-        <a href="index.html#usecases">场景</a>
-        <a href="index.html#stack">生态</a>
-        <a href="model-configuration.html">模型配置</a>
-        <a href="acp-agents.html" aria-current="page">ACP</a>
-        <a href="index.html#faq">FAQ</a>
-        <a href="https://github.com/xuzhougeng/wisp-science/blob/main/README.md">文档</a>
+      <nav class="nav-links" data-i18n-aria="nav.aria" aria-label="页面导航">
+        <a href="index.html#features" data-i18n="nav.features">功能</a>
+        <a href="index.html#usecases" data-i18n="nav.usecases">场景</a>
+        <a href="index.html#stack" data-i18n="nav.stack">生态</a>
+        <a href="model-configuration.html" data-i18n="nav.models">模型配置</a>
+        <a href="acp-agents.html" aria-current="page" data-i18n="nav.acp">ACP</a>
+        <a href="index.html#faq" data-i18n="nav.faq">FAQ</a>
+        <a href="https://github.com/xuzhougeng/wisp-science/blob/main/README.md" data-i18n="nav.docs">文档</a>
       </nav>
       <div class="nav-cta">
+        <div class="lang-switch" role="group" data-i18n-aria="lang.aria" aria-label="语言">
+          <button type="button" data-lang="zh" aria-pressed="true">中文</button>
+          <button type="button" data-lang="en" aria-pressed="false">EN</button>
+        </div>
         <a class="btn btn-secondary" href="https://github.com/xuzhougeng/wisp-science">GitHub</a>
-        <a class="btn btn-primary" href="https://github.com/xuzhougeng/wisp-science/releases/latest"><span class="btn-label-full">下载桌面版</span><span class="btn-label-short">下载</span></a>
+        <a class="btn btn-primary" href="https://github.com/xuzhougeng/wisp-science/releases/latest"><span class="btn-label-full" data-i18n="nav.downloadFull">下载桌面版</span><span class="btn-label-short" data-i18n="nav.downloadShort">下载</span></a>
       </div>
     </div>
   </header>
@@ -39,15 +58,15 @@
       <div class="container">
         <div class="eyebrow">Settings → Models → ACP Agents</div>
         <h1>ACP Agent 配置</h1>
-        <p class="lead">
+        <p class="lead" data-i18n="acp.lead">
           Wisp 可作为 ACP Client，启动本机已安装的 Codex / Claude 等 ACP v1 Agent。
           它与 HTTP 模型 profile 分开：Models 里的「添加模型」管 API，
           「ACP Agents」管本地 stdio agent 进程。
         </p>
         <div class="hero-actions">
-          <a class="btn btn-primary" href="#setup">开始配置</a>
-          <a class="btn btn-secondary" href="model-configuration.html">HTTP 模型配置</a>
-          <a class="btn btn-secondary" href="https://github.com/xuzhougeng/wisp-science/blob/main/docs/acp-agents.md">Markdown 文档</a>
+          <a class="btn btn-primary" href="#setup" data-i18n="acp.start">开始配置</a>
+          <a class="btn btn-secondary" href="model-configuration.html" data-i18n="acp.httpCta">HTTP 模型配置</a>
+          <a class="btn btn-secondary" href="https://github.com/xuzhougeng/wisp-science/blob/main/docs/acp-agents.md" data-i18n="acp.md">Markdown 文档</a>
         </div>
       </div>
     </section>
@@ -302,14 +321,15 @@ claude-agent-acp --version</pre>
       </a>
       <nav class="footer-links">
         <a href="https://github.com/xuzhougeng/wisp-science">GitHub</a>
-        <a href="model-configuration.html">模型配置</a>
-        <a href="acp-agents.html">ACP</a>
+        <a href="model-configuration.html" data-i18n="nav.models">模型配置</a>
+        <a href="acp-agents.html" data-i18n="nav.acp">ACP</a>
         <a href="https://github.com/xuzhougeng/wisp-science/releases">Releases</a>
         <a href="https://github.com/xuzhougeng/wisp-science/issues">Issues</a>
         <a href="https://github.com/xuzhougeng/wisp-science/blob/main/LICENSE">AGPL-3.0-only</a>
       </nav>
-      <p class="footer-copy">© 2026 Wisp Science · 开源科学计算 Agent</p>
+      <p class="footer-copy" data-i18n="footer.copy">© 2026 Wisp Science · 开源科学计算 Agent</p>
     </div>
   </footer>
+  <script src="assets/i18n.js"></script>
 </body>
 </html>
