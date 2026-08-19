@@ -11,7 +11,7 @@ WISP — *Workspace for Intelligent Scientific Practice*
 
 <a href="https://github.com/xuzhougeng/wisp-science/releases"><img src="https://img.shields.io/github/v/release/xuzhougeng/wisp-science" alt="Release"></a>
 <a href="https://github.com/xuzhougeng/wisp-science/releases"><img src="https://img.shields.io/github/downloads/xuzhougeng/wisp-science/total" alt="下载量"></a>
-<a href="https://doi.org/10.5281/zenodo.21869520"><img src="https://zenodo.org/badge/1285857639.svg" alt="DOI"></a>
+<a href="https://doi.org/10.5281/zenodo.22009273"><img src="https://zenodo.org/badge/1285857639.svg" alt="DOI"></a>
 <a href="https://github.com/xuzhougeng/wisp-science/blob/main/LICENSE"><img src="https://img.shields.io/github/license/xuzhougeng/wisp-science" alt="许可证"></a>
 <a href="https://github.com/xuzhougeng/wisp-science/stargazers"><img src="https://img.shields.io/github/stars/xuzhougeng/wisp-science?style=social" alt="Stars"></a>
 <br>
@@ -159,16 +159,16 @@ Windows 代码签名由 [SignPath.io](https://signpath.io) 提供，证书由
 
 ## 引用
 
-[![DOI](https://zenodo.org/badge/1285857639.svg)](https://doi.org/10.5281/zenodo.21869520)
+[![DOI](https://zenodo.org/badge/1285857639.svg)](https://doi.org/10.5281/zenodo.22009273)
 
 ```bibtex
 @software{xu2026wisp,
   author    = {Xu, Zhou-Geng},
   title     = {Wisp Science: a local-first AI research workbench},
-  version   = {v1.2.0},
+  version   = {v1.5.0},
   year      = {2026},
   publisher = {Zenodo},
-  doi       = {10.5281/zenodo.21869520},
-  url       = {https://doi.org/10.5281/zenodo.21869520}
+  doi       = {10.5281/zenodo.22009273},
+  url       = {https://doi.org/10.5281/zenodo.22009273}
 }
 ```
