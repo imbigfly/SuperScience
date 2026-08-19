@@ -2576,6 +2576,7 @@ impl SessionStatusKind {
 #[derive(Clone, Deserialize)]
 pub struct ModelProfile {
     pub id: String,
+    #[serde(default)]
     pub label: String,
     #[serde(default)]
     pub provider: String,

@@ -3075,6 +3075,86 @@ async fn migrate_adds_folder_id_on_legacy_db() {
     let _ = std::fs::remove_file(&tmp);
 }
 
+/// A v0-era database that already recorded `0000_initial_schema`, so the
+/// current 0000_init.sql (folders, extra columns) never runs. Opening it
+/// after jumping to HEAD must still list sessions and folders.
+#[tokio::test]
+async fn upgrade_from_recorded_initial_schema_can_list_sessions() {
+    let tmp = std::env::temp_dir().join(format!("wisp_store_jump_{}.sqlite", uuid::Uuid::new_v4()));
+    {
+        let opts = SqliteConnectOptions::from_str(&format!("sqlite://{}", tmp.display()))
+            .unwrap()
+            .create_if_missing(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE wisp_schema_migrations (\
+             version TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO wisp_schema_migrations(version,applied_at) VALUES(?,1)")
+            .bind(INITIAL_SCHEMA_MIGRATION)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT, description TEXT, \
+             created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE frames (id TEXT PRIMARY KEY, parent_frame_id TEXT, root_frame_id TEXT, \
+             agent_name TEXT NOT NULL, status TEXT NOT NULL, project_id TEXT, model TEXT, \
+             input_tokens INTEGER, output_tokens INTEGER, created_at INTEGER NOT NULL, \
+             updated_at INTEGER NOT NULL, completed_at INTEGER)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE messages (id TEXT PRIMARY KEY, frame_id TEXT NOT NULL, seq INTEGER NOT NULL, \
+             role TEXT NOT NULL, content TEXT, tool_calls TEXT, tool_call_id TEXT, tool_name TEXT, \
+             reasoning TEXT, ts INTEGER NOT NULL, UNIQUE(frame_id, seq))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE artifacts (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, \
+             root_frame_id TEXT NOT NULL, filename TEXT NOT NULL, content_type TEXT NOT NULL, \
+             storage_path TEXT NOT NULL, created_at INTEGER NOT NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+    }
+
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    store.create_frame("f1", "p", "OPERON", "m").await.unwrap();
+    store
+        .append_message("f1", 1, &Message::user("jumped versions"))
+        .await
+        .unwrap();
+    let sessions = store.list_sessions("p").await.unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].0, "f1");
+    assert!(store.list_folders("p").await.unwrap().is_empty());
+    let _ = std::fs::remove_file(&tmp);
+}
+
 #[tokio::test]
 async fn folder_crud_and_move() {
     let tmp =

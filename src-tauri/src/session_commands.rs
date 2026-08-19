@@ -990,12 +990,24 @@ pub(super) fn transcript_page_items(
         .iter()
         .map(|(_, message)| message.clone())
         .collect::<Vec<_>>();
+    // Older builds persisted a slimmer AgentEvent shape. A single unknown
+    // field or later-added required key must not blank the whole transcript
+    // (or look like a launch crash when resume-last-session reopens it).
     let events: Vec<AgentEvent> = page
         .ui_events
         .iter()
-        .map(|json| serde_json::from_str(json))
-        .collect::<Result<_, _>>()
-        .map_err(|e| format!("invalid persisted UI event: {e}"))?;
+        .filter_map(|json| match serde_json::from_str(json) {
+            Ok(event) => Some(event),
+            Err(error) => {
+                tracing::warn!(
+                    target: "wisp",
+                    %error,
+                    "skipping unreadable persisted UI event"
+                );
+                None
+            }
+        })
+        .collect();
     let (mut items, boundaries) = if events.is_empty() {
         (messages_to_items(&msgs), HashMap::new())
     } else {
@@ -1151,9 +1163,7 @@ pub(super) async fn load_session(
             .load_latest_session_ui_event(&id, "ToolPresentation")
             .await
             .map_err(|e| format!("{e}"))?
-            .map(|json| serde_json::from_str::<AgentEvent>(&json))
-            .transpose()
-            .map_err(|e| format!("invalid persisted tool presentation: {e}"))?
+            .and_then(|json| serde_json::from_str::<AgentEvent>(&json).ok())
             .and_then(|event| match event {
                 AgentEvent::ToolPresentation {
                     presentation_id,
