@@ -79,7 +79,7 @@ test("browser offline banner stays under Settings in the Escape stack and can re
   const banner = page.getByTestId("browser-offline-banner");
   await expect(banner).toBeVisible();
 
-  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   await expect(page.getByRole("button", { name: "Back to app" })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: "Back to app" })).toHaveCount(0);

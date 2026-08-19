@@ -13,6 +13,11 @@ function providerSelect(page: Page) {
   return page.getByTestId("settings-provider");
 }
 
+function globalSettingsButton(page: Page) {
+  // "Project settings" on landing cards also matches name: "Settings" unless exact.
+  return page.getByRole("button", { name: "Settings", exact: true });
+}
+
 async function expectInsideViewport(locator: Locator, width: number, height: number) {
   const box = await locator.boundingBox();
   expect(box).not.toBeNull();
@@ -23,7 +28,7 @@ async function expectInsideViewport(locator: Locator, width: number, height: num
 }
 
 async function openModelsSettings(page: Page) {
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await page.getByRole("button", { name: "Models" }).click();
   const row = page.locator(".settings-list-row").first();
   if (await row.count()) {
@@ -35,7 +40,7 @@ async function openModelsSettings(page: Page) {
 }
 
 async function openSettingsSection(page: Page, name: string) {
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await page.getByRole("button", { name, exact: true }).click();
 }
 
@@ -620,7 +625,7 @@ test("language select shows the saved locale so Chinese can switch to English di
   ).toBe("en");
 
   // The app stays in English and the select stays on English after reopening.
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await globalSettingsButton(page).click();
   await expect(page.getByTestId("settings-language")).toHaveValue("en");
 });
 
@@ -1147,7 +1152,7 @@ test("effort flyout closes on Escape before the model menu", async ({ page }) =>
 
 test("Settings Models page can open ACP Agents dialog", async ({ page }) => {
   await enterApp(page);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await page.getByRole("button", { name: "Models", exact: true }).click();
   await expect(page.getByTestId("models-category-http")).toHaveClass(/active/);
   await page.getByTestId("open-acp-agents-from-settings").click();
@@ -1160,7 +1165,7 @@ test("Settings Models page can open ACP Agents dialog", async ({ page }) => {
 
 test("ACP Agent settings create, test, and authenticate an installed agent", async ({ page }) => {
   await enterApp(page);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await page.getByRole("button", { name: "Models", exact: true }).click();
   await page.getByTestId("open-acp-agents-from-settings").click();
   await page.getByTestId("add-acp-agent-settings").click();
@@ -8154,7 +8159,7 @@ test("settings can validate current API config", async ({ page }) => {
 
 test("editing a saved model validates with that model profile id", async ({ page }) => {
   await enterApp(page);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await page.getByRole("button", { name: "Models" }).click();
   await page.locator(".settings-list-row", { hasText: "opus-4.8" }).click();
   await expect(providerSelect(page)).toBeVisible();
@@ -8173,7 +8178,7 @@ test("editing a saved model validates with that model profile id", async ({ page
 
 test("check for updates shows an up-to-date modal", async ({ page }) => {
   await enterApp(page);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await setMockUpdateCheck(page, {
     current_version: "0.9.0",
     latest_version: "0.9.0",
@@ -8191,7 +8196,7 @@ test("check for updates shows an up-to-date modal", async ({ page }) => {
 
 test("check for updates shows an available-update modal before opening releases", async ({ page }) => {
   await enterApp(page);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await setMockUpdateCheck(page, {
     current_version: "0.9.0",
     latest_version: "1.2.3",
@@ -8214,7 +8219,7 @@ test("check for updates shows an available-update modal before opening releases"
 
 test("macOS update download is verified before a separate install confirmation", async ({ page }) => {
   await enterApp(page);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await setMockUpdateCheck(page, {
     current_version: "0.27.0",
     latest_version: "0.28.0",
@@ -8255,7 +8260,7 @@ test("macOS update download is verified before a separate install confirmation",
 
 test("update signature failure keeps the current app and offers Releases", async ({ page }) => {
   await enterApp(page);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   const releaseUrl =
     "https://github.com/xuzhougeng/wisp-science/releases/tag/v0.28.0";
   await setMockUpdateCheck(page, {
@@ -8282,7 +8287,7 @@ test("update signature failure keeps the current app and offers Releases", async
 
 test("update check failure offers the Releases fallback", async ({ page }) => {
   await enterApp(page);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await setMockUpdateCheckError(
     page,
     "Failed to check for a signed update: no matching macOS architecture",
@@ -8296,7 +8301,7 @@ test("update check failure offers the Releases fallback", async ({ page }) => {
 
 test("install is blocked while a task is active", async ({ page }) => {
   await enterApp(page);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await setMockUpdateCheck(page, {
     latest_version: "0.28.0",
     update_available: true,
@@ -8322,7 +8327,7 @@ test("install is blocked while a task is active", async ({ page }) => {
 
 test("Escape closes only the available-update modal above Settings", async ({ page }) => {
   await enterApp(page);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await setMockUpdateCheck(page, {
     latest_version: "0.28.0",
     update_available: true,
@@ -8739,7 +8744,7 @@ test("plugin settings diagnose, launch, install, and remove a feature plugin", a
 
 test("custom MCP row opens tools while edit uses a dedicated button", async ({ page }) => {
   await enterApp(page);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await page.getByRole("button", { name: "Connections" }).click();
   await expect(page.getByRole("button", { name: "Connect Notion" })).toHaveCount(0);
 
@@ -8756,7 +8761,7 @@ test("custom MCP row opens tools while edit uses a dedicated button", async ({ p
 
 test("Notion uses the generic Remote URL OAuth connection flow", async ({ page }) => {
   await enterApp(page);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await page.getByRole("button", { name: "Connections" }).click();
 
   await expect.poll(() => lastInvokeArgs(page, "authorize_http_connection")).toBeNull();
@@ -8815,7 +8820,7 @@ test("Notion uses the generic Remote URL OAuth connection flow", async ({ page }
 
 test("OAuth authorization keeps Cancel available and clears form status", async ({ page }) => {
   await enterApp(page, "/?mockOAuthPending=1");
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await page.getByRole("button", { name: "Connections" }).click();
   await page.getByRole("button", { name: "Add connection" }).click();
   await page.getByLabel("Name").fill("Hosted MCP");
@@ -9358,7 +9363,7 @@ test("sidebar search opens the Ctrl+K palette and finds sessions beyond loaded h
 test("home search opens artifacts, sessions, and settings", async ({ page }) => {
   await page.goto("/");
 
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   const settingsPage = page.locator(".settings-page");
   await expect(settingsPage).toBeVisible();
   await expect(page.locator(".overlay", { has: settingsPage })).toHaveCount(0);
@@ -10079,7 +10084,7 @@ test("Windows uses the integrated title bar without covering the project landing
     Math.round(el.getBoundingClientRect().top)
   )).toBe(38);
 
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await expect.poll(async () => page.locator(".settings-page").evaluate((el) =>
     Math.round(el.getBoundingClientRect().top)
   )).toBe(38);
@@ -10221,7 +10226,7 @@ test("macOS uses the native title bar without the integrated header", async ({ b
   await expect(page.locator(".window-controls")).toHaveCount(0);
   await expect(page.locator(".projects-screen")).toBeVisible();
 
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await expect.poll(async () => page.locator(".settings-page").evaluate((el) =>
     Math.round(el.getBoundingClientRect().top)
   )).toBe(0);
@@ -10244,7 +10249,7 @@ test("project cards use semantic buttons for keyboard access", async ({ page }) 
 
 test("Escape closes settings and unwinds the composer picker before the right pane", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await expect(page.locator(".settings-page")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.locator(".settings-page")).toHaveCount(0);
@@ -10527,6 +10532,26 @@ test("project cards show the workspace path and aligned action icons", async ({ 
   }
 });
 
+test("landing Settings stays distinct from Project settings", async ({ page }) => {
+  await page.goto("/");
+
+  const appSettings = globalSettingsButton(page);
+  const projectSettings = page.getByTestId("project-card-settings");
+  await expect(appSettings).toHaveCount(1);
+  await expect(projectSettings.first()).toBeVisible();
+  await expect(appSettings).not.toHaveAttribute("data-testid", "project-card-settings");
+
+  await appSettings.click();
+  await expect(page.locator(".settings-page")).toBeVisible();
+  await expect(page.getByTestId("project-home-settings")).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".settings-page")).toHaveCount(0);
+
+  await projectSettings.first().click();
+  await expect(page.getByTestId("project-home-settings")).toBeVisible();
+  await expect(page.locator(".settings-page")).toHaveCount(0);
+});
+
 test("project cards open settings without entering the project (#905)", async ({ page }) => {
   await page.goto("/");
   const otherCard = page.locator(".proj-card:not(.proj-example)", { hasText: "Other project" });
@@ -10608,7 +10633,7 @@ test("projects sync manually, copy a device code, and join on another device", a
   )).toBe(true);
 
   await expect(page.getByRole("button", { name: "Join synced project" })).toHaveCount(0);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await page.getByRole("button", { name: "Remote Access", exact: true }).click();
   await page.getByRole("button", { name: "Join synced project" }).click();
   const joinDialog = page.getByRole("dialog", { name: "Join a synced project" });
