@@ -9,11 +9,15 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
+mod cleanup;
+mod harvest_remote;
 mod local_detached;
 mod remote;
+pub(crate) mod remote_files;
 mod tools;
 mod transfer;
 
+pub(crate) use harvest_remote::WorkspaceListing;
 #[cfg(all(test, windows))]
 use remote::scp_local_path;
 #[cfg(test)]
@@ -26,8 +30,14 @@ use remote::{
 };
 #[cfg(test)]
 use remote::{parse_input_progress, remote_poll_delay_secs};
-pub use tools::{CancelRunTool, GetRunTool, MonitorRunTool, RunInContextTool};
-pub(crate) use transfer::{load_trust_edges, revoke_trust_edge, RevokeTrustResponse, SshTrustEdge};
+pub use tools::{
+    CancelRunTool, CleanupRunWorkspaceTool, GetRunTool, HarvestRunTool, ListRemoteFilesTool,
+    MonitorRunTool, RemoveRemoteFilesTool, RunInContextTool,
+};
+pub(crate) use transfer::{
+    load_trust_edges, persist_transfer_handle, revoke_trust_edge, submit_local_uploads_to_context,
+    RevokeTrustResponse, SshTrustEdge, TransferHandle, UploadToContextItem,
+};
 pub use transfer::{ConfigureSshTrustTool, TransferBetweenContextsTool};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,7 +56,7 @@ pub struct SubmitRunRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubmitRunResponse {
     pub run_id: String,
-    pub status: superscience_store::RunStatus,
+    pub status: wisp_store::RunStatus,
     pub exit_code: Option<i64>,
     pub stdout_tail: Option<String>,
     pub stderr_tail: Option<String>,
@@ -148,7 +158,7 @@ pub struct RunOutputUpdate {
 pub(crate) const PUBLICATION_REPRODUCTION_CONTEXT_ID: &str = "publication-reproduction";
 
 pub(crate) fn run_environment_snapshot(
-    context: &superscience_store::ExecutionContext,
+    context: &wisp_store::ExecutionContext,
 ) -> serde_json::Value {
     let process = ["LANG", "LC_ALL", "TZ"]
         .into_iter()
@@ -211,7 +221,7 @@ fn transfer_progress(
     files_total: u64,
     current_file: Option<String>,
     started: Instant,
-) -> superscience_store::RunProgress {
+) -> wisp_store::RunProgress {
     let elapsed = started.elapsed();
     let bytes_per_second = (elapsed >= Duration::from_secs(1))
         .then(|| (completed_bytes as f64 / elapsed.as_secs_f64()) as u64)
@@ -219,7 +229,7 @@ fn transfer_progress(
     let eta_seconds = bytes_per_second
         .filter(|_| completed_bytes < total_bytes)
         .map(|rate| total_bytes.saturating_sub(completed_bytes).div_ceil(rate));
-    superscience_store::RunProgress {
+    wisp_store::RunProgress {
         phase: phase.into(),
         direction: direction.into(),
         completed_bytes: completed_bytes.min(total_bytes),
@@ -386,7 +396,7 @@ async fn run_process(
     if let Some(cwd) = &command.cwd {
         cmd.current_dir(cwd);
     }
-    superscience_tools::process::hide_console_async(&mut cmd);
+    wisp_tools::process::hide_console_async(&mut cmd);
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("failed to spawn {}: {e}", command.program))?;
@@ -588,18 +598,20 @@ pub struct RunManager {
     active: Arc<Mutex<HashMap<String, ActiveRun>>>,
     owner_id: String,
     reconciler_started: Arc<AtomicBool>,
+    last_retention_sweep: Arc<Mutex<Option<Instant>>>,
 }
 
 const REMOTE_START_LEASE_SECS: i64 = 360;
 const ACTIVE_LEASE_SECS: i64 = 30;
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
+const RETENTION_SWEEP_INTERVAL: Duration = Duration::from_secs(10 * 60);
 const SSH_RETRY_STOPPED_MARKER: &str = "SSH automatic retry stopped";
 const LOCAL_RETRY_STOPPED_MARKER: &str = "Automatic Run retry stopped";
 
 impl RunManager {
     pub async fn has_in_flight_project(
         &self,
-        store: &superscience_store::Store,
+        store: &wisp_store::Store,
         project_id: &str,
     ) -> Result<bool, String> {
         let run_ids = self.active.lock().await.keys().cloned().collect::<Vec<_>>();
@@ -620,18 +632,23 @@ impl RunManager {
         Self::with_runner(Arc::new(ProcessRunRunner))
     }
 
+    pub(crate) fn runner_ref(&self) -> &dyn RunCommandRunner {
+        self.runner.as_ref()
+    }
+
     pub fn with_runner(runner: Arc<dyn RunCommandRunner>) -> Self {
         Self {
             runner,
             active: Arc::new(Mutex::new(HashMap::new())),
             owner_id: uuid::Uuid::new_v4().to_string(),
             reconciler_started: Arc::new(AtomicBool::new(false)),
+            last_retention_sweep: Arc::new(Mutex::new(None)),
         }
     }
 
     pub(crate) async fn preflight(
         &self,
-        store: &superscience_store::Store,
+        store: &wisp_store::Store,
         context_id: &str,
         project_root: &Path,
         spec: &RunPreflightSpec,
@@ -667,7 +684,7 @@ impl RunManager {
             );
             return Ok(report);
         };
-        if context.kind == superscience_store::ExecutionContextKind::Ssh {
+        if context.kind == wisp_store::ExecutionContextKind::Ssh {
             if let Err(error) = crate::ssh_hosts::require_managed_ssh_ready(&context) {
                 report.push("context", RunPreflightStatus::Failed, error);
                 return Ok(report);
@@ -805,7 +822,7 @@ impl RunManager {
         }
 
         if !syntax_files.is_empty() {
-            if context.kind != superscience_store::ExecutionContextKind::Local {
+            if context.kind != wisp_store::ExecutionContextKind::Local {
                 report.push(
                     "syntax",
                     RunPreflightStatus::Warning,
@@ -848,16 +865,17 @@ impl RunManager {
 
     pub async fn download_ssh_file(
         &self,
-        store: &superscience_store::Store,
+        store: &wisp_store::Store,
         project_id: &str,
         frame_id: Option<&str>,
-        context: &superscience_store::ExecutionContext,
+        context: &wisp_store::ExecutionContext,
         remote_path: &str,
         destination: &std::path::Path,
     ) -> Result<String, String> {
         if remote_path.is_empty() || remote_path.contains(['\0', '\n', '\r']) {
             return Err("Invalid remote file path".into());
         }
+        remote_files::refuse_if_context_path_discarded(store, &context.id, remote_path).await?;
         crate::ssh_hosts::require_managed_ssh_ready(context)?;
         let connection = crate::ssh_hosts::SshConnection::from_execution_context(context)?;
         let size = remote_file_size(self.runner.as_ref(), &connection, remote_path).await?;
@@ -879,7 +897,7 @@ impl RunManager {
             Some(file_name.clone()),
             started,
         );
-        let mut run = superscience_store::RunRecord::new(
+        let mut run = wisp_store::RunRecord::new(
             &run_id,
             project_id,
             &context.id,
@@ -893,7 +911,7 @@ impl RunManager {
         if !store
             .activate_run_lifecycle(
                 &run_id,
-                superscience_store::RunStatus::Running,
+                wisp_store::RunStatus::Running,
                 &self.owner_id,
                 ACTIVE_LEASE_SECS,
             )
@@ -947,12 +965,12 @@ impl RunManager {
         }
     }
 
-    pub async fn recover(&self, store: &superscience_store::Store) -> Result<u64, String> {
+    pub async fn recover(&self, store: &wisp_store::Store) -> Result<u64, String> {
         self.start_reconciler(store.clone());
         self.reconcile_once(store).await
     }
 
-    fn start_reconciler(&self, store: superscience_store::Store) {
+    fn start_reconciler(&self, store: wisp_store::Store) {
         if self.reconciler_started.swap(true, Ordering::SeqCst) {
             return;
         }
@@ -967,7 +985,116 @@ impl RunManager {
         });
     }
 
-    async fn reconcile_once(&self, store: &superscience_store::Store) -> Result<u64, String> {
+    /// Opt-in automatic reclamation of expired run workspaces. Every cleanup
+    /// goes through `cleanup_run_workspace`, so all of its preconditions and
+    /// path constraints apply; one failing run never blocks the sweep.
+    pub async fn run_retention_sweep(&self, store: &wisp_store::Store) -> Result<u64, String> {
+        let now = chrono::Utc::now().timestamp();
+        let due = store
+            .list_runs_due_for_retention(now)
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut cleaned = 0;
+        for run in due {
+            match self.cleanup_run_workspace(store, &run.id, false).await {
+                Ok(_) => cleaned += 1,
+                Err(error) => {
+                    tracing::warn!(run_id = %run.id, "retention cleanup failed: {error}");
+                }
+            }
+        }
+        Ok(cleaned)
+    }
+
+    /// Opt-in automatic reclamation of orphaned ledgered remote files: staged
+    /// uploads and persisted outputs that nothing references anymore, past
+    /// the project's orphan window. Replaced ledger entries are closed
+    /// in-ledger only — the newer entry owns those remote bytes. Only
+    /// ledgered paths are ever deleted, through the same safe channel as the
+    /// manual tool.
+    pub async fn orphan_file_sweep(&self, store: &wisp_store::Store) -> Result<u64, String> {
+        let now = chrono::Utc::now().timestamp();
+        let candidates = store
+            .list_orphan_gc_contexts(now)
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut removed = 0;
+        for (project_id, context_id, cutoff) in candidates {
+            let Some(context) = store
+                .get_execution_context(&context_id)
+                .await
+                .map_err(|e| e.to_string())?
+            else {
+                continue;
+            };
+            let views = match remote_files::list_remote_files(store, &project_id, &context_id).await
+            {
+                Ok(views) => views,
+                Err(error) => {
+                    tracing::warn!(context_id, "orphan sweep listing failed: {error}");
+                    continue;
+                }
+            };
+            let due = |view: &remote_files::RemoteFileView| view.created_at < cutoff;
+            let replaced: Vec<String> = views
+                .iter()
+                .filter(|view| view.state == remote_files::RemoteFileState::Replaced && due(view))
+                .map(|view| view.id.clone())
+                .collect();
+            if !replaced.is_empty() {
+                removed += store
+                    .mark_remote_staging_removed(&replaced)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            let orphans: Vec<String> = views
+                .iter()
+                .filter(|view| view.state == remote_files::RemoteFileState::Orphan && due(view))
+                .map(|view| view.id.clone())
+                .collect();
+            if orphans.is_empty() {
+                continue;
+            }
+            match remote_files::remove_remote_files(
+                store,
+                self.runner.as_ref(),
+                &project_id,
+                &context,
+                &orphans,
+                false,
+            )
+            .await
+            {
+                Ok(count) => removed += count,
+                Err(error) => {
+                    tracing::warn!(context_id, "orphan sweep deletion failed: {error}");
+                }
+            }
+        }
+        Ok(removed)
+    }
+
+    async fn maybe_run_retention_sweep(&self, store: &wisp_store::Store) {
+        {
+            let mut last = self.last_retention_sweep.lock().await;
+            let due = last
+                .map(|at| at.elapsed() >= RETENTION_SWEEP_INTERVAL)
+                .unwrap_or(true);
+            if !due {
+                return;
+            }
+            *last = Some(Instant::now());
+        }
+        if let Err(error) = self.run_retention_sweep(store).await {
+            tracing::warn!("run retention sweep failed: {error}");
+        }
+        if let Err(error) = self.orphan_file_sweep(store).await {
+            tracing::warn!("orphan file sweep failed: {error}");
+        }
+    }
+
+    async fn reconcile_once(&self, store: &wisp_store::Store) -> Result<u64, String> {
+        self.maybe_run_retention_sweep(store).await;
         let runs = store.list_active_runs().await.map_err(|e| e.to_string())?;
         let mut lost = 0;
         for run in runs {
@@ -991,6 +1118,12 @@ impl RunManager {
                 .await
                 .map_err(|e| e.to_string())?;
             if !claimed {
+                continue;
+            }
+            if run.kind == "file_transfer" {
+                if let Err(error) = self.reclaim_transfer(store.clone(), &run).await {
+                    tracing::warn!(run_id = %run.id, "transfer reclaim failed: {error}");
+                }
                 continue;
             }
             match remote_run_from_record(store, &run).await {
@@ -1024,7 +1157,7 @@ impl RunManager {
 
     pub async fn submit(
         &self,
-        store: superscience_store::Store,
+        store: wisp_store::Store,
         project_id: String,
         frame_id: Option<String>,
         request: SubmitRunRequest,
@@ -1036,7 +1169,7 @@ impl RunManager {
 
     pub(crate) async fn submit_preflighted(
         &self,
-        store: superscience_store::Store,
+        store: wisp_store::Store,
         project_id: String,
         frame_id: Option<String>,
         request: SubmitRunRequest,
@@ -1049,7 +1182,7 @@ impl RunManager {
 
     async fn submit_inner(
         &self,
-        store: superscience_store::Store,
+        store: wisp_store::Store,
         project_id: String,
         frame_id: Option<String>,
         request: SubmitRunRequest,
@@ -1062,7 +1195,7 @@ impl RunManager {
             frame_id.as_deref(),
             request,
             cwd,
-            superscience_store::RunStatus::Submitted,
+            wisp_store::RunStatus::Submitted,
             &self.owner_id,
             REMOTE_START_LEASE_SECS,
             preflight.as_ref(),
@@ -1121,7 +1254,7 @@ impl RunManager {
         });
         Ok(SubmitRunResponse {
             run_id,
-            status: superscience_store::RunStatus::Submitted,
+            status: wisp_store::RunStatus::Submitted,
             exit_code: None,
             stdout_tail: None,
             stderr_tail: None,
@@ -1131,7 +1264,7 @@ impl RunManager {
 
     async fn spawn_remote(
         &self,
-        store: superscience_store::Store,
+        store: wisp_store::Store,
         remote: RemoteRun,
     ) -> Result<bool, String> {
         if self.active.lock().await.contains_key(&remote.run_id) {
@@ -1149,7 +1282,7 @@ impl RunManager {
         Ok(true)
     }
 
-    async fn spawn_remote_claimed(&self, store: superscience_store::Store, remote: RemoteRun) {
+    async fn spawn_remote_claimed(&self, store: wisp_store::Store, remote: RemoteRun) {
         let run_id = remote.run_id.clone();
         let mut active_runs = self.active.lock().await;
         if active_runs.contains_key(&run_id) {
@@ -1185,7 +1318,404 @@ impl RunManager {
         });
     }
 
-    pub async fn cancel(&self, store: &superscience_store::Store, run_id: &str) -> Result<(), String> {
+    /// Cancel every in-flight Run for a project, then best-effort clean their
+    /// server workspaces. Called before `delete_project` so dropping the SQLite
+    /// rows does not abandon live nohup jobs.
+    pub async fn wind_down_project(
+        &self,
+        store: &wisp_store::Store,
+        project_id: &str,
+    ) -> Result<(), String> {
+        let active = store
+            .list_active_runs_for_project(project_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        for run in &active {
+            if let Err(error) = self.cancel(store, &run.id).await {
+                tracing::warn!(run_id = %run.id, "wind-down cancel failed: {error}");
+            }
+        }
+        let runs = store
+            .list_uncleaned_runs_for_project(project_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        for run in runs {
+            if run.kind == "file_transfer" {
+                continue;
+            }
+            if let Err(error) = self.cleanup_run_workspace(store, &run.id, true).await {
+                tracing::warn!(run_id = %run.id, "wind-down cleanup failed: {error}");
+            }
+        }
+        Ok(())
+    }
+
+    /// Cancel in-flight Runs on one SSH context across every project.
+    /// Called before dropping a host so nohup jobs do not keep running after
+    /// Wisp forgets the machine. Remote bytes are abandoned, not deleted.
+    pub async fn wind_down_context(
+        &self,
+        store: &wisp_store::Store,
+        context_id: &str,
+    ) -> Result<(), String> {
+        let active = store
+            .list_active_runs_for_context(context_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        for run in &active {
+            if let Err(error) = self.cancel(store, &run.id).await {
+                tracing::warn!(run_id = %run.id, "context wind-down cancel failed: {error}");
+            }
+        }
+        Ok(())
+    }
+
+    /// Delete a terminal Run's server-side workspace. `force` is an explicit
+    /// user confirmation that skips the harvested-before-clean guard (the
+    /// agent/automatic paths never pass it).
+    pub async fn cleanup_run_workspace(
+        &self,
+        store: &wisp_store::Store,
+        run_id: &str,
+        force: bool,
+    ) -> Result<wisp_store::RunRecord, String> {
+        let run = store
+            .get_run(run_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Run not found: {run_id}"))?;
+        if !run.status.is_terminal() {
+            return Err(format!(
+                "Run is still {}; cancel or wait for it before cleaning its workspace",
+                run.status.as_str()
+            ));
+        }
+        if run.cleaned_at.is_some() {
+            return Ok(run);
+        }
+        let output_specs: Vec<crate::harvest::OutputSpec> =
+            serde_json::from_str(&run.output_specs_json).unwrap_or_default();
+        if run.status == wisp_store::RunStatus::Succeeded
+            && !output_specs.is_empty()
+            && run.harvested_at.is_none()
+            && !force
+        {
+            return Err(
+                "Run outputs were never harvested; call harvest_run first, or clean up with \
+                 explicit user confirmation (force) accepting that unretrieved outputs are lost"
+                    .into(),
+            );
+        }
+        let handle: RemoteRunHandle = run
+            .remote_handle_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str(json).ok())
+            .ok_or_else(|| "Run has no server workspace to clean".to_string())?;
+        // Defensive: never delete a workdir that a registered External
+        // artifact reference still points into.
+        let workdir_fragment = match &handle {
+            RemoteRunHandle::SshDirect { workdir, .. }
+            | RemoteRunHandle::LocalDetached { workdir, .. } => format!("/{workdir}/"),
+        };
+        for output in store
+            .list_run_outputs(run_id)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            let Some(version) = store
+                .get_artifact_version(&output.artifact_version_id)
+                .await
+                .map_err(|e| e.to_string())?
+            else {
+                continue;
+            };
+            if version.materialization == wisp_store::ArtifactMaterialization::External
+                && version.storage_path.contains(&workdir_fragment)
+            {
+                return Err(format!(
+                    "Registered artifact reference {} still points into the run workspace; \
+                     harvest it before cleanup",
+                    version.storage_path
+                ));
+            }
+        }
+        // Never destroy the only copy of the run's logs: pull them into the
+        // project first. A failed pull aborts cleanup and stays retryable.
+        if run.logs_path.is_none() {
+            match save_run_logs_locally(store, self.runner.as_ref(), &run, &handle).await {
+                Ok(Some(relative)) => {
+                    let _ = store
+                        .mark_run_logs_saved(run_id, &relative)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let error = format!("saving run logs before cleanup failed: {error}");
+                    let _ = store.record_run_cleanup_error(run_id, &error).await;
+                    return Err(error);
+                }
+            }
+        }
+        match cleanup::delete_run_workspace(self.runner.as_ref(), &handle, run_id).await {
+            Ok(()) => {
+                store
+                    .mark_run_cleaned(run_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                // The workdir took its staged inputs with it.
+                let _ = store.mark_remote_staging_removed_for_run(run_id).await;
+                store
+                    .get_run(run_id)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| "Run disappeared after cleanup".to_string())
+            }
+            Err(error) => {
+                let _ = store.record_run_cleanup_error(run_id, &error).await;
+                Err(error)
+            }
+        }
+    }
+
+    async fn terminal_ssh_remote(
+        &self,
+        store: &wisp_store::Store,
+        run_id: &str,
+    ) -> Result<RemoteRun, String> {
+        let run = store
+            .get_run(run_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Run not found: {run_id}"))?;
+        if !run.status.is_terminal() {
+            return Err(format!(
+                "Run is still {}; wait for it to finish first",
+                run.status.as_str()
+            ));
+        }
+        if run.cleaned_at.is_some() {
+            return Err("Run workspace was already cleaned".into());
+        }
+        let remote = remote_run_from_record(store, &run)
+            .await?
+            .ok_or_else(|| "Run has no server workspace".to_string())?;
+        if remote.handle.is_local_detached() {
+            return Err("This Run executed locally; its files are already in the project".into());
+        }
+        Ok(remote)
+    }
+
+    /// Whether the results-review modal is worth auto-opening for this Run.
+    /// The prompt is reserved for submitted-task Runs with an unresolved
+    /// product decision: declared outputs that were never harvested (data at
+    /// risk on the server), or no declared outputs but files present in the
+    /// workspace. Exploratory command Runs, harvested Runs, cleaned Runs, and
+    /// Runs whose prompt the user already closed all return false.
+    pub async fn should_prompt_run_review(
+        &self,
+        store: &wisp_store::Store,
+        run_id: &str,
+    ) -> Result<bool, String> {
+        let run = store
+            .get_run(run_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Run not found: {run_id}"))?;
+        if run.kind != "ssh_direct"
+            || run.status != wisp_store::RunStatus::Succeeded
+            || run.cleaned_at.is_some()
+            || run.remote_workdir.is_none()
+        {
+            return Ok(false);
+        }
+        if store
+            .run_review_dismissed(run_id)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(false);
+        }
+        let has_output_specs = !matches!(run.output_specs_json.trim(), "" | "[]");
+        if has_output_specs {
+            // Harvest already registered the declared products locally; the
+            // remaining cleanup decision is not worth an interruption. An
+            // unharvested Run means results only exist on the server.
+            return Ok(run.harvested_at.is_none());
+        }
+        // No declared products: interrupt only when the workspace actually
+        // holds files to review. Listing errors (host unreachable) suppress
+        // the prompt rather than surfacing a modal that cannot browse.
+        let listing = self
+            .list_run_workspace_files(store, run_id, "", "", 0, 1)
+            .await?;
+        Ok(!listing.entries.is_empty())
+    }
+
+    /// One page of one directory level of a finished Run's server workspace.
+    /// Ephemeral data — nothing here is persisted.
+    pub async fn list_run_workspace_files(
+        &self,
+        store: &wisp_store::Store,
+        run_id: &str,
+        path: &str,
+        name_filter: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<harvest_remote::WorkspaceListing, String> {
+        let remote = self.terminal_ssh_remote(store, run_id).await?;
+        harvest_remote::list_run_workspace_files(
+            self.runner.as_ref(),
+            &remote,
+            path,
+            name_filter,
+            offset,
+            limit,
+        )
+        .await
+    }
+
+    /// Download the user's explicit selection from a finished Run's workspace
+    /// and register it (files individually, directories as one archive each).
+    pub async fn download_run_files(
+        &self,
+        store: &wisp_store::Store,
+        run_id: &str,
+        files: &[String],
+        dirs: &[String],
+    ) -> Result<Vec<crate::harvest::HarvestedArtifact>, String> {
+        for path in files.iter().chain(dirs) {
+            harvest_remote::validate_workspace_subpath(path)?;
+        }
+        let remote = self.terminal_ssh_remote(store, run_id).await?;
+        if remote.frame_id.is_none() {
+            return Err("Run has no source session to register artifacts under".into());
+        }
+        harvest_remote::download_run_files(
+            store,
+            self.runner.as_ref(),
+            &self.owner_id,
+            &remote,
+            files,
+            dirs,
+        )
+        .await
+    }
+
+    /// Delete selected files/directories inside a finished Run's workspace.
+    /// User-explicit by construction (the review modal is the only caller), so
+    /// no harvest guard applies; whole-workspace deletion still goes through
+    /// `cleanup_run_workspace`.
+    pub async fn delete_run_files(
+        &self,
+        store: &wisp_store::Store,
+        run_id: &str,
+        paths: &[String],
+    ) -> Result<(), String> {
+        let remote = self.terminal_ssh_remote(store, run_id).await?;
+        harvest_remote::delete_run_files(self.runner.as_ref(), &remote, paths).await
+    }
+
+    /// Retry output harvest for a succeeded Run whose outputs were never
+    /// registered (automatic harvest failed or the app closed mid-pull).
+    pub async fn harvest_run(
+        &self,
+        store: &wisp_store::Store,
+        run_id: &str,
+    ) -> Result<Vec<crate::harvest::HarvestedArtifact>, String> {
+        let run = store
+            .get_run(run_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Run not found: {run_id}"))?;
+        if run.status != wisp_store::RunStatus::Succeeded {
+            return Err(format!(
+                "harvest_run requires a succeeded Run, but it is {}",
+                run.status.as_str()
+            ));
+        }
+        if run.harvested_at.is_some() {
+            return Err("Run outputs were already harvested".into());
+        }
+        let remote = remote_run_from_record(store, &run)
+            .await?
+            .ok_or_else(|| "Run has no detached handle to harvest from".to_string())?;
+        if remote.output_specs.is_empty() {
+            return Err("Run declared no output specs".into());
+        }
+        let frame_id = remote
+            .frame_id
+            .clone()
+            .ok_or_else(|| "Run has no source session".to_string())?;
+        let result = if remote.handle.is_local_detached() {
+            let root = remote
+                .harvest_root
+                .clone()
+                .ok_or_else(|| "Run project workspace is not available".to_string())?;
+            let references: Vec<_> = remote
+                .output_specs
+                .iter()
+                .filter(|spec| !spec.glob.starts_with("ssh://"))
+                .cloned()
+                .collect();
+            crate::harvest::harvest_run_outputs(
+                store,
+                &remote.project_id,
+                &frame_id,
+                &remote.run_id,
+                &root,
+                &references,
+            )
+            .await
+        } else {
+            let fallback = PathBuf::from(".");
+            let uri_references: Vec<_> = remote
+                .output_specs
+                .iter()
+                .filter(|spec| spec.glob.starts_with("ssh://"))
+                .cloned()
+                .collect();
+            if !uri_references.is_empty() {
+                crate::harvest::harvest_run_outputs(
+                    store,
+                    &remote.project_id,
+                    &frame_id,
+                    &remote.run_id,
+                    remote.harvest_root.as_deref().unwrap_or(&fallback),
+                    &uri_references,
+                )
+                .await?;
+            }
+            harvest_remote::harvest_ssh_run(
+                store,
+                self.runner.as_ref(),
+                &self.owner_id,
+                &remote,
+                false,
+            )
+            .await
+        };
+        match result {
+            Ok(harvested) => {
+                store
+                    .mark_run_harvested(run_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(harvested)
+            }
+            Err(error) => {
+                let _ = store
+                    .record_run_harvest_error(
+                        run_id,
+                        &format!("remote artifact registration failed: {error}"),
+                    )
+                    .await;
+                Err(error)
+            }
+        }
+    }
+
+    pub async fn cancel(&self, store: &wisp_store::Store, run_id: &str) -> Result<(), String> {
         let run = store
             .get_run(run_id)
             .await
@@ -1194,7 +1724,7 @@ impl RunManager {
         if run.status.is_terminal() {
             return Err(format!("Run is already {}", run.status.as_str()));
         }
-        let already_cancelling = run.status == superscience_store::RunStatus::Cancelling;
+        let already_cancelling = run.status == wisp_store::RunStatus::Cancelling;
         let requested = if already_cancelling {
             false
         } else {
@@ -1211,7 +1741,7 @@ impl RunManager {
         if refreshed.status.is_terminal() {
             // The lifecycle task can confirm the cancellation requested above
             // before this re-read; that is success, not an error.
-            if requested && refreshed.status == superscience_store::RunStatus::Cancelled {
+            if requested && refreshed.status == wisp_store::RunStatus::Cancelled {
                 return Ok(());
             }
             return Err(format!("Run is already {}", refreshed.status.as_str()));
@@ -1223,7 +1753,7 @@ impl RunManager {
             if already_cancelling {
                 mark_transfer_progress_cancelled(store, &self.owner_id, &refreshed).await;
                 let _ = store
-                    .force_finish_cancelling_run(run_id, superscience_store::RunStatus::Cancelled, None)
+                    .force_finish_cancelling_run(run_id, wisp_store::RunStatus::Cancelled, None)
                     .await
                     .map_err(|e| e.to_string())?;
             } else if requested {
@@ -1232,7 +1762,7 @@ impl RunManager {
                     .finish_active_run_owned(
                         run_id,
                         &self.owner_id,
-                        superscience_store::RunStatus::Cancelled,
+                        wisp_store::RunStatus::Cancelled,
                         None,
                     )
                     .await
@@ -1248,7 +1778,7 @@ impl RunManager {
                     active.abort.abort();
                 }
                 let finished = store
-                    .force_finish_cancelling_run(run_id, superscience_store::RunStatus::Cancelled, None)
+                    .force_finish_cancelling_run(run_id, wisp_store::RunStatus::Cancelled, None)
                     .await
                     .map_err(|e| e.to_string())?;
                 if !finished {
@@ -1257,7 +1787,7 @@ impl RunManager {
                 return Ok(());
             }
             let uploading =
-                serde_json::from_str::<superscience_store::RunProgress>(&refreshed.progress_json)
+                serde_json::from_str::<wisp_store::RunProgress>(&refreshed.progress_json)
                     .is_ok_and(|progress| progress.phase == "uploading");
             if requested && uploading && !remote.handle.is_confirmed() {
                 if let Some(active) = self.active.lock().await.remove(run_id) {
@@ -1268,7 +1798,7 @@ impl RunManager {
                     .finish_active_run_owned(
                         run_id,
                         &self.owner_id,
-                        superscience_store::RunStatus::Cancelled,
+                        wisp_store::RunStatus::Cancelled,
                         None,
                     )
                     .await
@@ -1288,7 +1818,7 @@ impl RunManager {
         }
         if already_cancelling {
             let _ = store
-                .force_finish_cancelling_run(run_id, superscience_store::RunStatus::Cancelled, None)
+                .force_finish_cancelling_run(run_id, wisp_store::RunStatus::Cancelled, None)
                 .await
                 .map_err(|e| e.to_string())?;
         } else if requested {
@@ -1296,7 +1826,7 @@ impl RunManager {
                 .finish_active_run_owned(
                     run_id,
                     &self.owner_id,
-                    superscience_store::RunStatus::Cancelled,
+                    wisp_store::RunStatus::Cancelled,
                     None,
                 )
                 .await
@@ -1307,11 +1837,11 @@ impl RunManager {
 }
 
 async fn mark_transfer_progress_cancelled(
-    store: &superscience_store::Store,
+    store: &wisp_store::Store,
     owner_id: &str,
-    run: &superscience_store::RunRecord,
+    run: &wisp_store::RunRecord,
 ) {
-    let Ok(mut progress) = serde_json::from_str::<superscience_store::RunProgress>(&run.progress_json)
+    let Ok(mut progress) = serde_json::from_str::<wisp_store::RunProgress>(&run.progress_json)
     else {
         return;
     };
@@ -1368,7 +1898,7 @@ async fn remote_file_size(
 }
 
 async fn download_lifecycle(
-    store: &superscience_store::Store,
+    store: &wisp_store::Store,
     owner_id: &str,
     run_id: &str,
     runner: &dyn RunCommandRunner,
@@ -1409,7 +1939,7 @@ async fn download_lifecycle(
     };
     let (status, exit_code, stdout, stderr, result) = match output {
         Ok(output) if output.exit_code == 0 => (
-            superscience_store::RunStatus::Succeeded,
+            wisp_store::RunStatus::Succeeded,
             Some(0),
             output.stdout,
             output.stderr,
@@ -1423,7 +1953,7 @@ async fn download_lifecycle(
             };
             let error = format!("scp download failed (exit {}): {detail}", output.exit_code);
             (
-                superscience_store::RunStatus::Failed,
+                wisp_store::RunStatus::Failed,
                 Some(output.exit_code),
                 output.stdout,
                 output.stderr,
@@ -1431,14 +1961,14 @@ async fn download_lifecycle(
             )
         }
         Err(error) => (
-            superscience_store::RunStatus::Failed,
+            wisp_store::RunStatus::Failed,
             Some(-1),
             String::new(),
             error.clone(),
             Err(error),
         ),
     };
-    let completed = if status == superscience_store::RunStatus::Succeeded {
+    let completed = if status == wisp_store::RunStatus::Succeeded {
         total_bytes
     } else {
         tokio::fs::metadata(destination)
@@ -1448,14 +1978,14 @@ async fn download_lifecycle(
     };
     let progress = transfer_progress(
         "download",
-        if status == superscience_store::RunStatus::Succeeded {
+        if status == wisp_store::RunStatus::Succeeded {
             "downloaded"
         } else {
             "failed"
         },
         completed,
         total_bytes,
-        u64::from(status == superscience_store::RunStatus::Succeeded),
+        u64::from(status == wisp_store::RunStatus::Succeeded),
         1,
         None,
         started,
@@ -1523,7 +2053,7 @@ fn valid_package_name(language: &str, value: &str) -> bool {
     })
 }
 
-fn context_json_string(context: &superscience_store::ExecutionContext, keys: &[&str]) -> Option<String> {
+fn context_json_string(context: &wisp_store::ExecutionContext, keys: &[&str]) -> Option<String> {
     [&context.config_json, &context.capabilities_json]
         .into_iter()
         .filter_map(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
@@ -1540,7 +2070,7 @@ fn context_json_string(context: &superscience_store::ExecutionContext, keys: &[&
 }
 
 fn preflight_interpreter(
-    context: &superscience_store::ExecutionContext,
+    context: &wisp_store::ExecutionContext,
     language: &str,
 ) -> Result<String, String> {
     let (keys, fallback) = match language {
@@ -1600,14 +2130,14 @@ fn posix_shell_quote(value: &str) -> String {
 }
 
 fn build_preflight_command(
-    context: &superscience_store::ExecutionContext,
+    context: &wisp_store::ExecutionContext,
     interpreter: &str,
     args: Vec<String>,
     cwd: Option<PathBuf>,
     label: String,
 ) -> Result<RunCommand, String> {
     match context.kind {
-        superscience_store::ExecutionContextKind::Local => Ok(RunCommand {
+        wisp_store::ExecutionContextKind::Local => Ok(RunCommand {
             context_id: context.id.clone(),
             program: interpreter.into(),
             args,
@@ -1616,7 +2146,7 @@ fn build_preflight_command(
             stdin: None,
             envs: Vec::new(),
         }),
-        superscience_store::ExecutionContextKind::Wsl => {
+        wisp_store::ExecutionContextKind::Wsl => {
             let config: serde_json::Value =
                 serde_json::from_str(&context.config_json).unwrap_or_default();
             let distro = config
@@ -1636,7 +2166,7 @@ fn build_preflight_command(
                 envs: Vec::new(),
             })
         }
-        superscience_store::ExecutionContextKind::Ssh => {
+        wisp_store::ExecutionContextKind::Ssh => {
             let connection = crate::ssh_hosts::SshConnection::from_execution_context(context)?;
             let mut ssh_args = connection.ssh_args()?;
             let command = std::iter::once(interpreter)
@@ -1672,14 +2202,14 @@ fn command_failure_detail(output: &RunCommandOutput) -> String {
 }
 
 pub fn build_run_command(
-    ctx: &superscience_store::ExecutionContext,
+    ctx: &wisp_store::ExecutionContext,
     script: &str,
     cwd: Option<PathBuf>,
 ) -> RunCommand {
     let cfg: serde_json::Value = serde_json::from_str(&ctx.config_json).unwrap_or_default();
     match ctx.kind {
-        superscience_store::ExecutionContextKind::Local => local_command(&ctx.id, script, cwd),
-        superscience_store::ExecutionContextKind::Ssh => {
+        wisp_store::ExecutionContextKind::Local => local_command(&ctx.id, script, cwd),
+        wisp_store::ExecutionContextKind::Ssh => {
             let alias = cfg
                 .get("alias")
                 .and_then(|v| v.as_str())
@@ -1694,7 +2224,7 @@ pub fn build_run_command(
                 envs: Vec::new(),
             }
         }
-        superscience_store::ExecutionContextKind::Wsl => {
+        wisp_store::ExecutionContextKind::Wsl => {
             let distro = cfg
                 .get("distro")
                 .and_then(|v| v.as_str())
@@ -1786,7 +2316,7 @@ fn resolve_declared_inputs(
             {
                 return Err(format!("Run input must be project-relative: {reference}"));
             }
-            let path = superscience_tools::safety::validate_file_path(root, reference)?;
+            let path = wisp_tools::safety::validate_file_path(root, reference)?;
             if !path.is_file() {
                 return Err(format!("Run input is not a project file: {reference}"));
             }
@@ -1800,13 +2330,13 @@ fn git_code_state(root: Option<&Path>) -> (Option<String>, Option<String>) {
     let Some(root) = root else {
         return (None, None);
     };
-    let _git = superscience_tools::process::lock_git_command();
+    let _git = wisp_tools::process::lock_git_command();
     let mut commit_cmd = std::process::Command::new("git");
     commit_cmd
         .args(["rev-parse", "--verify", "HEAD"])
         .current_dir(root)
         .env("GIT_OPTIONAL_LOCKS", "0");
-    superscience_tools::process::hide_console(&mut commit_cmd);
+    wisp_tools::process::hide_console(&mut commit_cmd);
     let commit = commit_cmd
         .output()
         .ok()
@@ -1820,7 +2350,7 @@ fn git_code_state(root: Option<&Path>) -> (Option<String>, Option<String>) {
             .args(["diff", "--binary", "--no-ext-diff", "HEAD", "--", "."])
             .current_dir(root)
             .env("GIT_OPTIONAL_LOCKS", "0");
-        superscience_tools::process::hide_console(&mut diff_cmd);
+        wisp_tools::process::hide_console(&mut diff_cmd);
         diff_cmd
             .output()
             .ok()
@@ -1846,8 +2376,8 @@ fn contains_obvious_secret(value: &str) -> bool {
 }
 
 async fn record_created_run_lineage(
-    store: &superscience_store::Store,
-    run: &superscience_store::RunRecord,
+    store: &wisp_store::Store,
+    run: &wisp_store::RunRecord,
     root: Option<&Path>,
     input_refs: &[String],
     input_paths: &[PathBuf],
@@ -1866,13 +2396,13 @@ async fn record_created_run_lineage(
         None => (None, None),
     };
     store
-        .save_run_code_snapshot(&superscience_store::RunCodeSnapshot {
+        .save_run_code_snapshot(&wisp_store::RunCodeSnapshot {
             id: format!("run-code:{}:command", run.id),
             run_id: run.id.clone(),
             source_kind: "command".into(),
             source_path: run.script_path.clone(),
             source_text: command.to_string(),
-            checksum: superscience_sync::sha256_hex(command.as_bytes()),
+            checksum: wisp_sync::sha256_hex(command.as_bytes()),
             storage_path: None,
             git_commit,
             dirty_patch,
@@ -1900,7 +2430,7 @@ async fn record_created_run_lineage(
             .to_string_lossy()
             .replace('\\', "/");
         let logical_key = format!("path:{source_ref}");
-        let artifact_id = superscience_store::logical_artifact_id(&run.project_id, &logical_key);
+        let artifact_id = wisp_store::logical_artifact_id(&run.project_id, &logical_key);
         let captured = crate::snapshot_store::capture_file(
             root,
             path,
@@ -1915,7 +2445,7 @@ async fn record_created_run_lineage(
         let version_id = if let Some(version) = current.as_ref().filter(|version| {
             version.checksum.as_deref() == Some(captured.checksum.as_str())
                 && (version.materialization == captured.materialization
-                    || version.materialization == superscience_store::ArtifactMaterialization::Snapshot)
+                    || version.materialization == wisp_store::ArtifactMaterialization::Snapshot)
         }) {
             version.id.clone()
         } else {
@@ -1924,7 +2454,7 @@ async fn record_created_run_lineage(
                 .and_then(|name| name.to_str())
                 .unwrap_or("input");
             store
-                .save_artifact_version(&superscience_store::ArtifactVersionDraft {
+                .save_artifact_version(&wisp_store::ArtifactVersionDraft {
                     version_id: None,
                     artifact_id,
                     project_id: run.project_id.clone(),
@@ -1941,13 +2471,13 @@ async fn record_created_run_lineage(
                     producing_run_id: None,
                     env_snapshot_hash: None,
                     materialization: captured.materialization,
-                    capture_timing: superscience_store::ArtifactCaptureTiming::AtCreation,
+                    capture_timing: wisp_store::ArtifactCaptureTiming::AtCreation,
                 })
                 .await
                 .map_err(|error| error.to_string())?
         };
         store
-            .save_run_input(&superscience_store::RunInput {
+            .save_run_input(&wisp_store::RunInput {
                 id: uuid::Uuid::new_v4().to_string(),
                 run_id: run.id.clone(),
                 artifact_version_id: Some(version_id),
@@ -1955,8 +2485,8 @@ async fn record_created_run_lineage(
                 source_ref,
                 role: "input".into(),
                 required: true,
-                basis: superscience_store::LineageBasis::Declared,
-                confidence: superscience_store::LineageConfidence::Exact,
+                basis: wisp_store::LineageBasis::Declared,
+                confidence: wisp_store::LineageConfidence::Exact,
                 created_at: chrono::Utc::now().timestamp(),
             })
             .await
@@ -1966,12 +2496,12 @@ async fn record_created_run_lineage(
 }
 
 async fn create_run_record(
-    store: &superscience_store::Store,
+    store: &wisp_store::Store,
     project_id: &str,
     frame_id: Option<&str>,
     request: SubmitRunRequest,
     cwd: Option<PathBuf>,
-    initial_status: superscience_store::RunStatus,
+    initial_status: wisp_store::RunStatus,
     owner_id: &str,
     lease_secs: i64,
     preflight: Option<&RunPreflightReport>,
@@ -1985,7 +2515,7 @@ async fn create_run_record(
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Execution context not found: {}", request.context_id))?;
-    if ctx.kind != superscience_store::ExecutionContextKind::Local {
+    if ctx.kind != wisp_store::ExecutionContextKind::Local {
         let selected = match frame_id {
             Some(frame_id) => store
                 .session_execution_context_enabled(frame_id, &ctx.id)
@@ -2000,7 +2530,7 @@ async fn create_run_record(
             ));
         }
     }
-    if ctx.kind == superscience_store::ExecutionContextKind::Ssh {
+    if ctx.kind == wisp_store::ExecutionContextKind::Ssh {
         crate::ssh_hosts::require_managed_ssh_ready(&ctx)?;
     }
     let run_id = uuid::Uuid::new_v4().to_string();
@@ -2015,7 +2545,7 @@ async fn create_run_record(
         resolve_declared_inputs(
             root,
             &input_refs,
-            ctx.kind == superscience_store::ExecutionContextKind::Ssh,
+            ctx.kind == wisp_store::ExecutionContextKind::Ssh,
         )?
     };
     let timeout = Duration::from_secs(
@@ -2025,12 +2555,12 @@ async fn create_run_record(
             .clamp(1, 7 * 24 * 60 * 60),
     );
     let runner_kind = match ctx.kind {
-        superscience_store::ExecutionContextKind::Ssh => "ssh_direct",
-        superscience_store::ExecutionContextKind::Local | superscience_store::ExecutionContextKind::Wsl => {
+        wisp_store::ExecutionContextKind::Ssh => "ssh_direct",
+        wisp_store::ExecutionContextKind::Local | wisp_store::ExecutionContextKind::Wsl => {
             "local_detached"
         }
     };
-    let mut run = superscience_store::RunRecord::new(
+    let mut run = wisp_store::RunRecord::new(
         &run_id,
         project_id,
         &ctx.id,
@@ -2049,29 +2579,28 @@ async fn create_run_record(
     let environment = run_environment_snapshot(&ctx);
     let mut persisted_environment = environment.clone();
     persisted_environment["preflight"] = serde_json::to_value(preflight).unwrap_or_default();
-    run.env_snapshot_json = superscience_store::canonical_json(&persisted_environment);
+    run.env_snapshot_json = wisp_store::canonical_json(&persisted_environment);
 
     let handle = match ctx.kind {
-        superscience_store::ExecutionContextKind::Ssh => {
-            if output_specs
+        wisp_store::ExecutionContextKind::Ssh => {
+            for spec in output_specs
                 .iter()
-                .any(|spec| !spec.glob.starts_with("ssh://"))
+                .filter(|spec| !spec.glob.starts_with("ssh://"))
             {
-                return Err(
-                    "SSH direct output_specs must be explicit ssh:// references; remote glob harvest is not available yet"
-                        .into(),
-                );
+                harvest_remote::validate_remote_glob(&spec.glob)?;
             }
+            let (prefs, _) =
+                crate::storage_prefs::effective_prefs(store, project_id, &ctx.id).await?;
             RemoteRunHandle::SshDirect {
                 connection: crate::ssh_hosts::SshConnection::from_execution_context(&ctx)?,
-                workdir: format!(".superscience/runs/{run_id}"),
+                workdir: format!("{}/{run_id}", prefs.remote_workdir_root),
                 token: uuid::Uuid::new_v4().to_string(),
                 inputs_staged: false,
                 pgid: None,
                 start_time: None,
             }
         }
-        superscience_store::ExecutionContextKind::Local | superscience_store::ExecutionContextKind::Wsl => {
+        wisp_store::ExecutionContextKind::Local | wisp_store::ExecutionContextKind::Wsl => {
             local_detached_handle_for(&ctx, &run_id, cwd.as_deref())?
         }
     };
@@ -2119,12 +2648,12 @@ async fn create_run_record(
 }
 
 fn local_detached_handle_for(
-    ctx: &superscience_store::ExecutionContext,
+    ctx: &wisp_store::ExecutionContext,
     run_id: &str,
     cwd: Option<&Path>,
 ) -> Result<RemoteRunHandle, String> {
     let transport = match ctx.kind {
-        superscience_store::ExecutionContextKind::Wsl => {
+        wisp_store::ExecutionContextKind::Wsl => {
             let cfg: serde_json::Value = serde_json::from_str(&ctx.config_json).unwrap_or_default();
             let distro = cfg
                 .get("distro")
@@ -2142,7 +2671,7 @@ fn local_detached_handle_for(
                 ],
             }
         }
-        superscience_store::ExecutionContextKind::Local => {
+        wisp_store::ExecutionContextKind::Local => {
             #[cfg(windows)]
             {
                 LocalTransport::Windows {
@@ -2158,7 +2687,7 @@ fn local_detached_handle_for(
                 }
             }
         }
-        superscience_store::ExecutionContextKind::Ssh => {
+        wisp_store::ExecutionContextKind::Ssh => {
             return Err("local detached handle requires a local or WSL context".into());
         }
     };
@@ -2169,7 +2698,7 @@ fn local_detached_handle_for(
         .filter(|path| !path.is_empty());
     Ok(RemoteRunHandle::LocalDetached {
         transport,
-        workdir: format!(".superscience/runs/{run_id}"),
+        workdir: format!(".wisp-science/runs/{run_id}"),
         token: uuid::Uuid::new_v4().to_string(),
         inputs_staged: true,
         pgid: None,
@@ -2179,41 +2708,23 @@ fn local_detached_handle_for(
 }
 
 async fn finish_remote_run(
-    store: &superscience_store::Store,
+    store: &wisp_store::Store,
+    runner: &dyn RunCommandRunner,
     owner_id: &str,
     remote: &RemoteRun,
-    status: superscience_store::RunStatus,
+    status: wisp_store::RunStatus,
     exit_code: Option<i64>,
 ) -> Result<(), String> {
-    if status == superscience_store::RunStatus::Succeeded {
+    if status == wisp_store::RunStatus::Succeeded && !remote.output_specs.is_empty() {
         if let Some(frame_id) = remote.frame_id.as_deref() {
-            let references: Vec<_> = if remote.handle.is_local_detached() {
-                remote
-                    .output_specs
-                    .iter()
-                    .filter(|spec| !spec.glob.starts_with("ssh://"))
-                    .cloned()
-                    .collect()
-            } else {
-                remote
-                    .output_specs
-                    .iter()
-                    .filter(|spec| spec.glob.starts_with("ssh://"))
-                    .cloned()
-                    .collect()
-            };
-            if !references.is_empty() {
-                let fallback = PathBuf::from(".");
-                if let Err(error) = crate::harvest::harvest_run_outputs(
-                    store,
-                    &remote.project_id,
-                    frame_id,
-                    &remote.run_id,
-                    remote.harvest_root.as_deref().unwrap_or(&fallback),
-                    &references,
-                )
-                .await
-                {
+            match harvest_finished_remote(store, runner, owner_id, remote, frame_id).await {
+                Ok(()) => {
+                    store
+                        .mark_run_harvested(&remote.run_id)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+                Err(error) => {
                     store
                         .record_run_poll_owned(
                             &remote.run_id,
@@ -2232,6 +2743,58 @@ async fn finish_remote_run(
         .finish_active_run_owned(&remote.run_id, owner_id, status, exit_code)
         .await
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Register a succeeded detached Run's declared outputs: local globs for
+/// local/WSL Runs, and both `ssh://` URI references and glob-matched remote
+/// pull-back for SSH-direct Runs.
+async fn harvest_finished_remote(
+    store: &wisp_store::Store,
+    runner: &dyn RunCommandRunner,
+    owner_id: &str,
+    remote: &RemoteRun,
+    frame_id: &str,
+) -> Result<(), String> {
+    let fallback = PathBuf::from(".");
+    if remote.handle.is_local_detached() {
+        let references: Vec<_> = remote
+            .output_specs
+            .iter()
+            .filter(|spec| !spec.glob.starts_with("ssh://"))
+            .cloned()
+            .collect();
+        if !references.is_empty() {
+            crate::harvest::harvest_run_outputs(
+                store,
+                &remote.project_id,
+                frame_id,
+                &remote.run_id,
+                remote.harvest_root.as_deref().unwrap_or(&fallback),
+                &references,
+            )
+            .await?;
+        }
+        return Ok(());
+    }
+    let uri_references: Vec<_> = remote
+        .output_specs
+        .iter()
+        .filter(|spec| spec.glob.starts_with("ssh://"))
+        .cloned()
+        .collect();
+    if !uri_references.is_empty() {
+        crate::harvest::harvest_run_outputs(
+            store,
+            &remote.project_id,
+            frame_id,
+            &remote.run_id,
+            remote.harvest_root.as_deref().unwrap_or(&fallback),
+            &uri_references,
+        )
+        .await?;
+    }
+    harvest_remote::harvest_ssh_run(store, runner, owner_id, remote, true).await?;
     Ok(())
 }
 
@@ -2262,7 +2825,8 @@ fn remote_lifecycle_lease_secs(remote: &RemoteRun) -> i64 {
 }
 
 async fn fail_remote_start(
-    store: &superscience_store::Store,
+    store: &wisp_store::Store,
+    runner: &dyn RunCommandRunner,
     owner_id: &str,
     remote: &RemoteRun,
     error: &str,
@@ -2278,16 +2842,17 @@ async fn fail_remote_start(
         .map_err(|e| e.to_string())?;
     finish_remote_run(
         store,
+        runner,
         owner_id,
         remote,
-        superscience_store::RunStatus::Failed,
+        wisp_store::RunStatus::Failed,
         Some(69),
     )
     .await
 }
 
 async fn remote_lifecycle(
-    store: &superscience_store::Store,
+    store: &wisp_store::Store,
     runner: &dyn RunCommandRunner,
     owner_id: &str,
     mut remote: RemoteRun,
@@ -2312,7 +2877,7 @@ async fn remote_lifecycle(
         }
 
         if !remote.handle.is_confirmed()
-            && run.status == superscience_store::RunStatus::Submitted
+            && run.status == wisp_store::RunStatus::Submitted
             && run.last_poll_error.is_some()
         {
             let error = retry_stopped_error(
@@ -2321,11 +2886,11 @@ async fn remote_lifecycle(
                     .as_deref()
                     .unwrap_or("unknown start error"),
             );
-            fail_remote_start(store, owner_id, &remote, &error).await?;
+            fail_remote_start(store, runner, owner_id, &remote, &error).await?;
             return Ok(());
         }
 
-        if run.status == superscience_store::RunStatus::Submitted && remote.handle.is_confirmed() {
+        if run.status == wisp_store::RunStatus::Submitted && remote.handle.is_confirmed() {
             let _ = store
                 .transition_run_to_running_owned(&remote.run_id, owner_id)
                 .await
@@ -2334,15 +2899,16 @@ async fn remote_lifecycle(
         }
 
         if !remote.handle.is_confirmed() {
-            if run.status == superscience_store::RunStatus::Cancelling {
+            if run.status == wisp_store::RunStatus::Cancelling {
                 match prepare_remote(runner, &remote).await {
                     Ok(PrepareRemote::Existing(handle)) => remote.handle = handle,
                     Ok(PrepareRemote::Prepared) => {
                         finish_remote_run(
                             store,
+                            runner,
                             owner_id,
                             &remote,
-                            superscience_store::RunStatus::Cancelled,
+                            wisp_store::RunStatus::Cancelled,
                             None,
                         )
                         .await?;
@@ -2361,9 +2927,10 @@ async fn remote_lifecycle(
                             .map_err(|e| e.to_string())?;
                         finish_remote_run(
                             store,
+                            runner,
                             owner_id,
                             &remote,
-                            superscience_store::RunStatus::Cancelled,
+                            wisp_store::RunStatus::Cancelled,
                             None,
                         )
                         .await?;
@@ -2375,7 +2942,7 @@ async fn remote_lifecycle(
                     Ok(handle) => remote.handle = handle,
                     Err(error) => {
                         let error = retry_stopped_error(&remote.handle, &error);
-                        fail_remote_start(store, owner_id, &remote, &error).await?;
+                        fail_remote_start(store, runner, owner_id, &remote, &error).await?;
                         return Ok(());
                     }
                 }
@@ -2395,7 +2962,7 @@ async fn remote_lifecycle(
                 .await
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| format!("Run not found: {}", remote.run_id))?;
-            if refreshed.status == superscience_store::RunStatus::Submitted {
+            if refreshed.status == wisp_store::RunStatus::Submitted {
                 store
                     .transition_run_to_running_owned(&remote.run_id, owner_id)
                     .await
@@ -2404,14 +2971,15 @@ async fn remote_lifecycle(
             continue;
         }
 
-        if run.status == superscience_store::RunStatus::Cancelling {
+        if run.status == wisp_store::RunStatus::Cancelling {
             match cancel_remote(runner, &remote.handle).await {
                 Ok(RemoteCancel::Cancelled) => {
                     finish_remote_run(
                         store,
+                        runner,
                         owner_id,
                         &remote,
-                        superscience_store::RunStatus::Cancelled,
+                        wisp_store::RunStatus::Cancelled,
                         None,
                     )
                     .await?;
@@ -2420,6 +2988,7 @@ async fn remote_lifecycle(
                 Ok(RemoteCancel::Finished(code)) => {
                     finish_remote_run(
                         store,
+                        runner,
                         owner_id,
                         &remote,
                         remote_terminal_status(code),
@@ -2431,9 +3000,10 @@ async fn remote_lifecycle(
                 Ok(RemoteCancel::TimedOut(code)) => {
                     finish_remote_run(
                         store,
+                        runner,
                         owner_id,
                         &remote,
-                        superscience_store::RunStatus::TimedOut,
+                        wisp_store::RunStatus::TimedOut,
                         Some(code),
                     )
                     .await?;
@@ -2444,8 +3014,15 @@ async fn remote_lifecycle(
                         .record_run_poll_owned(&remote.run_id, owner_id, None, None, Some(&reason))
                         .await
                         .map_err(|e| e.to_string())?;
-                    finish_remote_run(store, owner_id, &remote, superscience_store::RunStatus::Lost, None)
-                        .await?;
+                    finish_remote_run(
+                        store,
+                        runner,
+                        owner_id,
+                        &remote,
+                        wisp_store::RunStatus::Lost,
+                        None,
+                    )
+                    .await?;
                     return Ok(());
                 }
                 Err(error) => {
@@ -2463,9 +3040,10 @@ async fn remote_lifecycle(
                             .map_err(|e| e.to_string())?;
                         finish_remote_run(
                             store,
+                            runner,
                             owner_id,
                             &remote,
-                            superscience_store::RunStatus::Lost,
+                            wisp_store::RunStatus::Lost,
                             None,
                         )
                         .await?;
@@ -2497,6 +3075,7 @@ async fn remote_lifecycle(
                         RemotePollState::Finished(code) => {
                             finish_remote_run(
                                 store,
+                                runner,
                                 owner_id,
                                 &remote,
                                 remote_terminal_status(code),
@@ -2508,9 +3087,10 @@ async fn remote_lifecycle(
                         RemotePollState::TimedOut(code) => {
                             finish_remote_run(
                                 store,
+                                runner,
                                 owner_id,
                                 &remote,
-                                superscience_store::RunStatus::TimedOut,
+                                wisp_store::RunStatus::TimedOut,
                                 Some(code),
                             )
                             .await?;
@@ -2519,9 +3099,10 @@ async fn remote_lifecycle(
                         RemotePollState::Cancelled => {
                             finish_remote_run(
                                 store,
+                                runner,
                                 owner_id,
                                 &remote,
-                                superscience_store::RunStatus::Cancelled,
+                                wisp_store::RunStatus::Cancelled,
                                 None,
                             )
                             .await?;
@@ -2540,9 +3121,10 @@ async fn remote_lifecycle(
                                 .map_err(|e| e.to_string())?;
                             finish_remote_run(
                                 store,
+                                runner,
                                 owner_id,
                                 &remote,
-                                superscience_store::RunStatus::Lost,
+                                wisp_store::RunStatus::Lost,
                                 None,
                             )
                             .await?;
@@ -2565,9 +3147,10 @@ async fn remote_lifecycle(
                             .map_err(|e| e.to_string())?;
                         finish_remote_run(
                             store,
+                            runner,
                             owner_id,
                             &remote,
-                            superscience_store::RunStatus::Lost,
+                            wisp_store::RunStatus::Lost,
                             None,
                         )
                         .await?;
@@ -2591,9 +3174,72 @@ async fn remote_lifecycle(
     }
 }
 
+/// Pull a trailing slice of the run's stdout/stderr logs (capped, not the
+/// full remote files) into `<workspace>/runs/<run_id>/` so the server
+/// workspace can be deleted without losing the useful tail. Returns the
+/// project-relative log directory when anything was written.
+async fn save_run_logs_locally(
+    store: &wisp_store::Store,
+    runner: &dyn RunCommandRunner,
+    run: &wisp_store::RunRecord,
+    handle: &RemoteRunHandle,
+) -> Result<Option<String>, String> {
+    let Some(workspace) = store
+        .get_project(&run.project_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .map(|(_, workspace)| workspace)
+        .filter(|workspace| !workspace.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    let pull = cleanup::fetch_run_logs(runner, handle, &run.id).await?;
+    let (stdout_log, stderr_log) = match pull {
+        cleanup::LogPull::Absent => return Ok(None),
+        cleanup::LogPull::EncoderMissing => {
+            // The server cannot emit binary-safe output; the persisted tails
+            // are the best remaining copy.
+            let as_log = |tail: &Option<String>| {
+                tail.as_deref()
+                    .filter(|tail| !tail.is_empty())
+                    .map(|tail| cleanup::PulledLog {
+                        total_size: tail.len() as u64,
+                        bytes: tail.as_bytes().to_vec(),
+                    })
+            };
+            (as_log(&run.stdout_tail), as_log(&run.stderr_tail))
+        }
+        cleanup::LogPull::Logs { stdout, stderr } => (stdout, stderr),
+    };
+    if stdout_log.is_none() && stderr_log.is_none() {
+        return Ok(None);
+    }
+    let relative = format!("runs/{}", run.id);
+    let directory = Path::new(&workspace).join("runs").join(&run.id);
+    std::fs::create_dir_all(&directory).map_err(|e| format!("create local log directory: {e}"))?;
+    for (name, log) in [("stdout.log", stdout_log), ("stderr.log", stderr_log)] {
+        let Some(log) = log else { continue };
+        let path = directory.join(name);
+        let mut contents = Vec::with_capacity(log.bytes.len() + 96);
+        if (log.bytes.len() as u64) < log.total_size {
+            contents.extend_from_slice(
+                format!(
+                    "[wisp] log truncated: showing last {} of {} bytes\n",
+                    log.bytes.len(),
+                    log.total_size
+                )
+                .as_bytes(),
+            );
+        }
+        contents.extend_from_slice(&log.bytes);
+        std::fs::write(&path, contents).map_err(|e| format!("write {}: {e}", path.display()))?;
+    }
+    Ok(Some(relative))
+}
+
 async fn remote_run_from_record(
-    store: &superscience_store::Store,
-    run: &superscience_store::RunRecord,
+    store: &wisp_store::Store,
+    run: &wisp_store::RunRecord,
 ) -> Result<Option<RemoteRun>, String> {
     let Some(handle_json) = run.remote_handle_json.as_deref() else {
         return Ok(None);
@@ -2626,7 +3272,7 @@ async fn remote_run_from_record(
     }))
 }
 
-fn response_from_run(run: &superscience_store::RunRecord) -> SubmitRunResponse {
+fn response_from_run(run: &wisp_store::RunRecord) -> SubmitRunResponse {
     SubmitRunResponse {
         run_id: run.id.clone(),
         status: run.status,
@@ -2638,7 +3284,7 @@ fn response_from_run(run: &superscience_store::RunRecord) -> SubmitRunResponse {
 }
 
 async fn record_run_outcome(
-    store: &superscience_store::Store,
+    store: &wisp_store::Store,
     prepared: &PreparedRun,
     output: Result<RunCommandOutput, String>,
     owner_id: &str,
@@ -2657,15 +3303,15 @@ async fn record_run_outcome(
                 .await
                 .map_err(|e| e.to_string())?;
             let status = if out.exit_code == 0 {
-                superscience_store::RunStatus::Succeeded
+                wisp_store::RunStatus::Succeeded
             } else {
-                superscience_store::RunStatus::Failed
+                wisp_store::RunStatus::Failed
             };
             store
                 .finish_active_run_owned(&prepared.run_id, owner_id, status, Some(out.exit_code))
                 .await
                 .map_err(|e| e.to_string())?;
-            if status == superscience_store::RunStatus::Succeeded {
+            if status == wisp_store::RunStatus::Succeeded {
                 if let (Some(frame_id), Some(root)) = (
                     prepared.frame_id.as_deref(),
                     prepared.harvest_root.as_deref(),
@@ -2680,6 +3326,10 @@ async fn record_run_outcome(
                             &prepared.output_specs,
                         )
                         .await?;
+                        store
+                            .mark_run_harvested(&prepared.run_id)
+                            .await
+                            .map_err(|e| e.to_string())?;
                     }
                 }
             }
@@ -2699,11 +3349,11 @@ async fn record_run_outcome(
                 .await
                 .map_err(|err| err.to_string())?;
             let (status, exit_code) = if e == "run_in_context cancelled" {
-                (superscience_store::RunStatus::Cancelled, None)
+                (wisp_store::RunStatus::Cancelled, None)
             } else if e.starts_with("run_in_context timed out after ") {
-                (superscience_store::RunStatus::TimedOut, Some(124))
+                (wisp_store::RunStatus::TimedOut, Some(124))
             } else {
-                (superscience_store::RunStatus::Failed, Some(-1))
+                (wisp_store::RunStatus::Failed, Some(-1))
             };
             store
                 .finish_active_run_owned(&prepared.run_id, owner_id, status, exit_code)
@@ -2722,7 +3372,7 @@ async fn record_run_outcome(
 }
 
 async fn run_with_lifecycle_lease(
-    store: &superscience_store::Store,
+    store: &wisp_store::Store,
     run_id: &str,
     owner_id: &str,
     runner: &dyn RunCommandRunner,
@@ -2779,7 +3429,7 @@ async fn run_with_lifecycle_lease(
                     .await
                     .map_err(|e| e.to_string())?
                     .map(|run| run.status);
-                if status == Some(superscience_store::RunStatus::Cancelling) {
+                if status == Some(wisp_store::RunStatus::Cancelling) {
                     return Err("run_in_context cancelled".into());
                 }
                 let owned = store
@@ -2803,7 +3453,7 @@ async fn run_with_lifecycle_lease(
 
 #[cfg(test)]
 pub async fn submit_run_with_runner(
-    store: &superscience_store::Store,
+    store: &wisp_store::Store,
     project_id: &str,
     frame_id: Option<&str>,
     request: SubmitRunRequest,
@@ -2816,7 +3466,7 @@ pub async fn submit_run_with_runner(
         frame_id,
         request,
         cwd,
-        superscience_store::RunStatus::Running,
+        wisp_store::RunStatus::Running,
         "test-owner",
         ACTIVE_LEASE_SECS,
         None,

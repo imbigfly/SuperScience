@@ -179,6 +179,48 @@ pub(super) async fn pick_executable_file(app: AppHandle) -> Result<Option<String
     Ok(picked.map(|fp| fp.to_string()))
 }
 
+/// Upload local files or directories into the remote directory shown in Files.
+/// When `source_paths` is omitted, opens the native multi-file picker.
+#[tauri::command]
+pub(super) async fn upload_to_context(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    context_id: String,
+    destination_dir: String,
+    source_paths: Option<Vec<String>>,
+) -> Result<Vec<crate::run_context::UploadToContextItem>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let paths = match source_paths {
+        Some(paths) if !paths.is_empty() => paths,
+        Some(_) => return Ok(Vec::new()),
+        None => {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            app.dialog().file().pick_files(move |picked| {
+                let _ = tx.send(picked);
+            });
+            match rx.await.map_err(|e| format!("{e}"))? {
+                Some(files) if !files.is_empty() => {
+                    files.into_iter().map(|path| path.to_string()).collect()
+                }
+                _ => return Ok(Vec::new()),
+            }
+        }
+    };
+    let ap = state.active(window.label());
+    let frame_id = state.active_frame(window.label());
+    crate::run_context::submit_local_uploads_to_context(
+        &state.store,
+        &state.run_manager,
+        &ap.id,
+        frame_id.as_deref(),
+        &context_id,
+        &destination_dir,
+        &paths,
+    )
+    .await
+}
+
 /// Copy a workspace file to a user-chosen location via the native save dialog.
 /// Returns the saved path, or `None` if the user cancelled.
 pub(super) fn parse_ssh_artifact_uri(uri: &str) -> Option<(String, String)> {
@@ -236,6 +278,12 @@ pub(super) async fn download_file(
     };
     let dest_path = std::path::PathBuf::from(dest.to_string());
     if let Some((context_id, remote_path)) = remote {
+        crate::run_context::remote_files::refuse_if_context_path_discarded(
+            &state.store,
+            &context_id,
+            &remote_path,
+        )
+        .await?;
         let frame_id = state.active_frame(window.label());
         let context = state
             .store
@@ -306,6 +354,41 @@ pub(super) async fn save_share_image(
     };
     let dest_path = std::path::PathBuf::from(dest.to_string());
     tokio::fs::write(&dest_path, bytes)
+        .await
+        .map_err(|e| format!("write failed: {e}"))?;
+    Ok(Some(dest_path.to_string_lossy().into_owned()))
+}
+
+// Generous ceiling for one self-contained share HTML document.
+const MAX_SHARE_HTML_BYTES: usize = 16 * 1024 * 1024;
+
+/// Save a frontend-built `/share` HTML document through the native save
+/// dialog. Returns the saved path, or `None` when the user cancels.
+#[tauri::command]
+pub(super) async fn save_share_html(
+    app: AppHandle,
+    html: String,
+    default_name: String,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    if html.len() > MAX_SHARE_HTML_BYTES {
+        return Err("share HTML exceeds the size limit".into());
+    }
+    if html.trim().is_empty() {
+        return Err("share HTML is empty".into());
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_file_name(&share_image_file_name(&default_name))
+        .save_file(move |p| {
+            let _ = tx.send(p);
+        });
+    let Some(dest) = rx.await.map_err(|e| format!("{e}"))? else {
+        return Ok(None); // user cancelled
+    };
+    let dest_path = std::path::PathBuf::from(dest.to_string());
+    tokio::fs::write(&dest_path, html)
         .await
         .map_err(|e| format!("write failed: {e}"))?;
     Ok(Some(dest_path.to_string_lossy().into_owned()))

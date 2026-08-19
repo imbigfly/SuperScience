@@ -910,6 +910,9 @@ pub struct ArtifactSearchResult {
     /// User-facing path derived from a `path:` logical key. Storage paths may
     /// point into Wisp's private content-addressed snapshot tree instead.
     pub logical_path: Option<String>,
+    /// Latest version's remote source was abandoned (server discarded or the
+    /// persisted remote file was deleted after confirmation).
+    pub source_discarded: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1065,6 +1068,17 @@ pub struct RunRecord {
     pub last_poll_error: Option<String>,
     pub progress_json: String,
     pub env_snapshot_json: String,
+    /// When declared output specs were registered (downloaded/verified for
+    /// remote Runs). NULL means outputs were never harvested.
+    pub harvested_at: Option<i64>,
+    /// When the server-side run workspace was deleted. NULL means it still
+    /// exists (or was never created).
+    pub cleaned_at: Option<i64>,
+    pub cleanup_error: Option<String>,
+    /// Project-relative directory holding the run's full stdout/stderr logs,
+    /// pulled back before the server workspace was cleaned. NULL means logs
+    /// were never saved locally.
+    pub logs_path: Option<String>,
 }
 
 /// Polling/list projection for the WebView. Large command, output, remote
@@ -1086,6 +1100,9 @@ pub struct RunSummary {
     pub last_polled_at: Option<i64>,
     pub last_poll_error: Option<String>,
     pub progress_json: String,
+    pub harvested_at: Option<i64>,
+    pub cleaned_at: Option<i64>,
+    pub cleanup_error: Option<String>,
     /// Bounded head/tail sample plus byte lengths; changes make visible run
     /// monitors refetch the one full record they display.
     pub output_fingerprint: String,
@@ -1281,6 +1298,10 @@ impl RunRecord {
             last_poll_error: None,
             progress_json: "{}".into(),
             env_snapshot_json: "{}".into(),
+            harvested_at: None,
+            cleaned_at: None,
+            cleanup_error: None,
+            logs_path: None,
         }
     }
 
@@ -1387,6 +1408,10 @@ pub(crate) fn run_from_row(row: SqliteRow) -> Result<RunRecord> {
         last_poll_error: row.try_get("last_poll_error")?,
         progress_json: row.try_get("progress_json")?,
         env_snapshot_json: row.try_get("env_snapshot_json")?,
+        harvested_at: row.try_get("harvested_at")?,
+        cleaned_at: row.try_get("cleaned_at")?,
+        cleanup_error: row.try_get("cleanup_error")?,
+        logs_path: row.try_get("logs_path")?,
     })
 }
 
@@ -1408,6 +1433,9 @@ pub(crate) fn run_summary_from_row(row: SqliteRow) -> Result<RunSummary> {
         last_polled_at: row.try_get("last_polled_at")?,
         last_poll_error: row.try_get("last_poll_error")?,
         progress_json: row.try_get("progress_json")?,
+        harvested_at: row.try_get("harvested_at")?,
+        cleaned_at: row.try_get("cleaned_at")?,
+        cleanup_error: row.try_get("cleanup_error")?,
         output_fingerprint: row.try_get("output_fingerprint")?,
     })
 }

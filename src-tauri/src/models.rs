@@ -19,17 +19,16 @@ fn default_context_window() -> u64 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelProfile {
     pub id: String,
-    pub label: String,
-    /// Protocol type (`openai` / `openai_responses` / `anthropic`). Mirrored
-    /// from the owning provider on read so callers keep working.
-    pub provider: String,
-    /// API base URL mirrored from the owning provider on read.
-    pub api_url: String,
-    /// Owning provider id. Empty only for pre-migration JSON; `ensure` fills it.
     #[serde(default)]
-    pub provider_id: String,
+    pub label: String,
+    pub provider: String,
+    /// Shared credential root. Protocol-specific paths live in
+    /// `endpoint_suffix` so profiles on one service can reuse a key.
+    pub api_url: String,
+    #[serde(default)]
+    pub endpoint_suffix: String,
     pub model: String,
-    /// Computed on read from the secrets file; never part of the persisted JSON.
+    /// Computed on read from the keyring; never part of the persisted JSON.
     #[serde(default)]
     pub has_api_key: bool,
     /// Computed on read; true for the active profile.
@@ -54,53 +53,206 @@ pub struct ModelProfile {
     /// to the Scientific Illustrator's raster image-generation tool.
     #[serde(default)]
     pub use_for_image_generation: bool,
+    /// OpenAI image size (`auto`, `1024x1024`, …). Empty means the tool default.
+    #[serde(default)]
+    pub image_size: String,
+    /// Image quality (`auto`/`low`/`medium`/`high`, or Grok `low`/`medium`).
+    #[serde(default)]
+    pub image_quality: String,
+    /// Grok Imagine aspect ratio (`auto`, `1:1`, `16:9`, …).
+    #[serde(default)]
+    pub image_aspect_ratio: String,
+    /// Grok Imagine resolution (`1k` or `2k`).
+    #[serde(default)]
+    pub image_resolution: String,
+    /// Computed on read / accepted on save; true when this profile is assigned
+    /// to the video-generation tool.
+    #[serde(default)]
+    pub use_for_video_generation: bool,
+    /// Video length in seconds (1–15). None means the tool default.
+    #[serde(default)]
+    pub video_duration_secs: Option<u32>,
+    /// Video aspect ratio (`16:9`, `9:16`, `1:1`, `4:3`, `3:4`).
+    #[serde(default)]
+    pub video_aspect_ratio: Option<String>,
+    /// Video resolution (`480p`, `720p`, `1080p`).
+    #[serde(default)]
+    pub video_resolution: Option<String>,
 }
 
-/// Shared endpoint + credentials for one or more [`ModelProfile`]s.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelProvider {
-    pub id: String,
-    pub label: String,
-    /// Protocol: `openai` | `openai_responses` | `anthropic`.
-    pub protocol: String,
-    pub api_url: String,
-    #[serde(default)]
-    pub sort_order: i64,
-    #[serde(default)]
-    pub builtin: bool,
-    /// Computed on read from the secrets file; never persisted.
-    #[serde(default)]
-    pub has_api_key: bool,
-    /// Computed on read: number of model profiles under this provider.
-    #[serde(default)]
-    pub model_count: usize,
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ImageGenerationOptions {
+    pub size: String,
+    pub quality: String,
+    pub aspect_ratio: String,
+    pub resolution: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VideoGenerationOptions {
+    pub duration_secs: u32,
+    pub aspect_ratio: String,
+    pub resolution: String,
+}
+
+impl Default for VideoGenerationOptions {
+    fn default() -> Self {
+        Self {
+            duration_secs: 5,
+            aspect_ratio: "16:9".into(),
+            resolution: "720p".into(),
+        }
+    }
 }
 
 const PROFILES_KEY: &str = "model_profiles";
-const PROVIDERS_KEY: &str = "model_providers";
 const ACTIVE_KEY: &str = "active_model_id";
 const VISION_KEY: &str = "vision_model_id";
 const IMAGE_GENERATION_KEY: &str = "image_generation_model_id";
+const VIDEO_GENERATION_KEY: &str = "video_generation_model_id";
 const LEGACY_KEY_SECRET: &str = "api_key";
 const CUSTOM_CREDENTIALS_KEY: &str = "custom_credentials";
 const CUSTOM_CREDENTIAL_SECRET_PREFIX: &str = "custom_credential:";
-pub const TCTOKEN_PROVIDER_ID: &str = "tctoken";
-const TCTOKEN_PROVIDER_LABEL: &str = "天成TOKEN平台";
-const TCTOKEN_PROVIDER_URL: &str = "https://www.tctoken.cn/v1";
 
 fn secret_name(id: &str) -> String {
     format!("model_key:{id}")
 }
 
-fn provider_secret_name(id: &str) -> String {
-    format!("provider_key:{id}")
+fn normalize_endpoint_suffix(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(String::new());
+    }
+    if value.contains("://")
+        || value.starts_with("//")
+        || value.contains('?')
+        || value.contains('#')
+    {
+        return Err(
+            "Endpoint suffix must be a URL path without a host, query, or fragment.".into(),
+        );
+    }
+    let value = value.trim_matches('/');
+    if value.is_empty() {
+        return Ok(String::new());
+    }
+    if value.split('/').any(|segment| segment == "..") {
+        return Err("Endpoint suffix cannot contain '..' path segments.".into());
+    }
+    Ok(format!("/{value}"))
 }
 
-/// Process-lifetime cache of resolved secrets, keyed by secret name.
+pub(crate) fn join_api_url(base_url: &str, endpoint_suffix: &str) -> String {
+    let base_url = base_url.trim().trim_end_matches('/');
+    let endpoint_suffix = endpoint_suffix.trim().trim_matches('/');
+    if endpoint_suffix.is_empty() {
+        base_url.to_string()
+    } else {
+        format!("{base_url}/{endpoint_suffix}")
+    }
+}
+
+fn effective_api_url(profile: &ModelProfile) -> String {
+    join_api_url(&profile.api_url, &profile.endpoint_suffix)
+}
+
+/// Identity of an LLM credential: the API origin, not the provider enum and
+/// not the model id. `openai` covers DeepSeek, official OpenAI, and local
+/// gateways; those must not share a key. OpenAI Chat and Responses on the
+/// same host should.
+pub(crate) fn normalize_endpoint(url: &str) -> String {
+    let url = url.trim();
+    if url.is_empty() {
+        return String::new();
+    }
+    let (scheme, rest) = if let Some(rest) = url.strip_prefix("https://") {
+        ("https://", rest)
+    } else if let Some(rest) = url.strip_prefix("http://") {
+        ("http://", rest)
+    } else {
+        ("", url)
+    };
+    let rest = if scheme.is_empty() {
+        rest.to_string()
+    } else {
+        match rest.split_once('/') {
+            Some((host, path)) => format!("{}/{}", host.to_ascii_lowercase(), path),
+            None => rest.to_ascii_lowercase(),
+        }
+    };
+    let mut endpoint = format!("{scheme}{rest}");
+    loop {
+        while endpoint.ends_with('/') {
+            endpoint.pop();
+        }
+        let Some(stripped) = [
+            "/v1/messages",
+            "/v1/chat/completions",
+            "/chat/completions",
+            "/responses",
+            "/v1",
+        ]
+        .into_iter()
+        .find_map(|suffix| endpoint.strip_suffix(suffix).map(str::to_string)) else {
+            break;
+        };
+        endpoint = stripped;
+    }
+    endpoint
+}
+
+fn same_endpoint(left: &str, right: &str) -> bool {
+    let left = normalize_endpoint(left);
+    !left.is_empty() && left == normalize_endpoint(right)
+}
+
+fn sibling_key(profiles: &[ModelProfile], api_url: &str, exclude_id: &str) -> String {
+    profiles
+        .iter()
+        .filter(|profile| profile.id != exclude_id && same_endpoint(&profile.api_url, api_url))
+        .map(|profile| key_for(&profile.id))
+        .find(|key| !key.is_empty())
+        .unwrap_or_default()
+}
+
+/// Write a pasted key to this profile and every sibling on the same endpoint.
+/// If no key is pasted and this profile has none, copy a sibling's key so
+/// adding another model on the same URL does not require pasting again.
+fn store_profile_key(
+    id: &str,
+    key: Option<&str>,
+    api_url: &str,
+    profiles: &[ModelProfile],
+) -> Result<(), String> {
+    if let Some(key) = key.map(str::trim).filter(|key| !key.is_empty()) {
+        secret_set(&secret_name(id), key)?;
+        for profile in profiles {
+            if profile.id != id && same_endpoint(&profile.api_url, api_url) {
+                secret_set(&secret_name(&profile.id), key)?;
+            }
+        }
+        return Ok(());
+    }
+    if key_for(id).is_empty() {
+        let inherited = sibling_key(profiles, api_url, id);
+        if !inherited.is_empty() {
+            secret_set(&secret_name(id), &inherited)?;
+        }
+    }
+    Ok(())
+}
+
+/// Process-lifetime cache of resolved secrets, keyed by keyring name.
 ///
-/// Avoids re-reading the secrets file on every UI refresh. Writes go through
-/// `secret_set`/`secret_del` so the cache never goes stale. Values are dropped
-/// on process exit.
+/// On macOS the OS keyring pops a login-password prompt whenever the calling
+/// app's code signature doesn't match the stored item's ACL (e.g. after the
+/// unsigned→signed jump in v0.4.2). `decorated()` read the keyring once *per
+/// profile on every UI refresh*, turning that into an endless prompt storm
+/// (issue #85). Caching means the keyring is touched at most once per key per
+/// launch; a denied prompt is remembered as empty so it stops nagging too.
+/// Writes go through `secret_set`/`secret_del` so the cache never goes stale.
+/// ponytail: holds keys in memory for the session (the process already does
+/// while running a turn); values are dropped on process exit.
 fn secret_cache() -> &'static Mutex<HashMap<String, String>> {
     static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
@@ -110,7 +262,7 @@ fn secret_get(name: &str) -> String {
     if let Some(v) = secret_cache().lock().unwrap().get(name) {
         return v.clone();
     }
-    let v = superscience_store::secrets::Secret::get(name)
+    let v = wisp_store::secrets::Secret::get(name)
         .ok()
         .unwrap_or_default();
     secret_cache()
@@ -121,7 +273,7 @@ fn secret_get(name: &str) -> String {
 }
 
 fn secret_set(name: &str, value: &str) -> Result<(), String> {
-    superscience_store::secrets::Secret::set(name, value).map_err(|e| e.to_string())?;
+    wisp_store::secrets::Secret::set(name, value).map_err(|e| e.to_string())?;
     secret_cache()
         .lock()
         .unwrap()
@@ -130,8 +282,8 @@ fn secret_set(name: &str, value: &str) -> Result<(), String> {
 }
 
 fn secret_del(name: &str) -> Result<(), String> {
-    let r = superscience_store::secrets::Secret::delete(name).map_err(|e| e.to_string());
-    // Remember "absent" so existence checks don't re-read the secrets file.
+    let r = wisp_store::secrets::Secret::delete(name).map_err(|e| e.to_string());
+    // Remember "absent" so existence checks don't re-hit (and re-prompt) the keyring.
     secret_cache()
         .lock()
         .unwrap()
@@ -140,10 +292,10 @@ fn secret_del(name: &str) -> Result<(), String> {
 }
 
 /// Service credentials (#115): API keys/emails for external services that
-/// skills and bundled MCP tools authenticate to. Each is stored in the local
-/// secrets file (same cache as model keys, read at most once per launch) and
+/// skills and bundled MCP tools authenticate to. Each is stored in the OS
+/// keyring (same cache as model keys, read at most once per launch) and
 /// injected as an env var into spawned Python/MCP processes. `id` is the
-/// stable UI/command identifier; `secret` is the secrets-file key; `env` is the
+/// stable UI/command identifier; `secret` is the keyring name; `env` is the
 /// variable the consuming Python reads.
 struct Credential {
     id: &'static str,
@@ -153,7 +305,7 @@ struct Credential {
 
 /// User-defined credential metadata. The value is deliberately absent: only
 /// this non-secret name/environment mapping is persisted in SQLite, while the
-/// value stays in the local secrets file under an id-derived entry.
+/// value stays in the OS keyring under an id-derived entry.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CustomCredential {
     pub id: String,
@@ -259,7 +411,7 @@ fn sanitized_custom_credentials(raw: &str) -> Vec<CustomCredential> {
 /// Load user-defined credential metadata from SQLite into the synchronous
 /// process cache used by runtime/MCP launch paths.
 pub async fn load_custom_credentials(
-    store: &superscience_store::Store,
+    store: &wisp_store::Store,
 ) -> Result<Vec<CustomCredential>, String> {
     let raw = store
         .get_setting(CUSTOM_CREDENTIALS_KEY)
@@ -272,7 +424,7 @@ pub async fn load_custom_credentials(
 }
 
 async fn save_custom_credentials(
-    store: &superscience_store::Store,
+    store: &wisp_store::Store,
     credentials: &[CustomCredential],
 ) -> Result<(), String> {
     let raw = serde_json::to_string(credentials).map_err(|error| error.to_string())?;
@@ -285,7 +437,7 @@ async fn save_custom_credentials(
 }
 
 pub async fn custom_credential_status(
-    store: &superscience_store::Store,
+    store: &wisp_store::Store,
 ) -> Result<Vec<CustomCredentialStatus>, String> {
     Ok(load_custom_credentials(store)
         .await?
@@ -300,7 +452,7 @@ pub async fn custom_credential_status(
 }
 
 pub async fn add_custom_credential(
-    store: &superscience_store::Store,
+    store: &wisp_store::Store,
     name: &str,
     env_var: &str,
     value: &str,
@@ -358,10 +510,7 @@ pub async fn add_custom_credential(
     })
 }
 
-pub async fn remove_custom_credential(
-    store: &superscience_store::Store,
-    id: &str,
-) -> Result<(), String> {
+pub async fn remove_custom_credential(store: &wisp_store::Store, id: &str) -> Result<(), String> {
     let mut credentials = load_custom_credentials(store).await?;
     let index = credentials
         .iter()
@@ -438,17 +587,14 @@ pub fn service_env() -> Vec<(String, String)> {
     env
 }
 
-async fn load_raw(store: &superscience_store::Store) -> Vec<ModelProfile> {
+async fn load_raw(store: &wisp_store::Store) -> Vec<ModelProfile> {
     let Some(raw) = store.get_setting(PROFILES_KEY).await.ok().flatten() else {
         return Vec::new();
     };
     serde_json::from_str::<Vec<ModelProfile>>(&raw).unwrap_or_default()
 }
 
-async fn save_raw(
-    store: &superscience_store::Store,
-    profiles: &[ModelProfile],
-) -> Result<(), String> {
+async fn save_raw(store: &wisp_store::Store, profiles: &[ModelProfile]) -> Result<(), String> {
     let json = serde_json::to_string(profiles).map_err(|e| e.to_string())?;
     store
         .set_setting(PROFILES_KEY, &json)
@@ -456,322 +602,85 @@ async fn save_raw(
         .map_err(|e| e.to_string())
 }
 
-async fn load_providers_raw(store: &superscience_store::Store) -> Vec<ModelProvider> {
-    let Some(raw) = store.get_setting(PROVIDERS_KEY).await.ok().flatten() else {
-        return Vec::new();
-    };
-    serde_json::from_str::<Vec<ModelProvider>>(&raw).unwrap_or_default()
-}
-
-async fn save_providers_raw(
-    store: &superscience_store::Store,
-    providers: &[ModelProvider],
-) -> Result<(), String> {
-    let json = serde_json::to_string(providers).map_err(|e| e.to_string())?;
-    store
-        .set_setting(PROVIDERS_KEY, &json)
+/// Ensure at least one profile exists. On the first read of a legacy install,
+/// migrate the single `provider`/`api_url`/`model` settings + `api_key` secret
+/// into a "default" profile so existing users keep working unchanged.
+async fn ensure(store: &wisp_store::Store) -> Vec<ModelProfile> {
+    let profiles = load_raw(store).await;
+    if !profiles.is_empty() {
+        return profiles;
+    }
+    let provider = store
+        .get_setting("provider")
         .await
-        .map_err(|e| e.to_string())
-}
-
-fn normalize_api_url(url: &str) -> String {
-    url.trim().trim_end_matches('/').to_ascii_lowercase()
-}
-
-fn protocol_of(profile: &ModelProfile) -> String {
-    let p = profile.provider.trim();
-    if p.is_empty() {
-        "openai".into()
-    } else {
-        p.to_string()
-    }
-}
-
-fn fresh_provider_id(existing: &[ModelProvider]) -> String {
-    for n in 1..10_000 {
-        let id = format!("p{n}");
-        if !existing.iter().any(|p| p.id == id) {
-            return id;
-        }
-    }
-    "p".into()
-}
-
-fn builtin_tctoken_provider() -> ModelProvider {
-    ModelProvider {
-        id: TCTOKEN_PROVIDER_ID.into(),
-        label: TCTOKEN_PROVIDER_LABEL.into(),
-        protocol: "openai".into(),
-        api_url: TCTOKEN_PROVIDER_URL.into(),
-        sort_order: 0,
-        builtin: true,
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let api_url = store
+        .get_setting("api_url")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let model = store
+        .get_setting("model")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let max_tokens = store
+        .get_setting("max_tokens")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let reasoning_effort = store
+        .get_setting("reasoning_effort")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let default = ModelProfile {
+        id: "default".into(),
+        label: if model.trim().is_empty() {
+            "Default".into()
+        } else {
+            model.clone()
+        },
+        provider,
+        api_url,
+        endpoint_suffix: String::new(),
+        model,
         has_api_key: false,
-        model_count: 0,
-    }
-}
-
-fn strip_computed_provider(mut p: ModelProvider) -> ModelProvider {
-    p.has_api_key = false;
-    p.model_count = 0;
-    p
-}
-
-/// Ensure at least the builtin 天成TOKEN provider exists, migrate legacy flat
-/// profiles into providers, and return profiles with `provider_id` filled.
-async fn ensure(store: &superscience_store::Store) -> Vec<ModelProfile> {
-    let mut profiles = load_raw(store).await;
-    if profiles.is_empty() {
-        // Legacy single-model install → one default profile first.
-        let provider = store
-            .get_setting("provider")
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        let api_url = store
-            .get_setting("api_url")
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        let model = store
-            .get_setting("model")
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        let max_tokens = store
-            .get_setting("max_tokens")
-            .await
-            .ok()
-            .flatten()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-        let reasoning_effort = store
-            .get_setting("reasoning_effort")
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        if !(provider.is_empty() && api_url.is_empty() && model.is_empty()) {
-            let default = ModelProfile {
-                id: "default".into(),
-                label: if model.trim().is_empty() {
-                    "Default".into()
-                } else {
-                    model.clone()
-                },
-                provider,
-                api_url,
-                provider_id: String::new(),
-                model,
-                has_api_key: false,
-                active: false,
-                max_tokens,
-                context_window: DEFAULT_CONTEXT_WINDOW,
-                reasoning_effort,
-                supports_vision: false,
-                use_for_vision: false,
-                use_for_image_generation: false,
-            };
-            profiles = vec![default];
-            let _ = save_raw(store, &profiles).await;
-            let _ = store.set_setting(ACTIVE_KEY, "default").await;
-            let legacy = secret_get(LEGACY_KEY_SECRET);
-            if !legacy.is_empty() {
-                let _ = secret_set(&secret_name("default"), &legacy);
-            }
-        }
-    }
-
-    let mut providers = load_providers_raw(store).await;
-    let mut providers_dirty = false;
-    let mut profiles_dirty = false;
-
-    if providers.is_empty() && !profiles.is_empty() {
-        // Cluster flat profiles by (protocol, normalized URL).
-        let mut groups: Vec<(String, String, Vec<usize>)> = Vec::new();
-        for (idx, profile) in profiles.iter().enumerate() {
-            let protocol = protocol_of(profile);
-            let url = normalize_api_url(&profile.api_url);
-            if let Some((_, _, idxs)) = groups
-                .iter_mut()
-                .find(|(p, u, _)| *p == protocol && *u == url)
-            {
-                idxs.push(idx);
-            } else {
-                groups.push((protocol, url, vec![idx]));
-            }
-        }
-        for (protocol, url, idxs) in groups {
-            let first = &profiles[idxs[0]];
-            let id = if normalize_api_url(&first.api_url) == normalize_api_url(TCTOKEN_PROVIDER_URL)
-                && protocol == "openai"
-            {
-                TCTOKEN_PROVIDER_ID.to_string()
-            } else {
-                fresh_provider_id(&providers)
-            };
-            let label = if id == TCTOKEN_PROVIDER_ID {
-                TCTOKEN_PROVIDER_LABEL.to_string()
-            } else if !first.label.trim().is_empty() {
-                // Prefer a host-ish label from URL when available.
-                url.split("://")
-                    .nth(1)
-                    .and_then(|rest| rest.split('/').next())
-                    .filter(|h| !h.is_empty())
-                    .map(|h| h.to_string())
-                    .unwrap_or_else(|| first.label.clone())
-            } else {
-                "Provider".into()
-            };
-            let api_url = if first.api_url.trim().is_empty() {
-                if id == TCTOKEN_PROVIDER_ID {
-                    TCTOKEN_PROVIDER_URL.to_string()
-                } else {
-                    String::new()
-                }
-            } else {
-                first.api_url.clone()
-            };
-            let provider = ModelProvider {
-                id: id.clone(),
-                label,
-                protocol: protocol.clone(),
-                api_url,
-                sort_order: providers.len() as i64 + 1,
-                builtin: id == TCTOKEN_PROVIDER_ID,
-                has_api_key: false,
-                model_count: 0,
-            };
-            // Copy first available model key onto the provider.
-            for idx in &idxs {
-                let k = key_for_model(&profiles[*idx].id);
-                if !k.is_empty() {
-                    let _ = secret_set(&provider_secret_name(&id), &k);
-                    break;
-                }
-            }
-            for idx in idxs {
-                if profiles[idx].provider_id != id {
-                    profiles[idx].provider_id = id.clone();
-                    profiles[idx].provider = protocol.clone();
-                    profiles_dirty = true;
-                }
-            }
-            providers.push(provider);
-        }
-        providers_dirty = true;
-    }
-
-    // Always pin builtin 天成TOKEN at the front.
-    match providers
-        .iter_mut()
-        .find(|p| p.id == TCTOKEN_PROVIDER_ID)
-    {
-        Some(existing) => {
-            if !existing.builtin
-                || existing.label != TCTOKEN_PROVIDER_LABEL
-                || existing.protocol != "openai"
-            {
-                existing.builtin = true;
-                existing.label = TCTOKEN_PROVIDER_LABEL.into();
-                existing.protocol = "openai".into();
-                if existing.api_url.trim().is_empty() {
-                    existing.api_url = TCTOKEN_PROVIDER_URL.into();
-                }
-                providers_dirty = true;
-            }
-            if existing.sort_order != 0 {
-                existing.sort_order = 0;
-                providers_dirty = true;
-            }
-        }
-        None => {
-            providers.insert(0, builtin_tctoken_provider());
-            providers_dirty = true;
-        }
-    }
-
-    // Assign orphan profiles to tctoken when provider_id missing.
-    for profile in &mut profiles {
-        if profile.provider_id.trim().is_empty() {
-            profile.provider_id = TCTOKEN_PROVIDER_ID.into();
-            if profile.provider.trim().is_empty() {
-                profile.provider = "openai".into();
-            }
-            if profile.api_url.trim().is_empty() {
-                profile.api_url = TCTOKEN_PROVIDER_URL.into();
-            }
-            profiles_dirty = true;
-        }
-    }
-
-    // Re-sort: builtin tctoken first, then by sort_order / id.
-    providers.sort_by(|a, b| {
-        match (a.id.as_str() == TCTOKEN_PROVIDER_ID, b.id.as_str() == TCTOKEN_PROVIDER_ID) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a
-                .sort_order
-                .cmp(&b.sort_order)
-                .then_with(|| a.id.cmp(&b.id)),
-        }
-    });
-    for (idx, p) in providers.iter_mut().enumerate() {
-        let want = idx as i64;
-        if p.sort_order != want {
-            p.sort_order = want;
-            providers_dirty = true;
-        }
-    }
-
-    if providers_dirty {
-        let persisted: Vec<_> = providers.iter().cloned().map(strip_computed_provider).collect();
-        let _ = save_providers_raw(store, &persisted).await;
-    }
-    if profiles_dirty {
-        let _ = save_raw(store, &profiles).await;
-    }
-
-    // Mirror provider URL/protocol onto profiles for runtime callers.
-    let provider_map: std::collections::HashMap<_, _> =
-        providers.into_iter().map(|p| (p.id.clone(), p)).collect();
-    for profile in &mut profiles {
-        if let Some(prov) = provider_map.get(&profile.provider_id) {
-            profile.provider = prov.protocol.clone();
-            profile.api_url = prov.api_url.clone();
-        }
+        active: false,
+        max_tokens,
+        context_window: DEFAULT_CONTEXT_WINDOW,
+        reasoning_effort,
+        supports_vision: false,
+        use_for_vision: false,
+        use_for_image_generation: false,
+        image_size: String::new(),
+        image_quality: String::new(),
+        image_aspect_ratio: String::new(),
+        image_resolution: String::new(),
+        use_for_video_generation: false,
+        video_duration_secs: None,
+        video_aspect_ratio: None,
+        video_resolution: None,
+    };
+    let profiles = vec![default];
+    let _ = save_raw(store, &profiles).await;
+    let _ = store.set_setting(ACTIVE_KEY, "default").await;
+    // Carry the legacy key into the default profile's slot so it isn't lost.
+    let legacy = secret_get(LEGACY_KEY_SECRET);
+    if !legacy.is_empty() {
+        let _ = secret_set(&secret_name("default"), &legacy);
     }
     profiles
 }
 
-async fn ensure_providers(store: &superscience_store::Store) -> Vec<ModelProvider> {
-    let _ = ensure(store).await;
-    load_providers_raw(store).await
-}
-
-fn key_for_model(id: &str) -> String {
-    let k = secret_get(&secret_name(id));
-    if k.is_empty() && id == "default" {
-        secret_get(LEGACY_KEY_SECRET)
-    } else {
-        k
-    }
-}
-
-/// Key for a profile: prefer provider-level secret, fall back to legacy model key.
-fn key_for(profile: &ModelProfile) -> String {
-    if !profile.provider_id.trim().is_empty() {
-        let k = secret_get(&provider_secret_name(&profile.provider_id));
-        if !k.is_empty() {
-            return k;
-        }
-    }
-    key_for_model(&profile.id)
-}
-
-async fn active_id(store: &superscience_store::Store, profiles: &[ModelProfile]) -> String {
+async fn active_id(store: &wisp_store::Store, profiles: &[ModelProfile]) -> String {
     let want = store
         .get_setting(ACTIVE_KEY)
         .await
@@ -790,12 +699,12 @@ async fn active_id(store: &superscience_store::Store, profiles: &[ModelProfile])
     }
 }
 
-pub async fn active_profile_id(store: &superscience_store::Store) -> String {
+pub async fn active_profile_id(store: &wisp_store::Store) -> String {
     let profiles = ensure(store).await;
     active_id(store, &profiles).await
 }
 
-pub async fn session_profile_id(store: &superscience_store::Store, frame_id: &str) -> String {
+pub async fn session_profile_id(store: &wisp_store::Store, frame_id: &str) -> String {
     let profiles = ensure(store).await;
     let bound = store
         .frame_model(frame_id)
@@ -813,7 +722,7 @@ pub async fn session_profile_id(store: &superscience_store::Store, frame_id: &st
     }
 }
 
-pub async fn session_label(store: &superscience_store::Store, frame_id: &str) -> String {
+pub async fn session_label(store: &wisp_store::Store, frame_id: &str) -> String {
     let profiles = ensure(store).await;
     let id = session_profile_id(store, frame_id).await;
     profiles
@@ -828,7 +737,7 @@ pub async fn session_label(store: &superscience_store::Store, frame_id: &str) ->
 /// An empty stored override (written by older builds for "provider default")
 /// counts as no override, so the profile default applies again.
 pub async fn session_reasoning_effort(
-    store: &superscience_store::Store,
+    store: &wisp_store::Store,
     frame_id: &str,
     profile_default: &str,
 ) -> String {
@@ -840,33 +749,121 @@ pub async fn session_reasoning_effort(
     profile_default.to_string()
 }
 
-/// The active profile's `(provider, api_url, model, api_key)` for a turn.
-pub async fn active_config(store: &superscience_store::Store) -> (String, String, String, String) {
-    let profiles = ensure(store).await;
-    if profiles.is_empty() {
-        return (
-            String::new(),
-            String::new(),
-            String::new(),
-            String::new(),
-        );
+/// Key for a profile, falling back to the legacy `api_key` secret for the
+/// migrated "default" profile (so a not-yet-re-saved default still works).
+fn key_for(id: &str) -> String {
+    let k = secret_get(&secret_name(id));
+    if k.is_empty() && id == "default" {
+        secret_get(LEGACY_KEY_SECRET)
+    } else {
+        k
     }
+}
+
+/// The active profile's `(provider, api_url, model, api_key)` for a turn.
+pub async fn active_config(store: &wisp_store::Store) -> (String, String, String, String) {
+    let profiles = ensure(store).await;
     let id = active_id(store, &profiles).await;
     let p = profiles
         .iter()
         .find(|p| p.id == id)
         .cloned()
         .unwrap_or_else(|| profiles[0].clone());
-    (
-        p.provider.clone(),
-        p.api_url.clone(),
-        p.model.clone(),
-        key_for(&p),
-    )
+    let api_url = effective_api_url(&p);
+    (p.provider, api_url, p.model, key_for(&p.id))
 }
 
+pub(crate) const IMAGE_GENERATION_UNSUPPORTED: &str =
+    "Image generation currently supports OpenAI gpt-image-2 and xAI grok-imagine-image-2.0.";
+
+pub(crate) fn model_id_tail(model: &str) -> &str {
+    let model = model.trim();
+    model.rsplit('/').next().unwrap_or(model)
+}
+
+/// Raster image-generation model IDs. Gateway `vendor/model` ids match on the
+/// last path segment. Exact IDs only.
 pub(crate) fn is_image_generation_model(model: &str) -> bool {
-    model.trim().eq_ignore_ascii_case("gpt-image-2")
+    let tail = model_id_tail(model);
+    tail.eq_ignore_ascii_case("gpt-image-2") || tail.eq_ignore_ascii_case("grok-imagine-image-2.0")
+}
+
+pub(crate) fn is_grok_imagine_model(model: &str) -> bool {
+    model_id_tail(model).eq_ignore_ascii_case("grok-imagine-image-2.0")
+}
+
+pub(crate) const VIDEO_GENERATION_UNSUPPORTED: &str = "Video generation currently supports xAI grok-imagine-video, grok-imagine-video-1.5, and grok-imagine-video-1.5-preview.";
+
+pub(crate) const VIDEO_ASPECT_RATIOS: &[&str] = &["16:9", "9:16", "1:1", "4:3", "3:4"];
+pub(crate) const VIDEO_RESOLUTIONS: &[&str] = &["480p", "720p", "1080p"];
+pub(crate) const VIDEO_DURATION_MIN_SECS: u32 = 1;
+pub(crate) const VIDEO_DURATION_MAX_SECS: u32 = 15;
+
+/// Video-generation model IDs. Gateway `vendor/model` ids match on the last
+/// path segment. Exact IDs only — `grok-imagine-video` must not absorb
+/// `grok-imagine-video-1.5-preview` or a future sibling.
+pub(crate) fn is_video_generation_model(model: &str) -> bool {
+    let tail = model_id_tail(model);
+    tail.eq_ignore_ascii_case("grok-imagine-video")
+        || tail.eq_ignore_ascii_case("grok-imagine-video-1.5")
+        || tail.eq_ignore_ascii_case("grok-imagine-video-1.5-preview")
+}
+
+fn normalize_image_options(profile: &mut ModelProfile) -> Result<(), String> {
+    if !is_image_generation_model(&profile.model) {
+        profile.image_size.clear();
+        profile.image_quality.clear();
+        profile.image_aspect_ratio.clear();
+        profile.image_resolution.clear();
+        return Ok(());
+    }
+    let size = profile.image_size.trim();
+    let quality = profile.image_quality.trim();
+    let aspect = profile.image_aspect_ratio.trim();
+    let resolution = profile.image_resolution.trim();
+    if is_grok_imagine_model(&profile.model) {
+        if !matches!(
+            aspect,
+            "" | "auto"
+                | "1:1"
+                | "16:9"
+                | "9:16"
+                | "4:3"
+                | "3:4"
+                | "3:2"
+                | "2:3"
+                | "2:1"
+                | "1:2"
+                | "19.5:9"
+                | "9:19.5"
+                | "20:9"
+                | "9:20"
+        ) {
+            return Err("Unsupported image aspect ratio.".into());
+        }
+        if !matches!(resolution, "" | "1k" | "2k") {
+            return Err("Unsupported image resolution.".into());
+        }
+        if !matches!(quality, "" | "low" | "medium") {
+            return Err("Unsupported image quality.".into());
+        }
+        profile.image_size.clear();
+        profile.image_aspect_ratio = aspect.to_string();
+        profile.image_resolution = resolution.to_string();
+        profile.image_quality = quality.to_string();
+    } else {
+        if !matches!(size, "" | "auto" | "1024x1024" | "1536x1024" | "1024x1536") {
+            return Err("Unsupported image size.".into());
+        }
+        if !matches!(quality, "" | "auto" | "low" | "medium" | "high") {
+            return Err("Unsupported image quality.".into());
+        }
+        profile.image_size = size.to_string();
+        profile.image_quality = quality.to_string();
+        profile.image_aspect_ratio.clear();
+        profile.image_resolution.clear();
+    }
+    Ok(())
 }
 
 pub(crate) fn supports_image_generation(provider: &str, model: &str) -> bool {
@@ -876,8 +873,39 @@ pub(crate) fn supports_image_generation(provider: &str, model: &str) -> bool {
     ) && is_image_generation_model(model)
 }
 
+/// Out-of-range or unknown video options are dropped back to the tool
+/// defaults rather than rejected, so a stale form value cannot wedge a save.
+fn normalize_video_options(profile: &mut ModelProfile) {
+    if !is_video_generation_model(&profile.model) {
+        profile.video_duration_secs = None;
+        profile.video_aspect_ratio = None;
+        profile.video_resolution = None;
+        return;
+    }
+    profile.video_duration_secs = profile
+        .video_duration_secs
+        .map(|value| value.clamp(VIDEO_DURATION_MIN_SECS, VIDEO_DURATION_MAX_SECS));
+    profile.video_aspect_ratio = profile
+        .video_aspect_ratio
+        .take()
+        .map(|value| value.trim().to_string())
+        .filter(|value| VIDEO_ASPECT_RATIOS.contains(&value.as_str()));
+    profile.video_resolution = profile
+        .video_resolution
+        .take()
+        .map(|value| value.trim().to_string())
+        .filter(|value| VIDEO_RESOLUTIONS.contains(&value.as_str()));
+}
+
+pub(crate) fn supports_video_generation(provider: &str, model: &str) -> bool {
+    matches!(
+        provider.trim(),
+        "openai" | "openai_compatible" | "openai_responses" | "openai-responses" | "responses"
+    ) && is_video_generation_model(model)
+}
+
 fn is_chat_model(p: &ModelProfile) -> bool {
-    !is_image_generation_model(&p.model)
+    !is_image_generation_model(&p.model) && !is_video_generation_model(&p.model)
 }
 
 fn can_describe_images(p: &ModelProfile) -> bool {
@@ -888,7 +916,11 @@ fn can_generate_images(p: &ModelProfile) -> bool {
     supports_image_generation(&p.provider, &p.model)
 }
 
-async fn vision_id(store: &superscience_store::Store, profiles: &[ModelProfile]) -> Option<String> {
+fn can_generate_videos(p: &ModelProfile) -> bool {
+    supports_video_generation(&p.provider, &p.model)
+}
+
+async fn vision_id(store: &wisp_store::Store, profiles: &[ModelProfile]) -> Option<String> {
     let want = store
         .get_setting(VISION_KEY)
         .await
@@ -903,7 +935,7 @@ async fn vision_id(store: &superscience_store::Store, profiles: &[ModelProfile])
 }
 
 async fn image_generation_id(
-    store: &superscience_store::Store,
+    store: &wisp_store::Store,
     profiles: &[ModelProfile],
 ) -> Option<String> {
     let want = store
@@ -921,64 +953,89 @@ async fn image_generation_id(
 /// The assigned vision profile's `(provider, api_url, model, api_key,
 /// max_tokens, reasoning_effort)`, if the user configured one.
 pub async fn vision_config(
-    store: &superscience_store::Store,
+    store: &wisp_store::Store,
 ) -> Option<(String, String, String, String, u64, String)> {
     let profiles = ensure(store).await;
     let id = vision_id(store, &profiles).await?;
     let p = profiles.iter().find(|p| p.id == id)?.clone();
-    let key = key_for(&p);
+    let api_url = effective_api_url(&p);
     Some((
         p.provider,
-        p.api_url,
+        api_url,
         p.model,
-        key,
+        key_for(&p.id),
         p.max_tokens,
         p.reasoning_effort,
     ))
 }
 
-/// The explicitly assigned OpenAI image profile's `(api_url, model, api_key)`.
+/// The explicitly assigned image-generation profile.
 /// Unlike vision, image generation has no implicit fallback: no assignment
 /// means the Scientific Illustrator deliberately uses SVG.
 pub async fn image_generation_config(
-    store: &superscience_store::Store,
-) -> Option<(String, String, String)> {
+    store: &wisp_store::Store,
+) -> Option<(String, String, String, ImageGenerationOptions)> {
     let profiles = ensure(store).await;
     let id = image_generation_id(store, &profiles).await?;
     let p = profiles.iter().find(|p| p.id == id)?;
-    Some((p.api_url.clone(), p.model.clone(), key_for(p)))
+    Some((
+        effective_api_url(p),
+        p.model.clone(),
+        key_for(&p.id),
+        ImageGenerationOptions {
+            size: p.image_size.clone(),
+            quality: p.image_quality.clone(),
+            aspect_ratio: p.image_aspect_ratio.clone(),
+            resolution: p.image_resolution.clone(),
+        },
+    ))
 }
 
-/// Replace the API key for the model assigned to image generation.
-pub async fn set_image_generation_api_key(
-    store: &superscience_store::Store,
-    key: &str,
-) -> Result<String, String> {
-    let key = key.trim();
-    if key.is_empty() {
-        return Err(String::from("API key is empty."));
-    }
+async fn video_generation_id(
+    store: &wisp_store::Store,
+    profiles: &[ModelProfile],
+) -> Option<String> {
+    let want = store
+        .get_setting(VIDEO_GENERATION_KEY)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    profiles
+        .iter()
+        .find(|p| p.id == want && can_generate_videos(p))
+        .map(|p| p.id.clone())
+}
+
+/// The explicitly assigned video-generation profile. Like image generation,
+/// there is no implicit fallback: no assignment means no `generate_video`
+/// tool is injected into the turn.
+pub async fn video_generation_config(
+    store: &wisp_store::Store,
+) -> Option<(String, String, String, VideoGenerationOptions)> {
     let profiles = ensure(store).await;
-    let Some(id) = image_generation_id(store, &profiles).await else {
-        return Err(String::from(
-            "No image-generation model is configured. Assign gpt-image-2 under Settings → Models.",
-        ));
-    };
-    let Some(p) = profiles.iter().find(|p| p.id == id) else {
-        return Err(String::from("Image-generation model profile is missing."));
-    };
-    if !p.provider_id.trim().is_empty() {
-        secret_set(&provider_secret_name(&p.provider_id), key)?;
-    } else {
-        secret_set(&secret_name(&id), key)?;
-    }
-    Ok(id)
+    let id = video_generation_id(store, &profiles).await?;
+    let p = profiles.iter().find(|p| p.id == id)?;
+    let defaults = VideoGenerationOptions::default();
+    Some((
+        effective_api_url(p),
+        p.model.clone(),
+        key_for(&p.id),
+        VideoGenerationOptions {
+            duration_secs: p.video_duration_secs.unwrap_or(defaults.duration_secs),
+            aspect_ratio: p
+                .video_aspect_ratio
+                .clone()
+                .unwrap_or(defaults.aspect_ratio),
+            resolution: p.video_resolution.clone().unwrap_or(defaults.resolution),
+        },
+    ))
 }
 
 /// Update the active profile's provider/api_url/model/label. The classic Settings
 /// form now edits whichever model is active, rather than a single global config.
 pub async fn set_active_fields(
-    store: &superscience_store::Store,
+    store: &wisp_store::Store,
     provider: &str,
     api_url: &str,
     model: &str,
@@ -987,8 +1044,12 @@ pub async fn set_active_fields(
     let mut profiles = ensure(store).await;
     let id = active_id(store, &profiles).await;
     if let Some(p) = profiles.iter_mut().find(|p| p.id == id) {
+        let current_api_url = effective_api_url(p);
         p.provider = provider.to_string();
-        p.api_url = api_url.to_string();
+        if current_api_url != api_url.trim() {
+            p.api_url = api_url.to_string();
+            p.endpoint_suffix.clear();
+        }
         p.model = model.to_string();
         let alias = label.trim();
         p.label = if alias.is_empty() {
@@ -1001,7 +1062,7 @@ pub async fn set_active_fields(
 }
 
 /// Display alias for the active profile (shown in the composer picker).
-pub async fn active_label(store: &superscience_store::Store) -> String {
+pub async fn active_label(store: &wisp_store::Store) -> String {
     let profiles = ensure(store).await;
     let id = active_id(store, &profiles).await;
     profiles
@@ -1013,7 +1074,7 @@ pub async fn active_label(store: &superscience_store::Store) -> String {
 
 /// Per-model advanced LLM options for the active profile, falling back to
 /// legacy global store keys when a profile has no values yet.
-pub async fn active_llm_advanced(store: &superscience_store::Store) -> (u64, String) {
+pub async fn active_llm_advanced(store: &wisp_store::Store) -> (u64, String) {
     let profiles = ensure(store).await;
     let id = active_id(store, &profiles).await;
     if let Some(p) = profiles.iter().find(|p| p.id == id) {
@@ -1080,7 +1141,7 @@ fn clamp_to_catalog(profile: &mut ModelProfile) {
 }
 
 /// Context capacity for the active HTTP model.
-pub async fn active_context_window(store: &superscience_store::Store) -> u64 {
+pub async fn active_context_window(store: &wisp_store::Store) -> u64 {
     let profiles = ensure(store).await;
     let id = active_id(store, &profiles).await;
     profiles
@@ -1091,7 +1152,7 @@ pub async fn active_context_window(store: &superscience_store::Store) -> u64 {
 }
 
 /// Context capacity for a concrete HTTP model profile.
-pub async fn profile_context_window(store: &superscience_store::Store, id: &str) -> Option<u64> {
+pub async fn profile_context_window(store: &wisp_store::Store, id: &str) -> Option<u64> {
     ensure(store)
         .await
         .iter()
@@ -1102,7 +1163,7 @@ pub async fn profile_context_window(store: &superscience_store::Store, id: &str)
 /// Full LLM config for one profile id: (provider, api_url, model, api_key,
 /// max_tokens, reasoning_effort). None when the id doesn't exist.
 pub async fn profile_llm(
-    store: &superscience_store::Store,
+    store: &wisp_store::Store,
     id: &str,
 ) -> Option<(String, String, String, String, u64, String)> {
     let profiles = ensure(store).await;
@@ -1112,9 +1173,9 @@ pub async fn profile_llm(
     }
     Some((
         p.provider.clone(),
-        p.api_url.clone(),
+        effective_api_url(p),
         p.model.clone(),
-        key_for(p),
+        key_for(&p.id),
         p.max_tokens,
         p.reasoning_effort.clone(),
     ))
@@ -1122,29 +1183,23 @@ pub async fn profile_llm(
 
 /// Stored key for a specific profile id, or None when the profile does not
 /// exist. The returned string may still be empty when the profile has no key.
-pub async fn profile_key(store: &superscience_store::Store, id: &str) -> Option<String> {
+pub async fn profile_key(store: &wisp_store::Store, id: &str) -> Option<String> {
     let profiles = ensure(store).await;
-    profiles
-        .iter()
-        .find(|p| p.id == id)
-        .map(key_for)
+    profiles.iter().any(|p| p.id == id).then(|| key_for(id))
 }
 
 /// Whether the active profile has a key stored (for `get_settings`).
-pub async fn active_has_key(store: &superscience_store::Store) -> bool {
+pub async fn active_has_key(store: &wisp_store::Store) -> bool {
     let profiles = ensure(store).await;
     let id = active_id(store, &profiles).await;
-    profiles
-        .iter()
-        .find(|p| p.id == id)
-        .is_some_and(|p| !key_for(p).is_empty())
+    !key_for(&id).is_empty()
 }
 
-pub async fn active_supports_vision(store: &superscience_store::Store) -> bool {
+pub async fn active_supports_vision(store: &wisp_store::Store) -> bool {
     supports_vision(store, None).await
 }
 
-pub async fn supports_vision(store: &superscience_store::Store, profile_id: Option<&str>) -> bool {
+pub async fn supports_vision(store: &wisp_store::Store, profile_id: Option<&str>) -> bool {
     let profiles = ensure(store).await;
     let id = match profile_id.filter(|id| profiles.iter().any(|profile| profile.id == *id)) {
         Some(id) => id.to_string(),
@@ -1157,24 +1212,26 @@ pub async fn supports_vision(store: &superscience_store::Store, profile_id: Opti
 }
 
 /// Profiles with `has_api_key`/`active` filled in, for the UI.
-async fn decorated(store: &superscience_store::Store) -> Vec<ModelProfile> {
+async fn decorated(store: &wisp_store::Store) -> Vec<ModelProfile> {
     let profiles = ensure(store).await;
     let id = active_id(store, &profiles).await;
     let vision = vision_id(store, &profiles).await;
     let image_generation = image_generation_id(store, &profiles).await;
+    let video_generation = video_generation_id(store, &profiles).await;
     profiles
         .into_iter()
         .map(|mut p| {
-            p.has_api_key = !key_for(&p).is_empty();
+            p.has_api_key = !key_for(&p.id).is_empty();
             p.active = p.id == id;
             p.use_for_vision = vision.as_deref() == Some(p.id.as_str());
             p.use_for_image_generation = image_generation.as_deref() == Some(p.id.as_str());
+            p.use_for_video_generation = video_generation.as_deref() == Some(p.id.as_str());
             p
         })
         .collect()
 }
 
-pub(crate) async fn delegation_profiles(store: &superscience_store::Store) -> Vec<ModelProfile> {
+pub(crate) async fn delegation_profiles(store: &wisp_store::Store) -> Vec<ModelProfile> {
     decorated(store)
         .await
         .into_iter()
@@ -1196,133 +1253,6 @@ fn fresh_id(existing: &[ModelProfile]) -> String {
 #[tauri::command]
 pub async fn list_models(state: State<'_, crate::AppState>) -> Result<Vec<ModelProfile>, String> {
     Ok(decorated(&state.store).await)
-}
-
-fn decorated_providers(
-    providers: Vec<ModelProvider>,
-    profiles: &[ModelProfile],
-) -> Vec<ModelProvider> {
-    providers
-        .into_iter()
-        .map(|mut p| {
-            let provider_key = !secret_get(&provider_secret_name(&p.id)).is_empty();
-            p.has_api_key = provider_key
-                || profiles
-                    .iter()
-                    .any(|m| m.provider_id == p.id && !key_for(m).is_empty());
-            p.model_count = profiles.iter().filter(|m| m.provider_id == p.id).count();
-            p
-        })
-        .collect()
-}
-
-#[tauri::command]
-pub async fn list_model_providers(
-    state: State<'_, crate::AppState>,
-) -> Result<Vec<ModelProvider>, String> {
-    let profiles = ensure(&state.store).await;
-    let providers = ensure_providers(&state.store).await;
-    Ok(decorated_providers(providers, &profiles))
-}
-
-#[tauri::command]
-pub async fn save_model_provider(
-    state: State<'_, crate::AppState>,
-    mut provider: ModelProvider,
-    key: Option<String>,
-    clear_key: Option<bool>,
-) -> Result<Vec<ModelProvider>, String> {
-    let mut providers = ensure_providers(&state.store).await;
-    if provider.label.trim().is_empty() {
-        return Err("Provider name is required.".into());
-    }
-    if provider.api_url.trim().is_empty() {
-        return Err("API URL is required.".into());
-    }
-    let protocol = provider.protocol.trim();
-    if !matches!(
-        protocol,
-        "openai" | "openai_responses" | "openai-responses" | "responses" | "anthropic"
-    ) {
-        return Err("Unsupported provider protocol.".into());
-    }
-    provider.protocol = match protocol {
-        "openai-responses" | "responses" => "openai_responses".into(),
-        "anthropic" => "anthropic".into(),
-        _ => "openai".into(),
-    };
-    if provider.id.trim().is_empty() {
-        provider.id = fresh_provider_id(&providers);
-        provider.builtin = false;
-        provider.sort_order = providers.iter().map(|p| p.sort_order).max().unwrap_or(0) + 1;
-    } else if let Some(existing) = providers.iter().find(|p| p.id == provider.id) {
-        provider.builtin = existing.builtin;
-        provider.sort_order = existing.sort_order;
-        if existing.builtin {
-            provider.id = TCTOKEN_PROVIDER_ID.into();
-            // Keep builtin identity; allow URL/label/key edits.
-            if provider.label.trim().is_empty() {
-                provider.label = TCTOKEN_PROVIDER_LABEL.into();
-            }
-        }
-    }
-    let id = provider.id.clone();
-    if let Some(existing) = providers.iter_mut().find(|p| p.id == id) {
-        *existing = strip_computed_provider(provider);
-    } else {
-        providers.push(strip_computed_provider(provider));
-    }
-    save_providers_raw(&state.store, &providers).await?;
-    if clear_key == Some(true) {
-        let _ = secret_del(&provider_secret_name(&id));
-    } else if let Some(k) = key {
-        let k = k.trim();
-        if !k.is_empty() {
-            secret_set(&provider_secret_name(&id), k)?;
-        }
-    }
-    // Keep model mirrors in sync.
-    let mut profiles = ensure(&state.store).await;
-    let mut dirty = false;
-    if let Some(prov) = providers.iter().find(|p| p.id == id) {
-        for profile in &mut profiles {
-            if profile.provider_id == id
-                && (profile.provider != prov.protocol || profile.api_url != prov.api_url)
-            {
-                profile.provider = prov.protocol.clone();
-                profile.api_url = prov.api_url.clone();
-                dirty = true;
-            }
-        }
-    }
-    if dirty {
-        save_raw(&state.store, &profiles).await?;
-    }
-    crate::clear_idle_agents(&state).await;
-    let profiles = ensure(&state.store).await;
-    Ok(decorated_providers(providers, &profiles))
-}
-
-#[tauri::command]
-pub async fn remove_model_provider(
-    state: State<'_, crate::AppState>,
-    id: String,
-) -> Result<Vec<ModelProvider>, String> {
-    if id == TCTOKEN_PROVIDER_ID {
-        return Err("Built-in providers cannot be removed.".into());
-    }
-    let profiles = ensure(&state.store).await;
-    if profiles.iter().any(|p| p.provider_id == id) {
-        return Err("Remove or move all models under this provider first.".into());
-    }
-    let mut providers = ensure_providers(&state.store).await;
-    if providers.iter().any(|p| p.id == id && p.builtin) {
-        return Err("Built-in providers cannot be removed.".into());
-    }
-    providers.retain(|p| p.id != id);
-    save_providers_raw(&state.store, &providers).await?;
-    let _ = secret_del(&provider_secret_name(&id));
-    Ok(decorated_providers(providers, &profiles))
 }
 
 #[tauri::command]
@@ -1379,7 +1309,7 @@ pub async fn get_session_reasoning_effort(
 }
 
 /// Upsert a profile. An empty `id` creates a new one; a non-empty `key` updates
-/// the provider secret (a blank key leaves the stored one untouched).
+/// the keyring (a blank key leaves the stored one untouched).
 #[tauri::command]
 pub async fn save_model(
     state: State<'_, crate::AppState>,
@@ -1387,6 +1317,7 @@ pub async fn save_model(
     key: Option<String>,
     use_for_vision: Option<bool>,
     use_for_image_generation: Option<bool>,
+    use_for_video_generation: Option<bool>,
 ) -> Result<Vec<ModelProfile>, String> {
     // Explicit top-level param: the flag nested inside `profile` was observed
     // arriving as false through the webview IPC boundary, losing the
@@ -1394,32 +1325,31 @@ pub async fn save_model(
     let assign_vision = use_for_vision.unwrap_or(profile.use_for_vision);
     let assign_image_generation =
         use_for_image_generation.unwrap_or(profile.use_for_image_generation);
+    let assign_video_generation =
+        use_for_video_generation.unwrap_or(profile.use_for_video_generation);
     profile.use_for_vision = assign_vision;
     profile.use_for_image_generation = assign_image_generation;
+    profile.use_for_video_generation = assign_video_generation;
     let mut profiles = ensure(&state.store).await;
-    let providers = ensure_providers(&state.store).await;
     if profile.model.trim().is_empty() {
         return Err("Model is required.".into());
     }
-    if profile.provider_id.trim().is_empty() {
-        return Err("Provider is required.".into());
+    if profile.api_url.trim().is_empty() {
+        return Err("API URL is required.".into());
     }
-    let Some(prov) = providers
-        .iter()
-        .find(|p| p.id == profile.provider_id)
-        .cloned()
-    else {
-        return Err("Provider not found.".into());
-    };
-    // Model form no longer owns URL/protocol — always mirror the provider.
-    profile.provider = prov.protocol.clone();
-    profile.api_url = prov.api_url.clone();
+    profile.api_url = profile.api_url.trim().trim_end_matches('/').to_string();
+    profile.endpoint_suffix = normalize_endpoint_suffix(&profile.endpoint_suffix)?;
     if assign_vision && !can_describe_images(&profile) {
         return Err("Image analysis requires an API model marked as vision-capable.".into());
     }
     if assign_image_generation && !can_generate_images(&profile) {
-        return Err("Image generation currently supports only OpenAI gpt-image-2.".into());
+        return Err(IMAGE_GENERATION_UNSUPPORTED.into());
     }
+    if assign_video_generation && !can_generate_videos(&profile) {
+        return Err(VIDEO_GENERATION_UNSUPPORTED.into());
+    }
+    normalize_image_options(&mut profile)?;
+    normalize_video_options(&mut profile);
     clamp_to_catalog(&mut profile);
     if profile.label.trim().is_empty() {
         profile.label = profile.model.clone();
@@ -1428,14 +1358,18 @@ pub async fn save_model(
         profile.id = fresh_id(&profiles);
     }
     let id = profile.id.clone();
+    let api_url = profile.api_url.clone();
     let is_new = !profiles.iter().any(|p| p.id == id);
-    // Providers may exist with zero chat models (builtin empty card).
+    if !is_chat_model(&profile) && !profiles.iter().any(|p| p.id != id && is_chat_model(p)) {
+        return Err("At least one chat model is required.".into());
+    }
     if let Some(existing) = profiles.iter_mut().find(|p| p.id == id) {
         *existing = profile;
     } else {
         profiles.push(profile);
     }
     save_raw(&state.store, &profiles).await?;
+    store_profile_key(&id, key.as_deref(), &api_url, &profiles)?;
     if assign_vision {
         let _ = state.store.set_setting(VISION_KEY, &id).await;
     } else {
@@ -1468,10 +1402,18 @@ pub async fn save_model(
             let _ = state.store.set_setting(IMAGE_GENERATION_KEY, "").await;
         }
     }
-    if let Some(k) = key {
-        let k = k.trim();
-        if !k.is_empty() {
-            secret_set(&provider_secret_name(&prov.id), k)?;
+    if assign_video_generation {
+        let _ = state.store.set_setting(VIDEO_GENERATION_KEY, &id).await;
+    } else {
+        let current = state
+            .store
+            .get_setting(VIDEO_GENERATION_KEY)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        if current == id {
+            let _ = state.store.set_setting(VIDEO_GENERATION_KEY, "").await;
         }
     }
     // Land the user on a freshly added model so they can edit/use it right away.
@@ -1501,6 +1443,14 @@ pub async fn remove_model(
     id: String,
 ) -> Result<Vec<ModelProfile>, String> {
     let mut profiles = ensure(&state.store).await;
+    if profiles
+        .iter()
+        .filter(|p| p.id != id && is_chat_model(p))
+        .count()
+        == 0
+    {
+        return Err("At least one chat model is required.".into());
+    }
     profiles.retain(|p| p.id != id);
     save_raw(&state.store, &profiles).await?;
     let _ = secret_del(&secret_name(&id));
@@ -1526,6 +1476,16 @@ pub async fn remove_model(
         .unwrap_or_default();
     if image_generation == id {
         let _ = state.store.set_setting(IMAGE_GENERATION_KEY, "").await;
+    }
+    let video_generation = state
+        .store
+        .get_setting(VIDEO_GENERATION_KEY)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    if video_generation == id {
+        let _ = state.store.set_setting(VIDEO_GENERATION_KEY, "").await;
     }
     crate::clear_idle_agents(&state).await;
     Ok(decorated(&state.store).await)
@@ -1566,7 +1526,7 @@ pub async fn set_active_model(
         .find(|p| p.id == id)
         .is_some_and(|p| !is_chat_model(p))
     {
-        return Err("Image generation models cannot be used for chat.".into());
+        return Err("Image or video generation models cannot be used for chat.".into());
     }
     if let Some(session_id) = session_id.filter(|value| !value.is_empty()) {
         let (project, scope) =
@@ -1644,7 +1604,7 @@ mod tests {
             label: label.into(),
             provider: "openai".into(),
             api_url: "u".into(),
-            provider_id: TCTOKEN_PROVIDER_ID.into(),
+            endpoint_suffix: String::new(),
             model: model.into(),
             has_api_key: false,
             active: false,
@@ -1654,6 +1614,14 @@ mod tests {
             supports_vision: false,
             use_for_vision: false,
             use_for_image_generation: false,
+            image_size: String::new(),
+            image_quality: String::new(),
+            image_aspect_ratio: String::new(),
+            image_resolution: String::new(),
+            use_for_video_generation: false,
+            video_duration_secs: None,
+            video_aspect_ratio: None,
+            video_resolution: None,
         }
     }
 
@@ -1661,11 +1629,8 @@ mod tests {
     async fn save_then_reload_keeps_vision_assignment() {
         // repro for "checkbox lost after save+reopen": full backend round-trip
         // through save_raw + VISION_KEY + decorated.
-        let tmp = std::env::temp_dir().join(format!(
-            "superscience_vision_{}.sqlite",
-            uuid::Uuid::new_v4()
-        ));
-        let store = superscience_store::Store::open(&tmp).await.unwrap();
+        let tmp = std::env::temp_dir().join(format!("wisp_vision_{}.sqlite", uuid::Uuid::new_v4()));
+        let store = wisp_store::Store::open(&tmp).await.unwrap();
         let mut p = test_profile("m1", "claude", "claude-opus-4-8");
         p.supports_vision = true;
         save_raw(&store, &[test_profile("m0", "text", "deepseek"), p])
@@ -1716,10 +1681,10 @@ mod tests {
     #[tokio::test]
     async fn session_profile_binding_does_not_change_other_sessions() {
         let tmp = std::env::temp_dir().join(format!(
-            "superscience_session_models_{}.sqlite",
+            "wisp_session_models_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
-        let store = superscience_store::Store::open(&tmp).await.unwrap();
+        let store = wisp_store::Store::open(&tmp).await.unwrap();
         store.create_project("p", "project", "").await.unwrap();
         save_raw(
             &store,
@@ -1731,14 +1696,8 @@ mod tests {
         .await
         .unwrap();
         store.set_setting(ACTIVE_KEY, "m1").await.unwrap();
-        store
-            .create_frame("a", "p", "SUPERSCIENCE", "m1")
-            .await
-            .unwrap();
-        store
-            .create_frame("b", "p", "SUPERSCIENCE", "m1")
-            .await
-            .unwrap();
+        store.create_frame("a", "p", "OPERON", "m1").await.unwrap();
+        store.create_frame("b", "p", "OPERON", "m1").await.unwrap();
 
         store.set_frame_model("a", "p", "m2").await.unwrap();
 
@@ -1754,7 +1713,7 @@ mod tests {
             "wisp_session_reasoning_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
-        let store = superscience_store::Store::open(&tmp).await.unwrap();
+        let store = wisp_store::Store::open(&tmp).await.unwrap();
         store.create_project("p", "project", "").await.unwrap();
         let mut profile = test_profile("m1", "reasoner", "model-1");
         profile.reasoning_effort = "max".into();
@@ -1781,7 +1740,7 @@ mod tests {
             "wisp_session_reasoning_clear_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
-        let store = superscience_store::Store::open(&tmp).await.unwrap();
+        let store = wisp_store::Store::open(&tmp).await.unwrap();
         store.create_project("p", "project", "").await.unwrap();
         store.create_frame("a", "p", "OPERON", "m1").await.unwrap();
         store.create_frame("b", "p", "OPERON", "m1").await.unwrap();
@@ -1811,11 +1770,9 @@ mod tests {
 
     #[tokio::test]
     async fn vision_capability_follows_the_input_profile() {
-        let tmp = std::env::temp_dir().join(format!(
-            "superscience_input_vision_{}.sqlite",
-            uuid::Uuid::new_v4()
-        ));
-        let store = superscience_store::Store::open(&tmp).await.unwrap();
+        let tmp =
+            std::env::temp_dir().join(format!("wisp_input_vision_{}.sqlite", uuid::Uuid::new_v4()));
+        let store = wisp_store::Store::open(&tmp).await.unwrap();
         let text = test_profile("m0", "text", "text-model");
         let mut vision = test_profile("m1", "vision", "vision-model");
         vision.supports_vision = true;
@@ -1846,6 +1803,17 @@ mod tests {
             "use_for_image_generation dropped on deserialize"
         );
         assert_eq!(p.context_window, DEFAULT_CONTEXT_WINDOW);
+    }
+
+    #[test]
+    fn older_profiles_without_label_still_load() {
+        let profiles: Vec<ModelProfile> = serde_json::from_str(
+            r#"[{"id":"m1","provider":"openai","api_url":"https://api.deepseek.com","model":"deepseek-v4-flash"}]"#,
+        )
+        .unwrap();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].id, "m1");
+        assert!(profiles[0].label.is_empty());
     }
 
     #[test]
@@ -1933,9 +1901,15 @@ mod tests {
     }
 
     #[test]
-    fn image_generation_accepts_only_openai_gpt_image_2() {
+    fn image_generation_accepts_openai_and_xai_models() {
         let mut profile = test_profile("image", "image", "gpt-image-2");
         profile.provider = "openai_responses".into();
+        assert!(can_generate_images(&profile));
+
+        profile.model = "grok-imagine-image-2.0".into();
+        profile.provider = "openai".into();
+        assert!(can_generate_images(&profile));
+        profile.model = "xai/grok-imagine-image-2.0".into();
         assert!(can_generate_images(&profile));
 
         profile.provider = "anthropic".into();
@@ -1943,15 +1917,44 @@ mod tests {
         profile.provider = "openai".into();
         profile.model = "gpt-image-1".into();
         assert!(!can_generate_images(&profile));
+        profile.model = "grok-imagine-image".into();
+        assert!(!can_generate_images(&profile));
+        assert!(!is_chat_model(&test_profile(
+            "image",
+            "image",
+            "grok-imagine-image-2.0"
+        )));
+    }
+
+    #[test]
+    fn image_generation_options_are_normalized_per_family() {
+        let mut grok = test_profile("image", "image", "grok-imagine-image-2.0");
+        grok.image_aspect_ratio = "16:9".into();
+        grok.image_resolution = "2k".into();
+        grok.image_quality = "low".into();
+        grok.image_size = "1024x1024".into();
+        normalize_image_options(&mut grok).unwrap();
+        assert!(grok.image_size.is_empty());
+        assert_eq!(grok.image_aspect_ratio, "16:9");
+        assert_eq!(grok.image_resolution, "2k");
+
+        grok.image_aspect_ratio = "square".into();
+        assert!(normalize_image_options(&mut grok).is_err());
+
+        let mut openai = test_profile("image", "image", "gpt-image-2");
+        openai.image_size = "1536x1024".into();
+        openai.image_quality = "high".into();
+        openai.image_aspect_ratio = "16:9".into();
+        normalize_image_options(&mut openai).unwrap();
+        assert_eq!(openai.image_size, "1536x1024");
+        assert!(openai.image_aspect_ratio.is_empty());
     }
 
     #[tokio::test]
     async fn image_generation_requires_an_explicit_gpt_image_2_assignment() {
-        let tmp = std::env::temp_dir().join(format!(
-            "superscience_image_gen_{}.sqlite",
-            uuid::Uuid::new_v4()
-        ));
-        let store = superscience_store::Store::open(&tmp).await.unwrap();
+        let tmp =
+            std::env::temp_dir().join(format!("wisp_image_gen_{}.sqlite", uuid::Uuid::new_v4()));
+        let store = wisp_store::Store::open(&tmp).await.unwrap();
         let chat = test_profile("chat", "chat", "gpt-5.5");
         let mut image = test_profile("image", "image", "gpt-image-2");
         image.provider = "openai_responses".into();
@@ -1962,7 +1965,8 @@ mod tests {
             .set_setting(IMAGE_GENERATION_KEY, "image")
             .await
             .unwrap();
-        let (url, model, _key) = image_generation_config(&store).await.unwrap();
+        let (url, model, _key, options) = image_generation_config(&store).await.unwrap();
+        assert_eq!(options, ImageGenerationOptions::default());
         assert_eq!(url, "u");
         assert_eq!(model, "gpt-image-2");
 
@@ -1985,13 +1989,161 @@ mod tests {
         let _ = std::fs::remove_file(&tmp);
     }
 
+    #[test]
+    fn video_generation_matches_exact_model_ids() {
+        for model in [
+            "grok-imagine-video",
+            "Grok-Imagine-Video",
+            "grok-imagine-video-1.5",
+            "grok-imagine-video-1.5-preview",
+            "xai/grok-imagine-video-1.5-preview",
+        ] {
+            assert!(is_video_generation_model(model), "{model}");
+        }
+        // Exact ids only: the base id must not absorb longer siblings, and
+        // unrelated models (chat, image) must not match.
+        for model in [
+            "grok-imagine-video-2.0",
+            "grok-imagine-video-1.5-preview-2",
+            "grok-imagine-image-2.0",
+            "gpt-image-2",
+            "gpt-5.5",
+        ] {
+            assert!(!is_video_generation_model(model), "{model}");
+        }
+        assert!(!is_chat_model(&test_profile(
+            "video",
+            "video",
+            "grok-imagine-video-1.5-preview"
+        )));
+    }
+
+    #[test]
+    fn video_generation_requires_a_compatible_provider() {
+        let mut profile = test_profile("video", "video", "grok-imagine-video");
+        assert!(can_generate_videos(&profile));
+        profile.provider = "openai_compatible".into();
+        assert!(can_generate_videos(&profile));
+        profile.provider = "anthropic".into();
+        assert!(!can_generate_videos(&profile));
+        profile.provider = "openai".into();
+        profile.model = "grok-imagine-video-2.0".into();
+        assert!(!can_generate_videos(&profile));
+    }
+
+    #[test]
+    fn video_options_are_normalized() {
+        let mut video = test_profile("video", "video", "grok-imagine-video");
+        video.video_duration_secs = Some(42);
+        video.video_aspect_ratio = Some(" 9:16 ".into());
+        video.video_resolution = Some("4k".into());
+        normalize_video_options(&mut video);
+        assert_eq!(video.video_duration_secs, Some(15));
+        assert_eq!(video.video_aspect_ratio.as_deref(), Some("9:16"));
+        assert_eq!(video.video_resolution, None);
+
+        video.video_duration_secs = Some(0);
+        normalize_video_options(&mut video);
+        assert_eq!(video.video_duration_secs, Some(1));
+
+        // Non-video profiles drop any leftover video options.
+        let mut chat = test_profile("chat", "chat", "gpt-5.5");
+        chat.video_duration_secs = Some(5);
+        chat.video_aspect_ratio = Some("16:9".into());
+        normalize_video_options(&mut chat);
+        assert_eq!(chat.video_duration_secs, None);
+        assert_eq!(chat.video_aspect_ratio, None);
+    }
+
+    #[tokio::test]
+    async fn video_generation_requires_an_explicit_assignment() {
+        let tmp =
+            std::env::temp_dir().join(format!("wisp_video_gen_{}.sqlite", uuid::Uuid::new_v4()));
+        let store = wisp_store::Store::open(&tmp).await.unwrap();
+        let chat = test_profile("chat", "chat", "gpt-5.5");
+        let mut video = test_profile("video", "video", "grok-imagine-video-1.5");
+        video.video_duration_secs = Some(10);
+        video.video_aspect_ratio = Some("9:16".into());
+        save_raw(&store, &[chat, video]).await.unwrap();
+
+        assert!(video_generation_config(&store).await.is_none());
+        store
+            .set_setting(VIDEO_GENERATION_KEY, "video")
+            .await
+            .unwrap();
+        let (url, model, _key, options) = video_generation_config(&store).await.unwrap();
+        assert_eq!(url, "u");
+        assert_eq!(model, "grok-imagine-video-1.5");
+        assert_eq!(options.duration_secs, 10);
+        assert_eq!(options.aspect_ratio, "9:16");
+        assert_eq!(options.resolution, "720p");
+
+        let decorated = decorated(&store).await;
+        assert!(
+            decorated
+                .iter()
+                .find(|profile| profile.id == "video")
+                .unwrap()
+                .use_for_video_generation
+        );
+        assert_eq!(
+            delegation_profiles(&store)
+                .await
+                .iter()
+                .map(|profile| profile.id.as_str())
+                .collect::<Vec<_>>(),
+            ["chat"]
+        );
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[tokio::test]
+    async fn video_generation_config_falls_back_to_option_defaults() {
+        let tmp = std::env::temp_dir().join(format!(
+            "wisp_video_gen_defaults_{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let store = wisp_store::Store::open(&tmp).await.unwrap();
+        save_raw(
+            &store,
+            &[
+                test_profile("chat", "chat", "gpt-5.5"),
+                test_profile("video", "video", "grok-imagine-video"),
+            ],
+        )
+        .await
+        .unwrap();
+        store
+            .set_setting(VIDEO_GENERATION_KEY, "video")
+            .await
+            .unwrap();
+
+        let (_url, _model, _key, options) = video_generation_config(&store).await.unwrap();
+        assert_eq!(options, VideoGenerationOptions::default());
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn use_for_video_generation_survives_deserialization() {
+        let p: ModelProfile = serde_json::from_str(
+            r#"{"id":"m1","label":"l","provider":"openai","api_url":"u","model":"grok-imagine-video",
+                "use_for_video_generation":true,"video_duration_secs":8,
+                "video_aspect_ratio":"9:16","video_resolution":"1080p"}"#,
+        )
+        .unwrap();
+        assert!(p.use_for_video_generation);
+        assert_eq!(p.video_duration_secs, Some(8));
+        assert_eq!(p.video_aspect_ratio.as_deref(), Some("9:16"));
+        assert_eq!(p.video_resolution.as_deref(), Some("1080p"));
+    }
+
     #[tokio::test]
     async fn image_generation_profile_is_never_the_active_chat_model() {
         let tmp = std::env::temp_dir().join(format!(
-            "superscience_image_gen_active_{}.sqlite",
+            "wisp_image_gen_active_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
-        let store = superscience_store::Store::open(&tmp).await.unwrap();
+        let store = wisp_store::Store::open(&tmp).await.unwrap();
         let chat = test_profile("chat", "chat", "gpt-5.5");
         let image = test_profile("image", "image", "gpt-image-2");
         save_raw(&store, &[chat, image]).await.unwrap();
@@ -2018,20 +2170,209 @@ mod tests {
     }
 
     // The write-through cache must stay coherent: a set is readable without a
-    // fresh secrets-file read, and a delete reads back as absent (not the old value).
+    // fresh keyring hit, and a delete reads back as absent (not the old value).
+    // `cargo test` builds with debug_assertions, so the secret backend is the
+    // dev secrets file in $HOME, never a real OS keyring; the UUID-scoped name
+    // keeps concurrent or leftover runs sharing $HOME from colliding.
     #[test]
     fn secret_cache_write_through() {
-        let name = "model_key:__cache_coherence_test__";
-        secret_set(name, "sk-abc").unwrap();
-        assert_eq!(secret_get(name), "sk-abc");
-        secret_del(name).unwrap();
-        assert_eq!(secret_get(name), "");
+        let name = format!(
+            "model_key:__cache_coherence_test_{}__",
+            uuid::Uuid::new_v4()
+        );
+        secret_set(&name, "sk-abc").unwrap();
+        assert_eq!(secret_get(&name), "sk-abc");
+        secret_del(&name).unwrap();
+        assert_eq!(secret_get(&name), "");
+    }
+
+    #[test]
+    fn normalize_endpoint_strips_version_and_api_suffixes() {
+        assert_eq!(
+            normalize_endpoint("https://api.openai.com/v1"),
+            "https://api.openai.com"
+        );
+        assert_eq!(
+            normalize_endpoint("https://API.OpenAI.com/v1/"),
+            "https://api.openai.com"
+        );
+        assert_eq!(
+            normalize_endpoint("https://api.openai.com/v1/responses"),
+            "https://api.openai.com"
+        );
+        assert_eq!(
+            normalize_endpoint("https://api.deepseek.com"),
+            "https://api.deepseek.com"
+        );
+        assert_eq!(
+            normalize_endpoint("https://api.kimi.com/coding/v1"),
+            "https://api.kimi.com/coding"
+        );
+        assert!(same_endpoint(
+            "https://api.openai.com",
+            "https://api.openai.com/v1"
+        ));
+        assert!(!same_endpoint(
+            "https://api.deepseek.com",
+            "https://api.openai.com"
+        ));
+    }
+
+    #[test]
+    fn endpoint_suffix_is_normalized_and_joined_to_the_shared_root() {
+        assert_eq!(
+            normalize_endpoint_suffix(" anthropic/ ").unwrap(),
+            "/anthropic"
+        );
+        assert_eq!(normalize_endpoint_suffix("/").unwrap(), "");
+        assert_eq!(
+            join_api_url("https://api.deepseek.com/", "/anthropic"),
+            "https://api.deepseek.com/anthropic"
+        );
+        assert!(normalize_endpoint_suffix("https://other.example/v1").is_err());
+        assert!(normalize_endpoint_suffix("/anthropic?version=1").is_err());
+        assert!(normalize_endpoint_suffix("/../anthropic").is_err());
+    }
+
+    #[tokio::test]
+    async fn runtime_configs_use_the_per_model_endpoint_suffix() {
+        let tmp = std::env::temp_dir().join(format!(
+            "wisp_model_endpoint_suffix_{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let store = wisp_store::Store::open(&tmp).await.unwrap();
+
+        let mut anthropic = test_profile("anthropic", "deepseek-anthropic", "deepseek-chat");
+        anthropic.provider = "anthropic".into();
+        anthropic.api_url = "https://api.deepseek.com".into();
+        anthropic.endpoint_suffix = "/anthropic".into();
+
+        let mut image = test_profile("image", "image", "gpt-image-2");
+        image.provider = "openai_responses".into();
+        image.api_url = "https://api.openai.com".into();
+        image.endpoint_suffix = "/v1/images/generations".into();
+
+        save_raw(&store, &[anthropic, image]).await.unwrap();
+        store.set_setting(ACTIVE_KEY, "anthropic").await.unwrap();
+        store
+            .set_setting(IMAGE_GENERATION_KEY, "image")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            active_config(&store).await.1,
+            "https://api.deepseek.com/anthropic"
+        );
+        assert_eq!(
+            profile_llm(&store, "anthropic").await.unwrap().1,
+            "https://api.deepseek.com/anthropic"
+        );
+        assert_eq!(
+            image_generation_config(&store).await.unwrap().0,
+            "https://api.openai.com/v1/images/generations"
+        );
+
+        drop(store);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn new_profile_inherits_sibling_key_on_the_same_endpoint() {
+        let prefix = uuid::Uuid::new_v4();
+        let existing_id = format!("{prefix}-a");
+        let new_id = format!("{prefix}-b");
+        let _ = secret_del(&secret_name(&existing_id));
+        let _ = secret_del(&secret_name(&new_id));
+        secret_set(&secret_name(&existing_id), "sk-shared").unwrap();
+        let mut existing = test_profile(&existing_id, "flash", "deepseek-v4-flash");
+        existing.api_url = "https://api.deepseek.com".into();
+        let mut added = test_profile(&new_id, "pro", "deepseek-v4-pro");
+        added.api_url = "https://api.deepseek.com/".into();
+        let added_url = added.api_url.clone();
+        store_profile_key(&new_id, None, &added_url, &[existing, added]).unwrap();
+        assert_eq!(key_for(&new_id), "sk-shared");
+        let _ = secret_del(&secret_name(&existing_id));
+        let _ = secret_del(&secret_name(&new_id));
+    }
+
+    #[test]
+    fn new_profile_does_not_inherit_a_key_from_another_endpoint() {
+        let prefix = uuid::Uuid::new_v4();
+        let existing_id = format!("{prefix}-a");
+        let new_id = format!("{prefix}-b");
+        let _ = secret_del(&secret_name(&existing_id));
+        let _ = secret_del(&secret_name(&new_id));
+        secret_set(&secret_name(&existing_id), "sk-deepseek").unwrap();
+        let mut existing = test_profile(&existing_id, "flash", "deepseek-v4-flash");
+        existing.api_url = "https://api.deepseek.com".into();
+        let mut added = test_profile(&new_id, "gpt", "gpt-5.5");
+        added.api_url = "https://api.openai.com/v1".into();
+        let added_url = added.api_url.clone();
+        store_profile_key(&new_id, None, &added_url, &[existing, added]).unwrap();
+        assert!(key_for(&new_id).is_empty());
+        let _ = secret_del(&secret_name(&existing_id));
+        let _ = secret_del(&secret_name(&new_id));
+    }
+
+    #[test]
+    fn pasted_key_rotates_every_sibling_on_the_same_endpoint() {
+        let prefix = uuid::Uuid::new_v4();
+        let first_id = format!("{prefix}-a");
+        let second_id = format!("{prefix}-b");
+        let _ = secret_del(&secret_name(&first_id));
+        let _ = secret_del(&secret_name(&second_id));
+        secret_set(&secret_name(&first_id), "sk-old").unwrap();
+        let mut first = test_profile(&first_id, "flash", "deepseek-v4-flash");
+        first.api_url = "https://api.deepseek.com".into();
+        let mut second = test_profile(&second_id, "pro", "deepseek-v4-pro");
+        second.api_url = "https://api.deepseek.com/v1".into();
+        let second_url = second.api_url.clone();
+        store_profile_key(&second_id, Some("sk-new"), &second_url, &[first, second]).unwrap();
+        assert_eq!(key_for(&first_id), "sk-new");
+        assert_eq!(key_for(&second_id), "sk-new");
+        let _ = secret_del(&secret_name(&first_id));
+        let _ = secret_del(&secret_name(&second_id));
+    }
+
+    /// Restores each captured secret on drop (even when an assert panics), so
+    /// the test never clobbers values a developer keeps in the shared dev
+    /// secrets file.
+    struct RestoreSecrets(Vec<(String, String)>);
+
+    impl RestoreSecrets {
+        fn capture(ids: &[&str]) -> Self {
+            Self(
+                ids.iter()
+                    .map(|id| {
+                        let secret = credential(id).unwrap().secret.to_string();
+                        let prior = secret_get(&secret);
+                        (secret, prior)
+                    })
+                    .collect(),
+            )
+        }
+    }
+
+    impl Drop for RestoreSecrets {
+        fn drop(&mut self) {
+            for (secret, prior) in &self.0 {
+                if prior.is_empty() {
+                    let _ = secret_del(secret);
+                } else {
+                    let _ = secret_set(secret, prior);
+                }
+            }
+        }
     }
 
     // Storing a credential surfaces it in service_env under its env var;
-    // clearing removes it; an unknown id is rejected.
+    // clearing removes it; an unknown id is rejected. Registry ids are fixed
+    // production names, so prior values are captured and restored on exit.
     #[test]
     fn credential_registry_roundtrip() {
+        let _restore =
+            RestoreSecrets::capture(&["ncbi_email", "infinisynapse_api_key", "scimaster_api_key"]);
+
         store_credential("ncbi_email", "me@lab.org").unwrap();
         assert!(credential_status()
             .iter()
@@ -2061,15 +2402,15 @@ mod tests {
     #[tokio::test]
     async fn custom_credentials_keep_values_out_of_sqlite_and_join_service_env() {
         let tmp = std::env::temp_dir().join(format!(
-            "superscience_custom_credentials_{}.sqlite",
+            "wisp_custom_credentials_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
-        let store = superscience_store::Store::open(&tmp).await.unwrap();
+        let store = wisp_store::Store::open(&tmp).await.unwrap();
         let suffix = uuid::Uuid::new_v4()
             .simple()
             .to_string()
             .to_ascii_uppercase();
-        let env_var = format!("SUPERSCIENCE_CUSTOM_TEST_{suffix}");
+        let env_var = format!("WISP_CUSTOM_TEST_{suffix}");
         let secret = format!("custom-secret-{suffix}");
 
         assert!(
@@ -2135,20 +2476,18 @@ mod tests {
 
     #[tokio::test]
     async fn profile_key_reads_the_requested_profile() {
-        let tmp = std::env::temp_dir().join(format!(
-            "superscience_profile_key_{}.sqlite",
-            uuid::Uuid::new_v4()
-        ));
-        let store = superscience_store::Store::open(&tmp).await.unwrap();
-        // Distinct URLs so migration creates separate providers (keys are
-        // provider-scoped after the cards redesign).
-        let mut deepseek = test_profile("default", "deepseek", "deepseek-v4-pro");
-        deepseek.api_url = "https://api.deepseek.com/v1".into();
-        deepseek.provider_id.clear();
-        let mut glm = test_profile("glm", "glm", "glm-5.2");
-        glm.api_url = "https://open.bigmodel.cn/api/paas/v4".into();
-        glm.provider_id.clear();
-        save_raw(&store, &[deepseek, glm]).await.unwrap();
+        let tmp =
+            std::env::temp_dir().join(format!("wisp_profile_key_{}.sqlite", uuid::Uuid::new_v4()));
+        let store = wisp_store::Store::open(&tmp).await.unwrap();
+        save_raw(
+            &store,
+            &[
+                test_profile("default", "deepseek", "deepseek-v4-pro"),
+                test_profile("glm", "glm", "glm-5.2"),
+            ],
+        )
+        .await
+        .unwrap();
         secret_set(&secret_name("default"), "sk-default").unwrap();
         secret_set(&secret_name("glm"), "sk-glm").unwrap();
 
@@ -2161,75 +2500,6 @@ mod tests {
 
         let _ = secret_del(&secret_name("default"));
         let _ = secret_del(&secret_name("glm"));
-        let profiles = ensure(&store).await;
-        for p in &profiles {
-            let _ = secret_del(&provider_secret_name(&p.provider_id));
-        }
-        let _ = std::fs::remove_file(&tmp);
-    }
-
-    #[tokio::test]
-    async fn migrate_clusters_same_url_and_shares_provider_key() {
-        let tmp = std::env::temp_dir().join(format!(
-            "superscience_provider_migrate_{}.sqlite",
-            uuid::Uuid::new_v4()
-        ));
-        let store = superscience_store::Store::open(&tmp).await.unwrap();
-        let mut a = test_profile("m1", "A", "model-a");
-        a.api_url = "https://example.com/v1".into();
-        a.provider_id.clear();
-        let mut b = test_profile("m2", "B", "model-b");
-        b.api_url = "https://example.com/v1/".into(); // trailing slash → same cluster
-        b.provider_id.clear();
-        save_raw(&store, &[a, b]).await.unwrap();
-        secret_set(&secret_name("m1"), "sk-shared").unwrap();
-
-        let profiles = ensure(&store).await;
-        assert_eq!(profiles.len(), 2);
-        assert_eq!(profiles[0].provider_id, profiles[1].provider_id);
-        assert_ne!(profiles[0].provider_id, TCTOKEN_PROVIDER_ID);
-        assert_eq!(key_for(&profiles[0]), "sk-shared");
-        assert_eq!(key_for(&profiles[1]), "sk-shared");
-
-        let providers = load_providers_raw(&store).await;
-        assert!(providers.iter().any(|p| p.id == TCTOKEN_PROVIDER_ID && p.builtin));
-        assert_eq!(providers[0].id, TCTOKEN_PROVIDER_ID);
-
-        let _ = secret_del(&secret_name("m1"));
-        let _ = secret_del(&provider_secret_name(&profiles[0].provider_id));
-        let _ = std::fs::remove_file(&tmp);
-    }
-
-    #[tokio::test]
-    async fn empty_install_seeds_builtin_tctoken_only() {
-        let tmp = std::env::temp_dir().join(format!(
-            "superscience_provider_empty_{}.sqlite",
-            uuid::Uuid::new_v4()
-        ));
-        let store = superscience_store::Store::open(&tmp).await.unwrap();
-        let profiles = ensure(&store).await;
-        assert!(profiles.is_empty());
-        let providers = load_providers_raw(&store).await;
-        assert_eq!(providers.len(), 1);
-        assert_eq!(providers[0].id, TCTOKEN_PROVIDER_ID);
-        assert_eq!(providers[0].api_url, TCTOKEN_PROVIDER_URL);
-        assert!(providers[0].builtin);
-        let _ = std::fs::remove_file(&tmp);
-    }
-
-    #[tokio::test]
-    async fn builtin_provider_cannot_be_removed() {
-        let tmp = std::env::temp_dir().join(format!(
-            "superscience_provider_builtin_{}.sqlite",
-            uuid::Uuid::new_v4()
-        ));
-        let store = superscience_store::Store::open(&tmp).await.unwrap();
-        let _ = ensure(&store).await;
-        // Simulate remove_model_provider guard without Tauri State.
-        let id = TCTOKEN_PROVIDER_ID.to_string();
-        assert!(id == TCTOKEN_PROVIDER_ID);
-        let providers = load_providers_raw(&store).await;
-        assert!(providers.iter().any(|p| p.id == id && p.builtin));
         let _ = std::fs::remove_file(&tmp);
     }
 }

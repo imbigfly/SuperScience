@@ -15,6 +15,8 @@ Selecting an SSH context opens the remote user's home directory and supports:
 - moving to the parent directory;
 - opening child directories;
 - viewing non-hidden file names and sizes;
+- uploading local files into the current remote folder with the **Upload**
+  button or by dropping them onto the Files panel;
 - downloading a remote file through its right-click menu and a native save
   dialog.
 
@@ -26,10 +28,16 @@ OpenSSH `IdentitiesOnly` so unrelated agent keys are not offered to the server;
 agent-only users with a non-default key must name its `IdentityFile` in SuperScience or
 SSH config.
 
-Remote mutation remains intentionally out of scope: SSH files can be previewed
-or downloaded, but cannot be created, renamed, or deleted from Files. Downloads
-are explicit user actions and do not otherwise synchronize large remote data
-into the project.
+Uploads use the same managed `scp` `file_transfer` Run as
+`transfer_between_contexts`: they land in the folder currently shown in Files,
+never overwrite an existing remote path, and appear in the composer transfer
+tray. Creating, renaming, or deleting arbitrary remote files from Files remains
+out of scope. Ledgered project files can still be removed from the Environment
+panel's Remote files list, including harvest-persisted outputs that were
+too large to pull back. Dropping the SSH host from Settings marks those
+remote artifact references as source-discarded and blocks later download
+or preview of the abandoned URIs. Downloads are explicit user actions and do not
+otherwise synchronize large remote data into the project.
 
 Remote PDF, DOCX, XLSX, and PPTX previews use the same raw-byte IPC and bounded
 OOXML validation as local previews. The remote size check runs before transfer;
@@ -58,9 +66,12 @@ previews still require a complete under-budget payload.
 3. Select the SSH host in **File location**.
 4. Confirm the remote home directory loads, then open a child directory, use
    the parent button, and enter an absolute path.
-5. Right-click a remote file, choose **Download**, and confirm the selected
+5. Click **Upload**, choose a local file, and confirm a transfer Run starts
+   and the file appears in the current remote folder after refresh. Dropping a
+   local file onto the remote Files panel should start the same upload.
+6. Right-click a remote file, choose **Download**, and confirm the selected
    file is copied to the destination chosen in the native save dialog.
-6. Disconnect the host or enter an inaccessible path and confirm Files shows a
+7. Disconnect the host or enter an inaccessible path and confirm Files shows a
    retryable error without blocking the rest of the app.
 
 Automated tests use a fake remote-directory runner and a mocked Tauri command;

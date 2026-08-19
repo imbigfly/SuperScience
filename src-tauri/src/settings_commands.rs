@@ -8,29 +8,48 @@ use std::{
     path::{Path, PathBuf},
 };
 use tauri::State;
-use superscience_llm::Message;
-use superscience_store::secrets::Secret;
+use wisp_llm::Message;
+use wisp_store::secrets::Secret;
 
 const SYNC_RELAY_TOKEN: &str = "sync_relay_token";
 
 #[derive(serde::Serialize)]
 pub(super) struct TokenUsageOverview {
-    workspaces: Vec<superscience_store::ProjectTokenUsage>,
-    days: Vec<superscience_store::TokenUsageDay>,
-    models: Vec<superscience_store::ModelTokenUsage>,
-    tools: Vec<superscience_store::ToolCallUsage>,
+    workspaces: Vec<wisp_store::ProjectTokenUsage>,
+    days: Vec<wisp_store::TokenUsageDay>,
+    models: Vec<wisp_store::ModelTokenUsage>,
+    tools: Vec<wisp_store::ToolCallUsage>,
+}
+
+fn annotate_provider_error(error: impl ToString, proxy: Option<&str>) -> String {
+    wisp_llm::annotate_transport_error(&error.to_string(), proxy, &wisp_llm::ambient_proxy_env())
 }
 
 async fn validate_provider_config(
     provider_name: &str,
-    mut cfg: superscience_llm::ProviderConfig,
+    mut cfg: wisp_llm::ProviderConfig,
     supports_vision: bool,
 ) -> Result<(), String> {
+    let proxy = cfg.proxy.clone();
     if models::is_image_generation_model(&cfg.model) {
         if !models::supports_image_generation(provider_name, &cfg.model) {
-            return Err("Image generation currently supports only OpenAI gpt-image-2.".into());
+            return Err(models::IMAGE_GENERATION_UNSUPPORTED.into());
         }
         return super::image_generation_tool::GenerateImageTool::new(
+            cfg.base_url,
+            cfg.api_key,
+            cfg.model,
+            cfg.proxy,
+        )
+        .validate_model_access()
+        .await
+        .map_err(|error| annotate_provider_error(error, proxy.as_deref()));
+    }
+    if models::is_video_generation_model(&cfg.model) {
+        if !models::supports_video_generation(provider_name, &cfg.model) {
+            return Err(models::VIDEO_GENERATION_UNSUPPORTED.into());
+        }
+        return super::video_generation_tool::GenerateVideoTool::new(
             cfg.base_url,
             cfg.api_key,
             cfg.model,
@@ -50,11 +69,11 @@ async fn validate_provider_config(
     } else {
         Message::user("Reply with OK.")
     };
-    superscience_llm::build(cfg)
+    wisp_llm::build(cfg)
         .complete(&[probe], &[])
         .await
         .map(|_| ())
-        .map_err(|error| error.to_string())
+        .map_err(|error| annotate_provider_error(error, proxy.as_deref()))
 }
 
 #[tauri::command]
@@ -122,8 +141,9 @@ pub(super) async fn get_settings(state: State<'_, AppState>) -> Result<Settings,
         .flatten()
         .unwrap_or_default();
     let notifications_enabled = super::load_notifications_enabled(&state.store).await;
-    let pii_firewall_enabled = super::load_pii_firewall_enabled(&state.store).await;
     let auto_compact = super::load_auto_compact_enabled(&state.store).await;
+    let (auto_continue, auto_continue_limit) =
+        super::load_auto_continue_settings(&state.store).await;
     let follow_up_questions = state
         .store
         .get_setting("follow_up_questions")
@@ -157,6 +177,8 @@ pub(super) async fn get_settings(state: State<'_, AppState>) -> Result<Settings,
         workspace_dir,
         max_iter,
         auto_compact,
+        auto_continue,
+        auto_continue_limit: auto_continue_limit as u64,
         follow_up_questions,
         resume_last_session,
         max_tokens,
@@ -171,7 +193,6 @@ pub(super) async fn get_settings(state: State<'_, AppState>) -> Result<Settings,
         pet_enabled,
         pet_directory,
         notifications_enabled,
-        pii_firewall_enabled,
     })
 }
 
@@ -233,7 +254,7 @@ pub(super) async fn set_settings(
         load_pet_asset(Path::new(pet_directory))?;
     }
     tracing::info!(
-        target: "superscience",
+        target: "wisp",
         provider = %provider,
         api_url = %api_url,
         model = %model,
@@ -251,9 +272,8 @@ pub(super) async fn set_settings(
     .await?;
     let locale = match settings.locale.trim() {
         "zh" | "zh-CN" | "zh-TW" => "zh",
-        "en" | "en-US" | "en-GB" => "en",
         other if !other.is_empty() => other,
-        _ => "zh",
+        _ => "en",
     };
     state
         .store
@@ -262,7 +282,9 @@ pub(super) async fn set_settings(
         .map_err(|e| format!("{e}"))?;
     #[cfg(target_os = "macos")]
     super::install_macos_app_menu(&app, locale)?;
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    desktop_lifecycle::apply_windows_tray_locale(&app, locale)?;
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let _ = app;
     state
         .store
@@ -315,22 +337,6 @@ pub(super) async fn set_settings(
         )
         .await
         .map_err(|e| e.to_string())?;
-    let previous_pii = super::load_pii_firewall_enabled(&state.store).await;
-    state
-        .store
-        .set_setting(
-            "pii_firewall_enabled",
-            if settings.pii_firewall_enabled {
-                "true"
-            } else {
-                "false"
-            },
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-    if previous_pii != settings.pii_firewall_enabled {
-        clear_idle_agents(&state).await;
-    }
     state
         .store
         .set_setting("max_iter", &settings.max_iter.to_string())
@@ -339,6 +345,19 @@ pub(super) async fn set_settings(
     state
         .store
         .set_setting("auto_compact", &settings.auto_compact.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    state
+        .store
+        .set_setting("auto_continue", &settings.auto_continue.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    state
+        .store
+        .set_setting(
+            "auto_continue_limit",
+            &settings.auto_continue_limit.max(1).to_string(),
+        )
         .await
         .map_err(|e| e.to_string())?;
     state
@@ -423,7 +442,7 @@ pub(super) async fn add_custom_credential(
 ) -> Result<models::CustomCredentialStatus, String> {
     let credential = models::add_custom_credential(&state.store, &name, &env_var, &value).await?;
     tracing::info!(
-        target: "superscience",
+        target: "wisp",
         id = %credential.id,
         env_var = %credential.env_var,
         "added custom credential"
@@ -438,7 +457,7 @@ pub(super) async fn remove_custom_credential(
     id: String,
 ) -> Result<(), String> {
     models::remove_custom_credential(&state.store, &id).await?;
-    tracing::info!(target: "superscience", id = %id, "removed custom credential");
+    tracing::info!(target: "wisp", id = %id, "removed custom credential");
     clear_idle_agents(&state).await;
     Ok(())
 }
@@ -473,7 +492,7 @@ async fn init_agent_infini(api_key: &str) -> Result<(), String> {
     })?;
     let mut command = tokio::process::Command::new(&bin);
     command.arg("init").arg("--api-key").arg(api_key);
-    superscience_tools::process::hide_console_async(&mut command);
+    wisp_tools::process::hide_console_async(&mut command);
     let out = command
         .output()
         .await
@@ -589,7 +608,7 @@ pub(super) async fn set_credential(
     // standalone probe, so they're stored as-is.
     if id == "openalex_api_key" && !value.is_empty() {
         let resp = reqwest::Client::builder()
-            .user_agent("superscience")
+            .user_agent("wisp-science")
             .timeout(std::time::Duration::from_secs(10))
             .build()
             .map_err(|e| e.to_string())?
@@ -610,7 +629,7 @@ pub(super) async fn set_credential(
     if id == "scimaster_api_key" {
         sync_scimaster_config(&value)?;
     }
-    tracing::info!(target: "superscience", id = %id, present = !value.is_empty(), "saving credential");
+    tracing::info!(target: "wisp", id = %id, present = !value.is_empty(), "saving credential");
     models::store_credential(&id, &value)?;
     // Respawn kernels/MCP on the next turn so they inherit the new env.
     clear_idle_agents(&state).await;
@@ -624,76 +643,39 @@ pub(super) async fn validate_settings(
     key: Option<String>,
     profile_id: Option<String>,
 ) -> Result<String, String> {
-    // Prefer resolving an existing profile through its provider (URL + protocol
-    // + shared key). Form fields still win for brand-new / edited drafts.
-    let resolved = match profile_id
+    let provider_name = normalized_provider(&settings.provider);
+    let stored_key = match profile_id
         .as_deref()
         .map(str::trim)
         .filter(|id| !id.is_empty())
     {
-        Some(id) => models::profile_llm(&state.store, id).await,
-        None => None,
+        Some(id) => models::profile_key(&state.store, id)
+            .await
+            .unwrap_or_default(),
+        None => {
+            let (_, _, _, stored_key) = load_settings(&state.store).await;
+            stored_key
+        }
     };
-    let (provider, api_url, model, stored_key, max_tokens, reasoning_effort) =
-        if let Some((p, url, m, k, max, effort)) = resolved {
-            (
-                if settings.provider.trim().is_empty() {
-                    p
-                } else {
-                    settings.provider.clone()
-                },
-                if settings.api_url.trim().is_empty() {
-                    url
-                } else {
-                    settings.api_url.clone()
-                },
-                if settings.model.trim().is_empty() {
-                    m
-                } else {
-                    settings.model.clone()
-                },
-                k,
-                if settings.max_tokens == 0 {
-                    max
-                } else {
-                    settings.max_tokens
-                },
-                if settings.reasoning_effort.trim().is_empty() {
-                    effort
-                } else {
-                    settings.reasoning_effort.clone()
-                },
-            )
-        } else {
-            let stored_key = {
-                let (_, _, _, stored_key) = load_settings(&state.store).await;
-                stored_key
-            };
-            (
-                settings.provider.clone(),
-                settings.api_url.clone(),
-                settings.model.clone(),
-                stored_key,
-                settings.max_tokens,
-                settings.reasoning_effort.clone(),
-            )
-        };
-    let provider_name = normalized_provider(&provider);
     let api_key = effective_api_key(key, stored_key);
-    let cfg = build_provider_config(
-        &provider,
-        &api_url,
+    let mut cfg = build_provider_config(
+        &settings.provider,
+        &settings.api_url,
         &api_key,
-        &model,
-        max_tokens,
-        &reasoning_effort,
+        &settings.model,
+        settings.max_tokens,
+        &settings.reasoning_effort,
     )?;
+    let form_proxy = settings.proxy_url.trim();
+    if !form_proxy.is_empty() {
+        cfg.proxy = Some(form_proxy.to_string());
+    }
 
     tracing::info!(
-        target: "superscience",
+        target: "wisp",
         provider = %provider_name,
-        api_url = %api_url,
-        model = %model,
+        api_url = %settings.api_url,
+        model = %settings.model,
         "validating settings"
     );
     let result = tokio::time::timeout(
@@ -702,22 +684,25 @@ pub(super) async fn validate_settings(
     )
     .await
     .map_err(|_| {
-        tracing::warn!(target: "superscience", "settings validation timed out");
+        tracing::warn!(target: "wisp", "settings validation timed out");
         "Validation timed out after 30s".to_string()
     })?;
     if let Err(e) = result {
-        tracing::warn!(target: "superscience", error = %e, vision = settings.supports_vision, "settings validation failed");
+        tracing::warn!(target: "wisp", error = %e, vision = settings.supports_vision, "settings validation failed");
         return Err(e);
     }
 
-    tracing::info!(target: "superscience", "settings validation succeeded");
-    Ok(format!("Validated {} with {}", provider_name, model))
+    tracing::info!(target: "wisp", "settings validation succeeded");
+    Ok(format!(
+        "Validated {} with {}",
+        provider_name, settings.model
+    ))
 }
 
 /// 16x16 PNG — small enough to be free, large enough that vision APIs with a
 /// minimum-dimension rule don't reject it for the wrong reason.
 fn vision_probe_message() -> Message {
-    use superscience_llm::message::{Content, ImageUrl, Part};
+    use wisp_llm::message::{Content, ImageUrl, Part};
     const PROBE_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR42mM4EWBDEmIY1TCqYfhqAABNl1QQCkyLAQAAAABJRU5ErkJggg==";
     let mut msg = Message::user("");
     msg.content = Content::Parts(vec![
@@ -791,7 +776,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let dir = std::env::temp_dir().join(format!(
-            "superscience-scimaster-config-test-{}-{unique}",
+            "wisp-scimaster-config-test-{}-{unique}",
             std::process::id()
         ));
         let path = dir.join("config.json");
@@ -821,14 +806,14 @@ mod tests {
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "superscience-storage-usage-test-{}-{unique}",
+            "wisp-storage-usage-test-{}-{unique}",
             std::process::id()
         ));
         let app_data = root.join("app");
         let workspace = root.join("workspace");
         fs::create_dir_all(&app_data).unwrap();
         fs::create_dir_all(&workspace).unwrap();
-        fs::write(app_data.join("superscience.sqlite"), [0u8; 3]).unwrap();
+        fs::write(app_data.join("wisp.sqlite"), [0u8; 3]).unwrap();
         fs::write(workspace.join("results.csv"), [0u8; 7]).unwrap();
 
         let usage = collect_storage_usage(
@@ -899,7 +884,7 @@ fn dir_size(path: &Path) -> u64 {
         .sum()
 }
 
-fn collect_storage_usage(
+pub(crate) fn collect_storage_usage(
     app_data: PathBuf,
     projects: Vec<(String, String, PathBuf)>,
 ) -> serde_json::Value {
@@ -1016,7 +1001,7 @@ pub(super) async fn get_session_token_usage(
     project_id: String,
     offset: Option<i64>,
     limit: Option<i64>,
-) -> Result<superscience_store::SessionTokenUsagePage, String> {
+) -> Result<wisp_store::SessionTokenUsagePage, String> {
     state
         .store
         .token_usage_by_session(&project_id, offset.unwrap_or(0), limit.unwrap_or(20))

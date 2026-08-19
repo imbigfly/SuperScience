@@ -21,8 +21,8 @@ Under **Settings → Models** there are two categories with the same list → ad
 
 1. Open **Settings → Models**
 2. Switch tabs: **Models (n)** | **ACP Agents (n)**
-3. Click **Add model** or **Add ACP Agent** (breadcrumb subpage form)
-4. Or from the chat model picker: **Add model** / **Add ACP Agent** — same forms
+3. Click **Add provider** or **Add ACP Agent** (breadcrumb subpage form)
+4. Or from the chat model picker: **Add provider** / **Add ACP Agent** — same forms
 
 Click a row to edit. HTTP and ACP both use Cancel / Save on the subpage.
 

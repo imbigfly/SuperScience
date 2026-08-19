@@ -10,8 +10,9 @@ pub(super) async fn new_session(
     // Create a fresh frame and hand its id to the UI up front, so the UI can
     // route streamed events to the right transcript *before* the first delta
     // arrives. Does NOT cancel any running turn — parallel conversations keep
-    // running. Persisted history still ignores empty frames; the UI keeps the
-    // currently active draft visible until its first user turn is stored.
+    // running. Persisted history still ignores empty untitled frames; the UI
+    // keeps the currently active draft visible until its first user turn is
+    // stored, and an explicit rename makes the draft listable right away (#888).
     let active = state.active(window.label());
     let ap = project_commands::load_active_project(&state, &active.id)
         .await?
@@ -670,6 +671,9 @@ pub(super) async fn transfer_session_to_project(
         if state.active_frame(window.label()).as_deref() == Some(id.as_str()) {
             state.set_active_frame(window.label(), None);
         }
+        // The moved conversation gets a new frame id in the target project;
+        // its old interpreters point at the source workspace and must go.
+        state.runtime_manager.stop_session(&source.id, &id).await;
     } else {
         state
             .store
@@ -744,6 +748,9 @@ pub(super) async fn delete_session(
     if state.active_frame(window.label()).as_deref() == Some(id.as_str()) {
         state.set_active_frame(window.label(), None);
     }
+    // Interpreters are keyed per conversation; a deleted conversation's
+    // Python/R workers must not linger until project close.
+    state.runtime_manager.stop_session(&ap.id, &id).await;
     state
         .store
         .delete_session(&id, &ap.id)
@@ -788,6 +795,23 @@ pub(super) async fn set_session_pinned(
 
 /// How many sessions appear on the Projects landing "Recent sessions" column.
 pub(super) const RECENT_SESSIONS_LIMIT: i64 = 5;
+
+/// Most recently used conversation in the active project, if any.
+///
+/// Named unused drafts are listable (#888) but are not a conversation to
+/// resume: the settings copy promises a used chat, not a blank titled draft.
+#[tauri::command]
+pub(super) async fn latest_used_session(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+) -> Result<Option<String>, String> {
+    let ap = state.active(window.label());
+    state
+        .store
+        .latest_used_session_id(&ap.id)
+        .await
+        .map_err(|e| format!("{e}"))
+}
 
 #[tauri::command]
 pub(super) async fn list_recent_sessions(
@@ -972,12 +996,24 @@ pub(super) fn transcript_page_items(
         .iter()
         .map(|(_, message)| message.clone())
         .collect::<Vec<_>>();
+    // Older builds persisted a slimmer AgentEvent shape. A single unknown
+    // field or later-added required key must not blank the whole transcript
+    // (or look like a launch crash when resume-last-session reopens it).
     let events: Vec<AgentEvent> = page
         .ui_events
         .iter()
-        .map(|json| serde_json::from_str(json))
-        .collect::<Result<_, _>>()
-        .map_err(|e| format!("invalid persisted UI event: {e}"))?;
+        .filter_map(|json| match serde_json::from_str(json) {
+            Ok(event) => Some(event),
+            Err(error) => {
+                tracing::warn!(
+                    target: "wisp",
+                    %error,
+                    "skipping unreadable persisted UI event"
+                );
+                None
+            }
+        })
+        .collect();
     let (mut items, boundaries) = if events.is_empty() {
         (messages_to_items(&msgs), HashMap::new())
     } else {
@@ -1133,9 +1169,7 @@ pub(super) async fn load_session(
             .load_latest_session_ui_event(&id, "ToolPresentation")
             .await
             .map_err(|e| format!("{e}"))?
-            .map(|json| serde_json::from_str::<AgentEvent>(&json))
-            .transpose()
-            .map_err(|e| format!("invalid persisted tool presentation: {e}"))?
+            .and_then(|json| serde_json::from_str::<AgentEvent>(&json).ok())
             .and_then(|event| match event {
                 AgentEvent::ToolPresentation {
                     presentation_id,

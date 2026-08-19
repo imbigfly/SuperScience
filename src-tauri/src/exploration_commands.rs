@@ -26,6 +26,7 @@ const ERR_HISTORY_UNAVAILABLE: &str = "exploration_history_unavailable";
 const ERR_NOT_WRITABLE: &str = "exploration_not_writable";
 const ERR_ROUND_ACTIVE: &str = "exploration_round_active";
 const ERR_MAINLINE_FROZEN: &str = "exploration_mainline_frozen";
+const ERR_BRANCH_UNSUPPORTED: &str = "exploration_branch_unsupported";
 
 fn coded_error(code: &str, message: impl AsRef<str>) -> String {
     format!("{code}: {}", message.as_ref())
@@ -104,6 +105,18 @@ impl ExplorationService {
             return Err(coded_error(
                 ERR_HISTORY_UNAVAILABLE,
                 "checkpoints must be created from the current mainline conversation",
+            ));
+        }
+        if self
+            .store
+            .session_branch_state(source_frame_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .is_some()
+        {
+            return Err(coded_error(
+                ERR_BRANCH_UNSUPPORTED,
+                "Conversation branches cannot start an exploration.",
             ));
         }
         if self
@@ -884,6 +897,18 @@ pub(crate) async fn start_exploration(
     if owner.project_id() != active.id || !matches!(owner, StateScope::Mainline { .. }) {
         return Err("Source conversation does not belong to the active mainline".into());
     }
+    if state
+        .store
+        .session_branch_state(&source_frame_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .is_some()
+    {
+        return Err(coded_error(
+            ERR_BRANCH_UNSUPPORTED,
+            "Conversation branches cannot start an exploration.",
+        ));
+    }
     let _creation = state.begin_exploration_creation(&active.id).await;
     let round_already_active = state
         .store
@@ -1470,6 +1495,26 @@ mod tests {
         assert!(!denied.success);
         assert_eq!(denied.control, superscience_tools::ToolControl::StopBatch);
         assert!(prompts.lock().unwrap()[0].contains("cannot be rolled back"));
+        let denied_mainline_run = wisp_tools::Tool::run(
+            &external_tool,
+            &serde_json::json!({
+                "context_id": "local",
+                "command": format!("cat '{}'", project.join("baseline.txt").display())
+            }),
+            &DenyExternalRunEnv {
+                root: PathBuf::from(&first.workspace_dir),
+                prompts: prompts.clone(),
+            },
+        )
+        .await;
+        assert!(!denied_mainline_run.success);
+        assert_eq!(
+            denied_mainline_run.control,
+            wisp_tools::ToolControl::StopBatch
+        );
+        assert!(denied_mainline_run
+            .content
+            .contains("exploration_scope_violation"));
         std::fs::write(project.join("later.txt"), b"later mainline result").unwrap();
         let later_mainline_version = service
             .store
@@ -1803,6 +1848,36 @@ mod tests {
             .await
             .unwrap_err()
             .starts_with(ERR_ACTIVE_RUN));
+        drop(service);
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[tokio::test]
+    async fn conversation_branches_cannot_create_exploration_checkpoints() {
+        let (service, base, _) = fixture("branch_no_explore").await;
+        service
+            .store
+            .create_frame("branch", "p", "OPERON", "model")
+            .await
+            .unwrap();
+        service
+            .store
+            .append_message("branch", 1, &wisp_llm::Message::user("question"))
+            .await
+            .unwrap();
+        service
+            .store
+            .append_message("branch", 2, &wisp_llm::Message::assistant("answer"))
+            .await
+            .unwrap();
+        service
+            .store
+            .set_session_branch_point("branch", "main", 0, "after_response")
+            .await
+            .unwrap();
+        let error = service.create_checkpoint("p", "branch").await.unwrap_err();
+        assert!(error.starts_with(ERR_BRANCH_UNSUPPORTED), "{error}");
+        assert!(error.contains("Conversation branches cannot start an exploration."));
         drop(service);
         let _ = std::fs::remove_dir_all(base);
     }

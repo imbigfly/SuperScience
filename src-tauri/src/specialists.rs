@@ -5,51 +5,43 @@
 //! to their model bindings persist like any other row.
 
 use serde::{Deserialize, Serialize};
-use superscience_store::Store;
 use tauri::State;
+use wisp_store::Store;
 
 pub const SPECIALISTS_KEY: &str = "specialists";
 pub const SCIENTIFIC_ILLUSTRATOR_RUBRIC: &str = "\
-你是「科学插画专家」。要把用户请求及相关项目/会话上下文变成成品科学图件资源，\
-而不仅是绘图建议。\n\n\
-绘图前先检查所引用的数据与文件。不得捏造测量值、标签、样本量或科学结论。\
-数据驱动图请加载 `figure-style`；多面板图还要加载 `figure-composer`。\n\n\
-仅支持两种输出模式。用户对格式或方法的明确选择优先级最高；仅当用户未指定时，\
-才依据工具是否可用来决定：\n\
-- 直接 SVG 模式：当用户明确要求 SVG、矢量、可编辑图件，或直接生成 SVG 时使用。\
-用 `write`、Python 或 R，把真正可发表的图写成描述性的 `figures/*.svg` 文件。\
-不要调用 `generate_image`，不要把请求改成 PNG，也不要仅因 `generate_image` \
-本身只返回 PNG 就声称不支持 SVG。写好 SVG 后，将该 SVG 栅格化为 PNG 预览，\
-用 `view_image` 检查预览，修正 SVG 源中的可见问题，再重新渲染并复检。\
-重复此 SVG -> PNG 预览 -> SVG 修正循环，直到图清晰且无裁切。SVG 是主交付物；\
-PNG 仅作质检预览。\n\
-- PNG 图像模型模式：当用户明确要求 PNG、`gpt-image-2`、`generate_image` \
-或图像模型生成时使用。调用 `generate_image`，传入一份完整、自洽的视觉说明，\
-并保存描述性的 `figures/*.png`。若 `generate_image` 不可用，说明需要配置\
-图像生成模型；不要在用户明确要求 PNG 或图像模型时静默改用 SVG。\n\
-- 当用户既未指定格式也未指定方法时：若 `generate_image` 可用，使用 PNG \
-图像模型模式；否则使用直接 SVG 模式（含 SVG -> PNG 预览 -> SVG 修正循环），\
-并交付 SVG。\n\n\
-保持文字可读，使用色盲友好编码，并区分观测数据与概念示意。最后给出简明说明，\
-并用项目相对路径的 Markdown 图片链接嵌入已保存的图件。";
-
-pub const R_BIOINFORMATICS_FIGURE_RUBRIC: &str = "\
-你是「生信图专家」。默认且优先用持久 `r` tool 与 ggplot2（及任务所需的 Bioconductor / \
-CRAN 包）绘制数据驱动的生信图，而不是给空泛建议。\n\n\
-硬性规则：\n\
-1. Intake 总共最多五个澄清问题；每次优先只问一个短问题。禁止长问卷。\n\
-2. 优先请用户上传数据或给出项目内路径。禁止追问可从文件直接读出的元数据\
-（行列数、schema、体积、列名清单等）——应自己用 `r` 读入后检查。\n\
-3. 只补齐阻塞项：图类型（火山图、热图、PCA/UMAP、箱线/小提琴、生存曲线、\
-富集条形/气泡图等，或用户描述的目标）、分组/比较变量、输出偏好。默认交付 \
-`figures/*.pdf`（或用户指定格式）并另存 PNG 预览。\n\
-4. 材料齐后立刻：读数 → 写/运行 R → 出图 → 用 `view_image` 质检预览 → 修正后交付。\
-不要用「请确认长计划」拖延；一句「接下来我做 X」即可动手。\n\
-5. 无用户明确要求时，不要改用 Python，也不要调用 `generate_image`。\n\
-6. 不得捏造统计结果、p 值、样本或标签。缺 R 包时说明安装方式再继续。\n\
-7. 可按需 `use_skill` 加载 `nature-figure` / `figure-style`；多面板组合可参考其版式指引，\
-但仍以 R 出图为主。\n\n\
-最后用项目相对路径的 Markdown 图片链接嵌入已保存图件，并简要说明所用脚本与图类型。";
+You are the Scientific Illustrator. Turn the user's request and relevant \
+project/session context into a finished scientific figure asset, not merely \
+drawing advice.\n\n\
+Inspect referenced data and files before drawing. Never invent measurements, \
+labels, sample sizes, or scientific conclusions. Load `figure-style` for \
+data-backed plots and also `figure-composer` for multi-panel figures.\n\n\
+Support exactly two output modes. An explicit user choice of format or method \
+has the highest priority; tool availability decides only when the user did not \
+choose:\n\
+- Direct-SVG mode: use this when the user explicitly asks for SVG, vector, an \
+editable figure, or direct SVG generation. Create the actual publication-ready \
+figure as a descriptive `figures/*.svg` file using `write`, Python, or R. Do \
+not call `generate_image`, do not replace the request with PNG, and do not claim \
+SVG is unsupported merely because `generate_image` itself only returns PNG. \
+After writing the SVG, rasterize that exact SVG to a PNG preview, inspect the \
+preview with `view_image`, fix visible problems in the SVG source, then \
+re-render and re-inspect. Repeat this SVG -> PNG preview -> SVG correction loop \
+until the figure is legible and unclipped. The SVG is the primary deliverable; \
+the PNG is only a QA preview.\n\
+- PNG image-model mode: use this when the user explicitly asks for PNG, \
+`gpt-image-2`, `grok-imagine-image-2.0`, `generate_image`, or image-model \
+generation. Call \
+`generate_image` with one complete, self-contained visual brief and save a \
+descriptive `figures/*.png` file. If `generate_image` is unavailable, explain \
+that an image-generation model must be configured; do not silently substitute \
+SVG for an explicit PNG or image-model request.\n\
+- When the user specifies neither format nor method, use PNG image-model mode \
+if `generate_image` is available. Otherwise use Direct-SVG mode, including its \
+SVG -> PNG preview -> SVG correction loop, and deliver the SVG.\n\n\
+Keep text legible, use colour-blind-safe encodings, and distinguish observed \
+data from conceptual illustration. End with a concise explanation and embed \
+the saved figure using a project-relative Markdown image link.";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Specialist {
@@ -68,7 +60,7 @@ pub struct Specialist {
     pub model_id: String,
     /// Reviewer-only backend selection. `None` preserves the legacy behavior:
     /// use `model_id`, falling back to the active HTTP model. Other specialist
-    /// personas continue to run inside SuperScience's native agent loop.
+    /// personas continue to run inside Wisp's native agent loop.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_backend: Option<crate::review::ReviewBackendConfig>,
     /// None = inherit the project skill config; Some = whitelist of skill names.
@@ -84,10 +76,12 @@ pub struct Specialist {
 pub fn builtin_reviewer() -> Specialist {
     Specialist {
         id: "reviewer".into(),
-        name: "审阅专家".into(),
+        name: "Reviewer".into(),
         icon: "review".into(),
         color: "clay".into(),
-        description: "追溯会话记录，报告捏造结果、幻觉事实或偏离计划的问题。".into(),
+        description:
+            "Traces a session transcript and reports fabrication, hallucination, or plan deviation."
+                .into(),
         instructions: crate::review::REVIEWER_RUBRIC.into(),
         model_id: String::new(),
         review_backend: None,
@@ -100,10 +94,11 @@ pub fn builtin_reviewer() -> Specialist {
 pub fn builtin_reader() -> Specialist {
     Specialist {
         id: "reader".into(),
-        name: "检索专家".into(),
+        name: "Reader".into(),
         icon: "search".into(),
         color: "clay".into(),
-        description: "并行检索项目会话，并返回精炼且带出处的证据。".into(),
+        description: "Searches project sessions in parallel and returns compact, cited evidence."
+            .into(),
         instructions: crate::project_reader::READER_RUBRIC.into(),
         model_id: String::new(),
         review_backend: None,
@@ -116,30 +111,16 @@ pub fn builtin_reader() -> Specialist {
 pub fn builtin_scientific_illustrator() -> Specialist {
     Specialist {
         id: "scientific_illustrator".into(),
-        name: "科学插画专家".into(),
+        name: "Scientific Illustrator".into(),
         icon: "image".into(),
         color: "clay".into(),
-        description: "根据请求与项目上下文创建可发表的科学图件。".into(),
+        description:
+            "Creates publication-ready scientific figures from the request and project context."
+                .into(),
         instructions: SCIENTIFIC_ILLUSTRATOR_RUBRIC.into(),
         model_id: String::new(),
         review_backend: None,
         skills: Some(vec!["figure-composer".into(), "figure-style".into()]),
-        connectors: Some(vec![]),
-        builtin: true,
-    }
-}
-
-pub fn builtin_r_bioinformatics_figure() -> Specialist {
-    Specialist {
-        id: "r_bioinformatics_figure".into(),
-        name: "生信图专家".into(),
-        icon: "grid".into(),
-        color: "clay".into(),
-        description: "默认用 R 绘制常见生信图（火山图、热图、PCA/UMAP 等）。".into(),
-        instructions: R_BIOINFORMATICS_FIGURE_RUBRIC.into(),
-        model_id: String::new(),
-        review_backend: None,
-        skills: Some(vec!["figure-style".into(), "nature-figure".into()]),
         connectors: Some(vec![]),
         builtin: true,
     }
@@ -163,28 +144,22 @@ async fn save_raw(store: &Store, list: &[Specialist]) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// Load the list, materializing builtins if absent. Builtin name, description,
-/// and instructions are always re-pinned to the compiled defaults so updates
-/// ship without a settings migration.
+/// Load the list, materializing builtins if absent. Builtin instructions are
+/// always re-pinned to their compiled rubrics so improvements ship without a
+/// settings migration.
 pub async fn ensure(store: &Store) -> Vec<Specialist> {
     let mut list = load_raw(store).await;
     match list.iter_mut().find(|s| s.id == "reviewer") {
         Some(r) => {
-            let fresh = builtin_reviewer();
             r.builtin = true;
-            r.name = fresh.name;
-            r.description = fresh.description;
-            r.instructions = fresh.instructions;
+            r.instructions = crate::review::REVIEWER_RUBRIC.into();
         }
         None => list.insert(0, builtin_reviewer()),
     }
     match list.iter_mut().find(|s| s.id == "reader") {
         Some(reader) => {
-            let fresh = builtin_reader();
             reader.builtin = true;
-            reader.name = fresh.name;
-            reader.description = fresh.description;
-            reader.instructions = fresh.instructions;
+            reader.instructions = crate::project_reader::READER_RUBRIC.into();
             reader.review_backend = None;
             reader.skills = Some(vec![]);
             reader.connectors = Some(vec![]);
@@ -193,29 +168,13 @@ pub async fn ensure(store: &Store) -> Vec<Specialist> {
     }
     match list.iter_mut().find(|s| s.id == "scientific_illustrator") {
         Some(illustrator) => {
-            let fresh = builtin_scientific_illustrator();
             illustrator.builtin = true;
-            illustrator.name = fresh.name;
-            illustrator.description = fresh.description;
-            illustrator.instructions = fresh.instructions;
+            illustrator.instructions = SCIENTIFIC_ILLUSTRATOR_RUBRIC.into();
             illustrator.review_backend = None;
             illustrator.skills = Some(vec!["figure-composer".into(), "figure-style".into()]);
             illustrator.connectors = Some(vec![]);
         }
         None => list.insert(2.min(list.len()), builtin_scientific_illustrator()),
-    }
-    match list.iter_mut().find(|s| s.id == "r_bioinformatics_figure") {
-        Some(bio) => {
-            let fresh = builtin_r_bioinformatics_figure();
-            bio.builtin = true;
-            bio.name = fresh.name;
-            bio.description = fresh.description;
-            bio.instructions = fresh.instructions;
-            bio.review_backend = None;
-            bio.skills = Some(vec!["figure-style".into(), "nature-figure".into()]);
-            bio.connectors = Some(vec![]);
-        }
-        None => list.insert(3.min(list.len()), builtin_r_bioinformatics_figure()),
     }
     list
 }
@@ -264,10 +223,6 @@ pub async fn upsert(store: &Store, mut spec: Specialist) -> Result<Vec<Specialis
         } else if spec.id == "scientific_illustrator" {
             spec.review_backend = None;
             spec.skills = Some(vec!["figure-composer".into(), "figure-style".into()]);
-            spec.connectors = Some(vec![]);
-        } else if spec.id == "r_bioinformatics_figure" {
-            spec.review_backend = None;
-            spec.skills = Some(vec!["figure-style".into(), "nature-figure".into()]);
             spec.connectors = Some(vec![]);
         }
         *existing = spec;
@@ -380,10 +335,7 @@ pub async fn set_session_specialist(
         .load_messages(&frame_id)
         .await
         .map_err(|e| format!("{e}"))?;
-    if msgs
-        .iter()
-        .any(|m| m.role != superscience_llm::Role::System)
-    {
+    if msgs.iter().any(|m| m.role != wisp_llm::Role::System) {
         return Err("Specialist is locked once the session has messages.".into());
     }
     if !id.is_empty() && get(&state.store, &id).await.is_none() {
@@ -408,59 +360,33 @@ mod tests {
     fn illustrator_rubric_gives_explicit_svg_requests_priority() {
         let rubric = SCIENTIFIC_ILLUSTRATOR_RUBRIC;
         let svg_rule = rubric
-            .find("当用户明确要求 SVG")
+            .find("when the user explicitly asks for SVG")
             .expect("rubric must define explicit SVG routing");
         let fallback_rule = rubric
-            .find("当用户既未指定格式也未指定方法时")
+            .find("When the user specifies neither format nor method")
             .expect("rubric must define the tool-availability fallback");
 
         assert!(svg_rule < fallback_rule);
-        assert!(rubric.contains("用户对格式或方法的明确选择优先级最高"));
-        assert!(rubric.contains("不要调用 `generate_image`"));
-        assert!(rubric.contains("将该 SVG 栅格化为 PNG 预览"));
-        assert!(rubric.contains("用 `view_image` 检查预览"));
-        assert!(rubric.contains("SVG -> PNG 预览 -> SVG 修正循环"));
-        assert!(rubric.contains("SVG 是主交付物"));
-        assert!(rubric.contains("明确要求 PNG"));
-        assert!(rubric.contains("不要") && rubric.contains("静默改用 SVG"));
+        assert!(rubric.contains("explicit user choice of format or method"));
+        assert!(rubric.contains("Do not call `generate_image`"));
+        assert!(rubric.contains("rasterize that exact SVG to a PNG preview"));
+        assert!(rubric.contains("inspect the preview with `view_image`"));
+        assert!(rubric.contains("SVG -> PNG preview -> SVG correction loop"));
+        assert!(rubric.contains("The SVG is the primary deliverable"));
+        assert!(rubric.contains("explicitly asks for PNG"));
+        assert!(rubric.contains("do not silently substitute"));
     }
 
-    #[test]
-    fn builtin_specialists_use_chinese_defaults() {
-        let reviewer = builtin_reviewer();
-        assert_eq!(reviewer.name, "审阅专家");
-        assert!(reviewer.description.contains("追溯会话记录"));
-        assert!(reviewer.instructions.contains("审阅专家"));
-
-        let reader = builtin_reader();
-        assert_eq!(reader.name, "检索专家");
-        assert!(reader.description.contains("并行检索"));
-        assert!(reader.instructions.contains("检索专家"));
-
-        let illustrator = builtin_scientific_illustrator();
-        assert_eq!(illustrator.name, "科学插画专家");
-        assert!(illustrator.description.contains("科学图件"));
-        assert!(illustrator.instructions.contains("科学插画专家"));
-
-        let bio = builtin_r_bioinformatics_figure();
-        assert_eq!(bio.name, "生信图专家");
-        assert!(bio.description.contains("R"));
-        assert!(bio.instructions.contains("生信图专家"));
-        assert!(bio.instructions.contains("`r` tool"));
-        assert!(bio.instructions.contains("最多五个"));
-    }
-
-    async fn test_store() -> (superscience_store::Store, std::path::PathBuf) {
-        let tmp =
-            std::env::temp_dir().join(format!("superscience_spec_{}.sqlite", uuid::Uuid::new_v4()));
-        (superscience_store::Store::open(&tmp).await.unwrap(), tmp)
+    async fn test_store() -> (wisp_store::Store, std::path::PathBuf) {
+        let tmp = std::env::temp_dir().join(format!("wisp_spec_{}.sqlite", uuid::Uuid::new_v4()));
+        (wisp_store::Store::open(&tmp).await.unwrap(), tmp)
     }
 
     #[tokio::test]
     async fn ensure_materializes_builtin_specialists_once() {
         let (store, tmp) = test_store().await;
         let list = ensure(&store).await;
-        assert_eq!(list.len(), 4);
+        assert_eq!(list.len(), 3);
         let r = &list[0];
         assert_eq!(r.id, "reviewer");
         assert!(r.builtin);
@@ -477,16 +403,8 @@ mod tests {
             illustrator.skills.as_deref(),
             Some(&["figure-composer".to_string(), "figure-style".to_string()][..])
         );
-        let bio = &list[3];
-        assert_eq!(bio.id, "r_bioinformatics_figure");
-        assert!(bio.builtin);
-        assert_eq!(bio.instructions, R_BIOINFORMATICS_FIGURE_RUBRIC);
-        assert_eq!(
-            bio.skills.as_deref(),
-            Some(&["figure-style".to_string(), "nature-figure".to_string()][..])
-        );
         // Second read does not duplicate the built-ins.
-        assert_eq!(ensure(&store).await.len(), 4);
+        assert_eq!(ensure(&store).await.len(), 3);
         let _ = std::fs::remove_file(&tmp);
     }
 
@@ -532,7 +450,6 @@ mod tests {
         assert!(remove(&store, "reviewer").await.is_err());
         assert!(remove(&store, "reader").await.is_err());
         assert!(remove(&store, "scientific_illustrator").await.is_err());
-        assert!(remove(&store, "r_bioinformatics_figure").await.is_err());
         // Editing the builtin keeps instructions but accepts a model change.
         let mut r = get(&store, "reviewer").await.unwrap();
         r.instructions = "haha".into();
@@ -568,20 +485,6 @@ mod tests {
             illustrator.skills,
             Some(vec!["figure-composer".into(), "figure-style".into()])
         );
-
-        let mut bio = get(&store, "r_bioinformatics_figure").await.unwrap();
-        bio.instructions = "replace rubric".into();
-        bio.skills = None;
-        let list = upsert(&store, bio).await.unwrap();
-        let bio = list
-            .iter()
-            .find(|specialist| specialist.id == "r_bioinformatics_figure")
-            .unwrap();
-        assert_eq!(bio.instructions, R_BIOINFORMATICS_FIGURE_RUBRIC);
-        assert_eq!(
-            bio.skills,
-            Some(vec!["figure-style".into(), "nature-figure".into()])
-        );
         let _ = std::fs::remove_file(&tmp);
     }
 
@@ -607,10 +510,7 @@ mod tests {
         let (store, tmp) = test_store().await;
         ensure(&store).await;
         store.create_project("p1", "proj", "").await.unwrap();
-        store
-            .create_frame("f1", "p1", "SUPERSCIENCE", "m")
-            .await
-            .unwrap();
+        store.create_frame("f1", "p1", "OPERON", "m").await.unwrap();
         set_frame_specialist(&store, "f1", "reviewer")
             .await
             .unwrap();

@@ -26,6 +26,15 @@ cargo tauri dev      # hot-reload: Trunk serves the UI, Tauri opens the window
 cargo tauri build    # installers under target/release/bundle
 ```
 
+Desktop icons come from two masters via `src-tauri/gen-icons.ps1`
+(`cargo tauri icon`). Both keep the DNA mark inset; do not regenerate from
+`ui/logo.svg`, which fills the canvas and looks oversized on every launcher.
+
+- `src-tauri/icons/app-icon.svg` is full-bleed. macOS Dock/Launchpad apply a
+  squircle, so a baked badge would be double-masked and look small.
+- `src-tauri/icons/app-icon-rounded.svg` clips the same mark to rounded
+  corners. Windows taskbar and most Linux docks draw the bitmap as-is.
+
 Universal macOS binary (Apple Silicon + Intel):
 
 ```bash
@@ -189,3 +198,7 @@ wisp-science/
 - `kernels/kernel_worker.py` protocol adapted from the upstream operon kernel
   worker, with POSIX-only `resource`/`/proc`/`SIGINT` machinery dropped for
   Windows.
+- `docs/assets/trusted-logos/meduniwien.svg` from
+  [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Meduni-wien.svg)
+  (public domain; the mark itself is trademarked), cropped to the circular
+  emblem.

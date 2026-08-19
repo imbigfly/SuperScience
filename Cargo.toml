@@ -12,12 +12,13 @@ members = [
     "crates/superscience-cli",
     "crates/superscience-paths",
     "crates/superscience-sync",
+    "crates/superscience-dto",
     "src-tauri",
 ]
 default-members = ["crates/superscience-cli"]
 
 [workspace.package]
-version = "1.3.0"
+version = "1.5.0"
 edition = "2021"
 rust-version = "1.88"
 license = "AGPL-3.0-only"
@@ -68,6 +69,7 @@ superscience-mcp = { path = "crates/superscience-mcp" }
 superscience-acp = { path = "crates/superscience-acp" }
 superscience-paths = { path = "crates/superscience-paths" }
 superscience-sync = { path = "crates/superscience-sync" }
+superscience-dto = { path = "crates/superscience-dto" }
 
 [profile.release]
 codegen-units = 1

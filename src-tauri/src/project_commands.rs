@@ -26,7 +26,7 @@ fn same_workspace_path(left: &Path, right: &Path) -> bool {
 pub(super) async fn get_research_graph(
     state: State<'_, AppState>,
     window: tauri::WebviewWindow,
-) -> Result<superscience_store::ResearchGraph, String> {
+) -> Result<wisp_store::ResearchGraph, String> {
     let (_, scope) =
         exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
     state
@@ -102,13 +102,13 @@ pub(super) async fn create_project(
         return Err("This folder is already registered as a project.".into());
     }
     // Writability probe: create + remove a temp marker.
-    let marker = path.join(".superscience-write-test");
+    let marker = path.join(".wisp-write-test");
     std::fs::write(&marker, b"").map_err(|e| format!("Working directory is not writable: {e}"))?;
     let _ = std::fs::remove_file(&marker);
 
     let id = Uuid::new_v4().to_string();
     // #405: opt-in. Unchecked means the user keeps their own structure, so we
-    // create nothing — the convention lives in .superscience/SUPERSCIENCE.md instead (below).
+    // create nothing — the convention lives in .wisp/WISP.md instead (below).
     if standard_layout {
         workspace_manifest::init_workspace_layout(&path, &id, name.trim())?;
     }
@@ -117,7 +117,7 @@ pub(super) async fn create_project(
         .create_project(&id, name.trim(), dir)
         .await
         .map_err(|e| format!("{e}"))?;
-    // Description (DB) + Agent Context (.superscience/SUPERSCIENCE.md) — same storage as update_project.
+    // Description (DB) + Agent Context (.wisp/WISP.md) — same storage as update_project.
     let desc = description.trim();
     if !desc.is_empty() {
         state
@@ -128,10 +128,10 @@ pub(super) async fn create_project(
     }
     let ctx = agent_context.trim();
     if !ctx.is_empty() {
-        let wisp_dir = path.join(".superscience");
+        let wisp_dir = path.join(".wisp");
         std::fs::create_dir_all(&wisp_dir)
             .map_err(|e| format!("Failed to write Agent Context: {e}"))?;
-        std::fs::write(wisp_dir.join("SUPERSCIENCE.md"), ctx)
+        std::fs::write(wisp_dir.join("WISP.md"), ctx)
             .map_err(|e| format!("Failed to write Agent Context: {e}"))?;
     }
     Ok(build_project_summary(&state, &id).await)
@@ -287,15 +287,32 @@ pub(super) fn project_window_url(id: &str, session: Option<&str>) -> String {
     }
 }
 
+/// Top-left position (physical px) that centers a window of `window_size`
+/// over an anchor window at `anchor_pos`/`anchor_size`. Pure so placement
+/// stays testable; the caller converts to logical coordinates.
+pub(super) fn centered_window_position(
+    anchor_pos: (i32, i32),
+    anchor_size: (u32, u32),
+    window_size: (u32, u32),
+) -> (i32, i32) {
+    (
+        anchor_pos.0 + (anchor_size.0 as i32 - window_size.0 as i32) / 2,
+        anchor_pos.1 + (anchor_size.1 as i32 - window_size.1 as i32) / 2,
+    )
+}
+
 /// Open a project in its own window (or focus the existing one), wiring up
 /// cleanup on close. Shared by the `open_project_window` command and the
 /// startup restore (#52). With `session`, the window opens straight into that
 /// session — an existing window is told via the `open-session` event (#423).
+/// `anchor_label` is the window the new one centers over; `None` (startup
+/// restore) falls back to the main window.
 pub(super) async fn spawn_project_window(
     app: &AppHandle,
     state: &AppState,
     id: &str,
     session: Option<&str>,
+    anchor_label: Option<&str>,
 ) -> Result<String, String> {
     let label = project_window_label(id);
     if let Some(w) = app.get_webview_window(&label) {
@@ -313,13 +330,31 @@ pub(super) async fn spawn_project_window(
     // even before the window's frontend calls open_project.
     set_active_project(state, &label, id).await?;
     let url = tauri::WebviewUrl::App(project_window_url(id, session).into());
-    let builder = tauri::WebviewWindowBuilder::new(app, &label, url)
-        .title("SuperScience")
+    let mut builder = tauri::WebviewWindowBuilder::new(app, &label, url)
+        .title("wisp science")
         .inner_size(1100.0, 760.0)
-        .resizable(true);
+        .resizable(true)
+        .on_navigation(crate::guard_webview_navigation);
+    // Center over the requesting window (or the main window on startup
+    // restore); otherwise the OS cascades each new window to an arbitrary
+    // spot. Sizes/positions are physical, so convert through the anchor's
+    // scale factor for the builder's logical `position`.
+    let anchor = anchor_label
+        .and_then(|label| app.get_webview_window(label))
+        .or_else(|| app.get_webview_window("main"));
+    if let Some(anchor) = anchor {
+        if let (Ok(pos), Ok(size)) = (anchor.outer_position(), anchor.outer_size()) {
+            let scale = anchor.scale_factor().unwrap_or(1.0);
+            let physical = ((1100.0 * scale) as u32, (760.0 * scale) as u32);
+            let (x, y) =
+                centered_window_position((pos.x, pos.y), (size.width, size.height), physical);
+            builder = builder.position(x as f64 / scale, y as f64 / scale);
+        }
+    }
     #[cfg(target_os = "windows")]
     let builder = builder.decorations(false).shadow(true);
     let win = builder.build().map_err(|e| e.to_string())?;
+    crate::windows_snap::install_for_window(&win);
     #[cfg(target_os = "macos")]
     wire_macos_menu_events(&win);
     let evt_app = app.clone();
@@ -350,10 +385,18 @@ pub(super) async fn spawn_project_window(
 pub(super) async fn open_project_window(
     app: AppHandle,
     state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
     id: String,
     session: Option<String>,
 ) -> Result<String, String> {
-    spawn_project_window(&app, state.inner(), &id, session.as_deref()).await
+    spawn_project_window(
+        &app,
+        state.inner(),
+        &id,
+        session.as_deref(),
+        Some(window.label()),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -391,6 +434,9 @@ pub(super) async fn delete_project(
     // the store cascade removes them); other projects keep running (#52).
     cancel_project_sessions(state.inner(), &id).await;
     state.runtime_manager.stop_project(&id).await;
+    if let Err(error) = state.run_manager.wind_down_project(&state.store, &id).await {
+        tracing::warn!(project_id = %id, "project wind-down failed: {error}");
+    }
     if let Some(target) = workspace_delete_target {
         delete_project_workspace_data(target).await?;
     }
@@ -489,38 +535,133 @@ pub(super) struct ProjectSettings {
     agent_context: String,
 }
 
-/// Read the active project's editable settings for the Project Settings modal.
-/// Agent Context is `.superscience/SUPERSCIENCE.md`, injected into every seeded system prompt.
+fn project_agent_context_path(root: &Path) -> PathBuf {
+    root.join(".wisp").join("WISP.md")
+}
+
+fn read_project_agent_context(root: &Path) -> String {
+    std::fs::read_to_string(project_agent_context_path(root)).unwrap_or_default()
+}
+
+fn write_project_agent_context(root: &Path, agent_context: &str) -> Result<(), String> {
+    let wisp_md = project_agent_context_path(root);
+    let ctx = agent_context.trim();
+    if ctx.is_empty() {
+        let _ = std::fs::remove_file(&wisp_md);
+        return Ok(());
+    }
+    if let Some(parent) = wisp_md.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to write Agent Context: {e}"))?;
+    }
+    std::fs::write(&wisp_md, ctx).map_err(|e| format!("Failed to write Agent Context: {e}"))
+}
+
+/// Resolve the project whose settings should be read or written. An explicit
+/// `id` (home-card configure) must not switch this window's active project.
+async fn settings_project(
+    state: &AppState,
+    window_label: &str,
+    requested_id: Option<&str>,
+) -> Result<(String, PathBuf, String, String), String> {
+    let id = match requested_id.map(str::trim).filter(|id| !id.is_empty()) {
+        Some(id) => id.to_string(),
+        None => state.active(window_label).id,
+    };
+    let (name, description, workspace) = state
+        .store
+        .get_project_meta(&id)
+        .await
+        .map_err(|e| format!("{e}"))?
+        .ok_or_else(|| "Project not found".to_string())?;
+    let root = ensure_writable(PathBuf::from(workspace), &state.app_data);
+    Ok((id, root, name, description))
+}
+
+/// Read a project's editable settings for the Project Settings modal.
+/// `id` targets a specific project (home-card configure). Omit it to use the
+/// window's active project. Agent Context is `.wisp/WISP.md`.
 #[tauri::command]
 pub(super) async fn get_project_settings(
     state: State<'_, AppState>,
     window: tauri::WebviewWindow,
+    id: Option<String>,
 ) -> Result<ProjectSettings, String> {
-    let ap = state.active(window.label());
-    let _project_activity = state.begin_project_activity(&ap.id)?;
-    let (name, description, _ws) = state
-        .store
-        .get_project_meta(&ap.id)
-        .await
-        .map_err(|e| format!("{e}"))?
-        .unwrap_or_default();
-    let agent_context =
-        std::fs::read_to_string(ap.root.join(".superscience").join("SUPERSCIENCE.md")).unwrap_or_default();
+    let (project_id, root, name, description) =
+        settings_project(state.inner(), window.label(), id.as_deref()).await?;
+    let _project_activity = state.begin_project_activity(&project_id)?;
     Ok(ProjectSettings {
-        id: ap.id.clone(),
+        id: project_id,
         name,
         description,
-        agent_context,
+        agent_context: read_project_agent_context(&root),
     })
 }
 
-/// Save the active project's name/description (DB) and Agent Context (.superscience/SUPERSCIENCE.md).
-/// An empty Agent Context removes SUPERSCIENCE.md so the prompt falls back to "no rules".
+#[derive(Serialize, Clone)]
+pub(super) struct ProjectRunRetention {
+    run_retention_days: Option<i64>,
+    failed_run_retention_days: Option<i64>,
+    orphan_file_retention_days: Option<i64>,
+}
+
+/// Opt-in retention windows for automatic run-workspace cleanup and orphaned
+/// remote-file reclamation on servers.
+#[tauri::command]
+pub(super) async fn get_project_run_retention(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+) -> Result<ProjectRunRetention, String> {
+    let ap = state.active(window.label());
+    let (run_retention_days, failed_run_retention_days, orphan_file_retention_days) = state
+        .store
+        .project_run_retention(&ap.id)
+        .await
+        .map_err(|e| format!("{e}"))?;
+    Ok(ProjectRunRetention {
+        run_retention_days,
+        failed_run_retention_days,
+        orphan_file_retention_days,
+    })
+}
+
+#[tauri::command]
+pub(super) async fn set_project_run_retention(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    run_retention_days: Option<i64>,
+    failed_run_retention_days: Option<i64>,
+    orphan_file_retention_days: Option<i64>,
+) -> Result<ProjectRunRetention, String> {
+    let ap = state.active(window.label());
+    let _project_activity = state.begin_project_activity(&ap.id)?;
+    state
+        .store
+        .set_project_run_retention(
+            &ap.id,
+            run_retention_days,
+            failed_run_retention_days,
+            orphan_file_retention_days,
+        )
+        .await
+        .map_err(|e| format!("{e}"))?;
+    Ok(ProjectRunRetention {
+        run_retention_days,
+        failed_run_retention_days,
+        orphan_file_retention_days,
+    })
+}
+
+/// Save a project's name/description (DB) and Agent Context (.wisp/WISP.md).
+/// `id` targets a specific project (home-card configure). Omit it to use the
+/// window's active project — this does not switch the active project.
+/// An empty Agent Context removes WISP.md so the prompt falls back to "no rules".
 /// Takes effect on the next seeded session; already-running agents keep their prompt.
 #[tauri::command]
 pub(super) async fn update_project(
     state: State<'_, AppState>,
     window: tauri::WebviewWindow,
+    id: Option<String>,
     name: String,
     description: String,
     agent_context: String,
@@ -528,29 +669,22 @@ pub(super) async fn update_project(
     if name.trim().is_empty() {
         return Err("Project name is required".into());
     }
-    let ap = state.active(window.label());
+    let (project_id, root, _, _) =
+        settings_project(state.inner(), window.label(), id.as_deref()).await?;
+    let _project_activity = state.begin_project_activity(&project_id)?;
     exploration_commands::reject_private_exploration_project_mutation(
         &state.store,
-        &ap.id,
+        &project_id,
         "Project settings changes",
     )
     .await?;
     state
         .store
-        .update_project(&ap.id, name.trim(), description.trim())
+        .update_project(&project_id, name.trim(), description.trim())
         .await
         .map_err(|e| format!("{e}"))?;
-    let wisp_dir = ap.root.join(".superscience");
-    let wisp_md = wisp_dir.join("SUPERSCIENCE.md");
-    let ctx = agent_context.trim();
-    if ctx.is_empty() {
-        let _ = std::fs::remove_file(&wisp_md);
-    } else {
-        std::fs::create_dir_all(&wisp_dir)
-            .map_err(|e| format!("Failed to write Agent Context: {e}"))?;
-        std::fs::write(&wisp_md, ctx).map_err(|e| format!("Failed to write Agent Context: {e}"))?;
-    }
-    Ok(build_project_summary(&state, &ap.id).await)
+    write_project_agent_context(&root, &agent_context)?;
+    Ok(build_project_summary(&state, &project_id).await)
 }
 
 #[tauri::command]
@@ -563,7 +697,7 @@ pub(super) async fn get_project_info(
 
 #[cfg(test)]
 mod tests {
-    use super::same_workspace_path;
+    use super::{read_project_agent_context, same_workspace_path, write_project_agent_context};
 
     #[test]
     fn workspace_path_match_resolves_equivalent_existing_paths() {
@@ -573,6 +707,26 @@ mod tests {
 
         assert!(same_workspace_path(&root, &root.join(".")));
         assert!(!same_workspace_path(&root, &root.join("other")));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn agent_context_writes_wisp_md_and_empty_clears_it() {
+        let root = std::env::temp_dir().join(format!(
+            "wisp_project_settings_ctx_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+
+        write_project_agent_context(&root, "  Prefer the project UI setting.  ").unwrap();
+        assert_eq!(
+            read_project_agent_context(&root),
+            "Prefer the project UI setting."
+        );
+        write_project_agent_context(&root, "   ").unwrap();
+        assert!(read_project_agent_context(&root).is_empty());
+        assert!(!root.join(".wisp").join("WISP.md").exists());
 
         let _ = std::fs::remove_dir_all(root);
     }

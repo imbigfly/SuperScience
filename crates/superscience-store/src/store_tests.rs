@@ -34,7 +34,7 @@ async fn create_running_nested_test_root(
 ) -> AgentWorkflowAttempt {
     store.create_project("p", "proj", "").await.unwrap();
     store
-        .create_frame("root-frame", "p", "SUPERSCIENCE", "m")
+        .create_frame("root-frame", "p", "OPERON", "m")
         .await
         .unwrap();
     let mut workflow = AgentWorkflow::new("root", "p", "workspace", "Root batch").unwrap();
@@ -87,14 +87,11 @@ async fn create_running_nested_test_root(
 
 #[tokio::test]
 async fn roundtrip() {
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience_store_test_{}.sqlite",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp = std::env::temp_dir().join(format!("wisp_store_test_{}.sqlite", uuid::Uuid::new_v4()));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p1", "proj", "").await.unwrap();
     store
-        .create_frame("f1", "p1", "SUPERSCIENCE", "test-model")
+        .create_frame("f1", "p1", "OPERON", "test-model")
         .await
         .unwrap();
     store
@@ -114,12 +111,20 @@ async fn roundtrip() {
         [0, 1]
     );
     assert_eq!(sequenced[1].1.content.as_text(), "hello");
+
+    // Durability: close every connection and reopen the same file — the
+    // writes must come back from disk, not from the live pool's cache.
+    store.pool.close().await;
+    let store = Store::open(&tmp).await.unwrap();
+    let msgs = store.load_messages("f1").await.unwrap();
+    assert_eq!(msgs.len(), 2, "messages must survive close + reopen");
+    assert_eq!(msgs[0].content.as_text(), "hi");
+    assert_eq!(msgs[1].content.as_text(), "hello");
+
     // list_sessions derives a title from the first user message and skips
-    // frames with no user turn.
-    store
-        .create_frame("f2", "p1", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    // untitled frames with no user turn. Named unused drafts are covered in
+    // `named_draft_is_listable_but_not_resumable`.
+    store.create_frame("f2", "p1", "OPERON", "m").await.unwrap();
     store
         .append_message("f2", 0, &Message::system("only system"))
         .await
@@ -136,6 +141,190 @@ async fn roundtrip() {
     assert_eq!(sessions[0].1, "Renamed chat");
     store.delete_session("f1", "p1").await.unwrap();
     assert!(store.list_sessions("p1").await.unwrap().is_empty());
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn named_draft_is_listable_but_not_resumable() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_store_named_draft_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p1", "proj", "").await.unwrap();
+    store
+        .create_frame("used", "p1", "OPERON", "m")
+        .await
+        .unwrap();
+    store
+        .append_message("used", 0, &Message::user("hello"))
+        .await
+        .unwrap();
+
+    store
+        .create_frame("untitled", "p1", "OPERON", "m")
+        .await
+        .unwrap();
+    store
+        .append_message("untitled", 0, &Message::system("only system"))
+        .await
+        .unwrap();
+    assert_eq!(
+        store.list_sessions("p1").await.unwrap().len(),
+        1,
+        "untitled empty draft stays hidden"
+    );
+    assert_eq!(
+        store.latest_used_session_id("p1").await.unwrap().as_deref(),
+        Some("used")
+    );
+
+    store
+        .create_frame("draft", "p1", "OPERON", "m")
+        .await
+        .unwrap();
+    store
+        .rename_session("draft", "p1", "Named draft")
+        .await
+        .unwrap();
+    let sessions = store.list_sessions("p1").await.unwrap();
+    assert_eq!(sessions.len(), 2, "named draft joins the used session");
+    assert!(sessions
+        .iter()
+        .any(|row| row.0 == "draft" && row.1 == "Named draft"));
+    assert!(sessions.iter().any(|row| row.0 == "used"));
+
+    let projs = store.list_projects().await.unwrap();
+    let p1 = projs.iter().find(|p| p.0 == "p1").unwrap();
+    assert_eq!(p1.5, 2, "named draft counts; untitled empty does not");
+
+    let found = store
+        .search_sessions(None, "named draft", 10, None, None)
+        .await
+        .unwrap();
+    assert_eq!(found.len(), 1, "named draft must be searchable by title");
+    assert_eq!(found[0].id, "draft");
+    let all = store
+        .search_sessions(None, "", 10, None, None)
+        .await
+        .unwrap();
+    assert!(
+        all.iter().all(|s| s.id != "untitled"),
+        "untitled message-less frame stays unsearchable"
+    );
+
+    assert!(
+        store
+            .list_recent_sessions_detail(10)
+            .await
+            .unwrap()
+            .iter()
+            .all(|row| row.id != "draft"),
+        "named unused draft is not recent activity"
+    );
+    assert_eq!(
+        store.latest_used_session_id("p1").await.unwrap().as_deref(),
+        Some("used"),
+        "rename must not steal resume from a used conversation"
+    );
+
+    store.delete_session("used", "p1").await.unwrap();
+    assert_eq!(
+        store.latest_used_session_id("p1").await.unwrap(),
+        None,
+        "a project that only has a named unused draft has nothing to resume"
+    );
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn duplicate_seq_in_a_frame_is_rejected_and_leaves_rows_unchanged() {
+    let tmp =
+        std::env::temp_dir().join(format!("wisp_store_dupseq_{}.sqlite", uuid::Uuid::new_v4()));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p1", "proj", "").await.unwrap();
+    store.create_frame("f1", "p1", "OPERON", "m").await.unwrap();
+    store
+        .append_message("f1", 0, &Message::user("first"))
+        .await
+        .unwrap();
+
+    // The schema enforces UNIQUE(frame_id, seq): a second append with the
+    // same explicit seq must error instead of silently replacing the row.
+    let err = store
+        .append_message("f1", 0, &Message::user("imposter"))
+        .await
+        .expect_err("duplicate (frame_id, seq) must be rejected");
+    assert!(
+        err.to_string().to_ascii_lowercase().contains("unique"),
+        "unexpected error: {err}"
+    );
+
+    let msgs = store.load_messages_with_seq("f1").await.unwrap();
+    assert_eq!(msgs.len(), 1, "the failed insert must not add a row");
+    assert_eq!(msgs[0].0, 0);
+    assert_eq!(msgs[0].1.content.as_text(), "first");
+
+    // The same seq in a different frame is fine — uniqueness is per frame.
+    store.create_frame("f2", "p1", "OPERON", "m").await.unwrap();
+    store
+        .append_message("f2", 0, &Message::user("other frame"))
+        .await
+        .unwrap();
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn concurrent_writers_on_two_pools_all_land() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_store_concurrent_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store_a = Store::open(&tmp).await.unwrap();
+    let store_b = Store::open(&tmp).await.unwrap();
+    store_a.create_project("p1", "proj", "").await.unwrap();
+    store_a
+        .create_frame("fa", "p1", "OPERON", "m")
+        .await
+        .unwrap();
+    store_a
+        .create_frame("fb", "p1", "OPERON", "m")
+        .await
+        .unwrap();
+
+    // Two independent pools on the same file, interleaving writes to
+    // different frames — exercises WAL + busy_timeout instead of failing
+    // with SQLITE_BUSY.
+    const PER_WRITER: i64 = 20;
+    let writer = |store: Store, frame: &'static str| async move {
+        for seq in 0..PER_WRITER {
+            store
+                .append_message(frame, seq, &Message::user(format!("{frame} {seq}")))
+                .await?;
+            tokio::task::yield_now().await;
+        }
+        anyhow::Ok(())
+    };
+    let task_a = tokio::spawn(writer(store_a.clone(), "fa"));
+    let task_b = tokio::spawn(writer(store_b.clone(), "fb"));
+    task_a.await.unwrap().unwrap();
+    task_b.await.unwrap().unwrap();
+
+    for (store, frame) in [(&store_a, "fb"), (&store_b, "fa")] {
+        let msgs = store.load_messages_with_seq(frame).await.unwrap();
+        assert_eq!(
+            msgs.len(),
+            PER_WRITER as usize,
+            "every {frame} append must land"
+        );
+        assert_eq!(
+            msgs.iter().map(|(seq, _)| *seq).collect::<Vec<_>>(),
+            (0..PER_WRITER).collect::<Vec<_>>()
+        );
+    }
+
     let _ = std::fs::remove_file(&tmp);
 }
 
@@ -168,7 +357,7 @@ async fn replace_and_load_system_message() {
         .await
         .unwrap();
     assert_eq!(map.len(), 1, "only f1 has a system message: {map:?}");
-    let content: superscience_llm::Content = serde_json::from_str(&map["f1"]).unwrap();
+    let content: wisp_llm::Content = serde_json::from_str(&map["f1"]).unwrap();
     assert_eq!(content.as_text(), "old prompt");
 
     assert!(store
@@ -195,7 +384,7 @@ async fn replace_and_load_system_message() {
 #[tokio::test]
 async fn token_usage_folds_usage_events_into_root_sessions() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_store_token_usage_{}.sqlite",
+        "wisp_store_token_usage_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
@@ -212,7 +401,7 @@ async fn token_usage_folds_usage_events_into_root_sessions() {
         .await
         .unwrap();
     store
-        .create_frame("root", "p", "SUPERSCIENCE", "m")
+        .create_frame("root", "p", "OPERON", "m")
         .await
         .unwrap();
     store
@@ -327,7 +516,7 @@ async fn token_usage_folds_usage_events_into_root_sessions() {
         .unwrap();
     // A session with no usage events must not appear at all.
     store
-        .create_frame("quiet", "p", "SUPERSCIENCE", "m")
+        .create_frame("quiet", "p", "OPERON", "m")
         .await
         .unwrap();
 
@@ -414,13 +603,13 @@ async fn token_usage_folds_usage_events_into_root_sessions() {
 #[tokio::test]
 async fn child_agent_frames_stay_out_of_top_level_session_history() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_store_child_frames_{}.sqlite",
+        "wisp_store_child_frames_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
     store
-        .create_frame("root", "p", "SUPERSCIENCE", "model")
+        .create_frame("root", "p", "OPERON", "model")
         .await
         .unwrap();
     store
@@ -479,17 +668,17 @@ async fn child_agent_frames_stay_out_of_top_level_session_history() {
 #[tokio::test]
 async fn frame_models_are_session_scoped() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_store_frame_models_{}.sqlite",
+        "wisp_store_frame_models_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
     store
-        .create_frame("first", "p", "SUPERSCIENCE", "m1")
+        .create_frame("first", "p", "OPERON", "m1")
         .await
         .unwrap();
     store
-        .create_frame("second", "p", "SUPERSCIENCE", "m1")
+        .create_frame("second", "p", "OPERON", "m1")
         .await
         .unwrap();
 
@@ -576,7 +765,7 @@ async fn frame_reasoning_effort_is_session_scoped_and_nullable() {
 #[tokio::test]
 async fn agent_workflow_and_steps_roundtrip() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_agent_workflow_{}.sqlite",
+        "wisp_agent_workflow_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
@@ -621,17 +810,11 @@ async fn agent_workflow_and_steps_roundtrip() {
 }
 
 #[tokio::test]
-async fn agent_workflow_plan_edit_and_approval_are_versioned() {
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience_agent_plan_{}.sqlite",
-        uuid::Uuid::new_v4()
-    ));
+async fn agent_workflow_plan_approval_is_versioned() {
+    let tmp = std::env::temp_dir().join(format!("wisp_agent_plan_{}.sqlite", uuid::Uuid::new_v4()));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
-    store
-        .create_frame("f", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
 
     let mut workflow = AgentWorkflow::new("wf", "p", "workspace", "Delegated analysis").unwrap();
     workflow.frame_id = Some("f".into());
@@ -659,7 +842,7 @@ async fn agent_workflow_plan_edit_and_approval_are_versioned() {
 #[tokio::test]
 async fn agent_workflow_attempts_persist_cas_lifecycle_and_usage() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_agent_attempt_{}.sqlite",
+        "wisp_agent_attempt_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
@@ -765,7 +948,7 @@ async fn agent_workflow_attempts_persist_cas_lifecycle_and_usage() {
 #[tokio::test]
 async fn interrupted_agent_workflows_recover_to_failed_terminal_state() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_agent_recovery_{}.sqlite",
+        "wisp_agent_recovery_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
@@ -1144,10 +1327,8 @@ async fn workflow_run_activity_recovery_preserves_valid_link_and_fails_missing_l
 
 #[tokio::test]
 async fn workflow_cancellation_is_persisted_and_cleared_for_retry() {
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience_agent_cancel_{}.sqlite",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp =
+        std::env::temp_dir().join(format!("wisp_agent_cancel_{}.sqlite", uuid::Uuid::new_v4()));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
     let workflow = AgentWorkflow::new("wf", "p", "workspace", "Delegation").unwrap();
@@ -1225,7 +1406,7 @@ async fn workflow_cancellation_is_persisted_and_cleared_for_retry() {
 #[tokio::test]
 async fn nested_agent_fanout_lineage_survives_restart_and_root_cancel() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_nested_agent_lineage_{}.sqlite",
+        "wisp_nested_agent_lineage_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
@@ -1378,7 +1559,7 @@ async fn nested_agent_task_and_budget_limits_fail_before_workflow_creation() {
         ),
     ] {
         let tmp = std::env::temp_dir().join(format!(
-            "superscience_nested_agent_{name}_{}.sqlite",
+            "wisp_nested_agent_{name}_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
         let store = Store::open(&tmp).await.unwrap();
@@ -1423,7 +1604,7 @@ async fn raw_tools_prompt_and_depth_cannot_grant_nested_delegation() {
         ("depth", true, 1, "depth limit"),
     ] {
         let tmp = std::env::temp_dir().join(format!(
-            "superscience_nested_agent_{name}_{}.sqlite",
+            "wisp_nested_agent_{name}_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
         let store = Store::open(&tmp).await.unwrap();
@@ -1486,17 +1667,17 @@ async fn raw_tools_prompt_and_depth_cannot_grant_nested_delegation() {
 #[tokio::test]
 async fn last_user_message_session_ignores_later_assistant_activity() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_store_last_user_session_{}.sqlite",
+        "wisp_store_last_user_session_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
     store
-        .create_frame("older", "p", "SUPERSCIENCE", "m")
+        .create_frame("older", "p", "OPERON", "m")
         .await
         .unwrap();
     store
-        .create_frame("latest", "p", "SUPERSCIENCE", "m")
+        .create_frame("latest", "p", "OPERON", "m")
         .await
         .unwrap();
     store
@@ -1521,18 +1702,15 @@ async fn last_user_message_session_ignores_later_assistant_activity() {
 
 #[tokio::test]
 async fn session_history_and_outline_use_message_times() {
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience_activity_{}.sqlite",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp = std::env::temp_dir().join(format!("wisp_activity_{}.sqlite", uuid::Uuid::new_v4()));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
     store
-        .create_frame("older", "p", "SUPERSCIENCE", "m")
+        .create_frame("older", "p", "OPERON", "m")
         .await
         .unwrap();
     store
-        .create_frame("newer", "p", "SUPERSCIENCE", "m")
+        .create_frame("newer", "p", "OPERON", "m")
         .await
         .unwrap();
     store.set_frame_timestamps("older", 100, 100).await.unwrap();
@@ -1596,17 +1774,11 @@ async fn session_history_and_outline_use_message_times() {
 
 #[tokio::test]
 async fn session_pages_are_stable_when_timestamps_match() {
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience_pages_{}.sqlite",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp = std::env::temp_dir().join(format!("wisp_pages_{}.sqlite", uuid::Uuid::new_v4()));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
     for id in ["a", "b", "c"] {
-        store
-            .create_frame(id, "p", "SUPERSCIENCE", "m")
-            .await
-            .unwrap();
+        store.create_frame(id, "p", "OPERON", "m").await.unwrap();
         let mut message = Message::user(id);
         message.ts = 10;
         store.append_message(id, 1, &message).await.unwrap();
@@ -1630,17 +1802,11 @@ async fn session_pages_are_stable_when_timestamps_match() {
 
 #[tokio::test]
 async fn branched_from_survives_listing() {
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience_branched_{}.sqlite",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp = std::env::temp_dir().join(format!("wisp_branched_{}.sqlite", uuid::Uuid::new_v4()));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
     for id in ["main", "fork"] {
-        store
-            .create_frame(id, "p", "SUPERSCIENCE", "m")
-            .await
-            .unwrap();
+        store.create_frame(id, "p", "OPERON", "m").await.unwrap();
         store
             .append_message(id, 1, &Message::user(id))
             .await
@@ -2046,15 +2212,12 @@ async fn branch_summary_guard_changes_only_when_the_branch_changes() {
 #[tokio::test]
 async fn existing_database_without_branched_from_column_is_repaired() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_branch_lineage_migration_{}.sqlite",
+        "wisp_branch_lineage_migration_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
-    store
-        .create_frame("f", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
     store
         .append_message("f", 1, &Message::user("saved conversation"))
         .await
@@ -2063,7 +2226,7 @@ async fn existing_database_without_branched_from_column_is_repaired() {
         .execute(&store.pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
         .bind(SESSION_BRANCH_LINEAGE_MIGRATION)
         .execute(&store.pool)
         .await
@@ -2085,17 +2248,11 @@ async fn existing_database_without_branched_from_column_is_repaired() {
 
 #[tokio::test]
 async fn pinned_sessions_are_listed_separately_and_toggle() {
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience_pinned_{}.sqlite",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp = std::env::temp_dir().join(format!("wisp_pinned_{}.sqlite", uuid::Uuid::new_v4()));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
     for id in ["a", "b", "c"] {
-        store
-            .create_frame(id, "p", "SUPERSCIENCE", "m")
-            .await
-            .unwrap();
+        store.create_frame(id, "p", "OPERON", "m").await.unwrap();
         store
             .append_message(id, 1, &Message::user(id))
             .await
@@ -2127,15 +2284,12 @@ async fn pinned_sessions_are_listed_separately_and_toggle() {
 #[tokio::test]
 async fn existing_database_without_pinned_column_is_repaired() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_pinned_migration_{}.sqlite",
+        "wisp_pinned_migration_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
-    store
-        .create_frame("f", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
     store
         .append_message("f", 1, &Message::user("saved conversation"))
         .await
@@ -2144,7 +2298,7 @@ async fn existing_database_without_pinned_column_is_repaired() {
         .execute(&store.pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
         .bind(SESSION_PINNED_MIGRATION)
         .execute(&store.pool)
         .await
@@ -2164,15 +2318,12 @@ async fn multi_turn_append() {
     // appended across turns with incrementing seq; load_messages returns
     // them all in order.
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_store_multiturn_{}.sqlite",
+        "wisp_store_multiturn_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
-    store
-        .create_frame("f", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
 
     // Turn 1: system + user.
     store
@@ -2205,15 +2356,12 @@ async fn multi_turn_append() {
 #[tokio::test]
 async fn transcript_pages_keep_complete_user_turns_and_matching_events() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_store_transcript_page_{}.sqlite",
+        "wisp_store_transcript_page_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
-    store
-        .create_frame("f", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
     let messages = [
         Message::system("sys"),
         Message::user("one"),
@@ -2409,7 +2557,7 @@ async fn transcript_page_caps_legacy_stdout_before_returning_event_json() {
 #[tokio::test]
 async fn global_composer_search_carries_project_and_session_metadata() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_store_composer_search_{}.sqlite",
+        "wisp_store_composer_search_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
@@ -2423,7 +2571,7 @@ async fn global_composer_search_carries_project_and_session_metadata() {
         .unwrap();
     for (frame, project, title) in [("f1", "p1", "alpha result"), ("f2", "p2", "beta result")] {
         store
-            .create_frame(frame, project, "SUPERSCIENCE", "m")
+            .create_frame(frame, project, "OPERON", "m")
             .await
             .unwrap();
         store
@@ -2566,16 +2714,11 @@ async fn session_search_prefers_current_project_then_title_then_body() {
 
 #[tokio::test]
 async fn truncate_messages() {
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience_store_trunc_{}.sqlite",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp =
+        std::env::temp_dir().join(format!("wisp_store_trunc_{}.sqlite", uuid::Uuid::new_v4()));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
-    store
-        .create_frame("f", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
     store
         .append_message("f", 1, &Message::user("a"))
         .await
@@ -2597,16 +2740,11 @@ async fn truncate_messages() {
 
 #[tokio::test]
 async fn session_reviews_are_upserted_and_truncated_with_the_transcript() {
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience_review_test_{}.sqlite",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp =
+        std::env::temp_dir().join(format!("wisp_review_test_{}.sqlite", uuid::Uuid::new_v4()));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "P", "").await.unwrap();
-    store
-        .create_frame("f", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
 
     store
         .upsert_session_review("f", "review-1", 2, r#"{"summary":"first"}"#)
@@ -2637,16 +2775,10 @@ async fn session_reviews_are_upserted_and_truncated_with_the_transcript() {
 
 #[tokio::test]
 async fn session_ui_events_keep_insertion_order() {
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience_ui_events_{}.sqlite",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp = std::env::temp_dir().join(format!("wisp_ui_events_{}.sqlite", uuid::Uuid::new_v4()));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "P", "").await.unwrap();
-    store
-        .create_frame("f", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
 
     assert_eq!(store.next_session_ui_event_seq("f").await.unwrap(), 1);
     let first = r#"{"kind":"MessageBoundary","frame_id":"f","seq":1}"#;
@@ -2727,10 +2859,7 @@ async fn side_chat_snapshot_survives_compaction_and_stops_at_completed_boundary(
 
 #[tokio::test]
 async fn project_crud_and_listing() {
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience_store_proj_{}.sqlite",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp = std::env::temp_dir().join(format!("wisp_store_proj_{}.sqlite", uuid::Uuid::new_v4()));
     let store = Store::open(&tmp).await.unwrap();
 
     // create + get roundtrips workspace_dir
@@ -2748,10 +2877,7 @@ async fn project_crud_and_listing() {
     );
 
     // one session under "a" (root frame with a user turn), none under "b"
-    store
-        .create_frame("f1", "a", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    store.create_frame("f1", "a", "OPERON", "m").await.unwrap();
     store
         .append_message("f1", 1, &Message::user("hi"))
         .await
@@ -2775,10 +2901,7 @@ async fn project_crud_and_listing() {
     assert_eq!(b.7, 0, "project b has no artifacts");
 
     // recent sessions span projects
-    store
-        .create_frame("f2", "b", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    store.create_frame("f2", "b", "OPERON", "m").await.unwrap();
     store
         .append_message("f2", 1, &Message::user("yo"))
         .await
@@ -2801,17 +2924,12 @@ async fn project_crud_and_listing() {
 
 #[tokio::test]
 async fn recent_sessions_detail_last_role() {
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience_store_recent_{}.sqlite",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp =
+        std::env::temp_dir().join(format!("wisp_store_recent_{}.sqlite", uuid::Uuid::new_v4()));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
 
-    store
-        .create_frame("f1", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    store.create_frame("f1", "p", "OPERON", "m").await.unwrap();
     store
         .append_message("f1", 1, &Message::user("q"))
         .await
@@ -2821,10 +2939,7 @@ async fn recent_sessions_detail_last_role() {
         .await
         .unwrap();
 
-    store
-        .create_frame("f2", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    store.create_frame("f2", "p", "OPERON", "m").await.unwrap();
     store
         .append_message("f2", 1, &Message::user("only user"))
         .await
@@ -2840,16 +2955,10 @@ async fn recent_sessions_detail_last_role() {
 
 #[tokio::test]
 async fn mark_frame_seen_clears_unseen_until_new_activity() {
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience_store_seen_{}.sqlite",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp = std::env::temp_dir().join(format!("wisp_store_seen_{}.sqlite", uuid::Uuid::new_v4()));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
-    store
-        .create_frame("f1", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    store.create_frame("f1", "p", "OPERON", "m").await.unwrap();
     store
         .append_message("f1", 1, &Message::user("q"))
         .await
@@ -2891,17 +3000,14 @@ async fn mark_frame_seen_clears_unseen_until_new_activity() {
 #[tokio::test]
 async fn recent_sessions_detail_respects_limit() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_store_recent_lim_{}.sqlite",
+        "wisp_store_recent_lim_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
     for i in 0..7 {
         let fid = format!("f{i}");
-        store
-            .create_frame(&fid, "p", "SUPERSCIENCE", "m")
-            .await
-            .unwrap();
+        store.create_frame(&fid, "p", "OPERON", "m").await.unwrap();
         store
             .append_message(&fid, 1, &Message::user(&format!("msg {i}")))
             .await
@@ -2914,10 +3020,8 @@ async fn recent_sessions_detail_respects_limit() {
 
 #[tokio::test]
 async fn migrate_adds_folder_id_on_legacy_db() {
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience_store_legacy_{}.sqlite",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp =
+        std::env::temp_dir().join(format!("wisp_store_legacy_{}.sqlite", uuid::Uuid::new_v4()));
     {
         let opts = SqliteConnectOptions::from_str(&format!("sqlite://{}", tmp.display()))
             .unwrap()
@@ -2960,10 +3064,7 @@ async fn migrate_adds_folder_id_on_legacy_db() {
     }
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
-    store
-        .create_frame("f1", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    store.create_frame("f1", "p", "OPERON", "m").await.unwrap();
     store
         .append_message("f1", 1, &Message::user("legacy"))
         .await
@@ -2974,26 +3075,98 @@ async fn migrate_adds_folder_id_on_legacy_db() {
     let _ = std::fs::remove_file(&tmp);
 }
 
+/// A v0-era database that already recorded `0000_initial_schema`, so the
+/// current 0000_init.sql (folders, extra columns) never runs. Opening it
+/// after jumping to HEAD must still list sessions and folders.
 #[tokio::test]
-async fn folder_crud_and_move() {
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience_store_folder_{}.sqlite",
-        uuid::Uuid::new_v4()
-    ));
-    let store = Store::open(&tmp).await.unwrap();
-    store.create_project("p", "proj", "").await.unwrap();
-    store
-        .create_frame("f1", "p", "SUPERSCIENCE", "m")
+async fn upgrade_from_recorded_initial_schema_can_list_sessions() {
+    let tmp = std::env::temp_dir().join(format!("wisp_store_jump_{}.sqlite", uuid::Uuid::new_v4()));
+    {
+        let opts = SqliteConnectOptions::from_str(&format!("sqlite://{}", tmp.display()))
+            .unwrap()
+            .create_if_missing(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE wisp_schema_migrations (\
+             version TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)",
+        )
+        .execute(&pool)
         .await
         .unwrap();
+        sqlx::query("INSERT INTO wisp_schema_migrations(version,applied_at) VALUES(?,1)")
+            .bind(INITIAL_SCHEMA_MIGRATION)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT, description TEXT, \
+             created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE frames (id TEXT PRIMARY KEY, parent_frame_id TEXT, root_frame_id TEXT, \
+             agent_name TEXT NOT NULL, status TEXT NOT NULL, project_id TEXT, model TEXT, \
+             input_tokens INTEGER, output_tokens INTEGER, created_at INTEGER NOT NULL, \
+             updated_at INTEGER NOT NULL, completed_at INTEGER)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE messages (id TEXT PRIMARY KEY, frame_id TEXT NOT NULL, seq INTEGER NOT NULL, \
+             role TEXT NOT NULL, content TEXT, tool_calls TEXT, tool_call_id TEXT, tool_name TEXT, \
+             reasoning TEXT, ts INTEGER NOT NULL, UNIQUE(frame_id, seq))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE artifacts (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, \
+             root_frame_id TEXT NOT NULL, filename TEXT NOT NULL, content_type TEXT NOT NULL, \
+             storage_path TEXT NOT NULL, created_at INTEGER NOT NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+    }
+
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    store.create_frame("f1", "p", "OPERON", "m").await.unwrap();
+    store
+        .append_message("f1", 1, &Message::user("jumped versions"))
+        .await
+        .unwrap();
+    let sessions = store.list_sessions("p").await.unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].0, "f1");
+    assert!(store.list_folders("p").await.unwrap().is_empty());
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn folder_crud_and_move() {
+    let tmp =
+        std::env::temp_dir().join(format!("wisp_store_folder_{}.sqlite", uuid::Uuid::new_v4()));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    store.create_frame("f1", "p", "OPERON", "m").await.unwrap();
     store
         .append_message("f1", 1, &Message::user("in folder"))
         .await
         .unwrap();
-    store
-        .create_frame("f2", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    store.create_frame("f2", "p", "OPERON", "m").await.unwrap();
     store
         .append_message("f2", 1, &Message::user("ungrouped"))
         .await
@@ -3031,7 +3204,7 @@ async fn folder_crud_and_move() {
 #[tokio::test]
 async fn session_transcripts_copy_and_move_between_projects() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_store_session_transfer_{}.sqlite",
+        "wisp_store_session_transfer_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
@@ -3044,7 +3217,7 @@ async fn session_transcripts_copy_and_move_between_projects() {
         .await
         .unwrap();
     store
-        .create_frame("original", "source", "SUPERSCIENCE", "model")
+        .create_frame("original", "source", "OPERON", "model")
         .await
         .unwrap();
     store
@@ -3207,7 +3380,7 @@ fn execution_context_id_parsing_and_serialization() {
 #[tokio::test]
 async fn execution_context_store_roundtrip() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_store_context_{}.sqlite",
+        "wisp_store_context_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
@@ -3261,19 +3434,13 @@ async fn execution_context_store_roundtrip() {
 #[tokio::test]
 async fn execution_context_selection_is_isolated_per_session() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_store_session_contexts_{}.sqlite",
+        "wisp_store_session_contexts_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "Project", "").await.unwrap();
-    store
-        .create_frame("f1", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
-    store
-        .create_frame("f2", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    store.create_frame("f1", "p", "OPERON", "m").await.unwrap();
+    store.create_frame("f2", "p", "OPERON", "m").await.unwrap();
     store
         .upsert_execution_context(&ExecutionContext::new("ssh:gpu", "GPU").unwrap())
         .await
@@ -3322,7 +3489,7 @@ async fn execution_context_selection_is_isolated_per_session() {
 #[tokio::test]
 async fn store_open_records_migrations_and_seeds_local_context() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_store_migrations_{}.sqlite",
+        "wisp_store_migrations_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
@@ -3378,8 +3545,332 @@ async fn store_open_records_migrations_and_seeds_local_context() {
             SESSION_REASONING_EFFORT_MIGRATION.to_string(),
             SESSION_BRANCH_MERGE_MIGRATION.to_string(),
             EXPLORATION_PROMOTION_RECOVERY_MIGRATION.to_string(),
+            RUN_HARVEST_STATE_MIGRATION.to_string(),
+            CONTEXT_STORAGE_PREFS_MIGRATION.to_string(),
+            RUN_CLEANUP_STATE_MIGRATION.to_string(),
+            REMOTE_STAGING_MIGRATION.to_string(),
+            RUN_RETENTION_MIGRATION.to_string(),
+            SCHEDULES_MIGRATION.to_string(),
+            ARTIFACT_SOURCE_DISCARDED_MIGRATION.to_string(),
+            RUN_LOG_PULL_MIGRATION.to_string(),
+            ORPHAN_FILE_RETENTION_MIGRATION.to_string(),
+            RUN_REVIEW_DISMISSED_MIGRATION.to_string(),
         ]
     );
+    let first_open_migrations = store.schema_migrations().await.unwrap();
+
+    // Idempotency: opening the same file again must neither re-run migrations
+    // nor seed a second `local` execution context.
+    store.pool.close().await;
+    let store = Store::open(&tmp).await.unwrap();
+    assert_eq!(
+        store.schema_migrations().await.unwrap(),
+        first_open_migrations,
+        "a second open must leave the recorded migration set unchanged"
+    );
+    let locals = store
+        .list_execution_contexts()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|ctx| ctx.id == "local")
+        .count();
+    assert_eq!(locals, 1, "the seeded local context must not be duplicated");
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn context_storage_prefs_validate_and_round_trip() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_storage_prefs_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+
+    assert!(store
+        .get_context_storage_prefs("p", "ssh:gpu")
+        .await
+        .unwrap()
+        .is_none());
+    let mut prefs = ContextStoragePrefs {
+        project_id: "p".into(),
+        context_id: "ssh:gpu".into(),
+        remote_data_root: "~/wisp/proj/data".into(),
+        remote_workdir_root: ".wisp-science/runs".into(),
+        local_results_dir: "remote/gpu".into(),
+        created_at: 0,
+        updated_at: 0,
+    };
+    store.upsert_context_storage_prefs(&prefs).await.unwrap();
+    let stored = store
+        .get_context_storage_prefs("p", "ssh:gpu")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.remote_data_root, "~/wisp/proj/data");
+
+    prefs.remote_data_root = "/data/wisp/proj".into();
+    prefs.local_results_dir = "results/from-gpu".into();
+    store.upsert_context_storage_prefs(&prefs).await.unwrap();
+    let updated = store
+        .get_context_storage_prefs("p", "ssh:gpu")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated.remote_data_root, "/data/wisp/proj");
+    assert_eq!(updated.local_results_dir, "results/from-gpu");
+    assert_eq!(updated.created_at, stored.created_at);
+
+    // Validation matrix: traversal, escapes, absolute local dirs all rejected.
+    for (field, value) in [
+        ("remote_data_root", "~/wisp/../etc"),
+        ("remote_data_root", "$HOME/data"),
+        ("remote_data_root", "a b"),
+        ("remote_data_root", ""),
+        ("remote_workdir_root", "/absolute/runs"),
+        ("remote_workdir_root", "~/runs"),
+        ("remote_workdir_root", "runs/.."),
+        ("local_results_dir", "/absolute"),
+        ("local_results_dir", "../outside"),
+        ("local_results_dir", "a;b"),
+    ] {
+        let mut bad = updated.clone();
+        match field {
+            "remote_data_root" => bad.remote_data_root = value.into(),
+            "remote_workdir_root" => bad.remote_workdir_root = value.into(),
+            _ => bad.local_results_dir = value.into(),
+        }
+        assert!(
+            store.upsert_context_storage_prefs(&bad).await.is_err(),
+            "{field}={value} should be rejected"
+        );
+    }
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn remote_staging_ledger_round_trips_and_counts_external_references() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_remote_staging_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+
+    let entry = RemoteStagingEntry::new(
+        "p",
+        "ssh:gpu",
+        None,
+        "~/wisp/proj/data/input.fasta",
+        "transfer",
+    );
+    store.record_remote_staging(&entry).await.unwrap();
+    let mut bad = entry.clone();
+    bad.id = "bad".into();
+    bad.source = "mystery".into();
+    assert!(store.record_remote_staging(&bad).await.is_err());
+
+    let listed = store
+        .list_remote_staging("p", "ssh:gpu", false)
+        .await
+        .unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(
+        store
+            .mark_remote_staging_removed(&[entry.id.clone()])
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store
+            .mark_remote_staging_removed(&[entry.id.clone()])
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(store
+        .list_remote_staging("p", "ssh:gpu", false)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        store
+            .list_remote_staging("p", "ssh:gpu", true)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // External-reference audit counts only head versions on that server.
+    store
+        .save_artifact_version(&ArtifactVersionDraft {
+            version_id: None,
+            artifact_id: logical_artifact_id("p", "path:big.bam"),
+            project_id: "p".into(),
+            root_frame_id: "f".into(),
+            filename: "big.bam".into(),
+            content_type: "data".into(),
+            storage_path: "ssh://gpu/scratch/proj/artifacts/r1/big.bam".into(),
+            logical_key: Some("path:big.bam".into()),
+            size_bytes: None,
+            checksum: None,
+            producing_run_id: None,
+            env_snapshot_hash: None,
+            materialization: ArtifactMaterialization::External,
+            capture_timing: ArtifactCaptureTiming::AtCreation,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .count_external_references_on_context("p", "ssh://gpu/")
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store
+            .count_external_references_on_context("p", "ssh://other/")
+            .await
+            .unwrap(),
+        0
+    );
+
+    let persist = RemoteStagingEntry::new(
+        "p",
+        "ssh:gpu",
+        Some("r1".into()),
+        "/scratch/proj/artifacts/r1/big.bam",
+        "harvest_persist",
+    );
+    assert!(store.ensure_remote_staging(&persist).await.unwrap());
+    assert!(!store.ensure_remote_staging(&persist).await.unwrap());
+    assert_eq!(
+        store
+            .list_live_external_uris_on_context("p", "ssh://gpu/")
+            .await
+            .unwrap(),
+        vec!["ssh://gpu/scratch/proj/artifacts/r1/big.bam".to_string()]
+    );
+
+    assert_eq!(
+        store
+            .mark_external_artifacts_source_discarded("ssh://gpu/")
+            .await
+            .unwrap(),
+        1
+    );
+    assert!(store
+        .ssh_uri_source_discarded("ssh://gpu/scratch/proj/artifacts/r1/big.bam")
+        .await
+        .unwrap());
+    assert_eq!(
+        store
+            .count_external_references_on_context("p", "ssh://gpu/")
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(store
+        .list_live_external_uris_on_context("p", "ssh://gpu/")
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        store
+            .mark_remote_staging_removed_for_context("ssh:gpu")
+            .await
+            .unwrap(),
+        1
+    );
+    assert!(store
+        .list_remote_staging("p", "ssh:gpu", false)
+        .await
+        .unwrap()
+        .is_empty());
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn run_harvest_state_is_recorded_once_and_survives_reopen() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_run_harvest_state_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    let mut run = RunRecord::new("r", "p", "local", "Run", "command");
+    run.status = RunStatus::Succeeded;
+    store.create_run(&run).await.unwrap();
+
+    assert!(store
+        .get_run("r")
+        .await
+        .unwrap()
+        .unwrap()
+        .harvested_at
+        .is_none());
+    assert!(store.mark_run_harvested("r").await.unwrap());
+    let harvested_at = store
+        .get_run("r")
+        .await
+        .unwrap()
+        .unwrap()
+        .harvested_at
+        .unwrap();
+    // Idempotent: a second mark does not rewrite the timestamp.
+    assert!(!store.mark_run_harvested("r").await.unwrap());
+    drop(store);
+
+    // Reopening (legacy-database repair path) keeps the column and the value.
+    let reopened = Store::open(&tmp).await.unwrap();
+    assert_eq!(
+        reopened.get_run("r").await.unwrap().unwrap().harvested_at,
+        Some(harvested_at)
+    );
+    assert!(reopened
+        .record_run_harvest_error("r", "remote artifact registration failed: boom")
+        .await
+        .unwrap());
+    assert_eq!(
+        reopened
+            .get_run("r")
+            .await
+            .unwrap()
+            .unwrap()
+            .last_poll_error
+            .as_deref(),
+        Some("remote artifact registration failed: boom")
+    );
+
+    // Cleanup state: errors are retryable and cleared by a successful clean.
+    assert!(reopened
+        .record_run_cleanup_error("r", "rm failed: permission denied")
+        .await
+        .unwrap());
+    let run = reopened.get_run("r").await.unwrap().unwrap();
+    assert!(run.cleaned_at.is_none());
+    assert_eq!(
+        run.cleanup_error.as_deref(),
+        Some("rm failed: permission denied")
+    );
+    assert!(reopened.mark_run_cleaned("r").await.unwrap());
+    let run = reopened.get_run("r").await.unwrap().unwrap();
+    assert!(run.cleaned_at.is_some());
+    assert!(run.cleanup_error.is_none());
+    // Idempotent, and errors no longer overwrite a cleaned run.
+    assert!(!reopened.mark_run_cleaned("r").await.unwrap());
+    assert!(!reopened
+        .record_run_cleanup_error("r", "late")
+        .await
+        .unwrap());
 
     let _ = std::fs::remove_file(&tmp);
 }
@@ -3407,7 +3898,7 @@ async fn method_search_state_candidates_and_pause_lifecycle_are_durable() {
             root_frame_id: "f".into(),
             filename: "method-search.json".into(),
             content_type: "application/json".into(),
-            storage_path: ".superscience/artifacts/sha256/aa/spec.json".into(),
+            storage_path: ".wisp/artifacts/sha256/aa/spec.json".into(),
             logical_key: Some("method-search:spec".into()),
             size_bytes: Some(2),
             checksum: Some("a".repeat(64)),
@@ -3467,7 +3958,7 @@ async fn method_search_state_candidates_and_pause_lifecycle_are_durable() {
         kind: "source".into(),
         checksum: "b".repeat(64),
         size_bytes: 12,
-        storage_path: ".superscience/method-search/run/blobs/bb/source.py".into(),
+        storage_path: ".wisp/method-search/run/blobs/bb/source.py".into(),
         created_at: 1,
     };
     store.save_method_candidate_blob(&blob).await.unwrap();
@@ -3543,7 +4034,7 @@ async fn method_search_state_candidates_and_pause_lifecycle_are_durable() {
 #[tokio::test]
 async fn run_artifact_lineage_migration_repairs_partial_application() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_run_lineage_partial_migration_{}.sqlite",
+        "wisp_run_lineage_partial_migration_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
@@ -3580,12 +4071,12 @@ async fn run_artifact_lineage_migration_repairs_partial_application() {
     ] {
         sqlx::query(statement).execute(&store.pool).await.unwrap();
     }
-    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
         .bind(RUN_ARTIFACT_LINEAGE_MIGRATION)
         .execute(&store.pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
         .bind(EXPLORATION_BRANCHES_MIGRATION)
         .execute(&store.pool)
         .await
@@ -3629,7 +4120,7 @@ async fn run_artifact_lineage_migration_repairs_partial_application() {
 #[tokio::test]
 async fn publication_domain_migration_repairs_partial_application() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_publication_partial_migration_{}.sqlite",
+        "wisp_publication_partial_migration_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
@@ -3641,7 +4132,7 @@ async fn publication_domain_migration_repairs_partial_application() {
         .execute(&store.pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
         .bind(PUBLICATION_DOMAIN_MIGRATION)
         .execute(&store.pool)
         .await
@@ -3673,7 +4164,7 @@ async fn publication_domain_migration_repairs_partial_application() {
 #[tokio::test]
 async fn publication_freeze_migration_repairs_partial_application() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_publication_freeze_partial_migration_{}.sqlite",
+        "wisp_publication_freeze_partial_migration_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
@@ -3694,7 +4185,7 @@ async fn publication_freeze_migration_repairs_partial_application() {
     ] {
         sqlx::query(statement).execute(&store.pool).await.unwrap();
     }
-    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
         .bind(PUBLICATION_FREEZE_MIGRATION)
         .execute(&store.pool)
         .await
@@ -3740,7 +4231,7 @@ async fn publication_freeze_migration_repairs_partial_application() {
 #[tokio::test]
 async fn publication_verification_migration_repairs_partial_application() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_publication_verification_partial_migration_{}.sqlite",
+        "wisp_publication_verification_partial_migration_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
@@ -3752,7 +4243,7 @@ async fn publication_verification_migration_repairs_partial_application() {
         .execute(&store.pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
         .bind(PUBLICATION_VERIFICATION_MIGRATION)
         .execute(&store.pool)
         .await
@@ -3785,7 +4276,7 @@ async fn publication_verification_migration_repairs_partial_application() {
 #[tokio::test]
 async fn turn_file_undo_migration_repairs_partial_application() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_turn_undo_partial_migration_{}.sqlite",
+        "wisp_turn_undo_partial_migration_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
@@ -3801,7 +4292,7 @@ async fn turn_file_undo_migration_repairs_partial_application() {
         .execute(&store.pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
         .bind(TURN_FILE_UNDO_MIGRATION)
         .execute(&store.pool)
         .await
@@ -3834,7 +4325,7 @@ async fn turn_file_undo_migration_repairs_partial_application() {
 #[tokio::test]
 async fn agent_workflow_contract_migration_repairs_partial_application() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_agent_workflow_partial_migration_{}.sqlite",
+        "wisp_agent_workflow_partial_migration_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
@@ -3842,7 +4333,7 @@ async fn agent_workflow_contract_migration_repairs_partial_application() {
         .execute(&store.pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
         .bind(AGENT_WORKFLOW_CONTRACTS_MIGRATION)
         .execute(&store.pool)
         .await
@@ -3872,7 +4363,7 @@ async fn agent_workflow_contract_migration_repairs_partial_application() {
 #[tokio::test]
 async fn agent_workflow_plan_migration_repairs_partial_application() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_agent_plan_partial_migration_{}.sqlite",
+        "wisp_agent_plan_partial_migration_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
@@ -3880,7 +4371,7 @@ async fn agent_workflow_plan_migration_repairs_partial_application() {
         .execute(&store.pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
         .bind(AGENT_WORKFLOW_PLANS_MIGRATION)
         .execute(&store.pool)
         .await
@@ -3909,7 +4400,7 @@ async fn agent_workflow_plan_migration_repairs_partial_application() {
 #[tokio::test]
 async fn agent_workflow_attempt_migration_is_retry_safe() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_agent_attempt_migration_{}.sqlite",
+        "wisp_agent_attempt_migration_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
@@ -3917,7 +4408,7 @@ async fn agent_workflow_attempt_migration_is_retry_safe() {
         .execute(&store.pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
         .bind(AGENT_WORKFLOW_ATTEMPTS_MIGRATION)
         .execute(&store.pool)
         .await
@@ -3944,7 +4435,7 @@ async fn agent_workflow_attempt_migration_is_retry_safe() {
 #[tokio::test]
 async fn agent_workflow_lineage_migration_is_retry_safe() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_agent_lineage_migration_{}.sqlite",
+        "wisp_agent_lineage_migration_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
@@ -3952,7 +4443,7 @@ async fn agent_workflow_lineage_migration_is_retry_safe() {
         .execute(&store.pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
         .bind(AGENT_WORKFLOW_LINEAGE_MIGRATION)
         .execute(&store.pool)
         .await
@@ -3995,15 +4486,12 @@ async fn agent_workflow_lineage_migration_is_retry_safe() {
 #[tokio::test]
 async fn background_agent_completion_is_delivered_and_resumed_exactly_once() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_agent_delivery_{}.sqlite",
+        "wisp_agent_delivery_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
-    store
-        .create_frame("f", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
     let mut workflow = AgentWorkflow::new("wf", "p", "workspace", "Background batch").unwrap();
     workflow.frame_id = Some("f".into());
     let step =
@@ -4090,7 +4578,7 @@ async fn background_agent_completion_is_delivered_and_resumed_exactly_once() {
         AGENT_WORKFLOW_COMPLETION_TOOL
     );
     store
-        .create_frame("branch", "p", "SUPERSCIENCE", "m")
+        .create_frame("branch", "p", "OPERON", "m")
         .await
         .unwrap();
     let internal = store.load_messages("f").await.unwrap().remove(0);
@@ -4201,7 +4689,7 @@ async fn background_agent_completion_is_delivered_and_resumed_exactly_once() {
 #[tokio::test]
 async fn agent_workflow_delivery_migration_is_retry_safe() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_agent_delivery_migration_{}.sqlite",
+        "wisp_agent_delivery_migration_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
@@ -4209,7 +4697,7 @@ async fn agent_workflow_delivery_migration_is_retry_safe() {
         .execute(&store.pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
         .bind(AGENT_WORKFLOW_DELIVERIES_MIGRATION)
         .execute(&store.pool)
         .await
@@ -4236,15 +4724,12 @@ async fn agent_workflow_delivery_migration_is_retry_safe() {
 #[tokio::test]
 async fn reserved_background_generation_is_failed_instead_of_resumed_after_restart() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_agent_delivery_prestart_{}.sqlite",
+        "wisp_agent_delivery_prestart_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
-    store
-        .create_frame("f", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
     let mut workflow = AgentWorkflow::new("wf", "p", "workspace", "Background batch").unwrap();
     workflow.frame_id = Some("f".into());
     store
@@ -4293,7 +4778,7 @@ async fn reserved_background_generation_is_failed_instead_of_resumed_after_resta
 #[tokio::test]
 async fn migrate_adds_execution_context_table_on_legacy_db() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_store_context_legacy_{}.sqlite",
+        "wisp_store_context_legacy_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     {
@@ -4357,7 +4842,7 @@ async fn migrate_adds_execution_context_table_on_legacy_db() {
 #[tokio::test]
 async fn migrate_adds_ssh_run_control_columns_to_existing_runs() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_store_run_control_legacy_{}.sqlite",
+        "wisp_store_run_control_legacy_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     {
@@ -4370,7 +4855,7 @@ async fn migrate_adds_ssh_run_control_columns_to_existing_runs() {
             .await
             .unwrap();
         sqlx::query(
-            "CREATE TABLE superscience_schema_migrations (\
+            "CREATE TABLE wisp_schema_migrations (\
              version TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)",
         )
         .execute(&pool)
@@ -4381,14 +4866,12 @@ async fn migrate_adds_ssh_run_control_columns_to_existing_runs() {
             (2, CONTROL_PLANE_MIGRATION),
             (3, ARTIFACT_LINEAGE_MIGRATION),
         ] {
-            sqlx::query(
-                "INSERT INTO superscience_schema_migrations(version,applied_at) VALUES(?,?)",
-            )
-            .bind(version)
-            .bind(applied_at)
-            .execute(&pool)
-            .await
-            .unwrap();
+            sqlx::query("INSERT INTO wisp_schema_migrations(version,applied_at) VALUES(?,?)")
+                .bind(version)
+                .bind(applied_at)
+                .execute(&pool)
+                .await
+                .unwrap();
         }
         sqlx::query(
             "CREATE TABLE execution_contexts (\
@@ -4446,10 +4929,7 @@ async fn migrate_adds_ssh_run_control_columns_to_existing_runs() {
 
 #[tokio::test]
 async fn run_manager_roundtrip_and_lifecycle() {
-    let tmp = std::env::temp_dir().join(format!(
-        "superscience_store_runs_{}.sqlite",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp = std::env::temp_dir().join(format!("wisp_store_runs_{}.sqlite", uuid::Uuid::new_v4()));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
     store.create_frame("f1", "p", "OPERON", "m").await.unwrap();
@@ -4496,7 +4976,7 @@ async fn run_manager_roundtrip_and_lifecycle() {
             "r1",
             "roundtrip-owner",
             r#"{"kind":"ssh_direct","pid":42,"start_time":7}"#,
-            "/scratch/superscience/r1",
+            "/scratch/wisp/r1",
         )
         .await
         .unwrap());
@@ -4532,10 +5012,7 @@ async fn run_manager_roundtrip_and_lifecycle() {
         finished.remote_handle_json.as_deref(),
         Some(r#"{"kind":"ssh_direct","pid":42,"start_time":7}"#)
     );
-    assert_eq!(
-        finished.remote_workdir.as_deref(),
-        Some("/scratch/superscience/r1")
-    );
+    assert_eq!(finished.remote_workdir.as_deref(), Some("/scratch/wisp/r1"));
     assert_eq!(finished.timeout_secs, Some(900));
     assert!(finished.last_polled_at.is_some());
     assert!(finished.last_poll_error.is_none());
@@ -4585,7 +5062,7 @@ async fn run_poll_summaries_omit_large_detail_payloads() {
 #[tokio::test]
 async fn run_can_cancel_then_time_out() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_store_run_cancel_timeout_{}.sqlite",
+        "wisp_store_run_cancel_timeout_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
@@ -4623,7 +5100,7 @@ async fn run_can_cancel_then_time_out() {
 #[tokio::test]
 async fn conditional_terminal_update_does_not_overwrite_winner() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_store_run_terminal_race_{}.sqlite",
+        "wisp_store_run_terminal_race_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
@@ -4738,15 +5215,12 @@ async fn conditional_terminal_update_does_not_overwrite_winner() {
 #[tokio::test]
 async fn research_graph_links_research_objects() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_store_research_graph_{}.sqlite",
+        "wisp_store_research_graph_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
-    store
-        .create_frame("f1", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    store.create_frame("f1", "p", "OPERON", "m").await.unwrap();
     store
         .upsert_execution_context(&ExecutionContext::new("local", "Local").unwrap())
         .await
@@ -4824,15 +5298,12 @@ async fn research_graph_links_research_objects() {
 #[tokio::test]
 async fn artifacts_keep_version_lineage() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_artifact_versions_{}.sqlite",
+        "wisp_artifact_versions_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
-    store
-        .create_frame("f", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
 
     let first = store
         .save_artifact("a", "p", "f", "report.md", "text/markdown", "reports/v1.md")
@@ -4892,14 +5363,14 @@ async fn artifacts_keep_version_lineage() {
 #[tokio::test]
 async fn publication_revisions_clone_exact_evidence_and_freeze_history() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_publication_domain_{}.sqlite",
+        "wisp_publication_domain_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
     for (project, frame) in [("p", "f"), ("other", "other-frame")] {
         store.create_project(project, project, "").await.unwrap();
         store
-            .create_frame(frame, project, "SUPERSCIENCE", "m")
+            .create_frame(frame, project, "OPERON", "m")
             .await
             .unwrap();
     }
@@ -5448,24 +5919,21 @@ async fn publication_revisions_clone_exact_evidence_and_freeze_history() {
 #[tokio::test]
 async fn fine_grained_publication_evidence_keeps_immutable_source_snapshots() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_publication_fine_evidence_{}.sqlite",
+        "wisp_publication_fine_evidence_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
-    store
-        .create_frame("f", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
     store
         .append_message("f", 1, &Message::user("prefix evidence suffix"))
         .await
         .unwrap();
     let mut assistant = Message::assistant("");
-    assistant.tool_calls.push(superscience_llm::ToolCall {
+    assistant.tool_calls.push(wisp_llm::ToolCall {
         id: "call-1".into(),
         kind: "function".into(),
-        function: superscience_llm::FunctionCall {
+        function: wisp_llm::FunctionCall {
             name: "read".into(),
             arguments: r#"{"path":"result.txt"}"#.into(),
         },
@@ -5648,15 +6116,12 @@ async fn fine_grained_publication_evidence_keeps_immutable_source_snapshots() {
 #[tokio::test]
 async fn publication_freeze_commit_rolls_back_all_late_captures_on_failure() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_publication_freeze_atomic_{}.sqlite",
+        "wisp_publication_freeze_atomic_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
-    store
-        .create_frame("f", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
     let old_version_id = store
         .save_artifact_version(&ArtifactVersionDraft {
             version_id: Some("version-old".into()),
@@ -5753,7 +6218,7 @@ async fn publication_freeze_commit_rolls_back_all_late_captures_on_failure() {
         expected_latest_version_id: Some(old_version_id.clone()),
         version_number: 2,
         content_type: "text/plain".into(),
-        storage_path: format!(".superscience/artifacts/sha256/{checksum}"),
+        storage_path: format!(".wisp/artifacts/sha256/{checksum}"),
         size_bytes: 4,
         checksum: checksum.into(),
         materialization: ArtifactMaterialization::Snapshot,
@@ -5843,15 +6308,12 @@ async fn publication_freeze_commit_rolls_back_all_late_captures_on_failure() {
 #[tokio::test]
 async fn runs_bind_exact_artifact_versions_code_and_environment() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_exact_run_lineage_{}.sqlite",
+        "wisp_exact_run_lineage_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
-    store
-        .create_frame("f", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
     store
         .create_run(&RunRecord::new("run", "p", "local", "Analysis", "command"))
         .await
@@ -5867,7 +6329,7 @@ async fn runs_bind_exact_artifact_versions_code_and_environment() {
             root_frame_id: "f".into(),
             filename: "input.csv".into(),
             content_type: "text/csv".into(),
-            storage_path: ".superscience/artifacts/sha256/aa/input.csv".into(),
+            storage_path: ".wisp/artifacts/sha256/aa/input.csv".into(),
             logical_key: Some(input_key.into()),
             size_bytes: Some(4),
             checksum: Some("a".repeat(64)),
@@ -5973,7 +6435,7 @@ async fn runs_bind_exact_artifact_versions_code_and_environment() {
             root_frame_id: "f".into(),
             filename: "figure.png".into(),
             content_type: "image/png".into(),
-            storage_path: ".superscience/artifacts/sha256/cc/figure.png".into(),
+            storage_path: ".wisp/artifacts/sha256/cc/figure.png".into(),
             logical_key: Some(output_key.into()),
             size_bytes: Some(8),
             checksum: Some("c".repeat(64)),
@@ -6058,14 +6520,14 @@ async fn runs_bind_exact_artifact_versions_code_and_environment() {
 #[tokio::test]
 async fn artifact_versions_reject_cross_project_owners() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_artifact_owner_{}.sqlite",
+        "wisp_artifact_owner_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
     for (project, frame) in [("p1", "f1"), ("p2", "f2")] {
         store.create_project(project, project, "").await.unwrap();
         store
-            .create_frame(frame, project, "SUPERSCIENCE", "m")
+            .create_frame(frame, project, "OPERON", "m")
             .await
             .unwrap();
     }
@@ -6103,15 +6565,12 @@ async fn artifact_versions_reject_cross_project_owners() {
 #[tokio::test]
 async fn deleting_a_session_keeps_artifact_versions_owned_by_run_lineage() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_run_retention_{}.sqlite",
+        "wisp_run_retention_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
-    store
-        .create_frame("f", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
     let mut run = RunRecord::new("run", "p", "local", "Analysis", "command");
     run.frame_id = Some("f".into());
     store.create_run(&run).await.unwrap();
@@ -6123,7 +6582,7 @@ async fn deleting_a_session_keeps_artifact_versions_owned_by_run_lineage() {
             root_frame_id: "f".into(),
             filename: "result.csv".into(),
             content_type: "text/csv".into(),
-            storage_path: ".superscience/artifacts/sha256/aa/result.csv".into(),
+            storage_path: ".wisp/artifacts/sha256/aa/result.csv".into(),
             logical_key: Some("path:results/result.csv".into()),
             size_bytes: Some(4),
             checksum: Some("a".repeat(64)),
@@ -6170,14 +6629,10 @@ async fn deleting_a_session_keeps_artifact_versions_owned_by_run_lineage() {
 
 #[tokio::test]
 async fn provenance_roundtrip() {
-    let tmp =
-        std::env::temp_dir().join(format!("superscience_prov_{}.sqlite", uuid::Uuid::new_v4()));
+    let tmp = std::env::temp_dir().join(format!("wisp_prov_{}.sqlite", uuid::Uuid::new_v4()));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p1", "proj", "").await.unwrap();
-    store
-        .create_frame("f1", "p1", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    store.create_frame("f1", "p1", "OPERON", "m").await.unwrap();
     store
         .record_env_snapshot(
             "h1",
@@ -6260,17 +6715,14 @@ async fn provenance_roundtrip() {
 #[tokio::test]
 async fn turn_undo_keeps_the_first_preimage_and_removes_owned_artifacts() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_turn_undo_store_{}.sqlite",
+        "wisp_turn_undo_store_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
     store
-        .create_frame("f", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
-    store
-        .create_frame("other", "p", "SUPERSCIENCE", "m")
+        .create_frame("other", "p", "OPERON", "m")
         .await
         .unwrap();
     store
@@ -6298,7 +6750,7 @@ async fn turn_undo_keeps_the_first_preimage_and_removes_owned_artifacts() {
             2,
             "notes.md",
             true,
-            Some(".superscience/undo/first"),
+            Some(".wisp/undo/first"),
             Some("before"),
             Some("after-1"),
             true,
@@ -6312,7 +6764,7 @@ async fn turn_undo_keeps_the_first_preimage_and_removes_owned_artifacts() {
             2,
             "notes.md",
             true,
-            Some(".superscience/undo/second"),
+            Some(".wisp/undo/second"),
             Some("middle"),
             Some("after-2"),
             false,
@@ -6324,7 +6776,7 @@ async fn turn_undo_keeps_the_first_preimage_and_removes_owned_artifacts() {
     assert_eq!(changes.len(), 1);
     assert_eq!(
         changes[0].before_snapshot_path.as_deref(),
-        Some(".superscience/undo/first")
+        Some(".wisp/undo/first")
     );
     assert_eq!(changes[0].before_checksum.as_deref(), Some("before"));
     assert_eq!(changes[0].after_checksum.as_deref(), Some("after-2"));
@@ -6338,7 +6790,7 @@ async fn turn_undo_keeps_the_first_preimage_and_removes_owned_artifacts() {
             "f",
             "summary.md",
             "text/markdown",
-            ".superscience/artifacts/summary.md",
+            ".wisp/artifacts/summary.md",
         )
         .await
         .unwrap();
@@ -6349,7 +6801,7 @@ async fn turn_undo_keeps_the_first_preimage_and_removes_owned_artifacts() {
             "f",
             "summary.md",
             "text/markdown",
-            ".superscience/artifacts/summary-v2.md",
+            ".wisp/artifacts/summary-v2.md",
         )
         .await
         .unwrap();
@@ -6360,7 +6812,7 @@ async fn turn_undo_keeps_the_first_preimage_and_removes_owned_artifacts() {
             "f",
             "shared.md",
             "text/markdown",
-            ".superscience/artifacts/shared.md",
+            ".wisp/artifacts/shared.md",
         )
         .await
         .unwrap();
@@ -6473,15 +6925,12 @@ async fn turn_undo_keeps_the_first_preimage_and_removes_owned_artifacts() {
 #[tokio::test]
 async fn publication_evidence_retains_message_artifacts_during_undo_and_session_delete() {
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_publication_artifact_retention_{}.sqlite",
+        "wisp_publication_artifact_retention_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
-    store
-        .create_frame("f", "p", "SUPERSCIENCE", "m")
-        .await
-        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
     store
         .append_message("f", 1, &Message::user("prepare the figure"))
         .await
@@ -6497,7 +6946,7 @@ async fn publication_evidence_retains_message_artifacts_during_undo_and_session_
             "f",
             "figure.png",
             "image/png",
-            ".superscience/artifacts/figure.png",
+            ".wisp/artifacts/figure.png",
         )
         .await
         .unwrap();
@@ -6595,7 +7044,7 @@ async fn scratch_projects_hidden_from_user_lists() {
     use crate::{is_scratch_project_id, SCRATCH_PROJECT_PREFIX};
 
     let tmp = std::env::temp_dir().join(format!(
-        "superscience_store_scratch_{}.sqlite",
+        "wisp_store_scratch_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
@@ -6611,7 +7060,7 @@ async fn scratch_projects_hidden_from_user_lists() {
     assert!(is_scratch_project_id(&scratch_id));
 
     store
-        .create_frame("f-real", "real", "SUPERSCIENCE", "m")
+        .create_frame("f-real", "real", "OPERON", "m")
         .await
         .unwrap();
     store
@@ -6619,7 +7068,7 @@ async fn scratch_projects_hidden_from_user_lists() {
         .await
         .unwrap();
     store
-        .create_frame("f-scratch", &scratch_id, "SUPERSCIENCE", "m")
+        .create_frame("f-scratch", &scratch_id, "OPERON", "m")
         .await
         .unwrap();
     store
@@ -6713,7 +7162,7 @@ async fn create_exploration_checkpoint_fixture(store: &Store) {
             id: "archive".into(),
             project_id: "p".into(),
             frame_id: "main".into(),
-            storage_path: ".superscience/history/archive.json".into(),
+            storage_path: ".wisp/history/archive.json".into(),
             checksum: "b".repeat(64),
             created_at: 1,
         })
@@ -7139,7 +7588,7 @@ async fn exploration_promotion_recovery_migration_removes_legacy_cascade() {
     .execute(&store.pool)
     .await
     .unwrap();
-    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
         .bind(EXPLORATION_PROMOTION_RECOVERY_MIGRATION)
         .execute(&store.pool)
         .await
@@ -7563,7 +8012,7 @@ async fn exploration_checkpoint_rejects_stale_mainline_state() {
             id: "archive".into(),
             project_id: "p".into(),
             frame_id: "main".into(),
-            storage_path: ".superscience/history/archive.json".into(),
+            storage_path: ".wisp/history/archive.json".into(),
             checksum: "b".repeat(64),
             created_at: 1,
         })
@@ -7791,12 +8240,12 @@ async fn exploration_migration_repairs_partial_legacy_state() {
     .execute(&store.pool)
     .await
     .unwrap();
-    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
         .bind(EXPLORATION_BRANCHES_MIGRATION)
         .execute(&store.pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
         .bind(PROJECT_STATE_REVISIONS_MIGRATION)
         .execute(&store.pool)
         .await

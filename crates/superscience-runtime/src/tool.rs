@@ -12,16 +12,18 @@ pub struct ReplTool {
     manager: RuntimeManager,
     project_id: String,
     scope_key: String,
+    session_id: String,
 }
 
 pub struct RTool {
     manager: RuntimeManager,
     project_id: String,
     scope_key: String,
+    session_id: String,
 }
 
-const PYTHON_TOOL_DESCRIPTION: &str = "Execute Python code in a persistent REPL. Variables, imports, and loaded data persist per project and execution context. Return values of expressions are printed. Paths are interpreted inside the selected context. Use this for analysis, data loading, plotting, and computation when required packages already exist. Do not use this as a package installer; if dependencies are missing, set up a project-local pixi environment or use local-env-setup first.";
-const R_TOOL_DESCRIPTION: &str = "Execute R code in a persistent REPL. Variables, libraries, and loaded data persist per project and execution context. The final visible value is printed. Paths are interpreted inside the selected context. Write plots explicitly with png(), pdf(), ggsave(), or another file device. Rscript and the jsonlite package must already exist in that context; this tool does not install packages.";
+const PYTHON_TOOL_DESCRIPTION: &str = "Execute Python code in a persistent REPL. Variables, imports, and loaded data persist per conversation and execution context; parallel conversations never share interpreter state. Return values of expressions are printed. Paths are interpreted inside the selected context. Use this for analysis, data loading, plotting, and computation when required packages already exist. Do not use this as a package installer; if dependencies are missing, set up a project-local pixi environment or use local-env-setup first.";
+const R_TOOL_DESCRIPTION: &str = "Execute R code in a persistent REPL. Variables, libraries, and loaded data persist per conversation and execution context; parallel conversations never share interpreter state. The final visible value is printed. Paths are interpreted inside the selected context. Write plots explicitly with png(), pdf(), ggsave(), or another file device. Rscript and the jsonlite package must already exist in that context; this tool does not install packages.";
 
 impl ReplTool {
     pub fn new(manager: RuntimeManager, project_id: impl Into<String>) -> Self {
@@ -29,18 +31,21 @@ impl ReplTool {
             manager,
             project_id: project_id.into(),
             scope_key: crate::MAINLINE_RUNTIME_SCOPE.into(),
+            session_id: String::new(),
         }
     }
 
-    pub fn new_in_scope(
+    pub fn new_in_session(
         manager: RuntimeManager,
         project_id: impl Into<String>,
         scope_key: impl Into<String>,
+        session_id: impl Into<String>,
     ) -> Self {
         Self {
             manager,
             project_id: project_id.into(),
             scope_key: scope_key.into(),
+            session_id: session_id.into(),
         }
     }
 }
@@ -51,18 +56,21 @@ impl RTool {
             manager,
             project_id: project_id.into(),
             scope_key: crate::MAINLINE_RUNTIME_SCOPE.into(),
+            session_id: String::new(),
         }
     }
 
-    pub fn new_in_scope(
+    pub fn new_in_session(
         manager: RuntimeManager,
         project_id: impl Into<String>,
         scope_key: impl Into<String>,
+        session_id: impl Into<String>,
     ) -> Self {
         Self {
             manager,
             project_id: project_id.into(),
             scope_key: scope_key.into(),
+            session_id: session_id.into(),
         }
     }
 }
@@ -125,6 +133,11 @@ async fn run_runtime(
     language: &'static str,
     env: &dyn ToolEnv,
 ) -> ToolResult {
+    if key.context_id == LOCAL_CONTEXT_ID || key.context_id.starts_with("wsl:") {
+        if let Err(error) = env.preflight_local_execution(&code).await {
+            return ToolResult::fail(error).stop_batch();
+        }
+    }
     let mut execution = match manager.execute(&key, env.project_root(), code).await {
         Ok(execution) => execution,
         Err(error) => return ToolResult::fail(format!("{language} error: {error}")),
@@ -206,7 +219,8 @@ impl Tool for ReplTool {
         };
         run_runtime(
             &self.manager,
-            RuntimeKey::python_in_scope(&self.project_id, &self.scope_key, context_id),
+            RuntimeKey::python_in_scope(&self.project_id, &self.scope_key, context_id)
+                .with_session(&self.session_id),
             code,
             "python",
             env,
@@ -256,7 +270,8 @@ impl Tool for RTool {
         };
         run_runtime(
             &self.manager,
-            RuntimeKey::r_in_scope(&self.project_id, &self.scope_key, context_id),
+            RuntimeKey::r_in_scope(&self.project_id, &self.scope_key, context_id)
+                .with_session(&self.session_id),
             code,
             "r",
             env,
@@ -275,6 +290,14 @@ mod tests {
         assert!(PYTHON_TOOL_DESCRIPTION.contains("Do not use this as a package installer"));
         assert!(PYTHON_TOOL_DESCRIPTION.contains("project-local pixi"));
         assert!(PYTHON_TOOL_DESCRIPTION.contains("local-env-setup"));
+    }
+
+    #[test]
+    fn repl_descriptions_promise_per_conversation_state() {
+        for description in [PYTHON_TOOL_DESCRIPTION, R_TOOL_DESCRIPTION] {
+            assert!(description.contains("persist per conversation"));
+            assert!(description.contains("parallel conversations never share interpreter state"));
+        }
     }
 
     #[test]

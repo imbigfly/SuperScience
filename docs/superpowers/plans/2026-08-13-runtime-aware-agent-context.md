@@ -193,7 +193,7 @@ The implementation sends a new protocol command (e.g. `registry_lookup`) to
 - **Protocol extension:** Add a `lookup` op to the JSON-lines protocol, handled
   by `kernel_worker.py`. This is additive — existing `execute` and `inspect`
   ops are unchanged.
-- **Skill integration:** Skills like `scvi-tools` or `scgpt` can register
+- **Skill integration:** Skills like `analysis-workflow` can register
   additional function metadata or curated examples that the lookup tool
   surfaces alongside `inspect`-based results.
 

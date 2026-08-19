@@ -8,6 +8,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   class Channel {
     onmessage: ((message: any) => void) | null = null;
   }
+  const mp4Base64 = "AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAANdbW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAAHgAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAod0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAAHgAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAABAAAAAQAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAB4AAAEAAABAAAAAAH/bWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAAyAAAABgBVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABqm1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAWpzdGJsAAAAvnN0c2QAAAAAAAAAAQAAAK5hdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAABAAEABIAAAASAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGP//AAAANGF2Y0MBZAAK/+EAF2dkAAqs2V7ARAAAAwAEAAADAMg8SJZYAQAGaOvjyyLA/fj4AAAAABBwYXNwAAAAAQAAAAEAAAAUYnRydAAAAAAAAL7iAAC+4gAAABhzdHRzAAAAAAAAAAEAAAADAAACAAAAABRzdHNzAAAAAAAAAAEAAAABAAAAKGN0dHMAAAAAAAAAAwAAAAEAAAQAAAAAAQAABgAAAAABAAACAAAAABxzdHNjAAAAAAAAAAEAAAABAAAAAwAAAAEAAAAgc3RzegAAAAAAAAAAAAAAAwAAAsUAAAAMAAAADAAAABRzdGNvAAAAAAAAAAEAAAONAAAAYnVkdGEAAABabWV0YQAAAAAAAAAhaGRscgAAAAAAAAAAbWRpcmFwcGwAAAAAAAAAAAAAAAAtaWxzdAAAACWpdG9vAAAAHWRhdGEAAAABAAAAAExhdmY1OC43Ni4xMDAAAAAIZnJlZQAAAuVtZGF0AAACrgYF//+q3EXpvebZSLeWLNgg2SPu73gyNjQgLSBjb3JlIDE2MyByMzA2MCA1ZGI2YWE2IC0gSC4yNjQvTVBFRy00IEFWQyBjb2RlYyAtIENvcHlsZWZ0IDIwMDMtMjAyMSAtIGh0dHA6Ly93d3cudmlkZW9sYW4ub3JnL3gyNjQuaHRtbCAtIG9wdGlvbnM6IGNhYmFjPTEgcmVmPTMgZGVibG9jaz0xOjA6MCBhbmFseXNlPTB4MzoweDExMyBtZT1oZXggc3VibWU9NyBwc3k9MSBwc3lfcmQ9MS4wMDowLjAwIG1peGVkX3JlZj0xIG1lX3JhbmdlPTE2IGNocm9tYV9tZT0xIHRyZWxsaXM9MSA4eDhkY3Q9MSBjcW09MCBkZWFkem9uZT0yMSwxMSBmYXN0X3Bza2lwPTEgY2hyb21hX3FwX29mZnNldD0tMiB0aHJlYWRzPTEgbG9va2FoZWFkX3RocmVhZHM9MSBzbGljZWRfdGhyZWFkcz0wIG5yPTAgZGVjaW1hdGU9MSBpbnRlcmxhY2VkPTAgYmx1cmF5X2NvbXBhdD0wIGNvbnN0cmFpbmVkX2ludHJhPTAgYmZyYW1lcz0zIGJfcHlyYW1pZD0yIGJfYWRhcHQ9MSBiX2JpYXM9MCBkaXJlY3Q9MSB3ZWlnaHRiPTEgb3Blbl9nb3A9MCB3ZWlnaHRwPTIga2V5aW50PTI1MCBrZXlpbnRfbWluPTI1IHNjZW5lY3V0PTQwIGludHJhX3JlZnJlc2g9MCByY19sb29rYWhlYWQ9NDAgcmM9Y3JmIG1idHJlZT0xIGNyZj0yMy4wIHFjb21wPTAuNjAgcXBtaW49MCBxcG1heD02OSBxcHN0ZXA9NCBpcF9yYXRpbz0xLjQwIGFxPTE6MS4wMACAAAAAD2WIhAAz//727L4FNhTIwQAAAAhBmiJsQr/+wAAAAAgBnkF5Cv/EgQ==";
   const pdfBase64 = "JVBERi0xLjQKJVdpc3AKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUiA0IDAgUl0gL0NvdW50IDIgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA3IDAgUiA+PiA+PiAvQ29udGVudHMgNSAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA3IDAgUiA+PiA+PiAvQ29udGVudHMgNiAwIFIgPj4KZW5kb2JqCjUgMCBvYmoKPDwgL0xlbmd0aCA0OCA+PgpzdHJlYW0KQlQgL0YxIDI0IFRmIDcyIDcyMCBUZCAoUERGIHByZXZpZXcgd29ya3MpIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKNiAwIG9iago8PCAvTGVuZ3RoIDQ2ID4+CnN0cmVhbQpCVCAvRjEgMjQgVGYgNzIgNzIwIFRkIChTZWNvbmQgUERGIHBhZ2UpIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKNyAwIG9iago8PCAvVHlwZSAvRm9udCAvU3VidHlwZSAvVHlwZTEgL0Jhc2VGb250IC9IZWx2ZXRpY2EgPj4KZW5kb2JqCnhyZWYKMCA4CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAxNSAwMDAwIG4gCjAwMDAwMDAwNjQgMDAwMDAgbiAKMDAwMDAwMDEyNyAwMDAwMCBuIAowMDAwMDAwMjUzIDAwMDAwIG4gCjAwMDAwMDAzNzkgMDAwMDAgbiAKMDAwMDAwMDQ3NyAwMDAwMCBuIAowMDAwMDAwNTczIDAwMDAwIG4gCnRyYWlsZXIKPDwgL1NpemUgOCAvUm9vdCAxIDAgUiA+PgpzdGFydHhyZWYKNjQyCiUlRU9GCg==";
   // Real .docx (pandoc-built) with headings, a table, and OMML equations —
   // exercises the offline docx-preview render path (P3 / #274).
@@ -67,6 +68,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       last_polled_at: run.last_polled_at ?? null,
       last_poll_error: run.last_poll_error ?? null,
       progress_json: run.progress_json ?? "{}",
+      harvested_at: run.harvested_at ?? null,
+      cleaned_at: run.cleaned_at ?? null,
+      cleanup_error: run.cleanup_error ?? null,
       output_fingerprint: `${stdout.length}:${stdout.slice(0, 64)}:${stdout.slice(-128)}|${stderr.length}:${stderr.slice(0, 64)}:${stderr.slice(-128)}`,
     };
   };
@@ -114,7 +118,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       },
       {
         role: "assistant",
-        text: "## GSE153250 RNA-seq Upstream Analysis — Complete\n\nKept 12 samples: 6 siNT + 6 siESR1.\n\n| Sample | Group |\n| --- | --- |\n| S1 | siNT |\n| S2 | siESR1 |",
+        text: "## GSE153250 RNA-seq Upstream Analysis — Complete\n\nKept 12 samples: 6 siNT + 6 siESR1.",
         tool_name: null,
         ok: null,
         input: "",
@@ -124,7 +128,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
 
   const project = {
     id: "default",
-    name: "superscience",
+    name: "wisp-science",
     root: "/mock/root",
     skill_count: 12,
     mcp_server_count: 8,
@@ -132,6 +136,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     has_api_key: true,
   };
   let projectAgentContext = "";
+  const projectNames: Record<string, string> = { default: project.name, other: "Other project" };
+  const projectDescriptions: Record<string, string> = { default: "", other: "" };
+  const projectAgentContexts: Record<string, string> = { default: "", other: "" };
   const query = new URLSearchParams(window.location.search);
   const mockPlanFlow = query.get("mockPlanFlow");
   const mockPublication = query.get("mockPublication");
@@ -144,6 +151,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   const mockLongSession = query.get("mockLongSession") === "1" || mockLongPages > 0;
   const mockResourceSession = query.get("mockResourceSession") === "1";
   const mockMcpAppSession = query.get("mockMcpAppSession") === "1";
+  const mockBrowserRestore = query.get("mockBrowserRestore") === "1";
   const mockOAuthPending = query.get("mockOAuthPending") === "1";
   const mockOnboarding = query.get("mockOnboarding") === "1";
   const mockSyncUnconfigured = query.get("mockSyncUnconfigured") === "1";
@@ -184,6 +192,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       ? [{ id: "long-session", title: "Long transcript", ts: 2000, running: false }]
       : mockMcpAppSession
         ? [{ id: "mcp-app-session", title: "Saved MCP App", ts: 2000, running: false }]
+      : mockBrowserRestore
+        ? [{ id: "browser-restore-session", title: "Live PubMed retrieval", ts: 2000, running: false }]
       : query.has("mockAgentWorkflow")
         ? [{ id: "s-current", title: "Agent workflow conversation", ts: 2000, running: false }]
         : query.get("mockSessionModels") === "1"
@@ -197,6 +207,15 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               },
             ]
       : [];
+  if (query.get("mockNamedUnusedDraft") === "1") {
+    mockSessions.unshift({
+      id: "named-unused-draft",
+      title: "Named unused draft",
+      ts: 9000,
+      running: false,
+      has_user_turn: false,
+    });
+  }
   let activeMockFrame = mockExplorationFlow ? "exploration-mainline" : "";
   let mockBranchMergedSummary = "";
   let mockMainlineAdvanced = query.get("mockMainlineAdvanced") === "1";
@@ -287,6 +306,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
         code: blocked ? "MainlineAdvanced" : null,
         reasons: blocked ? [{ code: "MainlineAdvanced", message: "The mainline no longer matches this exploration checkpoint." }] : [],
         expectedGuardHash: `guard-${id}`,
+        manualResolutionAvailable: blocked && row.exploration.status === "active",
       },
     };
   };
@@ -313,7 +333,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     current_version: "0.9.0",
     latest_version: "0.9.0",
     update_available: false,
-    release_url: "https://github.com/imbigfly/SuperScience/releases",
+    release_url: "https://github.com/xuzhougeng/wisp-science/releases",
     notes: "",
     install_supported: false,
     downloaded: false,
@@ -328,7 +348,6 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   (window as any).__mockUpdateInstalled = false;
   let resolveMockOAuth: (() => void) | null = null;
   let mockPetEnabled = new URLSearchParams(window.location.search).get("mockPet") === "1";
-  let mockPiiFirewallEnabled = true;
   let mockPetDirectory = mockPetEnabled ? "C:\\Users\\tester\\.codex\\pets\\wispy" : "";
   (window as any).__petWindowVisible = false;
   let resolveMockUpdateCheck: (() => void) | null = null;
@@ -338,6 +357,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   let nextSessionImportDelayMs = 0;
   const nextProjectTransferDelayMs: Record<string, number> = {};
   let failNextProjectOpenId: string | null = null;
+  let failNextNewSession: string | null = null;
   (window as any).__delayNextProjectOpen = (projectId: string, milliseconds: number) => {
     nextProjectOpenDelayMs[String(projectId)] = Math.max(0, Number(milliseconds) || 0);
   };
@@ -352,6 +372,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   };
   (window as any).__failNextProjectOpen = (projectId: string) => {
     failNextProjectOpenId = String(projectId);
+  };
+  (window as any).__failNextNewSession = (message?: string) => {
+    failNextNewSession = String(message || "Project not found");
   };
   (window as any).__setMockUpdateCheck = (value: Record<string, unknown>) => {
     mockUpdateCheck = { ...mockUpdateCheck, ...(value ?? {}) };
@@ -384,9 +407,10 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     resolveMockOAuth = null;
   };
   let skills = [
-    { name: "remote-compute-modal", description: "Run jobs on Modal", tags: ["compute"], scope: "bundled", enabled: true, builtin: true, dir: "/skills/remote-compute-modal" },
-    { name: "alphafold2", description: "Predict protein structures", tags: ["protein", "structure"], scope: "bundled", enabled: true, builtin: true, dir: "/skills/alphafold2" },
-    { name: "paper-narrative", description: "Shape a paper story", tags: [], scope: "global", enabled: true, builtin: false, dir: "/home/me/.superscience/skills/paper-narrative" },
+    { name: "remote-compute-ssh", description: "Submit SSH-direct research Runs", tags: ["compute"], scope: "bundled", enabled: true, builtin: true, dir: "/skills/remote-compute-ssh" },
+    { name: "literature-review", description: "Find and synthesize literature", tags: ["literature"], scope: "bundled", enabled: true, builtin: true, dir: "/skills/literature-review" },
+    { name: "paper-narrative", description: "Shape a paper story", tags: [], scope: "global", enabled: true, builtin: false, dir: "/home/me/.wisp/skills/paper-narrative" },
+    { name: "social-note", description: "Write paste-ready social copy for Xiaohongshu, WeChat, or Twitter after the user chooses a platform", tags: ["share"], scope: "bundled", enabled: true, builtin: true, dir: "/skills/social-note" },
   ];
   let plugins = [
     {
@@ -481,10 +505,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     return String(raw);
   };
   let mockSpecialists: any[] = [
-    { id: "reviewer", name: "审阅专家", icon: "review", color: "clay", description: "追溯会话记录，报告捏造结果、幻觉事实或偏离计划的问题。", instructions: "rubric", model_id: "", skills: [], connectors: [], builtin: true },
-    { id: "reader", name: "检索专家", icon: "search", color: "clay", description: "并行检索项目会话，并返回精炼且带出处的证据。", instructions: "reader rubric", model_id: "", skills: [], connectors: [], builtin: true },
-    { id: "scientific_illustrator", name: "科学插画专家", icon: "image", color: "clay", description: "根据请求与项目上下文创建可发表的科学图件。", instructions: "illustrator rubric", model_id: "", skills: ["figure-composer", "figure-style"], connectors: [], builtin: true },
-    { id: "r_bioinformatics_figure", name: "生信图专家", icon: "image", color: "clay", description: "默认用 R/`r` tool 绘制常见生信图。", instructions: "r bioinfo figure rubric", model_id: "", skills: ["figure-style", "nature-figure"], connectors: [], builtin: true },
+    { id: "reviewer", name: "Reviewer", icon: "review", color: "clay", description: "", instructions: "rubric", model_id: "", skills: [], connectors: [], builtin: true },
+    { id: "reader", name: "Reader", icon: "search", color: "clay", description: "Searches project sessions", instructions: "reader rubric", model_id: "", skills: [], connectors: [], builtin: true },
+    { id: "scientific_illustrator", name: "Scientific Illustrator", icon: "image", color: "clay", description: "Creates scientific figures", instructions: "illustrator rubric", model_id: "", skills: ["figure-composer", "figure-style"], connectors: [], builtin: true },
   ];
   let sessionSpecialists: Record<string, string> = {};
   let mockBrowserUrlFilters = { block: [] as { host: string; reason?: string }[], prefer: [] as { host: string; reason?: string }[] };
@@ -688,7 +711,6 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       id: "default",
       label: "deepseek-v4-pro",
       provider: "openai",
-      provider_id: "deepseek",
       api_url: "https://api.deepseek.com",
       model: "deepseek-v4-pro",
       has_api_key: true,
@@ -699,12 +721,12 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       supports_vision: query.get("mockTextOnlyModel") !== "1",
       use_for_vision: query.get("mockTextOnlyModel") !== "1",
       use_for_image_generation: false,
+      use_for_video_generation: false,
     },
     {
       id: "opus",
       label: "opus-4.8",
       provider: "anthropic",
-      provider_id: "anthropic",
       api_url: "https://api.anthropic.com",
       model: "opus-4.8",
       has_api_key: true,
@@ -715,46 +737,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       supports_vision: true,
       use_for_vision: false,
       use_for_image_generation: false,
+      use_for_video_generation: false,
     },
   ];
-  let mockProviders = [
-    {
-      id: "tctoken",
-      label: "天成TOKEN平台",
-      protocol: "openai",
-      api_url: "https://www.tctoken.cn/v1",
-      sort_order: 0,
-      builtin: true,
-      has_api_key: false,
-      model_count: 0,
-    },
-    {
-      id: "deepseek",
-      label: "api.deepseek.com",
-      protocol: "openai",
-      api_url: "https://api.deepseek.com",
-      sort_order: 1,
-      builtin: false,
-      has_api_key: true,
-      model_count: 1,
-    },
-    {
-      id: "anthropic",
-      label: "api.anthropic.com",
-      protocol: "anthropic",
-      api_url: "https://api.anthropic.com",
-      sort_order: 2,
-      builtin: false,
-      has_api_key: true,
-      model_count: 1,
-    },
-  ];
-  const syncProviderModelCounts = () => {
-    for (const provider of mockProviders) {
-      provider.model_count = mockModels.filter((m) => m.provider_id === provider.id).length;
-    }
-  };
-  syncProviderModelCounts();
   const activeHttpModelId = () => mockModels.find((model) => model.active)?.id ?? mockModels[0]?.id ?? "";
   // Baked model catalog (mirrors src-tauri model_catalog): exact id match
   // within vendor namespaces, never prefix matching.
@@ -1080,6 +1065,13 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   const acpLongResolvers: Record<string, (value: string) => void> = {};
   const nativeConfirmResolvers: Record<string, (value: string) => void> = {};
   (window as any).__nativeConfirmPending = {};
+  (window as any).__finishAcpLong = (frameId?: string) => {
+    const ids = frameId ? [frameId] : Object.keys(acpLongResolvers);
+    for (const id of ids) {
+      acpLongResolvers[id]?.(id);
+      delete acpLongResolvers[id];
+    }
+  };
   let mockCredentials: Record<string, boolean> = {
     openalex_api_key: false,
     infinisynapse_api_key: false,
@@ -1173,6 +1165,79 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   ];
   (window as any).__mockExecutionContexts = executionContexts;
   const sessionExecutionContexts: Record<string, string[]> = {};
+  const contextStoragePrefs: Record<
+    string,
+    { remote_data_root: string; remote_workdir_root: string; local_results_dir: string }
+  > = {
+    // Confirmed by default so unrelated attach flows do not open the
+    // first-use storage dialog; the storage-prefs spec deletes this entry.
+    "ssh:gpu-server": {
+      remote_data_root: "~/wisp/demo-project/data",
+      remote_workdir_root: ".wisp-science/runs",
+      local_results_dir: "remote/gpu-server",
+    },
+  };
+  (window as any).__mockStoragePrefs = contextStoragePrefs;
+  const remoteStagingEntries: any[] = [
+    {
+      id: "stage-input-001",
+      context_id: "ssh:gpu-server",
+      run_id: "run-kinase-001",
+      remote_path: "~/.wisp-science/runs/run-kinase-001/inputs/plates.csv",
+      source: "run_input",
+      run_status: "succeeded",
+      size_bytes: 20480,
+      created_at: 1783482605,
+      removed_at: null,
+      state: "active",
+    },
+    {
+      id: "stage-old-upload",
+      context_id: "ssh:gpu-server",
+      run_id: null,
+      remote_path: "~/wisp/demo-project/data/matrix.tsv",
+      source: "transfer",
+      run_status: null,
+      size_bytes: 1048576,
+      created_at: 1783482000,
+      removed_at: null,
+      state: "replaced",
+    },
+    {
+      id: "stage-new-upload",
+      context_id: "ssh:gpu-server",
+      run_id: null,
+      remote_path: "~/wisp/demo-project/data/matrix.tsv",
+      source: "transfer",
+      run_status: null,
+      size_bytes: 2097152,
+      created_at: 1783482500,
+      removed_at: null,
+      state: "orphan",
+    },
+  ];
+  (window as any).__mockRemoteStaging = remoteStagingEntries;
+  let projectRunRetention: {
+    run_retention_days: number | null;
+    failed_run_retention_days: number | null;
+    orphan_file_retention_days: number | null;
+  } = {
+    run_retention_days: null,
+    failed_run_retention_days: null,
+    orphan_file_retention_days: null,
+  };
+  const runWorkspaceFiles: Record<string, Record<string, any[]>> = {
+    "run-kinase-001": {
+      "": [
+        { path: "results", kind: "dir", size_bytes: 3221225472, file_count: 132481 },
+        { path: "qc_table.tsv", kind: "file", size_bytes: 2048, file_count: null },
+      ],
+      results: [
+        { path: "results/summary.tsv", kind: "file", size_bytes: 4096, file_count: null },
+      ],
+    },
+  };
+  const runReviewDismissed = new Set<string>();
   let defaultExecutionContext: string | null = null;
   let runtimeInfos: any[] = [
     {
@@ -1234,7 +1299,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       exit_code: 0,
       stdout_tail: "wrote qc table",
       stderr_tail: "",
-      remote_workdir: "~/.superscience/runs/run-kinase-001",
+      remote_workdir: "~/.wisp-science/runs/run-kinase-001",
       remote_handle_json: "{\"kind\":\"ssh_direct\"}",
       timeout_secs: 14400,
       last_polled_at: 1783482609,
@@ -1301,7 +1366,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       last_polled_at: null,
       last_poll_error: null,
       progress_json: JSON.stringify({
-        schema: "superscience.method-search-progress.v1",
+        schema: "wisp.method-search-progress.v1",
         phase: "awaiting_approval",
         baseline_primary: 0.5372,
         best_primary: 0.5717,
@@ -1315,6 +1380,20 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     });
   }
   (window as any).__mockRuns = runs;
+  (window as any).__mockRunWorkspaceFiles = runWorkspaceFiles;
+  // Finish a pending MONITORRUN turn without changing the run's state: the
+  // test drives the run's status itself, then ends the turn to observe the
+  // deferred review prompt.
+  (window as any).__finishMonitorRun = () => {
+    if (!monitorRunFrameId) return;
+    const frameId = monitorRunFrameId;
+    const run = runs.find((item) => item.id === "run-local-002");
+    emit("agent", { kind: "ToolResult", frame_id: frameId, name: "monitor_run", ok: true, content: JSON.stringify(run) });
+    emit("agent", { kind: "Done", frame_id: frameId, stop_reason: "end_turn" });
+    resolveMonitorRun?.(frameId);
+    resolveMonitorRun = null;
+    monitorRunFrameId = null;
+  };
   const mockMethodSearchDetails = () => ({
     run: runs.find((item) => item.id === "method-search-001"),
     state: {
@@ -1329,7 +1408,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       updated_at: 1783482800,
     },
     spec: {
-      schema: "superscience.method-search.v1",
+      schema: "wisp.method-search.v1",
       objective: "Improve validation AUPRC without violating runtime limits.",
       target: {
         language: "python",
@@ -1361,7 +1440,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       final_verification: { artifact_version_id: "holdout-version-001", path: "data/holdout.csv", repetitions: 5 },
     },
     audit: {
-      schema: "superscience.method-search-audit.v1",
+      schema: "wisp.method-search-audit.v1",
       preparationId: "prepare-001",
       baseline: {
         repetitions: 3,
@@ -1390,11 +1469,11 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   let monitorRunFrameId: string | null = null;
   let resolveMonitorRun: ((frameId: string) => void) | null = null;
   const artifacts = [
-    { id: "art-tree", name: "nif3.treefile", kind: "text/treefile", path: "nif3.treefile", ts: Math.floor(Date.now() / 1000), project_id: "default", project_name: "superscience", session_id: "s-current", session_title: "Current analysis", origin: "output" },
-    { id: "art-profile", name: "plddt_profile.png", kind: "image/png", path: "plddt_profile.png", ts: Math.floor(Date.now() / 1000), project_id: "default", project_name: "superscience", session_id: "s-old", session_title: "Older structure run", origin: "output" },
+    { id: "art-tree", name: "nif3.treefile", kind: "text/treefile", path: "nif3.treefile", ts: Math.floor(Date.now() / 1000), project_id: "default", project_name: "wisp-science", session_id: "s-current", session_title: "Current analysis", origin: "output" },
+    { id: "art-profile", name: "plddt_profile.png", kind: "image/png", path: "plddt_profile.png", ts: Math.floor(Date.now() / 1000), project_id: "default", project_name: "wisp-science", session_id: "s-old", session_title: "Older structure run", origin: "output" },
     { id: "art-counts", name: "counts.csv", kind: "text/csv", path: "counts.csv", ts: Math.floor(Date.now() / 1000), project_id: "other", project_name: "Other project", session_id: "s-other", session_title: "Cross-project counts", origin: "upload" },
-    { id: "art-html", name: "dashboard.html", kind: "text/html", path: "dashboard.html", ts: Math.floor(Date.now() / 1000), project_id: "default", project_name: "superscience", session_id: "s-current", session_title: "Current analysis", origin: "output" },
-    { id: "art-markdown", name: "analysis-report.md", kind: "text/markdown", path: "analysis-report.md", ts: Math.floor(Date.now() / 1000), project_id: "default", project_name: "superscience", session_id: "s-current", session_title: "Current analysis", origin: "output" },
+    { id: "art-html", name: "dashboard.html", kind: "text/html", path: "dashboard.html", ts: Math.floor(Date.now() / 1000), project_id: "default", project_name: "wisp-science", session_id: "s-current", session_title: "Current analysis", origin: "output" },
+    { id: "art-markdown", name: "analysis-report.md", kind: "text/markdown", path: "analysis-report.md", ts: Math.floor(Date.now() / 1000), project_id: "default", project_name: "wisp-science", session_id: "s-current", session_title: "Current analysis", origin: "output" },
   ];
   let libraryItems: any[] = [];
   const librarySummary = ({ base64: _base64, code, ...item }: any) => ({
@@ -1577,12 +1656,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           return value;
         };
         switch (cmd) {
-          case "send_feedback_email": {
-            const message = String(arg("message") ?? "").trim();
-            if (!message) throw new Error("Please enter feedback before sending.");
-            ((window as any).__feedbackEmailLog ??= []).push(plain(args ?? {}));
+          case "start_window_move":
             return null;
-          }
           case "review_session": {
             const delay = Number((window as any).__reviewDelayMs ?? 0);
             if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
@@ -1906,7 +1981,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 items: [
                   { role: "user", text: "Prepare the regression plan", tool_name: null, ok: null },
                   // This is the load_session row produced from the persisted
-                  // plan tool message — `superscience:plan` for ACP, the `propose_plan`
+                  // plan tool message — `wisp:plan` for ACP, the `propose_plan`
                   // result for built-in; LoadedItem::into_chat rebuilds both.
                   {
                     role: "plan",
@@ -1925,6 +2000,39 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 ],
                 next_before_seq: null,
                 user_offset: 0,
+              };
+            }
+            if (mockBrowserRestore && String(arg("id") ?? "") === "browser-restore-session") {
+              return {
+                items: [
+                  { role: "user", text: "CLEC12A PubMed", tool_name: null, ok: null },
+                  {
+                    role: "tool",
+                    text: "{\n  \"status\": \"disconnected\",\n  \"live_retrieval\": false\n}",
+                    tool_name: "browser_setup",
+                    ok: true,
+                  },
+                  {
+                    role: "tool",
+                    text: "{\n  \"status\": \"connected\",\n  \"live_retrieval\": true,\n  \"connected_tabs\": 1\n}",
+                    tool_name: "browser_setup",
+                    ok: true,
+                  },
+                  {
+                    role: "tool",
+                    text: "{\"tabs\":[{\"title\":\"PubMed CLEC12A\",\"url\":\"https://pubmed.ncbi.nlm.nih.gov\"}]}",
+                    tool_name: "web_scan",
+                    ok: true,
+                  },
+                  { role: "assistant", text: "PubMed currently lists live hits for CLEC12A.", tool_name: null, ok: null },
+                ],
+                next_before_seq: null,
+                user_offset: 0,
+                presentations: [{
+                  presentation_id: "",
+                  presentation_kind: "browser_disconnected",
+                  payload: { code: "browser_extension_disconnected", live_retrieval: false },
+                }],
               };
             }
             if (mockMcpAppSession) {
@@ -1947,7 +2055,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                       text: `<!doctype html><html><body><div id="state">waiting</div><script>
                         addEventListener("message", (event) => {
                           const message = event.data || {};
-                          if (message.id === 1 && message.result?.hostInfo?.name === "superscience") {
+                          if (message.id === 1 && message.result?.hostInfo?.name === "wisp-science") {
                             document.getElementById("state").textContent = "restored";
                             parent.postMessage({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} }, "*");
                           }
@@ -2090,6 +2198,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               running_ids: mockSessions.filter((item) => item.running).map((item) => item.id),
             };
           }
+          case "latest_used_session":
+            return mockSessions.find((session) => session.has_user_turn !== false)?.id ?? null;
           case "list_project_explorations":
             return mockExplorations.filter((item) =>
               !mockExplorationRoundResolved || item.exploration.status !== "discarded").map((item) => ({
@@ -2097,8 +2207,15 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               exploration: { ...item.exploration },
             }));
           case "start_exploration": {
+            const sourceFrameId = String(arg("sourceFrameId") ?? "");
+            const sourceSession = mockSessions.find((session) => session.id === sourceFrameId);
+            if (sourceSession?.branched_from || sourceSession?.branch_state) {
+              throw new Error(
+                "exploration_branch_unsupported: Conversation branches cannot start an exploration.",
+              );
+            }
             ((window as any).__startExplorationCalls ??= []).push({
-              sourceFrameId: arg("sourceFrameId"),
+              sourceFrameId,
               turnIndex: arg("turnIndex"),
               name: arg("name"),
             });
@@ -2123,6 +2240,13 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           }
           case "preview_exploration_promotion":
             return mockExplorationPreview(String(arg("explorationId")));
+          case "open_exploration_manual_resolution": {
+            const preview = mockExplorationPreview(String(arg("explorationId")));
+            if (!preview.eligibility.manualResolutionAvailable) {
+              throw new Error("ExplorationNotPromotable: this exploration does not have a file-level manual resolution path");
+            }
+            return null;
+          }
           case "promote_exploration": {
             const id = String(arg("explorationId"));
             const preview = mockExplorationPreview(id);
@@ -2235,8 +2359,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return null;
           case "list_projects":
             return [
-              { id: "default", name: project.name, workspace_dir: project.root, session_count: 0, updated_at: 1, running_count: 0, needs_you_count: 0, sync_configured: syncedProjects.has("default"), last_synced_at: syncedProjects.has("default") ? Math.floor(Date.now() / 1000) : null },
-              { id: "other", name: "Other project", workspace_dir: "/mock/other", session_count: 1, updated_at: 1, running_count: 0, needs_you_count: 0, sync_configured: syncedProjects.has("other"), last_synced_at: syncedProjects.has("other") ? Math.floor(Date.now() / 1000) : null },
+              { id: "default", name: projectNames.default ?? project.name, workspace_dir: project.root, session_count: 0, updated_at: 1, running_count: 0, needs_you_count: 0, sync_configured: syncedProjects.has("default"), last_synced_at: syncedProjects.has("default") ? Math.floor(Date.now() / 1000) : null },
+              { id: "other", name: projectNames.other ?? "Other project", workspace_dir: "/mock/other", session_count: 1, updated_at: 1, running_count: 0, needs_you_count: 0, sync_configured: syncedProjects.has("other"), last_synced_at: syncedProjects.has("other") ? Math.floor(Date.now() / 1000) : null },
             ];
           case "list_recent_sessions":
             return [
@@ -2270,7 +2394,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             }
             activeProjectId = openingProjectId;
             ((window as any).__projectOpenCompletions ??= []).push(activeProjectId);
-            return { id: activeProjectId, name: activeProjectId === "other" ? "Other project" : project.name, workspace_dir: activeProjectId === "other" ? "/mock/other" : project.root, session_count: 0, updated_at: 1, running_count: 0, needs_you_count: 0 };
+            return { id: activeProjectId, name: projectNames[activeProjectId] ?? (activeProjectId === "other" ? "Other project" : project.name), workspace_dir: activeProjectId === "other" ? "/mock/other" : project.root, session_count: 0, updated_at: 1, running_count: 0, needs_you_count: 0 };
           }
           case "create_project":
             activeProjectId = "default";
@@ -2298,7 +2422,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               totalBytes: 1024, currentPath: "data/example.tsv",
             });
             if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
-            return "/mock/superscience-project.zip";
+            return "/mock/wisp-project.zip";
           }
           case "sync_project":
             if ((window as any).__failSyncConflict) {
@@ -2333,6 +2457,37 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               workspace: project.root,
               errors: [],
             };
+          case "get_appearance_prefs":
+            return (window as any).__mockAppearancePrefs ?? {
+              saved: false,
+              theme: "system",
+              light_palette: "paper",
+              dark_palette: "charcoal",
+              ui_font_size: 14,
+              code_font_size: 12,
+              ui_font_family: "",
+              code_font_family: "",
+              selection_popup_enabled: true,
+              send_with_modifier: false,
+              custom_css: "",
+            };
+          case "set_appearance_prefs": {
+            const next = plain(arg("prefs") ?? args ?? {});
+            (window as any).__mockAppearancePrefs = {
+              saved: true,
+              theme: String(next.theme ?? "system"),
+              light_palette: String(next.light_palette ?? "paper"),
+              dark_palette: String(next.dark_palette ?? "charcoal"),
+              ui_font_size: Number(next.ui_font_size ?? 14),
+              code_font_size: Number(next.code_font_size ?? 12),
+              ui_font_family: String(next.ui_font_family ?? ""),
+              code_font_family: String(next.code_font_family ?? ""),
+              selection_popup_enabled: next.selection_popup_enabled !== false,
+              send_with_modifier: Boolean(next.send_with_modifier),
+              custom_css: String(next.custom_css ?? ""),
+            };
+            return (window as any).__mockAppearancePrefs;
+          }
           case "get_settings":
             return {
               provider: "",
@@ -2342,6 +2497,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               locale: mockLocale,
               max_iter: 100,
               auto_compact: true,
+              auto_continue: false,
+              auto_continue_limit: 10,
               follow_up_questions: true,
               resume_last_session: true,
               max_tokens: 4096,
@@ -2354,7 +2511,6 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               has_sync_relay_token: !mockSyncUnconfigured,
               pet_enabled: mockPetEnabled,
               pet_directory: mockPetDirectory,
-              pii_firewall_enabled: mockPiiFirewallEnabled,
             };
           case "get_browser_url_filters":
             return mockBrowserUrlFilters;
@@ -2372,14 +2528,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             };
             return mockBrowserUrlFilters;
           }
-          case "get_pii_firewall_enabled":
-            return mockPiiFirewallEnabled;
-          case "set_pii_firewall_enabled":
-            mockPiiFirewallEnabled = Boolean(arg("enabled"));
-            return null;
           case "get_context_usage_details":
             return {
-              system_prompt: "You are superscience.\n\n## Environment\nWindows x86_64",
+              system_prompt: "You are wisp-science.\n\n## Environment\nWindows x86_64",
               tool_definitions: [
                 { name: "read", description: "Read a file from disk." },
                 { name: "write", description: "Write a file to disk." },
@@ -2486,59 +2637,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               String(arg("model") ?? ""),
             );
           }
-          case "list_model_providers":
-            syncProviderModelCounts();
-            return mockProviders;
-          case "save_model_provider": {
-            const provider = plain(arg("provider") ?? {});
-            const key = arg("key");
-            const clearKey = Boolean(arg("clearKey"));
-            if (!provider.id) {
-              let n = 1;
-              while (mockProviders.some((p) => p.id === `p${n}`)) n += 1;
-              provider.id = `p${n}`;
-              provider.builtin = false;
-              provider.sort_order = mockProviders.length;
-              mockProviders.push(provider);
-            } else {
-              const idx = mockProviders.findIndex((p) => p.id === provider.id);
-              if (idx >= 0) {
-                const builtin = mockProviders[idx].builtin;
-                mockProviders[idx] = { ...mockProviders[idx], ...provider, builtin };
-              } else {
-                mockProviders.push(provider);
-              }
-            }
-            const target = mockProviders.find((p) => p.id === provider.id);
-            if (target) {
-              if (clearKey) target.has_api_key = false;
-              else if (key) target.has_api_key = true;
-              for (const model of mockModels) {
-                if (model.provider_id === target.id) {
-                  model.provider = target.protocol;
-                  model.api_url = target.api_url;
-                  model.has_api_key = target.has_api_key;
-                }
-              }
-            }
-            syncProviderModelCounts();
-            return mockProviders;
-          }
-          case "remove_model_provider": {
-            const id = String(arg("id") ?? "");
-            if (id === "tctoken" || mockProviders.some((p) => p.id === id && p.builtin)) {
-              throw new Error("Built-in providers cannot be removed.");
-            }
-            if (mockModels.some((m) => m.provider_id === id)) {
-              throw new Error("Remove or move all models under this provider first.");
-            }
-            mockProviders = mockProviders.filter((p) => p.id !== id);
-            syncProviderModelCounts();
-            return mockProviders;
-          }
           case "get_storage_usage":
             return {
-              data_dir: "C:\\mock\\AppData\\superscience",
+              data_dir: "C:\\mock\\AppData\\wisp-science",
               projects: [
                 { id: "default", name: project.name, path: project.root, bytes: 96 * 1024 * 1024 },
                 { id: "other", name: "Other project", path: "/mock/other", bytes: 24 * 1024 * 1024 },
@@ -2937,6 +3038,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               identity_file: null,
               notes: "Mock GPU host",
             }];
+          case "remove_ssh_host":
+            return [];
           case "list_execution_contexts":
             return executionContexts;
           case "list_session_execution_context_ids": {
@@ -2955,6 +3058,69 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             else selected.delete(contextId);
             sessionExecutionContexts[sessionId] = [...selected].sort();
             return [...sessionExecutionContexts[sessionId]];
+          }
+          case "list_remote_files": {
+            const contextId = String(arg("contextId") ?? arg("context_id") ?? "");
+            return remoteStagingEntries.filter(
+              (entry) => entry.context_id === contextId && !entry.removed_at
+            );
+          }
+          case "remove_remote_files": {
+            const contextId = String(arg("contextId") ?? arg("context_id") ?? "");
+            const ids = (arg("ids") ?? []) as string[];
+            const force = Boolean(arg("force"));
+            for (const id of ids) {
+              const entry = remoteStagingEntries.find(
+                (item) => item.id === id && item.context_id === contextId && !item.removed_at
+              );
+              if (!entry) throw new Error(`remote file entry ${id} is not ledgered`);
+              if (entry.state === "active" && !force) {
+                throw new Error(`${entry.remote_path} is still referenced by a run`);
+              }
+              entry.removed_at = Math.floor(Date.now() / 1000);
+            }
+            return remoteStagingEntries.filter(
+              (entry) => entry.context_id === contextId && !entry.removed_at
+            );
+          }
+          case "context_disposal_report": {
+            const contextId = String(arg("contextId") ?? arg("context_id") ?? "");
+            return {
+              context_id: contextId,
+              external_references: Number((window as any).__mockExternalRefs ?? 0),
+              staged_files: remoteStagingEntries.filter(
+                (entry) => entry.context_id === contextId && !entry.removed_at
+              ).length,
+            };
+          }
+          case "get_context_storage_prefs": {
+            const contextId = String(arg("contextId") ?? arg("context_id") ?? "");
+            const stored = contextStoragePrefs[contextId];
+            if (stored) return { ...stored, context_id: contextId, confirmed: true };
+            const context = executionContexts.find((item) => item.id === contextId);
+            const label = (context?.label ?? contextId).toLowerCase().replace(/[^a-z0-9]+/g, "-");
+            return {
+              context_id: contextId,
+              remote_data_root: "~/wisp/demo-project/data",
+              remote_workdir_root: ".wisp-science/runs",
+              local_results_dir: `remote/${label}`,
+              confirmed: false,
+            };
+          }
+          case "set_context_storage_prefs": {
+            const contextId = String(arg("contextId") ?? arg("context_id") ?? "");
+            const prefs = {
+              remote_data_root: String(arg("remoteDataRoot") ?? arg("remote_data_root") ?? ""),
+              remote_workdir_root: String(
+                arg("remoteWorkdirRoot") ?? arg("remote_workdir_root") ?? ""
+              ),
+              local_results_dir: String(arg("localResultsDir") ?? arg("local_results_dir") ?? ""),
+            };
+            if (!prefs.remote_data_root || !prefs.remote_workdir_root || !prefs.local_results_dir) {
+              throw new Error("storage locations are required");
+            }
+            contextStoragePrefs[contextId] = prefs;
+            return { ...prefs, context_id: contextId, confirmed: true };
           }
           case "get_default_execution_context":
             return defaultExecutionContext;
@@ -3132,6 +3298,70 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             if (!run) throw new Error("Run not found");
             return run;
           }
+          case "list_run_workspace_files": {
+            const runId = String(arg("runId") ?? "");
+            const path = String(arg("path") ?? "");
+            const filter = String(arg("nameFilter") ?? "").toLowerCase();
+            const limit = Number(arg("limit") ?? 200);
+            const offset = Number(arg("offset") ?? 0);
+            const levels = runWorkspaceFiles[runId] ?? {};
+            let rows = (levels[path] ?? []).filter((entry: any) =>
+              !filter || entry.path.split("/").pop().toLowerCase().includes(filter)
+            );
+            const page = rows.slice(offset, offset + limit);
+            return { entries: page, truncated: rows.length > offset + limit };
+          }
+          case "download_run_files":
+            return [];
+          case "delete_run_files": {
+            const runId = String(arg("runId") ?? "");
+            const paths = (arg("paths") ?? []) as string[];
+            const levels = runWorkspaceFiles[runId] ?? {};
+            for (const level of Object.keys(levels)) {
+              levels[level] = levels[level].filter(
+                (entry: any) => !paths.some((p) => entry.path === p || entry.path.startsWith(`${p}/`))
+              );
+            }
+            for (const p of paths) delete levels[p];
+            return null;
+          }
+          case "should_prompt_run_review": {
+            const runId = String(arg("runId") ?? "");
+            const run = runs.find((item) => item.id === runId);
+            if (!run) throw new Error("Run not found");
+            if (
+              run.kind !== "ssh_direct" ||
+              run.status !== "succeeded" ||
+              run.cleaned_at ||
+              runReviewDismissed.has(runId)
+            ) {
+              return false;
+            }
+            const specs = JSON.parse(String(run.output_specs_json ?? "[]"));
+            if (Array.isArray(specs) && specs.length > 0) return !run.harvested_at;
+            return ((runWorkspaceFiles[runId] ?? {})[""] ?? []).length > 0;
+          }
+          case "dismiss_run_review": {
+            runReviewDismissed.add(String(arg("runId") ?? ""));
+            return null;
+          }
+          case "cleanup_run_workspace": {
+            const run = runs.find((item) => item.id === String(arg("runId") ?? ""));
+            if (!run) throw new Error("Run not found");
+            if (["submitted", "running", "cancelling"].includes(run.status)) {
+              throw new Error("Run is still active");
+            }
+            if (!run.remote_handle_json) throw new Error("Run has no server workspace to clean");
+            run.cleaned_at = run.cleaned_at ?? Math.floor(Date.now() / 1000);
+            run.cleanup_error = null;
+            return run;
+          }
+          case "harvest_run": {
+            const run = runs.find((item) => item.id === String(arg("runId") ?? ""));
+            if (!run) throw new Error("Run not found");
+            run.harvested_at = run.harvested_at ?? Math.floor(Date.now() / 1000);
+            return run;
+          }
           case "get_method_search_run":
             return mockMethodSearchDetails();
           case "start_method_search": {
@@ -3211,12 +3441,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             const useForImageGeneration = Boolean(
               arg("useForImageGeneration") ?? profile.use_for_image_generation,
             );
-            const provider = mockProviders.find((p) => p.id === profile.provider_id);
-            if (provider) {
-              profile.provider = provider.protocol;
-              profile.api_url = provider.api_url;
-              profile.has_api_key = provider.has_api_key;
-            }
+            const useForVideoGeneration = Boolean(
+              arg("useForVideoGeneration") ?? profile.use_for_video_generation,
+            );
             // Mirror the backend: an empty id creates a fresh profile.
             if (!profile.id) {
               let n = 1;
@@ -3230,20 +3457,22 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               ...profile,
               use_for_vision: useForVision,
               use_for_image_generation: useForImageGeneration,
+              use_for_video_generation: useForVideoGeneration,
             } : {
               ...m,
               use_for_vision: useForVision ? false : m.use_for_vision,
               use_for_image_generation: useForImageGeneration
                 ? false
                 : m.use_for_image_generation,
+              use_for_video_generation: useForVideoGeneration
+                ? false
+                : m.use_for_video_generation,
             });
-            syncProviderModelCounts();
             return mockModels;
           }
           case "remove_model": {
             const id = arg("id") ?? "";
             mockModels = mockModels.filter((m) => m.id !== id);
-            syncProviderModelCounts();
             return mockModels;
           }
           case "set_active_model": {
@@ -3279,12 +3508,43 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               "Expand the search for underrepresented species",
               "Generate a literature landscape visualization",
             ];
-          case "get_project_settings":
-            return { name: project.name, description: "", agent_context: projectAgentContext };
+          case "get_project_run_retention":
+            return projectRunRetention;
+          case "set_project_run_retention": {
+            projectRunRetention = {
+              run_retention_days: (arg("runRetentionDays") ?? null) as number | null,
+              failed_run_retention_days:
+                (arg("failedRunRetentionDays") ?? null) as number | null,
+              orphan_file_retention_days:
+                (arg("orphanFileRetentionDays") ?? null) as number | null,
+            };
+            return projectRunRetention;
+          }
+          case "get_project_settings": {
+            const settingsId = String(arg("id") ?? activeProjectId ?? "default");
+            return {
+              id: settingsId,
+              name: projectNames[settingsId] ?? (settingsId === "other" ? "Other project" : project.name),
+              description: projectDescriptions[settingsId] ?? "",
+              agent_context: projectAgentContexts[settingsId] ?? (settingsId === "default" ? projectAgentContext : ""),
+            };
+          }
           case "update_project": {
-            const nextName = String(arg("name") ?? project.name);
-            if (nextName.trim()) project.name = nextName.trim();
-            projectAgentContext = String(arg("agentContext") ?? arg("agent_context") ?? "");
+            const settingsId = String(arg("id") ?? activeProjectId ?? "default");
+            const nextName = String(arg("name") ?? projectNames[settingsId] ?? project.name);
+            if (nextName.trim()) {
+              projectNames[settingsId] = nextName.trim();
+              if (settingsId === "default" || settingsId === activeProjectId) {
+                project.name = nextName.trim();
+              }
+            }
+            const nextDescription = String(arg("description") ?? "");
+            projectDescriptions[settingsId] = nextDescription;
+            const nextContext = String(arg("agentContext") ?? arg("agent_context") ?? "");
+            projectAgentContexts[settingsId] = nextContext;
+            if (settingsId === "default" || settingsId === activeProjectId) {
+              projectAgentContext = nextContext;
+            }
             return null;
           }
           case "get_onboarding_state":
@@ -3322,7 +3582,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 scope: "project",
                 enabled: true,
                 builtin: false,
-                dir: "/mock/project/.superscience/skills/fresh-project-skill",
+                dir: "/mock/project/.wisp/skills/fresh-project-skill",
               });
             }
             return [
@@ -3543,6 +3803,17 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             workspaceEntries = workspaceEntries.filter((entry) => entry.path !== path && !entry.path.startsWith(`${path}/`));
             return null;
           }
+          case "upload_to_context": {
+            const dest = String(arg("destinationDir") ?? "/home/research");
+            const paths = Array.isArray(arg("sourcePaths")) ? arg("sourcePaths") : ["/mock/local/counts.csv"];
+            const name = String(paths[0] ?? "counts.csv").split(/[\\/]/).pop() || "counts.csv";
+            return [{
+              sourcePath: String(paths[0] ?? "/mock/local/counts.csv"),
+              destinationPath: `${dest.replace(/\/$/, "")}/${name}`,
+              runId: "run-upload-1",
+              status: "running",
+            }];
+          }
           case "list_remote_dir": {
             const path = String(arg("path") ?? "~");
             if (path === "/home/research/projects") {
@@ -3594,13 +3865,37 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                   status: session.running ? "running" : "complete",
                 }));
             }
-            const rows = [
-              { id: "s-current", project_id: "default", project_name: "superscience", title: "Current analysis", ts: 1, activity_at: 3, status: "complete" },
-              { id: "s-old", project_id: "default", project_name: "superscience", title: "Older structure run", ts: 1, activity_at: 2, status: "complete" },
-              { id: "s-other", project_id: "other", project_name: "Other project", title: "Cross-project counts", ts: 1, activity_at: 1, status: "needs_you" },
-              { id: "s-complete", project_id: "default", project_name: "superscience", title: "Enumerate MCP bio-tools databases", ts: 1, activity_at: 1, status: "complete" },
-            ];
-            return (q ? rows.filter((s) => s.title.toLowerCase().includes(q)) : rows).slice(0, limit);
+            const rows = query.get("mockManySessions") === "1"
+              ? mockSessions.map((session) => ({
+                  id: session.id,
+                  project_id: "default",
+                  project_name: project.name,
+                  title: session.title,
+                  body: session.body ?? "",
+                  ts: session.ts,
+                  activity_at: session.ts,
+                  status: session.running ? "running" : "complete",
+                }))
+              : [
+                  { id: "s-current", project_id: "default", project_name: "wisp-science", title: "Current analysis", body: "The counts table is discussed in this transcript.", ts: 1, activity_at: 3, status: "complete" },
+                  { id: "s-old", project_id: "default", project_name: "wisp-science", title: "Older structure run", body: "", ts: 1, activity_at: 2, status: "complete" },
+                  { id: "s-other", project_id: "other", project_name: "Other project", title: "Cross-project counts", body: "", ts: 1, activity_at: 1, status: "needs_you" },
+                  { id: "s-complete", project_id: "default", project_name: "wisp-science", title: "Enumerate MCP bio-tools databases", body: "", ts: 1, activity_at: 1, status: "complete" },
+                ];
+            return rows
+              .filter((session) => !q
+                || session.title.toLowerCase().includes(q)
+                || session.body.toLowerCase().includes(q))
+              .sort((left, right) => {
+                const projectRank = Number(left.project_id !== preferredProject)
+                  - Number(right.project_id !== preferredProject);
+                if (projectRank) return projectRank;
+                const titleRank = Number(!left.title.toLowerCase().includes(q))
+                  - Number(!right.title.toLowerCase().includes(q));
+                return titleRank || right.activity_at - left.activity_at;
+              })
+              .slice(0, limit)
+              .map(({ body: _body, ...session }) => session);
           }
           case "read_file": {
             const path = String(arg("path") ?? "report.csv");
@@ -3671,11 +3966,17 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             if (path.toLowerCase().includes(".png")) {
               return { path, mime: "image/png", text: null, base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z0mAAAAAASUVORK5CYII=" };
             }
+            if (path.toLowerCase().endsWith(".mp4")) {
+              return { path, mime: "video/mp4", text: null, base64: mp4Base64 };
+            }
+            if (path.toLowerCase().includes("figure_legend")) {
+              return { path, mime: "text/markdown", text: "# Figure legend\n\nSee [the paper](https://example.com/paper) and [the plot](results/new.png).\n", base64: null };
+            }
             if (path.toLowerCase().endsWith(".md")) {
               return { path, mime: "text/markdown", text: "# Draft manuscript\n\nOriginal body paragraph.\n", base64: null };
             }
             if (path.toLowerCase().includes(".json")) {
-              return { path, mime: "application/json", text: '{"model":{"name":"superscience","enabled":true}}', base64: null };
+              return { path, mime: "application/json", text: '{"model":{"name":"wisp","enabled":true}}', base64: null };
             }
             if (path.toLowerCase().includes(".html")) {
               return { path, mime: "text/html", text: '<style>#mode::after{content:"Desktop"}@media(max-width:900px){#mode::after{content:"Mobile"}}</style><div id="mode"></div>', base64: null };
@@ -3719,7 +4020,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               return {
                 path: "artifact-version:resource-version-bib",
                 mime: "text/x-bibtex",
-                text: "@article{superscience,\n  title = {SuperScience}\n}",
+                text: "@article{wisp,\n  title = {Wisp Science}\n}",
                 base64: null,
               };
             }
@@ -3742,6 +4043,42 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return "/mock/export.zip";
           case "save_share_image":
             return "/mock/wisp-share.png";
+          case "save_share_html":
+            return "/mock/wisp-share.html";
+          case "generate_share_social_copy": {
+            const platform = String(arg("platform") ?? "twitter");
+            const messages = Array.isArray(arg("messages")) ? arg("messages") : [];
+            if (!messages.length) {
+              throw new Error("Select at least one message.");
+            }
+            return {
+              platform,
+              highlights: [
+                {
+                  title: "Clean peak",
+                  why: "The 530 nm assignment is unambiguous.",
+                  messageIndexes: [1, 2],
+                },
+              ],
+              variants: [
+                {
+                  title: `${platform} hook`,
+                  body: `Paste-ready ${platform} copy about the clean 530 nm peak.`,
+                  hashtags: ["#wisp", "#spectrum"],
+                },
+                {
+                  title: `${platform} alt`,
+                  body: `Another ${platform} angle: the spectrum came back clean.`,
+                  hashtags: ["#lab"],
+                },
+                {
+                  title: `${platform} short`,
+                  body: `530 nm. Clean. Ready to share on ${platform}.`,
+                  hashtags: [],
+                },
+              ],
+            };
+          }
           case "import_session_archive":
             return {
               frame_id: "imported-frame",
@@ -3790,9 +4127,6 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             const next = plain(arg("settings") ?? {});
             mockPetEnabled = Boolean(next.pet_enabled);
             mockPetDirectory = String(next.pet_directory ?? "");
-            if (Object.prototype.hasOwnProperty.call(next, "pii_firewall_enabled")) {
-              mockPiiFirewallEnabled = Boolean(next.pii_firewall_enabled);
-            }
             mockLocale = String(next.locale ?? mockLocale);
             (window as any).__lastSetSettings = next;
             return null;
@@ -3853,12 +4187,17 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return null;
           case "validate_settings": {
             const validationSettings = plain(arg("settings") ?? {});
-            const provider = String(validationSettings.provider ?? "openai");
-            const model = String(validationSettings.model ?? "");
-            if (model === "gpt-image-2") {
+            const validatedModel = String(validationSettings.model ?? "");
+            if (validatedModel === "gpt-image-2") {
               return "Validated openai_responses with gpt-image-2";
             }
-            return `Validated ${provider} with ${model || "deepseek-v4-pro"}`;
+            if (validatedModel === "grok-imagine-image-2.0") {
+              return "Validated openai with grok-imagine-image-2.0";
+            }
+            if (validatedModel.startsWith("grok-imagine-video")) {
+              return `Validated openai with ${validatedModel}`;
+            }
+            return "Validated openai with deepseek-v4-pro";
           }
           case "get_memory_view":
             return memoryViewFor(resolveMemoryProjectId(args, arg));
@@ -4018,6 +4357,11 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return memoryFilesFor(resolveMemoryProjectId(args, arg))
               .find((file) => file.name === arg("name"))?.preview ?? "";
           case "new_session": {
+            if (failNextNewSession) {
+              const message = failNextNewSession;
+              failNextNewSession = null;
+              throw new Error(message);
+            }
             const id = `s-${Math.random().toString(36).slice(2)}`;
             sessionModels[id] = activeHttpModelId();
             return id;
@@ -4039,8 +4383,12 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return null;
           }
           case "branch_session": {
-            const id = `branch-${Math.random().toString(36).slice(2)}`;
             const source = String(arg("sessionId") ?? "");
+            const sourceSession = mockSessions.find((session) => session.id === source);
+            if (sourceSession?.branched_from || sourceSession?.branch_state) {
+              throw new Error("Conversation branches cannot be branched again.");
+            }
+            const id = `branch-${Math.random().toString(36).slice(2)}`;
             sessionModels[id] = sessionModels[source] ?? activeHttpModelId();
             if (Object.prototype.hasOwnProperty.call(sessionReasoningEfforts, source)) {
               sessionReasoningEfforts[id] = sessionReasoningEfforts[source];
@@ -4262,13 +4610,25 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             if (String(msg).includes("POSTSTARTFAIL")) {
               throw new Error("[turn-started] execution failed after turn/start");
             }
+            if (String(msg).includes("AUTOCONTINUE")) {
+              setTimeout(() => {
+                emit("agent", { kind: "User", frame_id: fid, text: msg });
+                emit("agent", { kind: "Text", frame_id: fid, delta: "First segment. " });
+                emit("agent", { kind: "Compaction", frame_id: fid, before: 1, after: 10, strategy: "auto_continue" });
+                emit("agent", { kind: "Text", frame_id: fid, delta: "Final segment." });
+                emit("agent", { kind: "Done", frame_id: fid });
+              }, 30);
+              return fid;
+            }
             if (String(msg).includes("SHARETHINK")) {
               // Fixture for /share: a turn with a visible thinking block, so
-              // the share dialog lists it (deselected by default).
+              // the share dialog lists it (deselected by default). The reply
+              // carries Markdown (heading, list, code fence) so the exported
+              // PNG exercises the rendered-Markdown path.
               setTimeout(() => {
                 emit("agent", { kind: "User", frame_id: fid, text: msg });
                 emit("agent", { kind: "Reasoning", frame_id: fid, delta: "Secret plan: verify with Alice first." });
-                emit("agent", { kind: "Text", frame_id: fid, delta: "Alice confirmed the spectrum is clean." });
+                emit("agent", { kind: "Text", frame_id: fid, delta: "Alice confirmed the **spectrum** is clean.\n\n## Fit summary\n- peak A at 530 nm\n- peak B at 612 nm\n\n```python\nfit(spectrum)\n```" });
                 emit("agent", { kind: "Done", frame_id: fid, stop_reason: "end_turn" });
               }, 30);
               return fid;
@@ -4289,6 +4649,10 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               return await new Promise<string>((resolve) => {
                 monitorRunFrameId = fid;
                 resolveMonitorRun = resolve;
+                // The monitored run belongs to the session that submitted it,
+                // like the real backend records frame_id at submission.
+                const monitored = runs.find((item) => item.id === "run-local-002");
+                if (monitored) monitored.frame_id = fid;
                 setTimeout(() => {
                   emit("agent", { kind: "User", frame_id: fid, text: msg });
                   emit("agent", { kind: "Reasoning", frame_id: fid, delta: "Attach the existing Run monitor." });
@@ -4326,6 +4690,42 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                     kind: "Text",
                     frame_id: fid,
                     delta: "The scientific figure is ready.",
+                  });
+                  emit("agent", { kind: "Done", frame_id: fid, stop_reason: "end_turn" });
+                  resolve(fid);
+                }, 1_350);
+              });
+            }
+            if (String(msg).includes("VIDEOGENPLACEHOLDER")) {
+              return await new Promise<string>((resolve) => {
+                setTimeout(() => {
+                  emit("agent", { kind: "User", frame_id: fid, text: msg });
+                  emit("agent", {
+                    kind: "Text",
+                    frame_id: fid,
+                    delta: "I’ll generate the demo clip now.",
+                  });
+                  emit("agent", {
+                    kind: "ToolCall",
+                    frame_id: fid,
+                    name: "generate_video",
+                    preview: "media/demo.mp4",
+                  });
+                }, 30);
+                setTimeout(() => {
+                  emit("agent", {
+                    kind: "ToolResult",
+                    frame_id: fid,
+                    name: "generate_video",
+                    ok: true,
+                    content: "Generated MP4 at media/demo.mp4.",
+                  });
+                }, 1_200);
+                setTimeout(() => {
+                  emit("agent", {
+                    kind: "Text",
+                    frame_id: fid,
+                    delta: "The demo clip is ready.",
                   });
                   emit("agent", { kind: "Done", frame_id: fid, stop_reason: "end_turn" });
                   resolve(fid);
@@ -4794,6 +5194,15 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               }, 30);
               return fid;
             }
+            if (String(arg("message") ?? "").includes("MDURL")) {
+              const md = "这是百度的网址：https://www.baidu.com，测试成功了吗？";
+              setTimeout(() => {
+                emit("agent", { kind: "User", frame_id: fid, text: msg });
+                emit("agent", { kind: "Text", frame_id: fid, delta: md });
+                emit("agent", { kind: "Done", frame_id: fid });
+              }, 30);
+              return fid;
+            }
             if (String(arg("message") ?? "").includes("MDTABLE")) {
               const md = [
                 "| Tissue | TPM |",
@@ -4840,7 +5249,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               emit("agent", { kind: "ToolCall", frame_id: fid, name: "read", preview: "mock context" });
               emit("agent", { kind: "ToolResult", frame_id: fid, name: "read", ok: true, content: "ok" });
               emit("agent", { kind: "Text", frame_id: fid, delta: "Hello " });
-              emit("agent", { kind: "Text", frame_id: fid, delta: "from mock superscience." });
+              emit("agent", { kind: "Text", frame_id: fid, delta: "from mock wisp-science." });
               emit("agent", { kind: "Done", frame_id: fid });
             }, 50 + Number((window as any).__userEventDelayMs ?? 0));
             return fid;
@@ -4892,179 +5301,6 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return null;
           case "get_session_specialist":
             return mockSpecialists.find((s) => s.id === sessionSpecialists[arg("frameId")]) ?? null;
-          case "tctoken_session":
-            return (window as any).__tctokenSession ?? {
-              loggedIn: false,
-              userId: null,
-              username: null,
-              displayName: null,
-              group: null,
-            };
-          case "tctoken_provider_url":
-            return "https://www.tctoken.cn";
-          case "tctoken_login": {
-            const username = String(arg("username") ?? "").trim();
-            const password = String(arg("password") ?? "").trim();
-            if (!username || !password) throw new Error("Username and password are required.");
-            if (password === "need2fa") {
-              return {
-                require2fa: true,
-                session: {
-                  loggedIn: false,
-                  userId: null,
-                  username: null,
-                  displayName: null,
-                  group: null,
-                },
-              };
-            }
-            const session = {
-              loggedIn: true,
-              userId: 42,
-              username,
-              displayName: "Demo User",
-              group: "default",
-            };
-            (window as any).__tctokenSession = session;
-            return { require2fa: false, session };
-          }
-          case "tctoken_login_2fa": {
-            const code = String(arg("code") ?? "").trim();
-            if (!code) throw new Error("Verification code is required.");
-            const session = {
-              loggedIn: true,
-              userId: 42,
-              username: "demo",
-              displayName: "Demo User",
-              group: "default",
-            };
-            (window as any).__tctokenSession = session;
-            return { require2fa: false, session };
-          }
-          case "tctoken_logout":
-            (window as any).__tctokenSession = {
-              loggedIn: false,
-              userId: null,
-              username: null,
-              displayName: null,
-              group: null,
-            };
-            return null;
-          case "tctoken_get_remembered_login":
-            return (window as any).__tctokenRememberedLogin ?? {
-              remember: false,
-              username: "",
-              password: "",
-            };
-          case "tctoken_set_remembered_login": {
-            const username = String(arg("username") ?? "").trim();
-            const password = String(arg("password") ?? "").trim();
-            (window as any).__tctokenRememberedLogin = username && password
-              ? { remember: true, username, password }
-              : { remember: false, username: "", password: "" };
-            return null;
-          }
-          case "tctoken_clear_remembered_login":
-            (window as any).__tctokenRememberedLogin = {
-              remember: false,
-              username: "",
-              password: "",
-            };
-            return null;
-          case "tctoken_account":
-            return {
-              userId: 42,
-              username: "demo",
-              displayName: "Demo User",
-              group: "default",
-              quota: 2_500_000,
-              usedQuota: 500_000,
-              requestCount: 12,
-              remainingDisplay: "¥5.00",
-              usedDisplay: "¥1.00",
-            };
-          case "tctoken_topup_info":
-            return {
-              min_topup: 1,
-              enable_online_topup: true,
-              pay_methods: [
-                { name: "支付宝", type: "alipay" },
-                { name: "微信", type: "wxpay" },
-              ],
-              amount_options: [50, 100, 200],
-            };
-          case "tctoken_topup_amount":
-            return { amount: Number(arg("amount") ?? 0), quota: Number(arg("amount") ?? 0) * 500_000 };
-          case "tctoken_topup_pay": {
-            ((window as any).__tctokenPayLog ??= []).push(plain(args ?? {}));
-            return {
-              provider: "epay",
-              trade_no: "USR1NOmock",
-              pay_url: "https://www.tctoken.cn/pay/mock",
-              params: {},
-            };
-          }
-          case "tctoken_get_default_token_id":
-            return (window as any).__tctokenDefaultTokenId ?? null;
-          case "tctoken_set_default_token": {
-            const id = Number(arg("id") ?? 0);
-            (window as any).__tctokenDefaultTokenId = id > 0 ? id : null;
-            return id;
-          }
-          case "tctoken_topup_redeem":
-            return { ok: true };
-          case "tctoken_topup_orders":
-            return {
-              items: [
-                {
-                  money: "50",
-                  trade_no: "ORD-001",
-                  payment_method: "alipay",
-                  created_at: 1_700_000_000,
-                  status: "success",
-                  quota: 25_000_000,
-                },
-              ],
-              total: 1,
-            };
-          case "tctoken_logs":
-            return {
-              items: [
-                {
-                  created_at: 1_700_000_100,
-                  channel: 1,
-                  username: "demo",
-                  token_name: "default",
-                  model_name: "gpt-4o",
-                  use_time: 2,
-                  prompt_tokens: 10,
-                  completion_tokens: 20,
-                  quota: 50_000,
-                },
-              ],
-              total: 1,
-            };
-          case "tctoken_logs_stat":
-            return { quota: 50_000, rpm: 1, tpm: 30 };
-          case "tctoken_tokens":
-            return {
-              items: [
-                {
-                  id: 7,
-                  name: "default",
-                  key: "sk-****abcd",
-                  remain_quota: 2_500_000,
-                  expired_time: -1,
-                  status: 1,
-                },
-              ],
-              total: 1,
-            };
-          case "tctoken_token_key":
-            return { key: "sk-mock-drawing-key" };
-          case "tctoken_set_drawing_key":
-            ((window as any).__drawingKeyLog ??= []).push(plain(args ?? {}));
-            return null;
           default:
             return null;
         }
@@ -5089,15 +5325,38 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
         startDragging: async () => {
           (window as any).__petDragStarted = true;
         },
+        toggleMaximize: async () => {
+          ((window as any).__skillInvokeLog ??= []).push({ cmd: "toggle-maximize" });
+        },
+        minimize: async () => {
+          ((window as any).__skillInvokeLog ??= []).push({ cmd: "minimize" });
+        },
+        close: async () => {
+          ((window as any).__skillInvokeLog ??= []).push({ cmd: "close" });
+        },
       }),
     },
   };
 }
 
-// Variant for parallel-session tests: each `send_message` streams an `echo:<msg>`
-// reply immediately but delays `Done` so the session stays "running" while the
-// test starts a second conversation. `list_sessions` reports every session that
-// received a user turn so the sidebar can list them.
+// Expected assistant reply text for a message sent under `parallelMock`.
+// Specs that must pin exact reply content derive it from these helpers so the
+// `echo:` convention stays an internal detail of this mock. (`parallelMock`
+// itself is serialized into the page by addInitScript, so it cannot call
+// these; its inline template below must stay in sync.)
+export function parallelReplyText(message: string): string {
+  return `echo:${message}`;
+}
+
+export function parallelReplyTailText(message: string): string {
+  return `${parallelReplyText(message)}:tail`;
+}
+
+// Variant for parallel-session tests: each `send_message` streams a reply
+// quoting the message (see `parallelReplyText`) immediately but delays `Done`
+// so the session stays "running" while the test starts a second conversation.
+// `list_sessions` reports every session that received a user turn so the
+// sidebar can list them.
 export function parallelMock(): void {
   const params = new URLSearchParams(window.location.search);
   const listeners: Record<string, ((e: { payload: unknown }) => void) | undefined> = {};
@@ -5115,7 +5374,7 @@ export function parallelMock(): void {
   const folders: { id: string; name: string }[] = [];
   const queues: Record<string, Promise<void>> = {};
 
-  const project = { id: "default", name: "superscience", root: "/mock/root", skill_count: 12, mcp_server_count: 8, memory_file_count: 2, has_api_key: true };
+  const project = { id: "default", name: "wisp-science", root: "/mock/root", skill_count: 12, mcp_server_count: 8, memory_file_count: 2, has_api_key: true };
 
   (window as any).__TAURI__ = {
     core: {
@@ -5123,17 +5382,16 @@ export function parallelMock(): void {
         ((window as any).__sendInvokeLog ??= []).push({ cmd, args });
         const arg = (key: string) => args instanceof Map ? args.get(key) : args?.[key];
         switch (cmd) {
-          case "send_feedback_email": {
-            const message = String(arg("message") ?? "").trim();
-            if (!message) throw new Error("Please enter feedback before sending.");
-            return null;
-          }
           case "list_demos": return [];
           case "load_demo": return { id: "x", title: "x", request: "x", response: "x" };
           case "copy_demo_to_project": return `copied-${String(arg("id") ?? "demo")}`;
           case "load_session": {
             const delay = Number((window as any).__parallelLoadDelayMs ?? 0);
             if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+            // Counts loads whose (possibly delayed) snapshot has been handed to
+            // the UI, so tests can wait for the late snapshot instead of sleeping.
+            (window as any).__parallelLoadsResolved =
+              ((window as any).__parallelLoadsResolved ?? 0) + 1;
             return { items: [], next_before_seq: null, user_offset: 0 };
           }
           case "list_sessions_page": return {
@@ -5141,6 +5399,8 @@ export function parallelMock(): void {
             next_cursor: null,
             running_ids: sessions.filter((item: any) => item.running).map((item) => item.id),
           };
+          case "latest_used_session":
+            return sessions.find((session) => session.has_user_turn !== false)?.id ?? null;
           case "list_folders": return folders.slice();
           case "create_folder": {
             const folder = { id: `folder-${folders.length + 1}`, name: String(arg("name") ?? "") };
@@ -5190,6 +5450,22 @@ export function parallelMock(): void {
             workspace: project.root,
             errors: [],
           };
+          case "get_appearance_prefs":
+            return {
+              saved: false,
+              theme: "system",
+              light_palette: "paper",
+              dark_palette: "charcoal",
+              ui_font_size: 14,
+              code_font_size: 12,
+              ui_font_family: "",
+              code_font_family: "",
+              selection_popup_enabled: true,
+              send_with_modifier: false,
+              custom_css: "",
+            };
+          case "set_appearance_prefs":
+            return arg("prefs") ?? null;
           case "get_settings": return {
             provider: "openai",
             api_url: "https://api.deepseek.com",
@@ -5206,10 +5482,7 @@ export function parallelMock(): void {
             sync_folder: "",
             sync_relay_token: "",
             has_sync_relay_token: true,
-            pii_firewall_enabled: true,
           };
-          case "get_pii_firewall_enabled": return true;
-          case "set_pii_firewall_enabled": return null;
           case "get_project_info": return project;
           case "generate_follow_up_questions": return [
             "Review the records that need manual correction",
@@ -5234,6 +5507,12 @@ export function parallelMock(): void {
             message_count: 3, artifact_count: 0, missing_artifacts: [],
           };
           case "upload_file": return { id: "a", name: "x", kind: "text/csv", path: "x", ts: 1 };
+          case "upload_to_context": return [{
+            sourcePath: "/mock/local/counts.csv",
+            destinationPath: "/home/research/counts.csv",
+            runId: "run-upload-1",
+            status: "running",
+          }];
           case "new_session": return `s-${Math.random().toString(36).slice(2)}`;
           case "start_scratch_chat": {
             scratchOpen = true;
@@ -5247,7 +5526,17 @@ export function parallelMock(): void {
           }
           case "rename_session": {
             const session = sessions.find((entry) => entry.id === arg("id"));
-            if (session) session.title = String(arg("title") ?? session.title);
+            if (session) {
+              session.title = String(arg("title") ?? session.title);
+            } else {
+              // Mirrors the store: naming a message-less draft makes it
+              // listable before its first user turn (#888).
+              sessions.unshift({
+                id: String(arg("id")), title: String(arg("title") ?? ""),
+                ts: Date.now(), folder_id: null,
+                has_user_turn: false,
+              });
+            }
             return null;
           }
           case "delete_session": {
@@ -5285,7 +5574,7 @@ export function parallelMock(): void {
               current_version: "0.9.0",
               latest_version: "0.9.0",
               update_available: false,
-              release_url: "https://github.com/imbigfly/SuperScience/releases",
+              release_url: "https://github.com/xuzhougeng/wisp-science/releases",
             };
           case "send_message": {
             const fid = (args && (args.sessionId ?? args.session_id)) || "t1";

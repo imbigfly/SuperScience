@@ -118,10 +118,10 @@ jobs:
                 InputArtifactPath   = $artifact.FullName
                 ApiToken            = $env:SIGNPATH_API_TOKEN
                 OrganizationId      = "5664b725-0848-42aa-a098-65be8f18d107"
-                ProjectSlug         = "superscience"
+                ProjectSlug         = "wisp-science"
                 SigningPolicySlug   = $env:SIGNING_POLICY
                 OutputArtifactPath  = $signed
-                Description         = "superscience $env:RELEASE_TAG"
+                Description         = "wisp-science $env:RELEASE_TAG"
                 WaitForCompletion   = $true
               }
               if ($group.ConfigSlug) {
@@ -148,7 +148,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          name: superscience ${{ env.RELEASE_TAG }}
+          name: '${{ env.RELEASE_TAG }}: Share'
           body: ${{ steps.notes.outputs.body }}
           draft: false
           prerelease: false

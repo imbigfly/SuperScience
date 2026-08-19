@@ -23,7 +23,9 @@ pub use message::{
 };
 pub use privacy::maybe_wrap as maybe_wrap_pii_firewall;
 pub use provider::{
-    build, is_retriable, NullSink, Provider, ProviderConfig, ProviderKind, StreamSink,
+    ambient_proxy_env, annotate_transport_error, build, is_fail_fast_transport,
+    is_model_transport_failure, is_retriable, leftover_proxy_note, NullSink, Provider,
+    ProviderConfig, ProviderKind, StreamSink,
 };
 pub use provider::{LlmError, Result};
 pub use routed::RoutedProvider;

@@ -17,6 +17,7 @@ pub(crate) fn renders_nothing(item: &ChatItem) -> bool {
     matches!(item, ChatItem::Assistant { text, .. } if text.trim().is_empty())
         || matches!(item, ChatItem::Tool { name, .. } if name == "attempt_completion")
         || matches!(item, ChatItem::FileChanged(_))
+        || matches!(item, ChatItem::QueuedUser { .. })
 }
 
 pub(crate) fn class_for(item: &ChatItem) -> &'static str {
@@ -30,6 +31,9 @@ pub(crate) fn class_for(item: &ChatItem) -> &'static str {
         ChatItem::Tool { name, .. } if is_run_monitor_tool(name) => "tool-wrap run-monitor-wrap",
         ChatItem::Tool { name, .. } if is_image_generation_tool(name) => {
             "tool-wrap image-generation-wrap"
+        }
+        ChatItem::Tool { name, .. } if is_video_generation_tool(name) => {
+            "tool-wrap video-generation-wrap"
         }
         ChatItem::Tool { .. } => "tool-wrap",
         ChatItem::FileChanged(_) => "artifact-write-marker",
@@ -158,6 +162,7 @@ pub(crate) fn context_usage_detail_text(details: &ContextUsageDetails, color: &s
 mod token_format_tests {
     use super::{
         context_percent, context_usage_rows, fmt_context_limit, fmt_context_tokens, fmt_tokens,
+        renders_nothing,
     };
     use crate::dto::{ContextUsage, ContextUsageSnapshot};
     use crate::i18n::Locale;
@@ -166,6 +171,16 @@ mod token_format_tests {
     fn small_counts_are_not_rounded_to_zero() {
         assert_eq!(fmt_tokens(81), "81");
         assert_eq!(fmt_tokens(136_286), "136.3k");
+    }
+
+    #[test]
+    fn queued_turns_do_not_occupy_a_transcript_row() {
+        use crate::dto::ChatItem;
+        assert!(renders_nothing(&ChatItem::QueuedUser {
+            id: 1,
+            text: "later".into(),
+        }));
+        assert!(!renders_nothing(&ChatItem::User("sent".into())));
     }
 
     #[test]
@@ -1042,6 +1057,11 @@ pub(crate) fn RunMonitorCard(
     tool_ok: Option<bool>,
     tool_output: String,
     dismissed_runs: RwSignal<HashSet<String>>,
+    /// Only foreground `monitor_run` cards nominate their Run for the
+    /// results-review prompt. AutoRun cards cover exploratory command Runs,
+    /// which must never interrupt with a review modal (#897).
+    #[prop(optional)]
+    auto_review: bool,
 ) -> impl IntoView {
     let locale = use_locale();
     let fallback = serde_json::from_str::<RunRecord>(&tool_output).ok();
@@ -1098,6 +1118,44 @@ pub(crate) fn RunMonitorCard(
     // body every few seconds, which would snap a native `<details>` shut while
     // the user is reading it.
     let env_open = create_rw_signal(false);
+    // Manual entry point: the review button on the card opens the modal
+    // directly, for any card.
+    let review_modal = use_context::<crate::overlays::RunReviewModal>().map(|modal| modal.0);
+    // When a foreground-monitored SSH Run finishes successfully in this
+    // session, nominate it for the results-review prompt. The root drains the
+    // queue once the session goes idle and asks the backend whether the Run
+    // has an unresolved product decision before opening the modal, so work in
+    // progress is never interrupted and empty workspaces never prompt (#897).
+    let review_queue = auto_review
+        .then(|| use_context::<crate::overlays::PendingRunReviews>().map(|queue| queue.0))
+        .flatten();
+    if let Some(review_queue) = review_queue {
+        let prompted = Rc::new(Cell::new(false));
+        create_effect(move |previous: Option<Option<String>>| {
+            let Some(run) = selected_run.get() else {
+                return None;
+            };
+            let status = run.status.clone();
+            let was_active = matches!(
+                previous.flatten().as_deref(),
+                Some("submitted") | Some("running") | Some("cancelling")
+            );
+            if was_active
+                && status == "succeeded"
+                && run.kind == "ssh_direct"
+                && run.cleaned_at.is_none()
+                && !prompted.get()
+            {
+                prompted.set(true);
+                review_queue.update(|ids| {
+                    if !ids.contains(&run.id) {
+                        ids.push(run.id.clone());
+                    }
+                });
+            }
+            Some(status)
+        });
+    }
     view! {
         {move || {
             if dismissed_runs.with(|ids| ids.contains(&run_id)) {
@@ -1224,6 +1282,19 @@ pub(crate) fn RunMonitorCard(
                                     }>{compose_icon("close")}</button>
                             }
                         })}
+                        {(dismissible && run.kind == "ssh_direct" && run.cleaned_at.is_none())
+                            .then(|| review_modal.map(|review_modal| {
+                                let review_id = run.id.clone();
+                                let tip = t(locale.get(), "run_review.open");
+                                view! {
+                                    <button type="button" class="icon-btn run-monitor-review"
+                                        data-testid="run-monitor-review"
+                                        title=tip.clone()
+                                        aria-label=tip
+                                        on:click=move |_| review_modal.set(Some(review_id.clone()))
+                                    >{compose_icon("folder")}</button>
+                                }
+                            }))}
                         {dismissible.then(|| {
                             let tip = t(locale.get(), "runs.dismiss");
                             let dismiss_id = run.id.clone();
@@ -1315,7 +1386,6 @@ pub(crate) fn render_item(
     on_review: Callback<String>,
     on_approval: Callback<(String, bool, Option<String>, String)>,
     on_resume: Callback<usize>,
-    on_queue: Callback<QueueOp>,
     disclosure_state: RwSignal<HashMap<String, bool>>,
     plan_mode_active: Signal<bool>,
     plan_compat: Signal<bool>,
@@ -1341,14 +1411,7 @@ pub(crate) fn render_item(
                 on_file=on_file
             />
         }.into_view(),
-        ChatItem::QueuedUser { id, text } => view! {
-            <QueuedMessage
-                id=*id
-                text=text.clone()
-                can_cut_in=can_modify
-                on_queue=on_queue
-            />
-        }.into_view(),
+        ChatItem::QueuedUser { .. } => view! {}.into_view(),
         ChatItem::Assistant { text, .. } if text.trim().is_empty() => view! {}.into_view(),
         ChatItem::Assistant { text, .. } if text.starts_with("Error: ") => {
             let msg = text.strip_prefix("Error: ").unwrap_or(text.as_str()).to_string();
@@ -1460,6 +1523,7 @@ pub(crate) fn render_item(
                 tool_ok=*ok
                 tool_output=output.clone()
                 dismissed_runs=dismissed_runs
+                auto_review=true
             />
         }.into_view(),
         ChatItem::Tool { name, ok, input, output, .. } if is_image_generation_tool(name) => view! {
@@ -1468,6 +1532,13 @@ pub(crate) fn render_item(
                 ok=*ok
                 output=output.clone()
                 on_file=on_file
+            />
+        }.into_view(),
+        ChatItem::Tool { name, ok, input, output, .. } if is_video_generation_tool(name) => view! {
+            <VideoGenerationCard
+                path=input.trim().to_string()
+                ok=*ok
+                output=output.clone()
             />
         }.into_view(),
         ChatItem::Reasoning(s) => {
@@ -1523,26 +1594,41 @@ pub(crate) fn render_item(
             after,
             strategy,
         } => {
-            let automatic = strategy == "auto";
-            let counts = format!(
-                "{} → {}",
-                fmt_tokens(*before as u64),
-                fmt_tokens(*after as u64)
-            );
-            view! {
-                <div class="context-compaction-flag" class:auto=automatic data-testid="context-compaction-flag">
-                    {compose_icon("doc")}
-                    <span>{move || t(
-                        locale.get(),
-                        if automatic {
-                            "chat.context_auto_compacted"
-                        } else {
-                            "chat.context_compacted"
-                        },
-                    )}</span>
-                    <span class="context-compaction-count">{counts}</span>
-                </div>
-            }.into_view()
+            if strategy == "auto_continue" {
+                let count = before.to_string();
+                let limit = after.to_string();
+                view! {
+                    <div class="context-compaction-flag auto" data-testid="auto-continue-flag">
+                        {compose_icon("sync")}
+                        <span>{move || tf(
+                            locale.get(),
+                            "chat.auto_continued",
+                            &[("count", count.as_str()), ("limit", limit.as_str())],
+                        )}</span>
+                    </div>
+                }.into_view()
+            } else {
+                let automatic = strategy == "auto";
+                let counts = format!(
+                    "{} → {}",
+                    fmt_tokens(*before as u64),
+                    fmt_tokens(*after as u64)
+                );
+                view! {
+                    <div class="context-compaction-flag" class:auto=automatic data-testid="context-compaction-flag">
+                        {compose_icon("doc")}
+                        <span>{move || t(
+                            locale.get(),
+                            if automatic {
+                                "chat.context_auto_compacted"
+                            } else {
+                                "chat.context_compacted"
+                            },
+                        )}</span>
+                        <span class="context-compaction-count">{counts}</span>
+                    </div>
+                }.into_view()
+            }
         }
         ChatItem::AcpTool { title, status, content, locations, .. } => view! {
             <article class="tool-card" data-testid="acp-tool" data-status=status.clone()>

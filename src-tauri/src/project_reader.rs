@@ -12,8 +12,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use superscience_llm::{Message, Provider, Role};
-use superscience_store::{SessionSearchResult, Store};
+use wisp_llm::{Message, Provider, Role};
+use wisp_store::{SessionSearchResult, Store};
 
 pub const READER_RUBRIC: &str = "\
 You are Reader, a read-only retrieval specialist. You receive exactly one saved \
@@ -117,18 +117,135 @@ pub async fn read_references(
     if project_ids.is_empty() && explicit_session_ids.is_empty() {
         return Ok(None);
     }
-    if matches!(
-        store
-            .frame_state_scope(target_frame_id)
-            .await
-            .map_err(|error| error.to_string())?,
-        Some(superscience_store::StateScope::Exploration { .. })
-    ) {
-        return Err(
-            "exploration_scope_violation: saved-session Reader references are disabled inside an exploration because they are not part of the frozen checkpoint view."
+    let sessions =
+        resolve_reference_sessions(store, project_ids, explicit_session_ids, target_frame_id)
+            .await?;
+
+    if sessions.is_empty() {
+        return Ok(Some(
+            "## Reader project search\nNo other saved sessions were available in the selected scope."
                 .into(),
-        );
+        ));
     }
+
+    let reader = crate::specialists::get(store, "reader")
+        .await
+        .unwrap_or_else(crate::specialists::builtin_reader);
+    let context_window = crate::specialists::specialist_context_window(store, &reader).await;
+    let question = reader_question(question);
+    let question = if question.is_empty() {
+        "Summarize the saved evidence most relevant to this project-context request.".into()
+    } else {
+        question
+    };
+    let fixed_tokens = estimated_tokens(READER_RUBRIC)
+        + estimated_tokens(&question)
+        + READER_OUTPUT_TOKENS as usize
+        + 1_024;
+    let transcript_budget = usize::try_from(context_window)
+        .unwrap_or(usize::MAX)
+        .saturating_sub(fixed_tokens);
+    if transcript_budget < 256 {
+        return Err(format!(
+            "Reader model context window ({context_window} tokens) is too small for retrieval."
+        ));
+    }
+
+    let mut inputs = Vec::with_capacity(sessions.len());
+    for info in sessions {
+        if cancel.load(Ordering::SeqCst) {
+            return Err("Project reading was cancelled.".into());
+        }
+        let messages = store
+            .load_messages_with_seq(&info.id)
+            .await
+            .map_err(|error| format!("Could not read session '{}': {error}", info.title))?;
+        inputs.push(SessionInput { info, messages });
+    }
+
+    let (provider, api_url, model, api_key, profile_max_tokens, reasoning_effort) =
+        crate::specialists::specialist_llm(store, &reader).await;
+    let cfg = crate::build_provider_config(
+        &provider,
+        &api_url,
+        &api_key,
+        &model,
+        READER_OUTPUT_TOKENS,
+        &reasoning_effort,
+    )
+    .map_err(|error| format!("Reader model is unavailable: {error}"))?;
+    let llm: Arc<dyn Provider> = Arc::from(wisp_llm::build(cfg));
+    // A reasoning model can burn the compact Reader budget on hidden reasoning
+    // before writing any JSON (`max_output_tokens`, #784). Keep the profile's
+    // full budget on hand so a chunk that hits the limit can retry once.
+    let retry_llm: Option<Arc<dyn Provider>> = if profile_max_tokens > READER_OUTPUT_TOKENS {
+        crate::build_provider_config(
+            &provider,
+            &api_url,
+            &api_key,
+            &model,
+            profile_max_tokens,
+            &reasoning_effort,
+        )
+        .ok()
+        .map(|cfg| Arc::from(wisp_llm::build(cfg)))
+    } else {
+        None
+    };
+
+    let mut tasks = Vec::new();
+    for (session_index, session) in inputs.iter().enumerate() {
+        let chunks = chunk_session(&session.messages, transcript_budget);
+        let chunk_count = chunks.len();
+        for (chunk_index, chunk) in chunks.into_iter().enumerate() {
+            tasks.push(Task {
+                session_index,
+                chunk_index,
+                chunk_count,
+                session: session.info.clone(),
+                chunk,
+            });
+        }
+    }
+    let task_count = tasks.len();
+    let results = run_tasks(llm, retry_llm, &question, tasks, cancel).await;
+
+    if cancel.load(Ordering::SeqCst) {
+        return Err("Project reading was cancelled.".into());
+    }
+    let successful_tasks = results
+        .iter()
+        .filter(|result| result.result.is_ok())
+        .count();
+    if successful_tasks == 0 {
+        // A failed Reader augmentation must not abort the whole send (#784):
+        // degrade to a visible note so the turn proceeds and the model tells
+        // the user the reference could not be retrieved.
+        return Ok(Some(failure_injection(&results)));
+    }
+
+    let mut by_session: Vec<Vec<(usize, ChunkResult)>> = vec![Vec::new(); inputs.len()];
+    for result in results {
+        if let Ok(chunk) = result.result {
+            by_session[result.session_index].push((result.chunk_index, chunk));
+        }
+    }
+    let failed_tasks = task_count.saturating_sub(successful_tasks);
+    Ok(Some(render_injection(&inputs, by_session, failed_tasks)))
+}
+
+/// Resolve the durable sessions that a Reader request may inspect.
+///
+/// Exploration targets are intentionally accepted. These queries return only
+/// ordinary, non-exploration root frames, and Reader turns are read-only, so a
+/// reference cannot expose sibling-private state or mutate the frozen project
+/// checkpoint.
+async fn resolve_reference_sessions(
+    store: &Store,
+    project_ids: &[String],
+    explicit_session_ids: &[String],
+    target_frame_id: &str,
+) -> Result<Vec<SessionSearchResult>, String> {
     let target_project = store
         .frame_project_id(target_frame_id)
         .await
@@ -184,117 +301,7 @@ pub async fn read_references(
         );
     }
 
-    if sessions.is_empty() {
-        return Ok(Some(
-            "## Reader project search\nNo other saved sessions were available in the selected scope."
-                .into(),
-        ));
-    }
-
-    let reader = crate::specialists::get(store, "reader")
-        .await
-        .unwrap_or_else(crate::specialists::builtin_reader);
-    let context_window = crate::specialists::specialist_context_window(store, &reader).await;
-    let question = reader_question(question);
-    let question = if question.is_empty() {
-        "Summarize the saved evidence most relevant to this project-context request.".into()
-    } else {
-        question
-    };
-    let fixed_tokens = estimated_tokens(READER_RUBRIC)
-        + estimated_tokens(&question)
-        + READER_OUTPUT_TOKENS as usize
-        + 1_024;
-    let transcript_budget = usize::try_from(context_window)
-        .unwrap_or(usize::MAX)
-        .saturating_sub(fixed_tokens);
-    if transcript_budget < 256 {
-        return Err(format!(
-            "Reader model context window ({context_window} tokens) is too small for retrieval."
-        ));
-    }
-
-    let mut inputs = Vec::with_capacity(sessions.len());
-    for info in sessions {
-        if cancel.load(Ordering::SeqCst) {
-            return Err("Project reading was cancelled.".into());
-        }
-        let messages = store
-            .load_messages_with_seq(&info.id)
-            .await
-            .map_err(|error| format!("Could not read session '{}': {error}", info.title))?;
-        inputs.push(SessionInput { info, messages });
-    }
-
-    let (provider, api_url, model, api_key, profile_max_tokens, reasoning_effort) =
-        crate::specialists::specialist_llm(store, &reader).await;
-    let cfg = crate::build_provider_config(
-        &provider,
-        &api_url,
-        &api_key,
-        &model,
-        READER_OUTPUT_TOKENS,
-        &reasoning_effort,
-    )
-    .map_err(|error| format!("Reader model is unavailable: {error}"))?;
-    let llm: Arc<dyn Provider> = Arc::from(superscience_llm::build(cfg));
-    // A reasoning model can burn the compact Reader budget on hidden reasoning
-    // before writing any JSON (`max_output_tokens`, #784). Keep the profile's
-    // full budget on hand so a chunk that hits the limit can retry once.
-    let retry_llm: Option<Arc<dyn Provider>> = if profile_max_tokens > READER_OUTPUT_TOKENS {
-        crate::build_provider_config(
-            &provider,
-            &api_url,
-            &api_key,
-            &model,
-            profile_max_tokens,
-            &reasoning_effort,
-        )
-        .ok()
-        .map(|cfg| Arc::from(superscience_llm::build(cfg)))
-    } else {
-        None
-    };
-
-    let mut tasks = Vec::new();
-    for (session_index, session) in inputs.iter().enumerate() {
-        let chunks = chunk_session(&session.messages, transcript_budget);
-        let chunk_count = chunks.len();
-        for (chunk_index, chunk) in chunks.into_iter().enumerate() {
-            tasks.push(Task {
-                session_index,
-                chunk_index,
-                chunk_count,
-                session: session.info.clone(),
-                chunk,
-            });
-        }
-    }
-    let task_count = tasks.len();
-    let results = run_tasks(llm, retry_llm, &question, tasks, cancel).await;
-
-    if cancel.load(Ordering::SeqCst) {
-        return Err("Project reading was cancelled.".into());
-    }
-    let successful_tasks = results
-        .iter()
-        .filter(|result| result.result.is_ok())
-        .count();
-    if successful_tasks == 0 {
-        // A failed Reader augmentation must not abort the whole send (#784):
-        // degrade to a visible note so the turn proceeds and the model tells
-        // the user the reference could not be retrieved.
-        return Ok(Some(failure_injection(&results)));
-    }
-
-    let mut by_session: Vec<Vec<(usize, ChunkResult)>> = vec![Vec::new(); inputs.len()];
-    for result in results {
-        if let Ok(chunk) = result.result {
-            by_session[result.session_index].push((result.chunk_index, chunk));
-        }
-    }
-    let failed_tasks = task_count.saturating_sub(successful_tasks);
-    Ok(Some(render_injection(&inputs, by_session, failed_tasks)))
+    Ok(sessions)
 }
 
 fn failure_injection(results: &[TaskResult]) -> String {
@@ -387,7 +394,7 @@ async fn complete_chunk(
     llm: &dyn Provider,
     messages: &[Message],
     cancel: &AtomicBool,
-) -> Result<superscience_llm::Completion, ChunkFailure> {
+) -> Result<wisp_llm::Completion, ChunkFailure> {
     let request = llm.complete(messages, &[]);
     tokio::pin!(request);
     let completion = tokio::select! {
@@ -806,6 +813,10 @@ fn clip(text: &str, cap: usize) -> String {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
+    use wisp_store::{
+        ContextArchiveRecord, Exploration, ExplorationCheckpoint, ExplorationFamily,
+        ExplorationStatus, WorkspaceSnapshotRecord,
+    };
 
     struct SlowProvider {
         active: AtomicUsize,
@@ -825,13 +836,13 @@ mod tests {
         async fn complete(
             &self,
             _messages: &[Message],
-            _tools: &[superscience_llm::ToolSchema],
-        ) -> superscience_llm::Result<superscience_llm::Completion> {
+            _tools: &[wisp_llm::ToolSchema],
+        ) -> wisp_llm::Result<wisp_llm::Completion> {
             let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
             self.max_active.fetch_max(active, Ordering::SeqCst);
             tokio::time::sleep(Duration::from_millis(25)).await;
             self.active.fetch_sub(1, Ordering::SeqCst);
-            Ok(superscience_llm::Completion {
+            Ok(wisp_llm::Completion {
                 content: r#"{"summary":"hit","evidence":[{"message_seq":1,"quote":"evidence","why":"match"}]}"#.into(),
                 ..Default::default()
             })
@@ -840,9 +851,9 @@ mod tests {
         async fn stream(
             &self,
             messages: &[Message],
-            tools: &[superscience_llm::ToolSchema],
-            _sink: &mut dyn superscience_llm::StreamSink,
-        ) -> superscience_llm::Result<superscience_llm::Completion> {
+            tools: &[wisp_llm::ToolSchema],
+            _sink: &mut dyn wisp_llm::StreamSink,
+        ) -> wisp_llm::Result<wisp_llm::Completion> {
             self.complete(messages, tools).await
         }
     }
@@ -853,6 +864,138 @@ mod tests {
             .enumerate()
             .map(|(index, message)| (index as i64 + 1, message))
             .collect()
+    }
+
+    #[tokio::test]
+    async fn exploration_targets_can_resolve_saved_session_references() {
+        let database = std::env::temp_dir().join(format!(
+            "wisp_reader_exploration_reference_{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let store = Store::open(&database).await.unwrap();
+        store
+            .create_project("project", "Project", "/tmp/project")
+            .await
+            .unwrap();
+        for frame_id in ["source", "reference", "exploration"] {
+            store
+                .create_frame(frame_id, "project", "OPERON", "model")
+                .await
+                .unwrap();
+        }
+        store
+            .append_message("source", 1, &Message::user("compare approaches"))
+            .await
+            .unwrap();
+        store
+            .append_message("source", 2, &Message::assistant("stable checkpoint"))
+            .await
+            .unwrap();
+        store
+            .append_message("reference", 1, &Message::user("historical evidence"))
+            .await
+            .unwrap();
+        store
+            .append_message("reference", 2, &Message::assistant("saved result"))
+            .await
+            .unwrap();
+        store
+            .create_workspace_snapshot(&WorkspaceSnapshotRecord {
+                id: "snapshot".into(),
+                project_id: "project".into(),
+                manifest_json: r#"{"version":1,"files":[]}"#.into(),
+                manifest_sha256: "a".repeat(64),
+                created_at: 1,
+            })
+            .await
+            .unwrap();
+        store
+            .create_context_archive(&ContextArchiveRecord {
+                id: "archive".into(),
+                project_id: "project".into(),
+                frame_id: "source".into(),
+                storage_path: ".wisp/history/archive.json".into(),
+                checksum: "b".repeat(64),
+                created_at: 1,
+            })
+            .await
+            .unwrap();
+        store
+            .create_exploration_family(&ExplorationFamily {
+                id: "family".into(),
+                project_id: "project".into(),
+                root_frame_id: "source".into(),
+                mainline_frame_id: "source".into(),
+                generation: 0,
+                created_at: 1,
+                updated_at: 1,
+            })
+            .await
+            .unwrap();
+        store
+            .create_exploration_checkpoint(&ExplorationCheckpoint {
+                id: "checkpoint".into(),
+                family_id: "family".into(),
+                project_id: "project".into(),
+                source_frame_id: "source".into(),
+                source_message_seq: 2,
+                source_frame_head_seq: 2,
+                source_ui_event_seq: 0,
+                source_family_generation: 0,
+                source_state_generation: 0,
+                workspace_snapshot_id: "snapshot".into(),
+                context_archive_id: "archive".into(),
+                guard_hash: "c".repeat(64),
+                entity_hash: "d".repeat(64),
+                isolation_summary_json: "{}".into(),
+                created_at: 1,
+            })
+            .await
+            .unwrap();
+        store
+            .create_exploration(&Exploration {
+                id: "explore".into(),
+                checkpoint_id: "checkpoint".into(),
+                frame_id: "exploration".into(),
+                name: "Alternative".into(),
+                status: ExplorationStatus::Creating,
+                workspace_dir: "/tmp/explorations/explore".into(),
+                workspace_backend: "snapshot".into(),
+                scope_generation: 0,
+                warnings_json: "[]".into(),
+                created_at: 2,
+                updated_at: 2,
+            })
+            .await
+            .unwrap();
+        assert!(store
+            .transition_exploration(
+                "explore",
+                ExplorationStatus::Creating,
+                ExplorationStatus::Active,
+            )
+            .await
+            .unwrap());
+
+        let explicit =
+            resolve_reference_sessions(&store, &[], &["reference".into()], "exploration")
+                .await
+                .unwrap();
+        assert_eq!(explicit.len(), 1);
+        assert_eq!(explicit[0].id, "reference");
+
+        let project = resolve_reference_sessions(&store, &["project".into()], &[], "exploration")
+            .await
+            .unwrap();
+        let ids = project
+            .into_iter()
+            .map(|session| session.id)
+            .collect::<HashSet<_>>();
+        assert_eq!(ids, HashSet::from(["source".into(), "reference".into()]));
+        assert!(!ids.contains("exploration"));
+
+        drop(store);
+        let _ = std::fs::remove_file(database);
     }
 
     #[test]
@@ -972,16 +1115,16 @@ mod tests {
         async fn complete(
             &self,
             _messages: &[Message],
-            _tools: &[superscience_llm::ToolSchema],
-        ) -> superscience_llm::Result<superscience_llm::Completion> {
+            _tools: &[wisp_llm::ToolSchema],
+        ) -> wisp_llm::Result<wisp_llm::Completion> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self.output_limit {
-                return Err(superscience_llm::LlmError::NotCompleted {
+                return Err(wisp_llm::LlmError::NotCompleted {
                     status: "incomplete".into(),
                     reason: "max_output_tokens".into(),
                 });
             }
-            Err(superscience_llm::LlmError::Api {
+            Err(wisp_llm::LlmError::Api {
                 status: 500,
                 body: self.error.clone(),
             })
@@ -990,9 +1133,9 @@ mod tests {
         async fn stream(
             &self,
             messages: &[Message],
-            tools: &[superscience_llm::ToolSchema],
-            _sink: &mut dyn superscience_llm::StreamSink,
-        ) -> superscience_llm::Result<superscience_llm::Completion> {
+            tools: &[wisp_llm::ToolSchema],
+            _sink: &mut dyn wisp_llm::StreamSink,
+        ) -> wisp_llm::Result<wisp_llm::Completion> {
             self.complete(messages, tools).await
         }
     }

@@ -611,6 +611,7 @@ mod tests {
             "monitor_run",
             "cancel_run",
             "research_graph",
+            "configure",
             "save_specialist",
         ] {
             assert!(
@@ -705,7 +706,7 @@ mod tests {
             count += 1;
         }
         assert!(
-            count >= 40,
+            count >= 30,
             "unexpectedly small bundled skill catalog: {count}"
         );
     }

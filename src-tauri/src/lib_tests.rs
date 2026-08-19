@@ -1,14 +1,11 @@
 use super::app_commands::parse_ssh_artifact_uri;
 use super::app_updates::{update_check_from_release, GithubRelease};
-use super::desktop_lifecycle::{
-    should_activate_workspace_window, should_hide_workspace_on_close, PET_WINDOW_HEIGHT,
-    PET_WINDOW_WIDTH,
-};
+use super::desktop_lifecycle::{should_activate_workspace_window, should_hide_workspace_on_close};
 use super::session_commands::transcript_page_items;
 use super::{
     begin_queued_cutin, branch_title, client_turn_error, coalesce_live_agent_events,
     copy_dir_recursive, enable_referenced_contexts, events_to_items, limit_persisted_ui_event,
-    merge_pending_ui_event, message_uses_resource_bindings, messages_to_items,
+    merge_pending_ui_event, message_uses_resource_bindings, messages_to_items, navigation_allowed,
     parse_disabled_skills, parse_enabled_skill_names, parse_follow_up_questions, parse_skill_tags,
     persist_ui_events, provenance_ui_file_changes, receive_confirm_decision,
     reclaim_unconsumed_cutin, resolve_acp_artifact_references, resolve_composer_references,
@@ -70,8 +67,8 @@ async fn native_confirmation_waits_for_an_explicit_response() {
             .is_err(),
         "an unanswered permission request must remain blocked"
     );
-    sender.send(superscience_tools::ConfirmDecision::Approved).unwrap();
-    assert_eq!(decision.await, superscience_tools::ConfirmDecision::Approved);
+    sender.send(wisp_tools::ConfirmDecision::Approved).unwrap();
+    assert_eq!(decision.await, wisp_tools::ConfirmDecision::Approved);
 }
 
 #[test]
@@ -165,11 +162,8 @@ fn mcp_app_instance_id_carries_its_session() {
 }
 
 #[test]
-fn image_attachments_are_loaded_for_model_input() {
-    let root = std::env::temp_dir().join(format!(
-        "superscience_message_images_{}",
-        uuid::Uuid::new_v4()
-    ));
+fn image_helper_loads_supported_extension_for_model_input() {
+    let root = std::env::temp_dir().join(format!("wisp_message_images_{}", uuid::Uuid::new_v4()));
     let uploads = root.join("uploads");
     std::fs::create_dir_all(&uploads).unwrap();
     std::fs::write(uploads.join("plot.PNG"), b"image bytes").unwrap();
@@ -177,7 +171,7 @@ fn image_attachments_are_loaded_for_model_input() {
 
     // Small images do not need the UI confirmation path; exercise the shared
     // loader directly through its image helper here.
-    let result = superscience_tools::image::view_image(&uploads.join("plot.PNG").to_string_lossy());
+    let result = wisp_tools::image::view_image(&uploads.join("plot.PNG").to_string_lossy());
     let images = vec![result.image.unwrap()];
 
     assert_eq!(images.len(), 1);
@@ -190,7 +184,7 @@ fn image_resize_confirmation_has_dedicated_card_kind() {
     assert_eq!(
         super::parse_confirm_payload(&format!(
             "{}Resize {}",
-            superscience_tools::image::RESIZE_CONFIRM_PREFIX,
+            wisp_tools::image::RESIZE_CONFIRM_PREFIX,
             "plot.png"
         )),
         ("image_resize".into(), "Resize plot.png".into())
@@ -199,19 +193,12 @@ fn image_resize_confirmation_has_dedicated_card_kind() {
 
 #[test]
 fn configured_image_generation_tool_is_available_without_a_specialist() {
-    let root = std::env::temp_dir().join(format!(
-        "superscience_image_tool_agent_{}",
-        uuid::Uuid::new_v4()
-    ));
+    let root = std::env::temp_dir().join(format!("wisp_image_tool_agent_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&root).unwrap();
-    let skills = Arc::new(superscience_skills::SkillIndex::load(&[]));
-    let memory = Arc::new(superscience_core::MemoryManager::new(&root));
-    let mut agent = superscience_core::Agent::new(
-        superscience_llm::ProviderConfig::openai(
-            "http://127.0.0.1:9/v1",
-            "sk-chat-test",
-            "chat-model",
-        ),
+    let skills = Arc::new(wisp_skills::SkillIndex::load(&[]));
+    let memory = Arc::new(wisp_core::MemoryManager::new(&root));
+    let mut agent = wisp_core::Agent::new(
+        wisp_llm::ProviderConfig::openai("http://127.0.0.1:9/v1", "sk-chat-test", "chat-model"),
         skills,
         memory,
         root.clone(),
@@ -219,7 +206,6 @@ fn configured_image_generation_tool_is_available_without_a_specialist() {
         4,
         false,
         None,
-        true,
     );
 
     super::add_configured_image_generation_tool(
@@ -228,6 +214,7 @@ fn configured_image_generation_tool_is_available_without_a_specialist() {
             "https://api.openai.com/v1".into(),
             "gpt-image-2".into(),
             "sk-image-test".into(),
+            super::models::ImageGenerationOptions::default(),
         )),
         Some("none".into()),
     );
@@ -241,10 +228,10 @@ fn live_agent_settings_refresh_max_iter_on_reused_agent() {
     // Mid-session Settings changes must not stay stuck at construction time.
     let root = std::env::temp_dir().join(format!("wisp_live_max_iter_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&root).unwrap();
-    let skills = Arc::new(superscience_skills::SkillIndex::load(&[]));
-    let memory = Arc::new(superscience_core::MemoryManager::new(&root));
-    let mut agent = superscience_core::Agent::new(
-        superscience_llm::ProviderConfig::openai("http://127.0.0.1:9/v1", "sk-chat-test", "chat-model"),
+    let skills = Arc::new(wisp_skills::SkillIndex::load(&[]));
+    let memory = Arc::new(wisp_core::MemoryManager::new(&root));
+    let mut agent = wisp_core::Agent::new(
+        wisp_llm::ProviderConfig::openai("http://127.0.0.1:9/v1", "sk-chat-test", "chat-model"),
         skills,
         memory,
         root.clone(),
@@ -252,14 +239,13 @@ fn live_agent_settings_refresh_max_iter_on_reused_agent() {
         100,
         false,
         None,
-        true,
     );
     assert_eq!(agent.max_iter, 100);
 
-    super::apply_live_agent_settings(&mut agent, 0, true);
+    super::apply_live_agent_settings(&mut agent, 0, true, true, 7);
     assert_eq!(agent.max_iter, 0);
 
-    super::apply_live_agent_settings(&mut agent, 50, false);
+    super::apply_live_agent_settings(&mut agent, 50, false, false, 10);
     assert_eq!(agent.max_iter, 50);
 
     let _ = std::fs::remove_dir_all(root);
@@ -311,9 +297,8 @@ fn reviewer_explicit_backend_does_not_follow_session() {
 
 #[tokio::test]
 async fn auto_review_is_off_by_default_and_persists_changes() {
-    let dir =
-        std::env::temp_dir().join(format!("superscience_auto_review_{}", uuid::Uuid::new_v4()));
-    let store = superscience_store::Store::open(&dir.join("superscience.sqlite"))
+    let dir = std::env::temp_dir().join(format!("wisp_auto_review_{}", uuid::Uuid::new_v4()));
+    let store = wisp_store::Store::open(&dir.join("wisp.sqlite"))
         .await
         .unwrap();
 
@@ -330,7 +315,7 @@ fn update_check_accepts_v_prefixed_newer_release() {
         "0.9.0",
         GithubRelease {
             tag_name: "v0.10.0".into(),
-            html_url: "https://github.com/imbigfly/SuperScience/releases/tag/v0.10.0".into(),
+            html_url: "https://github.com/xuzhougeng/wisp-science/releases/tag/v0.10.0".into(),
             body: "## What's new\n- release notes".into(),
         },
     )
@@ -355,19 +340,6 @@ fn update_check_does_not_downgrade() {
     .unwrap();
 
     assert!(!result.update_available);
-}
-
-#[test]
-fn default_locale_is_chinese() {
-    assert_eq!(super::default_locale(), "zh");
-    let settings: super::Settings = serde_json::from_value(serde_json::json!({
-        "provider": "openai",
-        "api_url": "https://example.test",
-        "model": "test",
-        "has_api_key": false
-    }))
-    .expect("settings without locale should deserialize");
-    assert_eq!(settings.locale, "zh");
 }
 
 #[cfg(target_os = "macos")]
@@ -400,36 +372,34 @@ fn mac_menu_action_maps_update_and_settings_ids() {
         super::mac_menu_action("action.check-updates"),
         Some("check-updates")
     );
-    assert_eq!(super::mac_menu_action("action.issues"), Some("issues"));
-    assert_eq!(super::mac_menu_action("action.star-us"), None);
-    assert_eq!(super::mac_menu_action("action.docs"), None);
+    assert_eq!(super::mac_menu_action("action.star-us"), Some("star-us"));
     assert_eq!(super::mac_menu_action("action.settings"), Some("settings"));
     assert_eq!(super::mac_menu_action("action.unknown"), None);
 }
 
 #[test]
 fn reloaded_tool_items_keep_notebook_source() {
-    let mut assistant = superscience_llm::Message::assistant("");
+    let mut assistant = wisp_llm::Message::assistant("");
     assistant.tool_calls = vec![
-        superscience_llm::ToolCall {
+        wisp_llm::ToolCall {
             id: "call-python".into(),
             kind: "function".into(),
-            function: superscience_llm::FunctionCall {
+            function: wisp_llm::FunctionCall {
                 name: "python".into(),
                 arguments: r#"{"code":"print(1)"}"#.into(),
             },
         },
-        superscience_llm::ToolCall {
+        wisp_llm::ToolCall {
             id: "call-r".into(),
             kind: "function".into(),
-            function: superscience_llm::FunctionCall {
+            function: wisp_llm::FunctionCall {
                 name: "r".into(),
                 arguments: r#"{"code":"summary(data)"}"#.into(),
             },
         },
     ];
-    let result = superscience_llm::Message::tool("call-python", "python", "1");
-    let r_result = superscience_llm::Message::tool("call-r", "r", "summary");
+    let result = wisp_llm::Message::tool("call-python", "python", "1");
+    let r_result = wisp_llm::Message::tool("call-r", "r", "summary");
 
     let items = messages_to_items(&[assistant, result, r_result]);
 
@@ -444,13 +414,13 @@ fn reloaded_tool_items_keep_notebook_source() {
 
 #[test]
 fn legacy_tool_replay_is_bounded_but_complete_cards_are_not_truncated() {
-    let ordinary = superscience_llm::Message::tool(
+    let ordinary = wisp_llm::Message::tool(
         "call-shell",
         "shell",
         "x".repeat(UI_TOOL_RESULT_MAX_CHARS + 500),
     );
     let completion_body = "y".repeat(UI_TOOL_RESULT_MAX_CHARS + 500);
-    let completion = superscience_llm::Message::tool(
+    let completion = wisp_llm::Message::tool(
         "call-completion",
         "attempt_completion",
         completion_body.clone(),
@@ -466,9 +436,9 @@ fn legacy_tool_replay_is_bounded_but_complete_cards_are_not_truncated() {
 
 #[test]
 fn reloaded_propose_plan_result_rebuilds_the_plan_card() {
-    let plan = superscience_llm::Message::tool(
+    let plan = wisp_llm::Message::tool(
         "call-plan",
-        superscience_tools::plan::PROPOSE_PLAN,
+        wisp_tools::plan::PROPOSE_PLAN,
         r#"{"v":1,"source":"native","entries":[{"content":"Read the loader","status":"pending","priority":"high"}]}"#,
     );
 
@@ -483,9 +453,9 @@ fn reloaded_propose_plan_result_rebuilds_the_plan_card() {
 
 #[test]
 fn reloaded_ask_user_result_rebuilds_the_question_card() {
-    let question = superscience_llm::Message::tool(
+    let question = wisp_llm::Message::tool(
         "call-ask",
-        superscience_tools::ask_user::ASK_USER,
+        wisp_tools::ask_user::ASK_USER,
         r#"{"v":1,"source":"native","question":"Which aligner?","options":[{"label":"STAR","description":""}],"allow_freeform":true}"#,
     );
 
@@ -500,10 +470,10 @@ fn reloaded_ask_user_result_rebuilds_the_question_card() {
 
 #[test]
 fn reloaded_background_completion_keeps_terminal_status() {
-    let mut completion = superscience_llm::Message::user(
+    let mut completion = wisp_llm::Message::user(
         r#"{"type":"delegated_batch_completion","result":{"status":"cancelled"}}"#,
     );
-    completion.tool_name = Some(superscience_store::AGENT_WORKFLOW_COMPLETION_TOOL.into());
+    completion.tool_name = Some(wisp_store::AGENT_WORKFLOW_COMPLETION_TOOL.into());
 
     let items = messages_to_items(&[completion]);
     assert_eq!(items.len(), 1);
@@ -620,7 +590,7 @@ fn persisted_file_changes_restore_structured_artifact_evidence() {
 
 #[test]
 fn provenance_for_execution_tools_becomes_file_change_evidence_without_direct_tool_duplicates() {
-    let mut record = superscience_core::ProvenanceRecord {
+    let mut record = wisp_core::ProvenanceRecord {
         tool: "python".into(),
         files_written: vec!["results/new.csv".into()],
         ..Default::default()
@@ -684,24 +654,24 @@ fn persisted_ui_events_restore_native_plan_and_question_cards() {
     let events = vec![
         AgentEvent::ToolCall {
             frame_id: frame_id.clone(),
-            name: superscience_tools::plan::PROPOSE_PLAN.into(),
+            name: wisp_tools::plan::PROPOSE_PLAN.into(),
             preview: "1 steps".into(),
         },
         AgentEvent::ToolResult {
             frame_id: frame_id.clone(),
-            name: superscience_tools::plan::PROPOSE_PLAN.into(),
+            name: wisp_tools::plan::PROPOSE_PLAN.into(),
             ok: true,
             content: r#"{"v":1,"source":"native","entries":[{"content":"Fix replay","status":"pending","priority":"high"}]}"#.into(),
             duration_ms: 1,
         },
         AgentEvent::ToolCall {
             frame_id: frame_id.clone(),
-            name: superscience_tools::ask_user::ASK_USER.into(),
+            name: wisp_tools::ask_user::ASK_USER.into(),
             preview: "Which option?".into(),
         },
         AgentEvent::ToolResult {
             frame_id,
-            name: superscience_tools::ask_user::ASK_USER.into(),
+            name: wisp_tools::ask_user::ASK_USER.into(),
             ok: true,
             content: r#"{"v":1,"source":"native","question":"Which option?","options":[]}"#.into(),
             duration_ms: 1,
@@ -735,9 +705,9 @@ fn persisted_usage_folds_per_turn_and_floats_to_tail() {
         cached,
         ctx_tokens: input as usize,
         max_context: 1_000,
-        context_usage: superscience_core::ContextUsage {
+        context_usage: wisp_core::ContextUsage {
             conversation: input as usize,
-            ..superscience_core::ContextUsage::default()
+            ..wisp_core::ContextUsage::default()
         },
     };
     let events = vec![
@@ -973,8 +943,8 @@ async fn live_agent_events_merge_deltas_and_preserve_order() {
 
 #[tokio::test]
 async fn ui_events_are_persisted_before_the_turn_ends() {
-    let base = std::env::temp_dir().join(format!("superscience_ui_flush_{}", uuid::Uuid::new_v4()));
-    let store = superscience_store::Store::open(&base.join("superscience.sqlite"))
+    let base = std::env::temp_dir().join(format!("wisp_ui_flush_{}", uuid::Uuid::new_v4()));
+    let store = wisp_store::Store::open(&base.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -982,7 +952,7 @@ async fn ui_events_are_persisted_before_the_turn_ends() {
         .await
         .unwrap();
     store
-        .create_frame("f", "p", "SUPERSCIENCE", "model")
+        .create_frame("f", "p", "OPERON", "model")
         .await
         .unwrap();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1017,13 +987,13 @@ async fn ui_events_are_persisted_before_the_turn_ends() {
 
 #[tokio::test]
 async fn composer_references_resolve_non_reader_context() {
-    let base = std::env::temp_dir().join(format!("superscience_refs_{}", uuid::Uuid::new_v4()));
+    let base = std::env::temp_dir().join(format!("wisp_refs_{}", uuid::Uuid::new_v4()));
     let root_a = base.join("alpha");
     let root_b = base.join("beta");
     std::fs::create_dir_all(root_a.join("uploads")).unwrap();
     std::fs::create_dir_all(&root_b).unwrap();
     std::fs::write(root_a.join("uploads/data.csv"), "x,y\n1,2\n").unwrap();
-    let store = superscience_store::Store::open(&base.join("superscience.sqlite"))
+    let store = wisp_store::Store::open(&base.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -1035,23 +1005,19 @@ async fn composer_references_resolve_non_reader_context() {
         .await
         .unwrap();
     store
-        .create_frame("target", "a", "SUPERSCIENCE", "m")
+        .create_frame("target", "a", "OPERON", "m")
         .await
         .unwrap();
     store
-        .append_message("target", 1, &superscience_llm::Message::user("current"))
+        .append_message("target", 1, &wisp_llm::Message::user("current"))
         .await
         .unwrap();
     store
-        .create_frame("source", "b", "SUPERSCIENCE", "m")
+        .create_frame("source", "b", "OPERON", "m")
         .await
         .unwrap();
     store
-        .append_message(
-            "source",
-            1,
-            &superscience_llm::Message::user("prior result"),
-        )
+        .append_message("source", 1, &wisp_llm::Message::user("prior result"))
         .await
         .unwrap();
     store
@@ -1072,11 +1038,9 @@ async fn composer_references_resolve_non_reader_context() {
         "---\nname: test-skill\ndescription: test\n---\nUse the test workflow.",
     )
     .unwrap();
-    let skills = superscience_skills::SkillIndex::load(&[base.join("skills")]);
+    let skills = wisp_skills::SkillIndex::load(&[base.join("skills")]);
     store
-        .upsert_execution_context(
-            &superscience_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap(),
-        )
+        .upsert_execution_context(&wisp_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap())
         .await
         .unwrap();
     let refs = vec![
@@ -1168,29 +1132,22 @@ async fn composer_references_resolve_non_reader_context() {
 
 #[tokio::test]
 async fn at_mentioning_a_server_turns_it_on_for_the_session() {
-    let base = std::env::temp_dir().join(format!("superscience_ctx_on_{}", uuid::Uuid::new_v4()));
+    let base = std::env::temp_dir().join(format!("wisp_ctx_on_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&base).unwrap();
-    let store = superscience_store::Store::open(&base.join("superscience.sqlite"))
+    let store = wisp_store::Store::open(&base.join("wisp.sqlite"))
         .await
         .unwrap();
     store
         .create_project("p", "P", &base.to_string_lossy())
         .await
         .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
     store
-        .create_frame("f", "p", "SUPERSCIENCE", "m")
+        .upsert_execution_context(&wisp_store::ExecutionContext::new("local", "Local").unwrap())
         .await
         .unwrap();
     store
-        .upsert_execution_context(
-            &superscience_store::ExecutionContext::new("local", "Local").unwrap(),
-        )
-        .await
-        .unwrap();
-    store
-        .upsert_execution_context(
-            &superscience_store::ExecutionContext::new("ssh:cpu1", "CPU1").unwrap(),
-        )
+        .upsert_execution_context(&wisp_store::ExecutionContext::new("ssh:cpu1", "CPU1").unwrap())
         .await
         .unwrap();
     assert!(store
@@ -1281,16 +1238,16 @@ fn branch_title_uses_the_draft_without_long_labels() {
 
 #[test]
 fn user_message_start_points_at_selected_turn() {
-    let mut completion = superscience_llm::Message::user("background completion");
-    completion.tool_name = Some(superscience_store::AGENT_WORKFLOW_COMPLETION_TOOL.into());
+    let mut completion = wisp_llm::Message::user("background completion");
+    completion.tool_name = Some(wisp_store::AGENT_WORKFLOW_COMPLETION_TOOL.into());
     let msgs = vec![
-        superscience_llm::Message::system("sys"),
-        superscience_llm::Message::user("first"),
-        superscience_llm::Message::assistant("first answer"),
-        superscience_llm::Message::tool("call-1", "python", "ok"),
+        wisp_llm::Message::system("sys"),
+        wisp_llm::Message::user("first"),
+        wisp_llm::Message::assistant("first answer"),
+        wisp_llm::Message::tool("call-1", "python", "ok"),
         completion,
-        superscience_llm::Message::user("second"),
-        superscience_llm::Message::assistant("second answer"),
+        wisp_llm::Message::user("second"),
+        wisp_llm::Message::assistant("second answer"),
     ];
     assert_eq!(user_message_start(&msgs, 0), 1);
     assert_eq!(user_message_start(&msgs, 1), 5);
@@ -1309,10 +1266,10 @@ fn transcript_page_reconstructs_legacy_prefix_before_persisted_events() {
             seq: 2,
         },
     ];
-    let page = superscience_store::SessionTranscriptPage {
+    let page = wisp_store::SessionTranscriptPage {
         messages: vec![
-            (1, superscience_llm::Message::user("legacy question")),
-            (2, superscience_llm::Message::assistant("fallback answer")),
+            (1, wisp_llm::Message::user("legacy question")),
+            (2, wisp_llm::Message::assistant("fallback answer")),
         ],
         branch_merges: vec![],
         reviews: vec![],
@@ -1335,14 +1292,51 @@ fn transcript_page_reconstructs_legacy_prefix_before_persisted_events() {
 }
 
 #[test]
-fn branch_merge_projection_never_relabels_the_previous_answer() {
-    let page = superscience_store::SessionTranscriptPage {
-        messages: vec![
-            (1, superscience_llm::Message::user("question")),
-            (2, superscience_llm::Message::assistant("original answer")),
-            (3, superscience_llm::Message::assistant("branch summary")),
+fn persisted_ui_events_from_older_builds_keep_the_transcript() {
+    let page = wisp_store::SessionTranscriptPage {
+        messages: vec![(1, wisp_llm::Message::user("hello"))],
+        branch_merges: vec![],
+        reviews: vec![],
+        resources: vec![],
+        ui_events: vec![
+            r#"{"kind":"User","frame_id":"f","text":"hello"}"#.into(),
+            // Pre-duration ToolResult (v0 shape).
+            r#"{"kind":"ToolResult","frame_id":"f","name":"python","ok":true,"content":"ok"}"#
+                .into(),
+            // Usage before reasoning/cached/round became required on read.
+            r#"{"kind":"Usage","frame_id":"f","input":10,"output":4,"ctx_tokens":20,"max_context":128000}"#
+                .into(),
+            // Completely unknown later/corrupt kind must not abort the page.
+            r#"{"kind":"FutureKind","frame_id":"f","mystery":true}"#.into(),
+            r#"{"kind":"MessageBoundary","frame_id":"f","seq":1}"#.into(),
         ],
-        branch_merges: vec![superscience_store::SessionBranchMergeCard {
+        next_before_seq: None,
+        user_offset: 0,
+        latest_seq: 1,
+    };
+
+    let items = transcript_page_items(&page).expect("legacy UI events must not fail load_session");
+    assert!(
+        items
+            .iter()
+            .any(|item| item.role == "user" && item.text == "hello"),
+        "user turn survived a version skip"
+    );
+    assert!(
+        items.iter().any(|item| item.role == "usage"),
+        "old Usage without reasoning/cached must still fold"
+    );
+}
+
+#[test]
+fn branch_merge_projection_never_relabels_the_previous_answer() {
+    let page = wisp_store::SessionTranscriptPage {
+        messages: vec![
+            (1, wisp_llm::Message::user("question")),
+            (2, wisp_llm::Message::assistant("original answer")),
+            (3, wisp_llm::Message::assistant("branch summary")),
+        ],
+        branch_merges: vec![wisp_store::SessionBranchMergeCard {
             summary_message_seq: 3,
             branch_session_id: "branch".into(),
             branch_title: "focused work".into(),
@@ -1367,11 +1361,11 @@ fn branch_merge_projection_never_relabels_the_previous_answer() {
 #[test]
 fn resource_bindings_cover_messages_rendered_as_assistant_output() {
     assert!(message_uses_resource_bindings(
-        &superscience_llm::Message::assistant("answer")
+        &wisp_llm::Message::assistant("answer")
     ));
-    let completion = superscience_llm::Message::tool("call-1", "attempt_completion", "result");
+    let completion = wisp_llm::Message::tool("call-1", "attempt_completion", "result");
     assert!(message_uses_resource_bindings(&completion));
-    let ordinary_tool = superscience_llm::Message::tool("call-2", "read_file", "result");
+    let ordinary_tool = wisp_llm::Message::tool("call-2", "read_file", "result");
     assert!(!message_uses_resource_bindings(&ordinary_tool));
 }
 
@@ -1379,7 +1373,7 @@ fn resource_bindings_cover_messages_rendered_as_assistant_output() {
 fn scope_gates_per_tool_modes() {
     use super::{ApprovalMode, ApprovalPolicy, Scope};
     use std::collections::HashMap;
-    use superscience_tools::Approval;
+    use wisp_tools::Approval;
 
     let policy = |scope: Scope| {
         let mut tools = HashMap::new();
@@ -1463,7 +1457,7 @@ fn approval_grant_key_skips_plan_and_normalizes_shell() {
     assert_eq!(
         approval_grant_key(&format!(
             "{}[ ] Inspect",
-            superscience_tools::plan::PLAN_APPROVAL_PREFIX
+            wisp_tools::plan::PLAN_APPROVAL_PREFIX
         )),
         None
     );
@@ -1472,7 +1466,7 @@ fn approval_grant_key_skips_plan_and_normalizes_shell() {
 #[test]
 fn copy_dir_recursive_copies_nested_files() {
     let base = std::env::temp_dir().join(format!(
-        "superscience_copy_dir_test_{}_{}",
+        "wisp_copy_dir_test_{}_{}",
         std::process::id(),
         line!()
     ));
@@ -1509,7 +1503,7 @@ fn validate_skill_name_rejects_traversal() {
     ] {
         assert!(validate_skill_name(bad).is_err(), "should reject {bad:?}");
     }
-    for ok in ["alphafold2", "my-skill", "Skill_1"] {
+    for ok in ["literature-review", "my-skill", "Skill_1"] {
         assert!(validate_skill_name(ok).is_ok(), "should accept {ok:?}");
     }
 }
@@ -1518,13 +1512,13 @@ fn validate_skill_name_rejects_traversal() {
 fn parse_disabled_skills_handles_missing_and_valid() {
     assert!(parse_disabled_skills(None).is_empty());
     assert!(parse_disabled_skills(Some("not json")).is_empty());
-    let s = parse_disabled_skills(Some(r#"["alphafold2","boltz"]"#));
-    assert!(s.contains("alphafold2") && s.contains("boltz") && s.len() == 2);
+    let s = parse_disabled_skills(Some(r#"["literature-review","analysis-workflow"]"#));
+    assert!(s.contains("literature-review") && s.contains("analysis-workflow") && s.len() == 2);
 }
 
 #[test]
 fn resolve_workspace_prefers_env_then_setting_then_default() {
-    let default = PathBuf::from("/nonexistent/superscience/default");
+    let default = PathBuf::from("/nonexistent/wisp/default");
     // Blank/whitespace candidates are skipped → default wins (never created).
     assert_eq!(
         resolve_workspace(Some("   ".into()), Some(String::new()), default.clone()),
@@ -1532,7 +1526,7 @@ fn resolve_workspace_prefers_env_then_setting_then_default() {
     );
     assert!(!default.exists());
 
-    let base = std::env::temp_dir().join(format!("superscience_ws_test_{}", std::process::id()));
+    let base = std::env::temp_dir().join(format!("wisp_ws_test_{}", uuid::Uuid::new_v4()));
     let env_dir = base.join("env");
     let set_dir = base.join("set");
     // A creatable env path wins over the setting, and gets created.
@@ -1673,13 +1667,10 @@ fn specialist_section_marker_detects_prior_append() {
     let mut prompt = String::from("base prompt");
     let section = crate::specialist_prompt_section(&spec);
     // First append happens; a second pass sees the marker and skips.
-    if !prompt.contains("\n\n## Specialist: ") {
-        prompt.push_str(&section);
-    }
-    if !prompt.contains("\n\n## Specialist: ") {
-        prompt.push_str(&section);
-    }
+    crate::append_specialist_section_once(&mut prompt, &section);
+    crate::append_specialist_section_once(&mut prompt, &section);
     assert_eq!(prompt.matches("## Specialist: Paper hunter").count(), 1);
+    assert!(prompt.starts_with("base prompt"));
 }
 
 #[test]
@@ -1753,11 +1744,6 @@ fn windows_close_to_tray_applies_only_to_the_main_window() {
 }
 
 #[test]
-fn windows_pet_window_uses_the_label_safe_viewport() {
-    assert_eq!((PET_WINDOW_WIDTH, PET_WINDOW_HEIGHT), (128, 176));
-}
-
-#[test]
 fn windows_path_repair_recovers_trailing_user_entries() {
     let inherited = r"C:\Windows\System32;C:\TOOLS\;C:\";
     let user = r"C:\IgnoredWithoutSlash;C:\tools\;C:\Users\Ada\AppData\Local\pixi\bin\;D:\";
@@ -1777,6 +1763,24 @@ fn project_window_url_carries_the_target_session() {
     assert_eq!(
         super::project_commands::project_window_url("abc", Some("s1")),
         "index.html?project=abc&session=s1"
+    );
+}
+
+#[test]
+fn centered_window_position_centers_over_the_anchor() {
+    assert_eq!(
+        super::project_commands::centered_window_position((100, 50), (1600, 1000), (1100, 760)),
+        (350, 170)
+    );
+    // A window larger than its anchor overflows symmetrically.
+    assert_eq!(
+        super::project_commands::centered_window_position((100, 50), (800, 600), (1100, 760)),
+        (-50, -30)
+    );
+    // Anchors on monitors left of/above the primary keep negative origins.
+    assert_eq!(
+        super::project_commands::centered_window_position((-1600, -50), (1600, 1000), (1100, 760)),
+        (-1350, 70)
     );
 }
 
@@ -2021,28 +2025,18 @@ fn queue_reorder_swaps_and_clamps() {
         attachments: vec![],
         references: vec![],
     };
-    let swap_toward = |q: &mut Vec<QueuedItem>, id: u64, up: bool| {
-        if let Some(i) = q.iter().position(|it| it.id == id) {
-            let target = if up {
-                i.checked_sub(1)
-            } else {
-                (i + 1 < q.len()).then_some(i + 1)
-            };
-            if let Some(j) = target {
-                q.swap(i, j);
-            }
-        }
-    };
     let ids = |q: &[QueuedItem]| q.iter().map(|it| it.id).collect::<Vec<_>>();
 
     let mut q = vec![item(1), item(2), item(3)]; // A, B, C
-    swap_toward(&mut q, 3, true); // C up → A, C, B
+    super::swap_queued_toward(&mut q, 3, true); // C up → A, C, B
     assert_eq!(ids(&q), [1, 3, 2]);
-    swap_toward(&mut q, 1, false); // A down → C, A, B
+    super::swap_queued_toward(&mut q, 1, false); // A down → C, A, B
     assert_eq!(ids(&q), [3, 1, 2]);
-    swap_toward(&mut q, 3, true); // C already first → no-op
+    super::swap_queued_toward(&mut q, 3, true); // C already first → no-op
     assert_eq!(ids(&q), [3, 1, 2]);
-    swap_toward(&mut q, 2, false); // B already last → no-op
+    super::swap_queued_toward(&mut q, 2, false); // B already last → no-op
+    assert_eq!(ids(&q), [3, 1, 2]);
+    super::swap_queued_toward(&mut q, 99, true); // unknown id → no-op
     assert_eq!(ids(&q), [3, 1, 2]);
 }
 
@@ -2059,22 +2053,24 @@ fn follow_up_questions_parse_exactly_three_distinct_options() {
 fn startup_timeline_returns_phase_results_and_names_the_slowest_phase() {
     let mut timeline = StartupTimeline::default();
     let fast = timeline.record("fast", || 1_u32);
-    let slow = timeline.record("slow", || {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        "store"
-    });
-
+    let slow = timeline.record("slow", || "store");
     assert_eq!(fast, 1);
     assert_eq!(slow, "store");
+
+    // Pin the measured durations instead of racing wall-clock sleeps, so the
+    // ordering assertions below are deterministic.
+    timeline.phases[0].1 = std::time::Duration::from_millis(1);
+    timeline.phases[1].1 = std::time::Duration::from_millis(20);
+
     let summary = timeline.summary();
-    assert!(summary.starts_with("total="), "{summary}");
-    let slow_at = summary.find("slow=").expect("slow phase reported");
-    let fast_at = summary.find("fast=").expect("fast phase reported");
+    assert!(summary.starts_with("total=21ms"), "{summary}");
+    let slow_at = summary.find("slow=20ms").expect("slow phase reported");
+    let fast_at = summary.find("fast=1ms").expect("fast phase reported");
     assert!(
         slow_at < fast_at,
         "slowest phase must come first: {summary}"
     );
-    assert!(timeline.total() >= std::time::Duration::from_millis(20));
+    assert_eq!(timeline.total(), std::time::Duration::from_millis(21));
 }
 
 #[test]
@@ -2099,5 +2095,81 @@ fn startup_report_grows_as_the_launch_progresses() {
     assert_eq!(
         report.summary(),
         "total=120ms store=90ms window_ready=600000ms deferred=4200ms"
+    );
+}
+
+#[test]
+fn navigation_guard_allows_only_app_origins() {
+    let allowed = [
+        "tauri://localhost/",
+        "tauri://localhost/index.html",
+        "http://tauri.localhost/",
+        "https://tauri.localhost/",
+        "http://localhost:1421/",
+        "about:blank",
+    ];
+    for url in allowed {
+        assert!(
+            navigation_allowed(&tauri::Url::parse(url).unwrap()),
+            "{url} should be allowed"
+        );
+    }
+
+    let blocked = [
+        "https://example.com/page",
+        "http://evil.example/figures/plot.png",
+        // Host-suffix lookalikes must not pass as the dev server.
+        "http://localhost.evil.example/",
+        "https://not-tauri.localhost/",
+        "file:///etc/passwd",
+        "javascript:alert(1)",
+    ];
+    for url in blocked {
+        assert!(
+            !navigation_allowed(&tauri::Url::parse(url).unwrap()),
+            "{url} should be blocked"
+        );
+    }
+}
+
+#[test]
+fn desktop_app_icon_is_full_bleed_with_an_inset_mark() {
+    let svg = include_str!("../icons/app-icon.svg");
+    let rounded = include_str!("../icons/app-icon-rounded.svg");
+    let script = include_str!("../gen-icons.ps1");
+    assert!(
+        !svg.contains("<clipPath"),
+        "macOS master must be full-bleed; Dock applies the squircle mask"
+    );
+    assert!(
+        svg.contains("scale(0.60)"),
+        "keep the DNA mark inset so Dock/Launchpad does not fill the tile"
+    );
+    assert!(
+        rounded.contains("<clipPath") && rounded.contains("rx=\"58\""),
+        "Windows/Linux launchers draw the bitmap as-is and need baked rounding"
+    );
+    assert!(
+        rounded.contains("scale(0.60)"),
+        "rounded launcher icon must keep the same inset mark"
+    );
+    assert!(
+        script
+            .lines()
+            .any(|line| line.contains("Resolve-Path") && line.contains("icons/app-icon.svg")),
+        "icon generation must use the desktop master, not the in-app logo"
+    );
+    assert!(
+        script.lines().any(
+            |line| line.contains("Resolve-Path") && line.contains("icons/app-icon-rounded.svg")
+        ),
+        "Windows/Linux icons must come from the rounded master"
+    );
+    assert!(
+        !script.lines().any(|line| {
+            let trimmed = line.trim_start();
+            !trimmed.starts_with('#') && line.contains("ui/logo.svg")
+        }),
+        "do not pass the in-app logo (canvas-filling badge) to cargo tauri icon"
     );
 }

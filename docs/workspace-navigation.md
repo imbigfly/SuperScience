@@ -1,12 +1,18 @@
 # Workspace navigation
 
-By default, opening a workspace restores its most recently active conversation.
-Opening a specific conversation from Recent sessions or search still takes
-priority.
+By default, opening a workspace restores its most recently **used** conversation
+(one that already has a user message). A named but unused draft stays visible
+in the sidebar, but it is not treated as the last conversation. Opening a
+specific conversation from Recent sessions or search still takes priority.
 
 Choose another workspace from the sidebar workspace menu to switch the current
 window in place. A separate window is opened only by an action explicitly
 labelled **Open in new window**.
+
+On the Projects home screen, each project card has a **Project settings**
+button. It opens name, description, and Agent Context for that project without
+entering the workspace first. The home screen does not use the browser
+right-click menu.
 
 To open workspaces on a blank conversation instead, turn off **Resume the last
 conversation when opening a workspace** in **Settings → General**. Starting a

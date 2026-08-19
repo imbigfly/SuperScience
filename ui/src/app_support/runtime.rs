@@ -44,6 +44,23 @@ pub(crate) fn refresh_session_execution_contexts(
     });
 }
 
+/// Render-relevant equality for the polled run list. `last_polled_at` is a
+/// backend heartbeat that changes on every remote poll; treating it as a
+/// change republishes every run card each poll cycle — the visible "page
+/// refresh" that flickered cards and yanked the chat scroll back to the top.
+/// `last_poll_error` stays in the comparison: the SSH-retry toast and the
+/// card's error line depend on it.
+fn run_lists_render_eq(current: &[RunSummary], next: &[RunSummary]) -> bool {
+    current.len() == next.len()
+        && current.iter().zip(next.iter()).all(|(a, b)| {
+            let mut a = a.clone();
+            let mut b = b.clone();
+            a.last_polled_at = None;
+            b.last_polled_at = None;
+            a == b
+        })
+}
+
 pub(crate) fn refresh_runtimes(into: RwSignal<Vec<RuntimeInfo>>) {
     spawn_local(async move {
         let value = invoke("list_runtimes", JsValue::UNDEFINED).await;
@@ -84,7 +101,9 @@ pub(crate) fn refresh_runs(into: RwSignal<Vec<RunSummary>>, locale: RwSignal<Loc
             // signal unconditionally rebuilds every run card, which resets the
             // output panel's scroll to the top for a frame — a finished run
             // visibly jumped once per poll with nothing to show for it (#654).
-            if into.with_untracked(|current| current != &list) {
+            // The heartbeat field alone must not count as a change either, or
+            // every remote poll keeps republishing the whole list.
+            if into.with_untracked(|current| !run_lists_render_eq(current, &list)) {
                 into.set(list);
                 schedule_run_output_follow();
             }
@@ -94,6 +113,58 @@ pub(crate) fn refresh_runs(into: RwSignal<Vec<RunSummary>>, locale: RwSignal<Loc
             }
         }
     });
+}
+
+#[cfg(test)]
+mod run_refresh_guard_tests {
+    use super::run_lists_render_eq;
+    use crate::dto::RunSummary;
+
+    fn summary(last_polled_at: Option<i64>) -> RunSummary {
+        RunSummary {
+            id: "run-1".into(),
+            frame_id: None,
+            context_id: "local".into(),
+            title: "job".into(),
+            kind: "shell".into(),
+            status: "running".into(),
+            created_at: 1,
+            started_at: Some(2),
+            ended_at: None,
+            exit_code: None,
+            remote_workdir: None,
+            timeout_secs: None,
+            last_polled_at,
+            last_poll_error: None,
+            progress_json: "{}".into(),
+            harvested_at: None,
+            cleaned_at: None,
+            cleanup_error: None,
+            output_fingerprint: "fp".into(),
+        }
+    }
+
+    #[test]
+    fn heartbeat_only_changes_do_not_republish_the_run_list() {
+        let current = vec![summary(Some(10))];
+        assert!(run_lists_render_eq(&current, &[summary(Some(10))]));
+        assert!(run_lists_render_eq(&current, &[summary(Some(20))]));
+        assert!(run_lists_render_eq(&current, &[summary(None)]));
+
+        let mut changed = summary(Some(10));
+        changed.status = "succeeded".into();
+        assert!(!run_lists_render_eq(&current, &[changed]));
+
+        let mut changed = summary(Some(10));
+        changed.last_poll_error = Some("ssh: connection lost".into());
+        assert!(!run_lists_render_eq(&current, &[changed]));
+
+        assert!(!run_lists_render_eq(&current, &[]));
+        assert!(!run_lists_render_eq(
+            &current,
+            &[summary(Some(10)), summary(Some(11))]
+        ));
+    }
 }
 
 pub(crate) fn show_probe_stopped_toast(value: &JsValue, locale: RwSignal<Locale>) {
@@ -1880,6 +1951,99 @@ pub(crate) enum ContextModalKind {
     Machine,
     Runtimes,
     Runs,
+    RemoteFiles,
+}
+
+/// Files this project ledgered on one server, with delete actions for
+/// retracted/replaced entries. Fetched on open; never persisted client-side.
+#[component]
+fn RemoteFilesPane(context_id: String, locale: RwSignal<Locale>) -> impl IntoView {
+    let files = create_rw_signal(Vec::<RemoteFileView>::new());
+    let error = create_rw_signal(None::<String>);
+    let fetch_context_id = context_id.clone();
+    let fetch = move || {
+        let context_id = fetch_context_id.clone();
+        spawn_local(async move {
+            let args = to_value(&serde_json::json!({ "contextId": context_id })).unwrap();
+            match invoke_checked("list_remote_files", args).await {
+                Ok(value) => {
+                    if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<RemoteFileView>>(value) {
+                        files.set(list);
+                    }
+                }
+                Err(value) => error.set(Some(localize_backend(
+                    locale.get_untracked(),
+                    &js_error_text(value),
+                ))),
+            }
+        });
+    };
+    fetch.clone()();
+    let section_context_id = context_id.clone();
+    view! {
+        <section class="control-section context-modal-section remote-files-pane"
+            data-context-id=section_context_id data-testid="remote-files-pane">
+            <div class="control-section-head">
+                <span>{t(locale.get(), "contexts.remote_files")}</span>
+                <span class="control-count">{move || files.get().len().to_string()}</span>
+            </div>
+            {move || error.get().map(|message| view! {
+                <div class="context-error">{message}</div>
+            })}
+            {move || {
+                let rows = files.get();
+                if rows.is_empty() {
+                    view! { <div class="control-empty">{t(locale.get(), "remote_files.empty")}</div> }.into_view()
+                } else {
+                    rows.into_iter().map(|file| {
+                        let state_label = t(locale.get(), &format!("remote_files.state_{}", file.state));
+                        let state_class = format!("remote-file-state {}", file.state);
+                        let deletable = file.state != "active";
+                        let delete_context_id = context_id.clone();
+                        let delete_id = file.id.clone();
+                        let refetch = fetch.clone();
+                        view! {
+                            <div class="remote-file-row" data-testid="remote-file-row">
+                                <div class="remote-file-main">
+                                    <code class="remote-file-path">{file.remote_path.clone()}</code>
+                                    <div class="remote-file-meta">
+                                        <span class=state_class>{state_label}</span>
+                                        <span>{t(locale.get(), &format!("remote_files.source_{}", file.source))}</span>
+                                        {file.run_status.map(|status| view! { <span>{status}</span> })}
+                                    </div>
+                                </div>
+                                {deletable.then(|| view! {
+                                    <button type="button" class="icon-btn remote-file-delete"
+                                        title=t(locale.get(), "remote_files.delete")
+                                        aria-label=t(locale.get(), "remote_files.delete")
+                                        on:click=move |_| {
+                                            let context_id = delete_context_id.clone();
+                                            let id = delete_id.clone();
+                                            let refetch = refetch.clone();
+                                            spawn_local(async move {
+                                                let args = to_value(&serde_json::json!({
+                                                    "contextId": context_id,
+                                                    "ids": [id],
+                                                }))
+                                                .unwrap();
+                                                match invoke_checked("remove_remote_files", args).await {
+                                                    Ok(_) => show_toast(&t(locale.get_untracked(), "remote_files.deleted")),
+                                                    Err(value) => show_toast(&localize_backend(
+                                                        locale.get_untracked(),
+                                                        &js_error_text(value),
+                                                    )),
+                                                }
+                                                refetch();
+                                            });
+                                        }>{compose_icon("trash")}</button>
+                                })}
+                            </div>
+                        }.into_view()
+                    }).collect_view()
+                }
+            }}
+        </section>
+    }
 }
 
 #[component]
@@ -1942,6 +2106,7 @@ pub(crate) fn ContextDetailsOverlay(
             ContextModalKind::Machine => t(locale.get(), "contexts.machine_info"),
             ContextModalKind::Runtimes => t(locale.get(), "contexts.runtimes"),
             ContextModalKind::Runs => t(locale.get(), "contexts.runs"),
+            ContextModalKind::RemoteFiles => t(locale.get(), "contexts.remote_files"),
         };
         let body_context_id = context.id.clone();
 
@@ -1965,6 +2130,9 @@ pub(crate) fn ContextDetailsOverlay(
                             on:click=move |_| modal.set(None)>{compose_icon("close")}</button>
                     </div>
                     {match kind {
+                        ContextModalKind::RemoteFiles => view! {
+                            <RemoteFilesPane context_id=body_context_id.clone() locale=locale />
+                        }.into_view(),
                         ContextModalKind::Machine => {
                             let status = context.last_probe_status.clone().unwrap_or_else(|| "unknown".into());
                             let status_class = format!("context-status {status}");
@@ -2077,6 +2245,18 @@ pub(crate) fn ContextDetailsOverlay(
                                                     run.status.as_str(),
                                                     "submitted" | "running" | "cancelling"
                                                 );
+                                            let terminal = matches!(
+                                                run.status.as_str(),
+                                                "succeeded" | "failed" | "cancelled" | "timed_out" | "lost"
+                                            );
+                                            let cleaned = run.cleaned_at.is_some();
+                                            let cleanable = !method_search
+                                                && terminal
+                                                && !cleaned
+                                                && run.kind != "file_transfer"
+                                                && run.remote_workdir.is_some();
+                                            let cleanup_id = run.id.clone();
+                                            let cleanup_error = run.cleanup_error.clone();
                                             let cancel_label = if run.status == "cancelling" {
                                                 t(locale.get(), "runs.force_cancel")
                                             } else {
@@ -2134,8 +2314,52 @@ pub(crate) fn ContextDetailsOverlay(
                                                                         }>{compose_icon("close")}</button>
                                                                 }
                                                             })}
+                                                            {cleanable.then(|| {
+                                                                let review_id = cleanup_id.clone();
+                                                                let tip = t(locale.get(), "run_review.open");
+                                                                let review_modal = use_context::<crate::overlays::RunReviewModal>();
+                                                                review_modal.map(|review_modal| view! {
+                                                                    <button type="button" class="icon-btn run-review-open"
+                                                                        data-testid="run-review-open"
+                                                                        title=tip.clone()
+                                                                        aria-label=tip
+                                                                        on:click=move |_| review_modal.0.set(Some(review_id.clone()))
+                                                                    >{compose_icon("folder")}</button>
+                                                                })
+                                                            })}
+                                                            {cleanable.then(|| {
+                                                                let run_id = cleanup_id.clone();
+                                                                let tip = t(locale.get(), "runs.cleanup");
+                                                                view! {
+                                                                    <button type="button" class="icon-btn run-cleanup"
+                                                                        title=tip.clone()
+                                                                        aria-label=tip
+                                                                        on:click=move |_| {
+                                                                            let run_id = run_id.clone();
+                                                                            spawn_local(async move {
+                                                                                let arg = to_value(&serde_json::json!({ "runId": run_id })).unwrap();
+                                                                                match invoke_checked("cleanup_run_workspace", arg).await {
+                                                                                    Ok(_) => show_toast(&t(locale.get_untracked(), "runs.cleanup_done")),
+                                                                                    Err(error) => show_toast(&localize_backend(
+                                                                                        locale.get_untracked(),
+                                                                                        &js_error_text(error),
+                                                                                    )),
+                                                                                }
+                                                                                refresh_runs(runs, locale);
+                                                                            });
+                                                                        }>{compose_icon("trash")}</button>
+                                                                }
+                                                            })}
+                                                            {cleaned.then(|| view! {
+                                                                <span class="run-cleaned" data-testid="run-cleaned">
+                                                                    {t(locale.get(), "runs.cleaned")}
+                                                                </span>
+                                                            })}
                                                         </div>
                                                     </div>
+                                                    {cleanup_error.filter(|error| !error.trim().is_empty()).map(|error| view! {
+                                                        <div class="context-error">{error}</div>
+                                                    })}
                                                     {progress.map(|progress| run_progress_meter(progress, locale.get()))}
                                                     {method_progress.map(|progress| view! {
                                                         <div class="method-search-card-progress">

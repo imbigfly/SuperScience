@@ -240,10 +240,11 @@ mod start_user_turn_tests {
     use super::{
         append_assistant_delta, append_reasoning_delta, completed_activity_end,
         composer_text_from_user_message, dismiss_follow_up_questions, is_commentary_at,
-        is_image_generation_tool, is_tool_activity, message_with_attachments,
-        message_with_composer_context, message_with_quotes, message_with_read_only_quotes,
-        process_item_insert_index, runtime_object_quote, selection_targets_center_file,
-        start_user_turn, trailing_queue_start, ComposerQuote, ComposerReferenceChip,
+        is_image_generation_tool, is_tool_activity, is_video_generation_tool,
+        message_with_attachments, message_with_composer_context, message_with_quotes,
+        message_with_read_only_quotes, process_item_insert_index, runtime_object_quote,
+        selection_targets_center_file, start_user_turn, trailing_queue_start, ComposerQuote,
+        ComposerReferenceChip,
     };
     use crate::dto::{ChatItem, ContextUsage};
     use leptos::*;
@@ -593,6 +594,22 @@ mod start_user_turn_tests {
     }
 
     #[test]
+    fn video_generation_is_not_folded_into_tool_activity() {
+        let video = ChatItem::Tool {
+            name: "generate_video".into(),
+            ok: None,
+            input: "media/clip.mp4".into(),
+            output: String::new(),
+            started_at_ms: None,
+            duration_ms: None,
+        };
+
+        assert!(is_video_generation_tool("generate_video"));
+        assert!(!is_video_generation_tool("generate_image"));
+        assert!(!is_tool_activity(&video));
+    }
+
+    #[test]
     fn completed_activity_folds_until_the_final_answer() {
         let assistant = |text: &str| ChatItem::Assistant {
             text: text.into(),
@@ -771,12 +788,17 @@ pub(crate) fn is_image_generation_tool(name: &str) -> bool {
     name == "generate_image"
 }
 
+pub(crate) fn is_video_generation_tool(name: &str) -> bool {
+    name == "generate_video"
+}
+
 pub(crate) fn is_tool_activity(item: &ChatItem) -> bool {
     match item {
         ChatItem::Tool { name, .. } => {
             name != "attempt_completion"
                 && !is_run_monitor_tool(name)
                 && !is_image_generation_tool(name)
+                && !is_video_generation_tool(name)
         }
         ChatItem::AcpTool { .. } => true,
         _ => false,

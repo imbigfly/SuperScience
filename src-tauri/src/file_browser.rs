@@ -1084,6 +1084,12 @@ pub(super) async fn read_remote_file(
     path: String,
     max_bytes: Option<u64>,
 ) -> Result<FileContent, String> {
+    crate::run_context::remote_files::refuse_if_context_path_discarded(
+        &state.store,
+        &context_id,
+        &path,
+    )
+    .await?;
     let context = state
         .store
         .get_execution_context(&context_id)
@@ -1105,6 +1111,12 @@ pub(super) async fn read_remote_file_bytes(
     path: String,
     max_bytes: Option<u64>,
 ) -> Result<Response, String> {
+    crate::run_context::remote_files::refuse_if_context_path_discarded(
+        &state.store,
+        &context_id,
+        &path,
+    )
+    .await?;
     let context = state
         .store
         .get_execution_context(&context_id)

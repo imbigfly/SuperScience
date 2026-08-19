@@ -65,6 +65,24 @@ test("exploration sidebar, banners, diff tabs, and Escape stack remain distinct 
   await expect(page.getByTestId("exploration-banner")).toContainText("Exploration B");
 });
 
+test("Escape immediately after opening the diff overlay closes only that layer", async ({ page }) => {
+  await enterExplorationProject(page);
+  await page.getByTestId("exploration-message-card").nth(0).click();
+  const banner = page.getByTestId("exploration-banner");
+  await expect(banner).toContainText("Exploration A");
+
+  await banner.getByRole("button", { name: "View diff" }).click();
+  const diff = page.getByTestId("exploration-diff-overlay");
+  await expect(diff).toBeVisible();
+  // Escape stack rule: press Escape immediately, before any focus moves into
+  // the overlay. One press closes only the topmost layer; the exploration
+  // view underneath must stay open.
+  await page.keyboard.press("Escape");
+  await expect(diff).toBeHidden();
+  await expect(banner).toBeVisible();
+  await expect(page.getByText("Exploration A result")).toBeVisible();
+});
+
 test("an exploration round banner and checkpoint cards stay scoped to its source session", async ({ page }) => {
   await page.goto("/?mockExplorations=1&mockOtherExplorationSession=1");
   await page.locator(".proj-card-main").first().click();
@@ -102,6 +120,44 @@ test("exploration cards expose right-click actions and selecting opens guarded p
   await expect.poll(() => lastInvokeArgs(page, "promote_exploration")).toBeNull();
   await diff.getByRole("button", { name: "Set as mainline", exact: true }).click();
   await expect(page.getByTestId("exploration-confirm-overlay")).toBeVisible();
+});
+
+test("blocked promotion offers a guarded manual file recovery flow", async ({ page }) => {
+  await page.goto("/?mockExplorations=1&mockMainlineAdvanced=1");
+  await page.locator(".proj-card-main").first().click();
+  await page
+    .getByTestId("sidebar-explorations")
+    .locator('[data-exploration-id="exploration-a"]')
+    .click();
+  await page.getByTestId("exploration-banner").getByRole("button", { name: "View diff" }).click();
+
+  const diff = page.getByTestId("exploration-diff-overlay");
+  await expect(diff.getByTestId("exploration-promotion-blocked")).toContainText(
+    "Automatic promotion stopped to avoid overwriting it",
+  );
+  const manual = diff.getByTestId("exploration-manual-resolution");
+  await expect(manual).toContainText("Resolve files manually");
+  await expect(diff.getByTestId("exploration-promote")).toBeDisabled();
+
+  await manual.getByTestId("exploration-open-manual-folders").click();
+  await expect.poll(() => lastInvokeArgs(page, "open_exploration_manual_resolution")).toMatchObject({
+    explorationId: "exploration-a",
+  });
+
+  await manual.getByTestId("exploration-finish-manual").click();
+  const confirm = page.getByTestId("exploration-confirm-overlay");
+  await expect(confirm).toContainText("Exploration-only conversation history and structured records will not be merged");
+  await page.keyboard.press("Escape");
+  await expect(confirm).toBeHidden();
+  await expect(diff).toBeVisible();
+
+  await manual.getByTestId("exploration-finish-manual").click();
+  await page.getByTestId("exploration-confirm-action").click();
+  await expect.poll(() => lastInvokeArgs(page, "abandon_exploration_round")).toMatchObject({
+    sourceFrameId: "exploration-mainline",
+  });
+  await expect(page.getByTestId("sidebar-explorations")).toHaveCount(0);
+  await expect(page.locator("#composer-input")).toBeEnabled();
 });
 
 test("discard permanently removes the exploration instead of leaving an unwritable tombstone", async ({ page }) => {
@@ -144,7 +200,25 @@ test("conversation branches appear at their checkpoint and expose merge-back act
   await branch.click();
   await expect(page.locator(".msg-branch-btn")).toHaveCount(0);
   await expect(page.locator('.user-bubble [title="Branch"]')).toHaveCount(0);
+  await expect(page.getByTestId("start-exploration")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Start exploration", exact: true })).toHaveCount(0);
+  await expect(page.getByTestId("exploration-start-overlay")).toHaveCount(0);
   await expect(page.locator("#composer-input")).toBeEnabled();
+  await page.getByRole("button", { name: "Message options" }).click();
+  await expect(page.getByRole("button", { name: "Branch in new session", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Side chat", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".send-mode-menu")).toHaveCount(0);
+  await expect(page.locator("#composer-input")).toBeEnabled();
+  await page.locator("#composer-input").pressSequentially("/");
+  const slashMenu = page.locator(".mention-menu");
+  await expect(slashMenu).toBeVisible();
+  await expect(slashMenu).toContainText("/compact");
+  await expect(slashMenu).not.toContainText("/fork");
+  await page.keyboard.press("Escape");
+  await page.locator("#composer-input").fill("/fork nested branch");
+  await page.getByRole("button", { name: "Send" }).click();
+  expect(await lastInvokeArgs(page, "branch_session")).toBeNull();
 
   await branch.click({ button: "right" });
   await expect(page.getByRole("button", { name: "Merge back", exact: true })).toBeVisible();
@@ -320,6 +394,7 @@ test("exploration candidates remain writable while mainline is frozen", async ({
   await expect(page.getByRole("button", { name: "Branch to new conversation", exact: true })).toHaveCount(0);
   await page.keyboard.press("Escape");
   await page.locator(".send-menu-toggle").click();
+  await expect(page.getByRole("button", { name: "Branch in new session", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Branch to new conversation", exact: true })).toHaveCount(0);
 });
 

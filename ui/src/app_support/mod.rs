@@ -4,8 +4,8 @@ use super::{
 };
 use crate::bindings::{
     attach_cropped_region, crop_region_to_upload, invoke, invoke_checked, is_mac, mount_preview,
-    open_external_url, schedule_highlight, schedule_run_output_follow, upload_files,
-    upload_input_files, upload_pasted_files,
+    native_drop_remote_target, open_external_url, schedule_highlight, schedule_run_output_follow,
+    upload_files, upload_input_files, upload_pasted_images,
 };
 use crate::dto::*;
 use crate::i18n::{localize_backend, t, tf, use_locale, Locale};
@@ -15,7 +15,8 @@ use crate::text::{
     fenced_blocks, file_kind, format_bytes, format_duration_ms, html_escape, ime_composing,
     is_external_href, is_separator, is_table_row, md_document_to_html, md_inline_to_html,
     md_to_html, next_artifact_id, normalize_path, opens_in_system_browser, parent_path,
-    parse_csv_line, parse_notebook, pretty_json, provider_value, split_row,
+    parse_csv_line, parse_notebook, pretty_json, provider_defaults, provider_value, split_row,
+    join_api_url, normalize_endpoint, same_endpoint, DEEPSEEK_FLASH_MODEL, DEEPSEEK_PRO_MODEL,
     tool_card_label, tool_lang, unique_dom_id, user_message_presentation, NbOutput, Notebook,
 };
 use leptos::{ev, window_event_listener, *};
@@ -29,13 +30,17 @@ use wasm_bindgen::JsCast;
 mod artifacts;
 mod chat_stream;
 mod composer;
+mod context_usage;
 mod dnd;
+mod extensions;
 mod files;
 mod issue_report;
 mod markdown;
 mod messages;
 mod modals;
+mod model_settings;
 mod palettes;
+mod pane_layout;
 mod prefs;
 mod previews;
 mod projects;
@@ -50,13 +55,17 @@ mod transcript;
 pub(crate) use artifacts::*;
 pub(crate) use chat_stream::*;
 pub(crate) use composer::*;
+pub(crate) use context_usage::*;
 pub(crate) use dnd::*;
+pub(crate) use extensions::*;
 pub(crate) use files::*;
 pub(crate) use issue_report::*;
 pub(crate) use markdown::*;
 pub(crate) use messages::*;
 pub(crate) use modals::*;
+pub(crate) use model_settings::*;
 pub(crate) use palettes::*;
+pub(crate) use pane_layout::*;
 pub(crate) use prefs::*;
 pub(crate) use previews::*;
 pub(crate) use projects::*;

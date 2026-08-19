@@ -85,11 +85,13 @@
             <li><img src="assets/trusted-logos/cornell.png" alt=""><span>Cornell University</span></li>
             <li><img src="assets/trusted-logos/michigan.png" alt=""><span>University of Michigan</span></li>
             <li><img src="assets/trusted-logos/ucla.png" alt=""><span>UCLA</span></li>
+            <li><img src="assets/trusted-logos/meduniwien.svg" alt=""><span>Medical University of Vienna</span></li>
             <li aria-hidden="true"><img src="assets/trusted-logos/yale.svg" alt=""><span>Yale University</span></li>
             <li aria-hidden="true"><img src="assets/trusted-logos/tsinghua.svg" alt=""><span>Tsinghua University</span></li>
             <li aria-hidden="true"><img src="assets/trusted-logos/cornell.png" alt=""><span>Cornell University</span></li>
             <li aria-hidden="true"><img src="assets/trusted-logos/michigan.png" alt=""><span>University of Michigan</span></li>
             <li aria-hidden="true"><img src="assets/trusted-logos/ucla.png" alt=""><span>UCLA</span></li>
+            <li aria-hidden="true"><img src="assets/trusted-logos/meduniwien.svg" alt=""><span>Medical University of Vienna</span></li>
           </ul>
         </div>
       </div>
@@ -181,17 +183,16 @@
 
           <article class="feature-card">
             <div>
-              <h3>29 个内置 SKILL 工作流</h3>
-              <p>从文献综述、蛋白结构（AlphaFold2 / Boltz / OpenFold3）到单细胞（scVI）、化学信息学与远程 HPC/Modal 计算，开箱即用。</p>
+              <h3>30 个内置 SKILL 工作流</h3>
+              <p>从文献综述、分析模块、作图与远程 SSH 计算，开箱即用。</p>
             </div>
             <div class="feature-visual">
               <pre>skills/
 ├─ literature-review/
-├─ scvi-tools/
-├─ boltz/
-├─ diffdock/
+├─ analysis-workflow/
 ├─ remote-compute-ssh/
-└─ figure-composer/ …
+├─ figure-composer/
+└─ paper-narrative/ …
 
 Agent 通过 use_skill 工具按需加载 SKILL.md</pre>
             </div>
@@ -263,7 +264,7 @@ Agent 通过 use_skill 工具按需加载 SKILL.md</pre>
         <div id="tab-scrna" class="tab-panel active" role="tabpanel">
           <div>
             <h3>单细胞与转录组分析</h3>
-            <p>加载 scVI、scGPT 等 SKILL，在持久 Python 内核中完成 QC、聚类、注释与 UMAP 可视化。</p>
+            <p>用 <code>analysis-workflow</code> 把 QC、聚类、注释收成可复现模块；在持久 Python 内核中完成 Scanpy 流程与 UMAP 可视化。</p>
             <ul>
               <li>调用 MCP 查询 GEO / CellxGene 元数据</li>
               <li>表格与图形自动进入 artifact 面板</li>
@@ -278,8 +279,8 @@ Agent 通过 use_skill 工具按需加载 SKILL.md</pre>
 
         <div id="tab-protein" class="tab-panel" role="tabpanel">
           <div>
-            <h3>蛋白结构与语言模型</h3>
-            <p>AlphaFold2、ESMFold、Boltz、OpenFold3、ProteinMPNN 等 SKILL 覆盖结构预测与设计。</p>
+            <h3>蛋白结构与序列</h3>
+            <p>从 UniProt / PDB 拉取序列与实验结构，结合文献综述与作图，生成可引用的位点表和 Methods 草稿。</p>
             <ul>
               <li>从 UniProt / PDB MCP 拉取序列与结构</li>
               <li>3D 结构查看器在 Roadmap 中</li>
@@ -295,7 +296,7 @@ Agent 通过 use_skill 工具按需加载 SKILL.md</pre>
         <div id="tab-chem" class="tab-panel" role="tabpanel">
           <div>
             <h3>化学信息学与分子设计</h3>
-            <p>通过 ChEMBL、PubChem MCP 检索活性数据，DiffDock 等 SKILL 支持对接与设计流程。</p>
+            <p>通过 ChEMBL、PubChem MCP 检索活性数据，计算理化性质与相似性，用 figure-composer 出 SAR 图。</p>
             <ul>
               <li>计算理化性质与相似性</li>
               <li>Ketcher MCP 支持 2D 结构编辑（bundled）</li>
@@ -405,7 +406,7 @@ Agent 通过 use_skill 工具按需加载 SKILL.md</pre>
               与通用 AI 助手有何不同？
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
             </button>
-            <div class="faq-a">它能真正执行：读写本地文件、运行 Shell、调用持久 Python REPL、通过 MCP 查询 PubMed/UniProt 等数据库，并在 SQLite 中保存完整会话。内置 29 个领域 SKILL，而非仅生成文本。</div>
+            <div class="faq-a">它能真正执行：读写本地文件、运行 Shell、调用持久 Python REPL、通过 MCP 查询 PubMed/UniProt 等数据库，并在 SQLite 中保存完整会话。内置 30 个领域 SKILL，而非仅生成文本。</div>
           </div>
           <div class="faq-item">
             <button class="faq-q" type="button">

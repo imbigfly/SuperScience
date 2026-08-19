@@ -12,15 +12,17 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use superscience_llm::{
+use wisp_llm::{
     is_retriable, Completion, Content, LlmError, Message, Part, Provider, ToolCall, ToolSchema,
 };
-use superscience_tools::{ImageData, Registry, ToolControl, ToolEnv};
+use wisp_tools::{ImageData, Registry, ToolControl, ToolEnv};
 
 const RETRY_DELAYS: [u64; 5] = [2_000, 10_000, 30_000, 60_000, 120_000];
 const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const STOPPED_BY_USER: &str = "stopped by user";
 const TRUNCATED_OUTPUT_MESSAGE: &str = "模型输出在达到 max_tokens 上限时被截断，任务可能尚未完成——请在设置中调高该模型的 max_tokens，或直接继续对话让我接着做。(output truncated at max_tokens)";
+const AUTO_CONTINUE_PROMPT: &str =
+    "Continue from where the previous response was truncated. Do not repeat completed work. The partial response already shown to the user was:\n\n";
 const STREAM_CUT_MESSAGE: &str = "模型响应流在中途被断开（未收到结束标记），已生成的部分内容不完整、不会计入上下文。常见原因：网络不稳定、代理/中转站切断连接，或同一 API key 的并发请求达到上限（例如多个会话同时使用同一模型）。可重发消息重试；需要并行会话时建议错开请求或使用不同的 API key。(stream cut mid-response, #437)";
 const EMPTY_RESPONSE_MESSAGE: &str = "模型完成了本轮推理，但没有返回可显示的文本或工具调用。对话上下文和已完成的工具结果均已保留；请点击“继续执行”重新生成最终回复。若长对话中反复出现，请先发送 /compact 压缩上下文。(model returned no visible response)";
 const ABNORMAL_FINISH_MESSAGE: &str = "模型服务没有正常完成本轮响应，已生成的部分内容不会作为最终答案提交。已完成的工具结果均已保留；请点击“继续执行”重试。(provider returned an unsuccessful finish reason)";
@@ -39,25 +41,24 @@ const STUCK_LOOP_MESSAGE: &str = "检测到智能体连续多次发出完全相�
 /// while the main model gets a bounded head/tail excerpt. This also covers
 /// read/grep/browser/MCP tools whose own safety cap can exceed a model window.
 /// Total byte budget (head + tail) for one tool result in the model context.
-/// ~16 KiB ≈ 4K estimated tokens. Override with SUPERSCIENCE_TOOL_RESULT_BUDGET
-/// (or legacy WISP_TOOL_RESULT_BUDGET; bytes; 0 disables).
+/// ~16 KiB ≈ 4K estimated tokens. Override with WISP_TOOL_RESULT_BUDGET
+/// (bytes; 0 disables).
 const DEFAULT_STREAM_RESULT_BUDGET: usize = 16 * 1024;
 
 fn context_archive(root: &Path) -> (PathBuf, String) {
     let id = uuid::Uuid::new_v4().simple().to_string();
     (
-        root.join(".superscience")
+        root.join(".wisp")
             .join("history")
             .join(format!("{id}.json")),
-        format!("superscience-history:{id}"),
+        format!("wisp-history:{id}"),
     )
 }
 
 /// Head/tail-truncate a tool's text result to the ingestion budget. The full
-/// text is written under `.superscience/tool-output/` so the model can read/grep it back.
+/// text is written under `.wisp/tool-output/` so the model can read/grep it back.
 fn budget_tool_result(root: &Path, tool_name: &str, content: Content) -> Content {
-    let budget = std::env::var("SUPERSCIENCE_TOOL_RESULT_BUDGET")
-        .or_else(|_| std::env::var("WISP_TOOL_RESULT_BUDGET"))
+    let budget = std::env::var("WISP_TOOL_RESULT_BUDGET")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(DEFAULT_STREAM_RESULT_BUDGET);
@@ -76,7 +77,7 @@ fn budget_tool_result_with_limit(
     if budget == 0 || text.len() <= budget {
         return content;
     }
-    let spill_dir = root.join(".superscience").join("tool-output");
+    let spill_dir = root.join(".wisp").join("tool-output");
     let safe_name = tool_name.replace(['/', '\\'], "_");
     let spill_path = spill_dir.join(format!(
         "{safe_name}-{}.txt",
@@ -208,7 +209,7 @@ fn native_image_content(user_input: &str, images: &[ImageData]) -> Content {
     }];
     parts.extend(images.iter().map(|image| Part::Image {
         kind: "image_url".into(),
-        image_url: superscience_llm::ImageUrl {
+        image_url: wisp_llm::ImageUrl {
             url: image.data_url.clone(),
         },
     }));
@@ -275,11 +276,18 @@ async fn agent_loop_inner(
     cancel: Option<&AtomicBool>,
     guidance: Option<&GuidanceQueue>,
 ) -> Result<AgentLoopOutcome> {
-    let env = match cancel {
-        Some(c) => ToolEnvAdapter::with_cancel(root.to_path_buf(), output, c),
-        None => ToolEnvAdapter::new(root.to_path_buf(), output),
+    let env = {
+        let adapter = match cancel {
+            Some(c) => ToolEnvAdapter::with_cancel(root.to_path_buf(), output, c),
+            None => ToolEnvAdapter::new(root.to_path_buf(), output),
+        };
+        match guidance {
+            Some(queue) => adapter.with_guidance(queue),
+            None => adapter,
+        }
     };
     let mut iteration = 0usize;
+    let mut auto_continues = 0usize;
     let mut recent_sigs: VecDeque<String> = VecDeque::with_capacity(STUCK_WINDOW);
     loop {
         if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
@@ -290,6 +298,12 @@ async fn agent_loop_inner(
         // persists the row and emits the User event the UI promotes on.
         if let Some(queue) = guidance {
             let drained: Vec<(u64, String)> = std::mem::take(&mut *queue.lock().unwrap());
+            if !drained.is_empty() {
+                // User injection is new information. Re-issuing monitor_run
+                // after a wait_interrupted return is expected progress, not a
+                // stuck loop (#907).
+                recent_sigs.clear();
+            }
             for (_, text) in drained {
                 ctx.append_user(&text);
                 if let Some(m) = ctx.messages.last() {
@@ -303,7 +317,7 @@ async fn agent_loop_inner(
         ctx.note_request_boundary(fixed_request_tokens);
         // Match the long-context behaviour used by mangopi-cli: check the
         // budget at every model boundary, not only when the user first sends a
-        // turn. SuperScience's archive-first compactor preserves the full transcript
+        // turn. Wisp's archive-first compactor preserves the full transcript
         // on disk before folding old turns, so automatic recovery has the same
         // retrievability contract as manual `/compact`.
         if ctx.needs_auto_compact_with_reserve(fixed_request_tokens) {
@@ -372,6 +386,26 @@ async fn agent_loop_inner(
             anyhow::bail!("stopped by user");
         }
         if is_truncated(comp.finish_reason.as_deref()) {
+            if let Some(limit) = ctx
+                .auto_continue_limit()
+                .filter(|limit| auto_continues < *limit)
+            {
+                auto_continues += 1;
+                let context_usage = ctx.context_usage(&schemas, &schema_origins);
+                output.usage(
+                    iteration,
+                    comp.usage.input_tokens,
+                    comp.usage.output_tokens,
+                    comp.usage.reasoning_tokens,
+                    comp.usage.cached_input_tokens,
+                    context_usage.total(),
+                    ctx.max_context,
+                    context_usage,
+                );
+                output.compaction(auto_continues, limit, "auto_continue");
+                ctx.inject_user(format!("{AUTO_CONTINUE_PROMPT}{}", comp.content));
+                continue;
+            }
             anyhow::bail!(TRUNCATED_OUTPUT_MESSAGE);
         }
         if is_unsuccessful_finish(comp.finish_reason.as_deref()) {
@@ -455,6 +489,9 @@ async fn agent_loop_inner(
             let producing = provenance::is_producing(&name);
             let root = producing.then(|| env.project_root().to_path_buf());
             let source = provenance::source_of(&name, &args);
+            // Registered before the pre-snapshot so concurrent sessions of the
+            // same workspace can tell which of each other's writes are theirs.
+            let window = root.as_deref().map(provenance::begin_window);
             let before = if let Some(root) = root.clone() {
                 tokio::task::spawn_blocking(move || provenance::snapshot(&root))
                     .await
@@ -482,7 +519,15 @@ async fn agent_loop_inner(
                 let after = tokio::task::spawn_blocking(move || provenance::snapshot(&root2))
                     .await
                     .unwrap_or_default();
+                let overlapping = window.map(provenance::ProducingWindow::finish);
                 let (mut written, mut read) = provenance::diff(&before, &after, root, &source);
+                provenance::retain_unambiguous_writes(
+                    &mut written,
+                    &after,
+                    root,
+                    &source,
+                    overlapping.as_deref().unwrap_or_default(),
+                );
                 provenance::augment_written_paths(
                     &name,
                     root,
@@ -741,7 +786,7 @@ async fn describe_image(
         .filter(|s| !s.is_empty())
         .unwrap_or("Describe the image carefully. Extract visible text, labels, plots, UI state, notable scientific content, and uncertainties.");
     let user = Message {
-        role: superscience_llm::Role::User,
+        role: wisp_llm::Role::User,
         content: image_content(
             &format!("Tool: {tool_name}\n{}\n\nTask: {question}", img.label),
             &img.data_url,
@@ -756,7 +801,7 @@ async fn describe_image(
     let comp = provider
         .complete(
             &[
-                Message::system("You are SuperScience's vision subagent. Return concise, factual observations for a non-visual main agent. Do not invent details that are not visible."),
+                Message::system("You are Wisp's vision subagent. Return concise, factual observations for a non-visual main agent. Do not invent details that are not visible."),
                 user,
             ],
             &[],
@@ -875,9 +920,10 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
-    use superscience_llm::{FunctionCall, ToolCall};
-    use superscience_tools::ask_user::ASK_USER;
-    use superscience_tools::{Approval, Registry, Tool, ToolEnv, ToolResult};
+    use std::time::Duration;
+    use wisp_llm::{FunctionCall, Role, ToolCall};
+    use wisp_tools::ask_user::ASK_USER;
+    use wisp_tools::{Approval, Registry, Tool, ToolEnv, ToolResult};
 
     #[test]
     fn retry_window_covers_sustained_provider_overload() {
@@ -928,7 +974,7 @@ mod tests {
 
     #[test]
     fn every_text_tool_result_is_bounded_before_it_enters_model_context() {
-        let root = std::env::temp_dir().join(format!("superscience-budget-tool-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("wisp-budget-tool-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let raw = format!("BEGIN\n{}\nEND", "界".repeat(20_000));
         let original_len = raw.len();
@@ -944,7 +990,7 @@ mod tests {
         assert!(
             ContextManager::estimated_tokens(&Message::tool("call-read", "read", text)) < 5_000
         );
-        let spill = std::fs::read_dir(root.join(".superscience/tool-output"))
+        let spill = std::fs::read_dir(root.join(".wisp/tool-output"))
             .unwrap()
             .next()
             .unwrap()
@@ -971,7 +1017,7 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-        ) -> superscience_llm::Result<Completion> {
+        ) -> wisp_llm::Result<Completion> {
             Ok(self.completion.clone())
         }
 
@@ -979,8 +1025,8 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-            _sink: &mut dyn superscience_llm::StreamSink,
-        ) -> superscience_llm::Result<Completion> {
+            _sink: &mut dyn wisp_llm::StreamSink,
+        ) -> wisp_llm::Result<Completion> {
             Ok(self.completion.clone())
         }
     }
@@ -1028,7 +1074,7 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-        ) -> superscience_llm::Result<Completion> {
+        ) -> wisp_llm::Result<Completion> {
             Err(LlmError::Config("complete is not used".into()))
         }
 
@@ -1036,8 +1082,8 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-            _sink: &mut dyn superscience_llm::StreamSink,
-        ) -> superscience_llm::Result<Completion> {
+            _sink: &mut dyn wisp_llm::StreamSink,
+        ) -> wisp_llm::Result<Completion> {
             self.started.notify_one();
             std::future::pending().await
         }
@@ -1057,7 +1103,7 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-        ) -> superscience_llm::Result<Completion> {
+        ) -> wisp_llm::Result<Completion> {
             Err(LlmError::Config("complete is not used".into()))
         }
 
@@ -1065,8 +1111,8 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-            _sink: &mut dyn superscience_llm::StreamSink,
-        ) -> superscience_llm::Result<Completion> {
+            _sink: &mut dyn wisp_llm::StreamSink,
+        ) -> wisp_llm::Result<Completion> {
             self.stream_calls.fetch_add(1, Ordering::SeqCst);
             self.started.notify_one();
             Err(LlmError::Api {
@@ -1090,7 +1136,7 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-        ) -> superscience_llm::Result<Completion> {
+        ) -> wisp_llm::Result<Completion> {
             self.complete_calls.fetch_add(1, Ordering::SeqCst);
             Ok(Completion {
                 content: "Objective\nRecovered after overflow.".into(),
@@ -1103,8 +1149,8 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-            _sink: &mut dyn superscience_llm::StreamSink,
-        ) -> superscience_llm::Result<Completion> {
+            _sink: &mut dyn wisp_llm::StreamSink,
+        ) -> wisp_llm::Result<Completion> {
             let call = self.stream_calls.fetch_add(1, Ordering::SeqCst);
             if call == 0 {
                 return Err(LlmError::Api {
@@ -1115,7 +1161,7 @@ mod tests {
             Ok(Completion {
                 content: "continued after overflow recovery".into(),
                 finish_reason: Some("stop".into()),
-                usage: superscience_llm::Usage {
+                usage: wisp_llm::Usage {
                     input_tokens: 1_000,
                     ..Default::default()
                 },
@@ -1138,7 +1184,7 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-        ) -> superscience_llm::Result<Completion> {
+        ) -> wisp_llm::Result<Completion> {
             Ok(Completion {
                 content: "Objective\nContinue the current conversation after compaction.".into(),
                 finish_reason: Some("stop".into()),
@@ -1150,8 +1196,8 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-            _sink: &mut dyn superscience_llm::StreamSink,
-        ) -> superscience_llm::Result<Completion> {
+            _sink: &mut dyn wisp_llm::StreamSink,
+        ) -> wisp_llm::Result<Completion> {
             self.stream_calls.fetch_add(1, Ordering::SeqCst);
             Ok(Completion {
                 content: "continued after compacting".into(),
@@ -1175,7 +1221,7 @@ mod tests {
             &self,
             messages: &[Message],
             _tools: &[ToolSchema],
-        ) -> superscience_llm::Result<Completion> {
+        ) -> wisp_llm::Result<Completion> {
             self.complete_requests
                 .lock()
                 .unwrap()
@@ -1187,8 +1233,8 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-            _sink: &mut dyn superscience_llm::StreamSink,
-        ) -> superscience_llm::Result<Completion> {
+            _sink: &mut dyn wisp_llm::StreamSink,
+        ) -> wisp_llm::Result<Completion> {
             self.stream_calls.fetch_add(1, Ordering::SeqCst);
             Err(LlmError::Config(
                 "main stream failed after degraded compaction".into(),
@@ -1249,7 +1295,7 @@ mod tests {
             }
         }
 
-        fn next(&self) -> superscience_llm::Result<Completion> {
+        fn next(&self) -> wisp_llm::Result<Completion> {
             self.completions
                 .lock()
                 .unwrap()
@@ -1329,7 +1375,7 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-        ) -> superscience_llm::Result<Completion> {
+        ) -> wisp_llm::Result<Completion> {
             self.next()
         }
 
@@ -1337,8 +1383,8 @@ mod tests {
             &self,
             _messages: &[Message],
             tools: &[ToolSchema],
-            _sink: &mut dyn superscience_llm::StreamSink,
-        ) -> superscience_llm::Result<Completion> {
+            _sink: &mut dyn wisp_llm::StreamSink,
+        ) -> wisp_llm::Result<Completion> {
             self.stream_calls.fetch_add(1, Ordering::SeqCst);
             self.schema_counts.lock().unwrap().push(tools.len());
             self.next()
@@ -1351,6 +1397,16 @@ mod tests {
     }
 
     struct CompactionCounter(AtomicUsize);
+
+    struct AutoContinueCounter(AtomicUsize);
+
+    impl Output for AutoContinueCounter {
+        fn compaction(&self, count: usize, limit: usize, strategy: &str) {
+            assert_eq!(strategy, "auto_continue");
+            assert!(count <= limit);
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
 
     impl Output for CompactionCounter {
         fn compaction(&self, _before: usize, _after: usize, strategy: &str) {
@@ -1425,7 +1481,7 @@ mod tests {
         assert_eq!(output.0.load(Ordering::SeqCst), 1);
         assert_eq!(ctx.compaction_revision(), 1);
         assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 1);
-        let archives = std::fs::read_dir(root.join(".superscience/history"))
+        let archives = std::fs::read_dir(root.join(".wisp/history"))
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
@@ -1434,7 +1490,7 @@ mod tests {
         assert!(ctx
             .messages
             .iter()
-            .any(|message| message.content.as_text().contains("superscience-history:")));
+            .any(|message| message.content.as_text().contains("wisp-history:")));
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1626,7 +1682,7 @@ mod tests {
             },
         ]);
         let mut tools = Registry::builtins();
-        tools.add(Box::new(superscience_tools::ask_user::AskUserTool));
+        tools.add(Box::new(wisp_tools::ask_user::AskUserTool));
         tools.add(Box::new(CountingTool {
             name: "later",
             runs: later_runs.clone(),
@@ -1671,7 +1727,7 @@ mod tests {
                 tool_calls: vec![
                     call(
                         "plan-1",
-                        superscience_tools::plan::PROPOSE_PLAN,
+                        wisp_tools::plan::PROPOSE_PLAN,
                         serde_json::json!({
                             "entries": [{ "content": "Implement the fix" }]
                         }),
@@ -1688,7 +1744,7 @@ mod tests {
             },
         ]);
         let mut tools = Registry::builtins();
-        tools.add(Box::new(superscience_tools::plan::ProposePlanTool));
+        tools.add(Box::new(wisp_tools::plan::ProposePlanTool));
         tools.add(Box::new(CountingTool {
             name: "later",
             runs: later_runs.clone(),
@@ -1938,7 +1994,7 @@ mod tests {
             &self,
             messages: &[Message],
             _tools: &[ToolSchema],
-        ) -> superscience_llm::Result<Completion> {
+        ) -> wisp_llm::Result<Completion> {
             self.complete_messages
                 .lock()
                 .unwrap()
@@ -1950,8 +2006,8 @@ mod tests {
             &self,
             messages: &[Message],
             _tools: &[ToolSchema],
-            _sink: &mut dyn superscience_llm::StreamSink,
-        ) -> superscience_llm::Result<Completion> {
+            _sink: &mut dyn wisp_llm::StreamSink,
+        ) -> wisp_llm::Result<Completion> {
             self.stream_messages.lock().unwrap().push(messages.to_vec());
             Ok(self.completion())
         }
@@ -2065,9 +2121,9 @@ mod tests {
         assert!(primary.stream_messages.lock().unwrap().is_empty());
     }
 
-    static SPY_RAN: AtomicBool = AtomicBool::new(false);
-
-    struct SpyTool;
+    struct SpyTool {
+        ran: Arc<AtomicBool>,
+    }
 
     #[async_trait]
     impl Tool for SpyTool {
@@ -2084,14 +2140,14 @@ mod tests {
         }
 
         async fn run(&self, _args: &serde_json::Value, _env: &dyn ToolEnv) -> ToolResult {
-            SPY_RAN.store(true, Ordering::SeqCst);
+            self.ran.store(true, Ordering::SeqCst);
             ToolResult::ok("ran")
         }
     }
 
     #[tokio::test]
     async fn truncated_tool_call_is_not_executed() {
-        SPY_RAN.store(false, Ordering::SeqCst);
+        let spy_ran = Arc::new(AtomicBool::new(false));
         let provider = FixedProvider {
             completion: Completion {
                 tool_calls: vec![ToolCall {
@@ -2108,7 +2164,9 @@ mod tests {
             },
         };
         let mut tools = Registry::builtins();
-        tools.add(Box::new(SpyTool));
+        tools.add(Box::new(SpyTool {
+            ran: spy_ran.clone(),
+        }));
         let mut ctx = ContextManager::new(100_000);
         let root = std::env::temp_dir().join(format!(
             "superscience-core-truncated-tool-test-{}",
@@ -2134,9 +2192,80 @@ mod tests {
             err.to_string().contains("output truncated at max_tokens"),
             "unexpected error: {err}"
         );
-        assert!(!SPY_RAN.load(Ordering::SeqCst), "truncated tool ran");
+        assert!(!spy_ran.load(Ordering::SeqCst), "truncated tool ran");
         assert_eq!(ctx.messages.len(), 1, "only the user message is persisted");
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[tokio::test]
+    async fn truncated_output_auto_continues_until_completion() {
+        let provider = SequenceProvider::new([
+            Completion {
+                content: "partial".into(),
+                finish_reason: Some("length".into()),
+                ..Completion::default()
+            },
+            Completion {
+                content: "done".into(),
+                finish_reason: Some("stop".into()),
+                ..Completion::default()
+            },
+        ]);
+        let output = AutoContinueCounter(AtomicUsize::new(0));
+        let mut ctx = ContextManager::new(100_000);
+        ctx.set_auto_continue(true, 10);
+
+        let outcome = agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &Registry::builtins().filtered(&[]),
+            Path::new("."),
+            &output,
+            "finish the task",
+            0,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome, AgentLoopOutcome::Completed);
+        assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(output.0.load(Ordering::SeqCst), 1);
+        assert!(ctx
+            .runtime_injections
+            .iter()
+            .any(|message| message.content.as_text().contains("partial")));
+    }
+
+    #[tokio::test]
+    async fn truncated_output_stops_at_auto_continue_limit() {
+        let provider = SequenceProvider::new((0..3).map(|_| Completion {
+            content: "partial".into(),
+            finish_reason: Some("length".into()),
+            ..Completion::default()
+        }));
+        let output = AutoContinueCounter(AtomicUsize::new(0));
+        let mut ctx = ContextManager::new(100_000);
+        ctx.set_auto_continue(true, 2);
+
+        let error = agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &Registry::builtins().filtered(&[]),
+            Path::new("."),
+            &output,
+            "finish the task",
+            0,
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("output truncated at max_tokens"));
+        assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 3);
+        assert_eq!(output.0.load(Ordering::SeqCst), 2);
     }
 
     struct OkTool;
@@ -2351,7 +2480,7 @@ mod tests {
         tools.add(Box::new(OkTool));
         let mut ctx = ContextManager::new(100_000);
         let root = std::env::temp_dir().join(format!(
-            "wisp-core-max-iter-invalid-summary-test-{}",
+            "superscience-core-max-iter-invalid-summary-test-{}",
             std::process::id()
         ));
         std::fs::create_dir_all(&root).unwrap();
@@ -2383,8 +2512,7 @@ mod tests {
     async fn identical_successful_tool_call_repeated_breaks_the_loop() {
         // Provider that returns the SAME successful tool call forever. With
         // max_iter=0 the iteration cap is disabled, so only the stuck-loop guard
-        // can stop it. Uses a side-effect-free tool (not SpyTool) to avoid the
-        // shared SPY_RAN static, keeping the test hermetic under parallel runs.
+        // can stop it. Uses a side-effect-free tool.
         let provider = FixedProvider {
             completion: Completion {
                 tool_calls: vec![ToolCall {
@@ -2424,6 +2552,179 @@ mod tests {
             err.to_string().contains("identical tool call"),
             "unexpected error: {err}"
         );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    struct InterruptibleMonitorTool {
+        calls: Arc<AtomicUsize>,
+        queue: Arc<GuidanceQueue>,
+        succeed_after: usize,
+    }
+
+    #[async_trait]
+    impl Tool for InterruptibleMonitorTool {
+        fn name(&self) -> &str {
+            "monitor_run"
+        }
+
+        fn schema(&self) -> ToolSchema {
+            ToolSchema::new(
+                "monitor_run",
+                "wait for a run",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": { "run_id": { "type": "string" } }
+                }),
+            )
+        }
+
+        async fn run(&self, _args: &serde_json::Value, env: &dyn ToolEnv) -> ToolResult {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if n >= self.succeed_after {
+                return ToolResult::ok(r#"{"id":"run-1","status":"succeeded"}"#);
+            }
+            // Simulate the host pushing mid-turn guidance while this wait is
+            // blocked. The wait must observe it without draining.
+            self.queue
+                .lock()
+                .unwrap()
+                .push((n as u64, format!("progress check {n}")));
+            assert!(
+                env.guidance_pending(),
+                "monitor_run must see pending guidance through ToolEnv"
+            );
+            ToolResult::ok(
+                r#"{"id":"run-1","status":"running","wait_interrupted":true,"next_action":"respond then call monitor_run again"}"#,
+            )
+        }
+    }
+
+    struct RemonitorProvider {
+        stream_calls: AtomicUsize,
+    }
+
+    impl RemonitorProvider {
+        fn next(&self, messages: &[Message]) -> Completion {
+            let saw_success = messages.iter().any(|message| {
+                message.role == Role::Tool
+                    && message
+                        .content
+                        .as_text()
+                        .contains(r#""status":"succeeded""#)
+            });
+            if saw_success {
+                return Completion {
+                    content: "the run finished after the progress update".into(),
+                    finish_reason: Some("stop".into()),
+                    ..Completion::default()
+                };
+            }
+            let saw_interrupt = messages.iter().any(|message| {
+                message.role == Role::Tool
+                    && message
+                        .content
+                        .as_text()
+                        .contains(r#""wait_interrupted":true"#)
+            });
+            Completion {
+                content: if saw_interrupt {
+                    "still on phase 2; continuing to wait".into()
+                } else {
+                    String::new()
+                },
+                tool_calls: vec![call(
+                    "mon",
+                    "monitor_run",
+                    serde_json::json!({ "run_id": "run-1" }),
+                )],
+                finish_reason: Some("tool_calls".into()),
+                ..Completion::default()
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Provider for RemonitorProvider {
+        fn name(&self) -> &str {
+            "remonitor"
+        }
+        fn model(&self) -> &str {
+            "remonitor"
+        }
+        async fn complete(
+            &self,
+            messages: &[Message],
+            _tools: &[ToolSchema],
+        ) -> wisp_llm::Result<Completion> {
+            Ok(self.next(messages))
+        }
+        async fn stream(
+            &self,
+            messages: &[Message],
+            _tools: &[ToolSchema],
+            _sink: &mut dyn wisp_llm::StreamSink,
+        ) -> wisp_llm::Result<Completion> {
+            self.stream_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.next(messages))
+        }
+    }
+
+    #[tokio::test]
+    async fn mid_turn_guidance_interrupts_monitor_wait_and_does_not_trip_stuck_detection() {
+        let interrupts = STUCK_REPEAT_LIMIT;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let queue = Arc::new(GuidanceQueue::default());
+        let mut tools = Registry::builtins().filtered(&[]);
+        tools.add(Box::new(InterruptibleMonitorTool {
+            calls: calls.clone(),
+            queue: queue.clone(),
+            succeed_after: interrupts + 1,
+        }));
+        let provider = RemonitorProvider {
+            stream_calls: AtomicUsize::new(0),
+        };
+        let mut ctx = ContextManager::new(100_000);
+        let root = std::env::temp_dir().join(format!(
+            "superscience-core-guidance-interrupt-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let outcome = agent_loop_with_images(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            &root,
+            &NullOutput,
+            "run the long job",
+            &[],
+            false,
+            0,
+            None,
+            Some(queue.as_ref()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome, AgentLoopOutcome::Completed);
+        assert_eq!(calls.load(Ordering::SeqCst), interrupts + 1);
+        let guidance_count = ctx
+            .messages
+            .iter()
+            .filter(|message| {
+                message.role == Role::User && message.content.as_text().contains("progress check")
+            })
+            .count();
+        assert_eq!(guidance_count, interrupts);
+        assert!(ctx.messages.iter().any(|message| {
+            message.role == Role::Assistant
+                && message
+                    .content
+                    .as_text()
+                    .contains("still on phase 2; continuing to wait")
+        }));
+        assert!(provider.stream_calls.load(Ordering::SeqCst) >= interrupts + 2);
         std::fs::remove_dir_all(root).ok();
     }
 
@@ -2470,15 +2771,15 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-        ) -> superscience_llm::Result<Completion> {
+        ) -> wisp_llm::Result<Completion> {
             Ok(self.pick())
         }
         async fn stream(
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-            _sink: &mut dyn superscience_llm::StreamSink,
-        ) -> superscience_llm::Result<Completion> {
+            _sink: &mut dyn wisp_llm::StreamSink,
+        ) -> wisp_llm::Result<Completion> {
             Ok(self.pick())
         }
     }
@@ -2520,5 +2821,231 @@ mod tests {
             "unexpected error: {err}"
         );
         std::fs::remove_dir_all(root).ok();
+    }
+
+    /// Streams like a real provider: each turn's content is pushed into the
+    /// sink as small text deltas and tool-call argument fragments *before* the
+    /// assembled completion is returned, exercising the streaming path the
+    /// other fakes skip.
+    struct StreamingSequenceProvider {
+        completions: Mutex<VecDeque<Completion>>,
+        stream_calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Provider for StreamingSequenceProvider {
+        fn name(&self) -> &str {
+            "streaming-sequence"
+        }
+
+        fn model(&self) -> &str {
+            "streaming-sequence"
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+        ) -> wisp_llm::Result<Completion> {
+            Err(LlmError::Config("complete is not used".into()))
+        }
+
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+            sink: &mut dyn wisp_llm::StreamSink,
+        ) -> wisp_llm::Result<Completion> {
+            self.stream_calls.fetch_add(1, Ordering::SeqCst);
+            let completion = self
+                .completions
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or(LlmError::Incomplete)?;
+            // Text arrives in small multi-character deltas, like SSE chunks.
+            let mut rest = completion.content.as_str();
+            while !rest.is_empty() {
+                let cut = rest
+                    .char_indices()
+                    .nth(3)
+                    .map(|(i, c)| i + c.len_utf8())
+                    .unwrap_or(rest.len());
+                let (chunk, tail) = rest.split_at(cut);
+                sink.on_text(chunk);
+                rest = tail;
+            }
+            // Tool-call arguments accumulate across fragments.
+            for (index, tool_call) in completion.tool_calls.iter().enumerate() {
+                let arguments = &tool_call.function.arguments;
+                let mid = arguments.len() / 2;
+                sink.on_tool_call(index, &tool_call.function.name, &arguments[..mid]);
+                sink.on_tool_call(index, &tool_call.function.name, arguments);
+            }
+            sink.on_usage(completion.usage.clone());
+            Ok(completion)
+        }
+    }
+
+    /// Records the text deltas the agent loop forwards through its sink.
+    struct RecordingDeltaOutput {
+        text: Mutex<String>,
+    }
+
+    impl Output for RecordingDeltaOutput {
+        fn assistant_text(&self, delta: &str) {
+            self.text.lock().unwrap().push_str(delta);
+        }
+    }
+
+    #[tokio::test]
+    async fn streamed_deltas_reach_the_sink_and_the_tool_still_executes() {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let provider = StreamingSequenceProvider {
+            completions: Mutex::new(VecDeque::from([
+                Completion {
+                    content: "Running the counter now.".into(),
+                    tool_calls: vec![call("count-1", "counter", serde_json::json!({}))],
+                    finish_reason: Some("tool_calls".into()),
+                    ..Completion::default()
+                },
+                Completion {
+                    content: "计数完成 — the tool ran.".into(),
+                    finish_reason: Some("stop".into()),
+                    ..Completion::default()
+                },
+            ])),
+            stream_calls: AtomicUsize::new(0),
+        };
+        let mut tools = Registry::builtins();
+        tools.add(Box::new(CountingTool {
+            name: "counter",
+            runs: runs.clone(),
+        }));
+        let output = RecordingDeltaOutput {
+            text: Mutex::new(String::new()),
+        };
+        let mut ctx = ContextManager::new(100_000);
+
+        let outcome = agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            Path::new("."),
+            &output,
+            "count once",
+            0,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome, AgentLoopOutcome::Completed);
+        assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            1,
+            "the streamed tool call must execute exactly once"
+        );
+        assert_eq!(
+            *output.text.lock().unwrap(),
+            "Running the counter now.计数完成 — the tool ran.",
+            "every text delta must reach the sink in order, multi-byte intact"
+        );
+        let last = ctx.messages.last().unwrap();
+        assert_eq!(last.role, wisp_llm::Role::Assistant);
+        assert_eq!(last.content.as_text(), "计数完成 — the tool ran.");
+    }
+
+    /// Fails with a retriable 503 `fail_times` times (the same error shape as
+    /// `RetriableStreamProvider`), then plays the queued completions.
+    struct FlakyThenOkProvider {
+        fail_times: usize,
+        stream_calls: AtomicUsize,
+        completions: Mutex<VecDeque<Completion>>,
+    }
+
+    #[async_trait]
+    impl Provider for FlakyThenOkProvider {
+        fn name(&self) -> &str {
+            "flaky-then-ok"
+        }
+
+        fn model(&self) -> &str {
+            "flaky-then-ok"
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+        ) -> wisp_llm::Result<Completion> {
+            Err(LlmError::Config("complete is not used".into()))
+        }
+
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+            _sink: &mut dyn wisp_llm::StreamSink,
+        ) -> wisp_llm::Result<Completion> {
+            let attempt = self.stream_calls.fetch_add(1, Ordering::SeqCst);
+            if attempt < self.fail_times {
+                return Err(LlmError::Api {
+                    status: 503,
+                    body: "overloaded".into(),
+                });
+            }
+            self.completions
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or(LlmError::Incomplete)
+        }
+    }
+
+    // start_paused: retry backoff sleeps (2s + 10s here) auto-advance instead
+    // of stalling the test in real time.
+    #[tokio::test(start_paused = true)]
+    async fn transient_provider_overload_is_retried_until_recovery() {
+        let provider = FlakyThenOkProvider {
+            fail_times: 2,
+            stream_calls: AtomicUsize::new(0),
+            completions: Mutex::new(VecDeque::from([Completion {
+                content: "recovered after overload".into(),
+                finish_reason: Some("stop".into()),
+                ..Completion::default()
+            }])),
+        };
+        let mut ctx = ContextManager::new(100_000);
+
+        let outcome = agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &Registry::builtins().filtered(&[]),
+            Path::new("."),
+            &NullOutput,
+            "keep going through the blip",
+            0,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome, AgentLoopOutcome::Completed);
+        assert_eq!(
+            provider.stream_calls.load(Ordering::SeqCst),
+            3,
+            "two retriable 503s, then the successful attempt"
+        );
+        let last = ctx.messages.last().unwrap();
+        assert_eq!(last.role, wisp_llm::Role::Assistant);
+        assert_eq!(
+            last.content.as_text(),
+            "recovered after overload",
+            "the recovered turn's content must land in context intact"
+        );
     }
 }

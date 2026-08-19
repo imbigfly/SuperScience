@@ -204,6 +204,7 @@ pub(crate) fn compose_icon(kind: &str) -> impl IntoView {
         "sparkles" => view! { <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/> }.into_view(),
         "undo" => view! { <path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 6 6v1"/> }.into_view(),
         "panel" => view! { <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/> }.into_view(),
+        "dock" => view! { <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 15h18"/> }.into_view(),
         "chevron-down" => view! { <path d="m6 9 6 6 6-6"/> }.into_view(),
         "chevron-left" => view! { <path d="m15 18-6-6 6-6"/> }.into_view(),
         "chevron-right" => view! { <path d="m9 18 6-6-6-6"/> }.into_view(),
@@ -220,18 +221,23 @@ pub(crate) fn compose_icon(kind: &str) -> impl IntoView {
         "close" => view! { <path d="M18 6 6 18"/><path d="m6 6 12 12"/> }.into_view(),
         "more" => view! { <circle cx="12" cy="5" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="19" r="1" fill="currentColor" stroke="none"/> }.into_view(),
         "minus" => view! { <path d="M5 12h14"/> }.into_view(),
+        "database" => view! { <ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/> }.into_view(),
+        "trash" => view! { <path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/> }.into_view(),
         "plus" => view! { <path d="M12 5v14"/><path d="M5 12h14"/> }.into_view(),
         "crop" => view! { <path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M2 6h14a2 2 0 0 1 2 2v14"/> }.into_view(),
         "split" => view! { <rect x="3" y="4" width="18" height="16" rx="2"/><path d="M14 4v16"/> }.into_view(),
         "runtime-panel" => view! { <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M14 3v18"/><path d="M3 15h11"/><circle cx="17.5" cy="7" r="1" fill="currentColor" stroke="none"/><circle cx="17.5" cy="11" r="1" fill="currentColor" stroke="none"/> }.into_view(),
         "play" => view! { <path d="M6 4.5v15l13-7.5Z"/> }.into_view(),
+        "bolt" => view! { <path d="M13 2 3 14h8l-1 8 10-12h-8l1-8z"/> }.into_view(),
         "up" => view! { <path d="m18 15-6-6-6 6"/> }.into_view(),
         "copy" => view! { <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/> }.into_view(),
+        "clipboard" => view! { <rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/> }.into_view(),
         "star" => view! { <path d="m12 2.7 2.85 5.77 6.37.93-4.61 4.49 1.09 6.34L12 17.23l-5.7 3 1.09-6.34L2.78 9.4l6.37-.93Z"/> }.into_view(),
         "star-filled" => view! { <path d="m12 2.7 2.85 5.77 6.37.93-4.61 4.49 1.09 6.34L12 17.23l-5.7 3 1.09-6.34L2.78 9.4l6.37-.93Z" fill="currentColor"/> }.into_view(),
         "edit" => view! { <path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/> }.into_view(),
         "doc" => view! { <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/> }.into_view(),
         "image" => view! { <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/> }.into_view(),
+        "video" => view! { <path d="m22 8-6 4 6 4V8Z"/><rect x="2" y="6" width="14" height="12" rx="2"/> }.into_view(),
         "review" => view! { <circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor" stroke="none"/> }.into_view(),
         "memory" => view! { <path d="M12 2a7 7 0 0 0-7 7v2a4 4 0 0 0-2 3.46V18a2 2 0 0 0 2 2h3"/><path d="M12 2a7 7 0 0 1 7 7v2a4 4 0 0 1 2 3.46V18a2 2 0 0 1-2 2h-3"/><path d="M9 9h6"/><path d="M9 13h6"/><path d="M12 17v5"/> }.into_view(),
         "gauge" => view! { <path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/> }.into_view(),
@@ -400,6 +406,103 @@ pub(crate) fn ImageGenerationCard(
     }
 }
 
+/// A `generate_video` call owns a stable media slot in the transcript, same
+/// pattern as the image card: ToolCall paints the placeholder, ToolResult
+/// remounts and streams the MP4 into an inline player.
+#[component]
+pub(crate) fn VideoGenerationCard(path: String, ok: Option<bool>, output: String) -> impl IntoView {
+    let locale = use_locale();
+    let source = create_rw_signal(None::<String>);
+    let preview_failed = create_rw_signal(false);
+    if ok == Some(true) {
+        let load_path = path.clone();
+        let loc = locale.get_untracked();
+        spawn_local(async move {
+            match load_file_content(&load_path, loc, Some(64 * 1024 * 1024)).await {
+                Ok(file) => match file.base64 {
+                    Some(base64) => source.set(Some(format!("data:{};base64,{base64}", file.mime))),
+                    None => preview_failed.set(true),
+                },
+                Err(_) => preview_failed.set(true),
+            }
+        });
+    }
+
+    let status = match ok {
+        None => "running",
+        Some(true) => "completed",
+        Some(false) => "failed",
+    };
+    let title_key = match ok {
+        None => "chat.video_generating",
+        Some(true) => "chat.video_generated",
+        Some(false) => "chat.video_failed",
+    };
+    let display_path = path.clone();
+    let filename = attachment_name(&path);
+    let failure_detail = output.trim().to_string();
+
+    view! {
+        <article
+            class="video-generation-card"
+            data-testid="video-generation-card"
+            data-status=status
+            data-path=path
+        >
+            <div class="video-generation-media">
+                {move || match ok {
+                    None => view! {
+                        <div class="video-generation-state" role="status" aria-live="polite">
+                            <span class="video-generation-spinner" aria-hidden="true"></span>
+                            <span>{move || t(locale.get(), "chat.video_generating")}</span>
+                        </div>
+                    }.into_view(),
+                    Some(false) => view! {
+                        <div class="video-generation-state failed">
+                            <span class="video-generation-failed-mark" aria-hidden="true">"!"</span>
+                            <span>{move || t(locale.get(), "chat.video_failed")}</span>
+                            {(!failure_detail.is_empty()).then(|| view! {
+                                <small title=failure_detail.clone()>{failure_detail.clone()}</small>
+                            })}
+                        </div>
+                    }.into_view(),
+                    Some(true) => match source.get() {
+                        Some(src) => view! {
+                            <video
+                                class="video-generation-player"
+                                controls
+                                preload="metadata"
+                                src=src
+                                aria-label=filename.clone()
+                                on:error=move |_| {
+                                    source.set(None);
+                                    preview_failed.set(true);
+                                }
+                            ></video>
+                        }.into_view(),
+                        None if preview_failed.get() => view! {
+                            <div class="video-generation-state failed">
+                                <span class="video-generation-failed-mark" aria-hidden="true">"!"</span>
+                                <span>{move || t(locale.get(), "chat.video_preview_unavailable")}</span>
+                            </div>
+                        }.into_view(),
+                        None => view! {
+                            <div class="video-generation-state" role="status" aria-live="polite">
+                                <span class="video-generation-spinner" aria-hidden="true"></span>
+                                <span>{move || t(locale.get(), "chat.video_loading")}</span>
+                            </div>
+                        }.into_view(),
+                    },
+                }}
+            </div>
+            <footer class="video-generation-meta">
+                <strong>{move || t(locale.get(), title_key)}</strong>
+                <code>{display_path}</code>
+            </footer>
+        </article>
+    }
+}
+
 /// Small, lazy image preview shared by composer cards and sent messages. The
 /// source stays inside the WebView as a data URL and gracefully falls back to
 /// an image icon when a native path cannot be read from the active project.
@@ -477,51 +580,109 @@ pub(crate) enum QueueOp {
     MoveDown(u64),
 }
 
-/// Queue (#433): a queued user turn bubble with edit / cancel / cut-in.
-/// `id == 0` marks a transient cut-in bubble (no controls). `can_cut_in` is
-/// false for ACP sessions, which cannot fold a message into a running turn.
+/// Queue (#433): one parked follow-up in the composer card. `id == 0` is a
+/// transient cut-in (no controls). `can_cut_in` is false for ACP sessions.
+/// Reorder controls stay hidden when the queue has only one item.
 #[component]
 pub(crate) fn QueuedMessage(
     id: u64,
     text: String,
+    user_index: usize,
     can_cut_in: bool,
+    can_reorder: bool,
     on_queue: Callback<QueueOp>,
 ) -> impl IntoView {
     let locale = use_locale();
     let show_controls = id != 0;
+    let preview = text.clone();
     view! {
-        <div class="role">{move || t(locale.get(), "composer.queued")}</div>
-        <div class="user-bubble queued-bubble">
-            <div class="body">{text}</div>
-            {show_controls.then(|| view! {
-                <div class="queue-actions">
-                    <button type="button" class="tool-btn queue-move"
-                        title=move || t(locale.get(), "queue.move_up")
-                        on:click=move |_| on_queue.call(QueueOp::MoveUp(id))>
-                        {compose_icon("up")}
-                    </button>
-                    <button type="button" class="tool-btn queue-move"
-                        title=move || t(locale.get(), "queue.move_down")
-                        on:click=move |_| on_queue.call(QueueOp::MoveDown(id))>
-                        {compose_icon("chevron-down")}
-                    </button>
-                    {can_cut_in.then(|| view! {
-                        <button type="button" class="tool-btn"
-                            on:click=move |_| on_queue.call(QueueOp::CutIn(id))>
-                            {move || t(locale.get(), "queue.cut_in")}
+        <div class="msg user queued" data-user-index=user_index.to_string()>
+            <div class="queued-card">
+                <div class="body" title=preview>{text}</div>
+                {show_controls.then(move || view! {
+                    <div class="queue-actions">
+                        {can_cut_in.then(|| view! {
+                            <button type="button" class="queue-cut-in"
+                                on:click=move |_| on_queue.call(QueueOp::CutIn(id))>
+                                {compose_icon("bolt")}
+                                <span>{move || t(locale.get(), "queue.cut_in")}</span>
+                            </button>
+                        })}
+                        {can_reorder.then(|| view! {
+                            <button type="button" class="msg-icon-btn"
+                                title=move || t(locale.get(), "queue.move_up")
+                                aria-label=move || t(locale.get(), "queue.move_up")
+                                on:click=move |_| on_queue.call(QueueOp::MoveUp(id))>
+                                {compose_icon("up")}
+                            </button>
+                            <button type="button" class="msg-icon-btn"
+                                title=move || t(locale.get(), "queue.move_down")
+                                aria-label=move || t(locale.get(), "queue.move_down")
+                                on:click=move |_| on_queue.call(QueueOp::MoveDown(id))>
+                                {compose_icon("chevron-down")}
+                            </button>
+                        })}
+                        <button type="button" class="msg-icon-btn"
+                            title=move || t(locale.get(), "queue.edit")
+                            aria-label=move || t(locale.get(), "queue.edit")
+                            on:click=move |_| on_queue.call(QueueOp::Edit(id))>
+                            {compose_icon("edit")}
                         </button>
-                    })}
-                    <button type="button" class="tool-btn"
-                        on:click=move |_| on_queue.call(QueueOp::Edit(id))>
-                        {move || t(locale.get(), "queue.edit")}
-                    </button>
-                    <button type="button" class="tool-btn"
-                        on:click=move |_| on_queue.call(QueueOp::Cancel(id))>
-                        {move || t(locale.get(), "settings.cancel")}
-                    </button>
-                </div>
-            })}
+                        <button type="button" class="msg-icon-btn queue-remove"
+                            title=move || t(locale.get(), "queue.remove")
+                            aria-label=move || t(locale.get(), "queue.remove")
+                            on:click=move |_| on_queue.call(QueueOp::Cancel(id))>
+                            {compose_icon("trash")}
+                        </button>
+                    </div>
+                })}
+            </div>
         </div>
+    }
+}
+
+/// Compact card above the composer: parked follow-ups sit with the input
+/// instead of as dashed transcript bubbles.
+#[component]
+pub(crate) fn ComposerQueue(
+    items: RwSignal<Vec<ChatItem>>,
+    user_offset: Signal<usize>,
+    can_cut_in: Signal<bool>,
+    on_queue: Callback<QueueOp>,
+) -> impl IntoView {
+    let locale = use_locale();
+    view! {
+        {move || {
+            let rows = queued_turn_rows(&items.get(), user_offset.get());
+            let len = rows.len();
+            let can_cut_in = can_cut_in.get();
+            let can_reorder = len > 1;
+            let loc = locale.get();
+            (!rows.is_empty()).then(move || view! {
+                <div class="composer-queue" data-testid="composer-queue"
+                    role="region"
+                    aria-label=t(loc, "queue.region")>
+                    <div class="composer-queue-head">
+                        <span class="composer-queue-dot" aria-hidden="true"></span>
+                        <span>{tf(loc, "queue.header", &[("n", &len.to_string())])}</span>
+                    </div>
+                    <div class="composer-queue-list">
+                        {rows.into_iter().map(|row| {
+                            view! {
+                                <QueuedMessage
+                                    id=row.id
+                                    text=row.text
+                                    user_index=row.user_index
+                                    can_cut_in=can_cut_in
+                                    can_reorder=can_reorder
+                                    on_queue=on_queue
+                                />
+                            }
+                        }).collect_view()}
+                    </div>
+                </div>
+            })
+        }}
     }
 }
 

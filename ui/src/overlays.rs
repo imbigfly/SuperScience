@@ -1,15 +1,14 @@
 use crate::app_support::{
     compose_icon, js_error_text, parse_redact_keywords, redact_text, refresh_execution_contexts,
-    refresh_runtimes, show_toast, ShareMessage, ShareRole,
+    refresh_runs, refresh_runtimes, share_html_document, share_png_payload, share_png_row,
+    share_png_width, show_toast, ShareExportFormat, ShareHtmlRow, ShareHtmlTheme, ShareMessage,
+    ShareRole,
 };
-use crate::bindings::{invoke_checked, render_share_png};
-use crate::capabilities_home::{
-    CapabilityAction, CapabilityGroup, CapabilityTileGrid,
-};
+use crate::bindings::{invoke_checked, open_external_url, render_share_png, snapshot_share_theme};
 use crate::dto::*;
 use crate::i18n::{localize_backend, t, tf, Locale};
-use crate::text::{dom_value, event_target_value};
-use leptos::{spawn_local, *};
+use crate::text::{dom_value, event_target_value, file_kind, format_bytes};
+use leptos::*;
 use serde_wasm_bindgen::to_value;
 
 #[component]
@@ -214,7 +213,48 @@ fn share_role_key(role: ShareRole) -> &'static str {
     }
 }
 
-/// `/share` preview dialog: pick messages, mask keywords, export a long PNG.
+fn share_stamp() -> String {
+    js_sys::Date::new_0()
+        .to_iso_string()
+        .as_string()
+        .as_deref()
+        .and_then(|iso| iso.get(..10))
+        .unwrap_or("")
+        .to_string()
+}
+
+fn selected_share_messages<'a>(
+    messages: &'a [ShareMessage],
+    keywords: &str,
+) -> (Vec<&'a ShareMessage>, Vec<String>) {
+    let redact = parse_redact_keywords(keywords);
+    let selected = messages.iter().filter(|message| message.selected).collect();
+    (selected, redact)
+}
+
+fn live_share_theme() -> ShareHtmlTheme {
+    serde_json::from_str(&snapshot_share_theme()).unwrap_or_default()
+}
+
+fn share_png_rows(
+    loc: Locale,
+    selected: &[&ShareMessage],
+    redact: &[String],
+) -> Vec<serde_json::Value> {
+    selected
+        .iter()
+        .map(|message| {
+            share_png_row(
+                message.role,
+                &t(loc, share_role_key(message.role)),
+                &redact_text(&message.text, redact),
+            )
+        })
+        .collect()
+}
+
+/// `/share` preview dialog. Opening it shows the long-image picker with PNG
+/// and HTML export. Social copy via the `social-note` skill stays hidden.
 /// `draft` is root-owned (`None` = closed) so the app-level Escape stack can
 /// dismiss it in visual order.
 #[component]
@@ -223,8 +263,10 @@ pub(super) fn ShareOverlay(
     draft: RwSignal<Option<Vec<ShareMessage>>>,
 ) -> impl IntoView {
     let keywords = create_rw_signal(String::new());
+    let width = create_rw_signal(String::new());
     let busy = create_rw_signal(false);
     let error = create_rw_signal(None::<String>);
+    let format = create_rw_signal(ShareExportFormat::Png);
     // Render from the open flag, not the editable draft, so checkbox toggles
     // and keyword input do not rebuild the dialog DOM and drop focus.
     let open = create_memo(move |_| draft.with(|value| value.is_some()));
@@ -232,8 +274,10 @@ pub(super) fn ShareOverlay(
         let now = open.get();
         if now && previous != Some(true) {
             keywords.set(String::new());
+            width.set(String::new());
             busy.set(false);
             error.set(None);
+            format.set(ShareExportFormat::Png);
         }
         now
     });
@@ -256,51 +300,65 @@ pub(super) fn ShareOverlay(
     let export = move |_| {
         let loc = locale.get_untracked();
         let messages = draft.get_untracked().unwrap_or_default();
-        let redact = parse_redact_keywords(&keywords.get_untracked());
-        let rows: Vec<serde_json::Value> = messages
-            .iter()
-            .filter(|message| message.selected)
-            .map(|message| {
-                serde_json::json!({
-                    "kind": message.role.tag(),
-                    "label": t(loc, share_role_key(message.role)),
-                    "text": redact_text(&message.text, &redact),
-                })
-            })
-            .collect();
-        if rows.is_empty() {
+        let (selected, redact) = selected_share_messages(&messages, &keywords.get_untracked());
+        if selected.is_empty() {
             error.set(Some(t(loc, "share.none_selected")));
             return;
         }
         busy.set(true);
         error.set(None);
-        let date = js_sys::Date::new_0().to_iso_string().as_string();
-        let stamp = date
-            .as_deref()
-            .and_then(|iso| iso.get(..10))
-            .unwrap_or("")
-            .to_string();
-        let payload = serde_json::json!({
-            "title": "wisp-science",
-            "subtitle": stamp,
-            "footer": t(loc, "share.image_footer"),
-            "messages": rows,
-        })
-        .to_string();
+        let stamp = share_stamp();
+        let footer = t(loc, "share.image_footer");
+        let png_width = share_png_width(&width.get_untracked());
+        let html_format = format.get_untracked() == ShareExportFormat::Html;
+        // Build the export payload up front (pure CPU); the spawned task only
+        // awaits the optional canvas render and the native save call.
+        let (png_payload, html_args) = if html_format {
+            let rows: Vec<ShareHtmlRow> = selected
+                .iter()
+                .map(|message| ShareHtmlRow {
+                    role: message.role,
+                    label: t(loc, share_role_key(message.role)).to_string(),
+                    text: redact_text(&message.text, &redact),
+                })
+                .collect();
+            let html =
+                share_html_document("wisp-science", &stamp, &footer, &rows, &live_share_theme());
+            let args = to_value(&serde_json::json!({
+                "html": html,
+                "defaultName": format!("wisp-share-{stamp}.html"),
+            }))
+            .unwrap();
+            (String::new(), Some(args))
+        } else {
+            let payload = share_png_payload(
+                "wisp-science",
+                &stamp,
+                &footer,
+                &share_png_rows(loc, &selected, &redact),
+                png_width,
+            );
+            (payload, None)
+        };
         spawn_local(async move {
-            let result = async {
-                let png = render_share_png(&payload)
-                    .await?
-                    .as_string()
-                    .unwrap_or_default();
-                let args = to_value(&serde_json::json!({
-                    "pngBase64": png,
-                    "defaultName": format!("wisp-share-{stamp}.png"),
-                }))
-                .unwrap();
-                invoke_checked("save_share_image", args).await
-            }
-            .await;
+            let result = match html_args {
+                Some(args) => invoke_checked("save_share_html", args).await,
+                None => {
+                    async {
+                        let png = render_share_png(&png_payload)
+                            .await?
+                            .as_string()
+                            .unwrap_or_default();
+                        let args = to_value(&serde_json::json!({
+                            "pngBase64": png,
+                            "defaultName": format!("wisp-share-{stamp}.png"),
+                        }))
+                        .unwrap();
+                        invoke_checked("save_share_image", args).await
+                    }
+                    .await
+                }
+            };
             busy.set(false);
             match result {
                 // A string result is the saved path; null means the user
@@ -322,9 +380,8 @@ pub(super) fn ShareOverlay(
             }
         });
     };
-
     move || {
-        open.get().then(|| view! {
+        open.get().then(move || view! {
             <div class="overlay">
                 <div class="modal share-modal" role="dialog" aria-modal="true"
                     aria-labelledby="share-modal-title" data-testid="share-overlay">
@@ -343,6 +400,11 @@ pub(super) fn ShareOverlay(
                             on:click=move |_| set_all(true)>{move || t(locale.get(), "share.select_all")}</button>
                         <button type="button" class="linklike"
                             on:click=move |_| set_all(false)>{move || t(locale.get(), "share.select_none")}</button>
+                        <span class="share-count">{move || {
+                            let total = draft.with(|value| value.as_ref().map_or(0, Vec::len));
+                            tf(locale.get(), "share.selected",
+                                &[("count", &format!("{}/{}", selected_count.get(), total))])
+                        }}</span>
                     </div>
                     <div class="share-list">
                         {move || {
@@ -361,8 +423,10 @@ pub(super) fn ShareOverlay(
                                                     }
                                                 }
                                             }) />
-                                        <span class="share-role">{t(loc, share_role_key(message.role))}</span>
-                                        <span class="share-text">{preview}</span>
+                                        <span class="share-row-body">
+                                            <span class="share-role">{t(loc, share_role_key(message.role))}</span>
+                                            <span class="share-text">{preview}</span>
+                                        </span>
                                     </label>
                                 }
                             }).collect_view()
@@ -375,6 +439,29 @@ pub(super) fn ShareOverlay(
                             prop:value=move || keywords.get()
                             on:input=move |ev| keywords.set(event_target_value(&ev)) />
                     </label>
+                    <div class="share-format">
+                        <span class="share-format-label">{move || t(locale.get(), "share.format_label")}</span>
+                        <div class="share-format-seg" role="group"
+                            aria-label=move || t(locale.get(), "share.format_label")>
+                            <button type="button" data-testid="share-format-png"
+                                class:active=move || format.get() == ShareExportFormat::Png
+                                on:click=move |_| format.set(ShareExportFormat::Png)>
+                                {move || t(locale.get(), "share.format_png")}</button>
+                            <button type="button" data-testid="share-format-html"
+                                class:active=move || format.get() == ShareExportFormat::Html
+                                on:click=move |_| format.set(ShareExportFormat::Html)>
+                                {move || t(locale.get(), "share.format_html")}</button>
+                        </div>
+                    </div>
+                    {move || (format.get() == ShareExportFormat::Png).then(|| view! {
+                        <label class="share-redact" for="share-width-input">
+                            {move || t(locale.get(), "share.width_label")}
+                            <input id="share-width-input" data-testid="share-width-input"
+                                autocomplete="off" inputmode="numeric" placeholder="840"
+                                prop:value=move || width.get()
+                                on:input=move |ev| width.set(event_target_value(&ev)) />
+                        </label>
+                    })}
                     {move || error.get().map(|message| view! {
                         <div class="settings-status fail">{message}</div>
                     })}
@@ -385,6 +472,8 @@ pub(super) fn ShareOverlay(
                             disabled=move || busy.get() || selected_count.get() == 0
                             on:click=export>{move || if busy.get() {
                                 t(locale.get(), "share.exporting")
+                            } else if format.get() == ShareExportFormat::Html {
+                                t(locale.get(), "share.export_html")
                             } else {
                                 t(locale.get(), "share.export")
                             }}</button>
@@ -534,10 +623,540 @@ pub(super) fn RuntimeInterpreterOverlay(
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum CapsOverlayTab {
-    Overview,
-    Scene(CapabilityGroup),
+/// Root-owned open state (run id) for the run-review modal, shared through
+/// the Leptos context so run cards anywhere can open it.
+#[derive(Clone, Copy)]
+pub(crate) struct RunReviewModal(pub(crate) RwSignal<Option<String>>);
+
+/// Run ids whose foreground-monitored success is awaiting a review prompt.
+/// Cards push candidates here while the turn is still running; the root
+/// drains the queue once the owning session goes idle, asks the backend
+/// whether each Run has an unresolved product decision, and only then opens
+/// the modal — never mid-work (#897).
+#[derive(Clone, Copy)]
+pub(crate) struct PendingRunReviews(pub(crate) RwSignal<Vec<String>>);
+
+fn run_review_subtitle_label(title: Option<&str>, run_id: &str) -> (String, bool) {
+    if let Some(title) = title.map(str::trim).filter(|title| !title.is_empty()) {
+        (title.to_string(), false)
+    } else {
+        (run_id.split('-').next().unwrap_or(run_id).to_string(), true)
+    }
+}
+
+fn run_review_icon(is_dir: bool, name: &str) -> &'static str {
+    if is_dir {
+        "folder"
+    } else if file_kind(name) == Some("image") {
+        "image"
+    } else {
+        "doc"
+    }
+}
+
+fn toggle_run_review_selection(
+    selection: RwSignal<std::collections::HashMap<String, String>>,
+    path: String,
+    kind: String,
+) {
+    selection.update(|selected| {
+        if selected.remove(&path).is_none() {
+            selected.insert(path, kind);
+        }
+    });
+}
+
+/// Review a finished Run's server workspace: browse one directory level at a
+/// time (server-side filter + paging, nothing persisted), download only the
+/// explicit selection, delete the selection, or clean the whole workspace.
+#[component]
+pub(super) fn RunReviewOverlay(
+    locale: RwSignal<Locale>,
+    modal: RwSignal<Option<String>>,
+    runs: RwSignal<Vec<RunSummary>>,
+) -> impl IntoView {
+    let path = create_rw_signal(String::new());
+    let filter = create_rw_signal(String::new());
+    let entries = create_rw_signal(Vec::<WorkspaceEntry>::new());
+    let truncated = create_rw_signal(false);
+    // Selected paths → kind ("file" | "dir").
+    let selection = create_rw_signal(std::collections::HashMap::<String, String>::new());
+    let busy = create_rw_signal(false);
+    let error = create_rw_signal(None::<String>);
+    let status = create_rw_signal(None::<String>);
+
+    let fetch = move |append: bool| {
+        let Some(run_id) = modal.get_untracked() else {
+            return;
+        };
+        busy.set(true);
+        error.set(None);
+        let offset = if append {
+            entries.with_untracked(|entries| entries.len())
+        } else {
+            0
+        };
+        let args = to_value(&serde_json::json!({
+            "runId": run_id,
+            "path": path.get_untracked(),
+            "nameFilter": filter.get_untracked().trim(),
+            "offset": offset,
+            "limit": 200,
+        }))
+        .unwrap();
+        spawn_local(async move {
+            match invoke_checked("list_run_workspace_files", args).await {
+                Ok(value) => {
+                    if let Ok(listing) = serde_wasm_bindgen::from_value::<WorkspaceListing>(value) {
+                        if append {
+                            entries.update(|current| current.extend(listing.entries));
+                        } else {
+                            entries.set(listing.entries);
+                        }
+                        truncated.set(listing.truncated);
+                    }
+                }
+                Err(value) => error.set(Some(localize_backend(
+                    locale.get_untracked(),
+                    &js_error_text(value),
+                ))),
+            }
+            busy.set(false);
+        });
+    };
+
+    // Fresh state and first page whenever the modal opens on a run.
+    create_effect(move |previous: Option<Option<String>>| {
+        let current = modal.get();
+        if current.is_some() && previous.flatten() != current {
+            path.set(String::new());
+            filter.set(String::new());
+            selection.set(Default::default());
+            status.set(None);
+            fetch(false);
+        }
+        current
+    });
+
+    let close = move || {
+        modal.set(None);
+        entries.set(Vec::new());
+        selection.set(Default::default());
+    };
+
+    let download = move |_| {
+        let Some(run_id) = modal.get_untracked() else {
+            return;
+        };
+        let selected = selection.get_untracked();
+        if selected.is_empty() {
+            return;
+        }
+        let files: Vec<String> = selected
+            .iter()
+            .filter(|(_, kind)| kind.as_str() == "file")
+            .map(|(path, _)| path.clone())
+            .collect();
+        let dirs: Vec<String> = selected
+            .iter()
+            .filter(|(_, kind)| kind.as_str() == "dir")
+            .map(|(path, _)| path.clone())
+            .collect();
+        busy.set(true);
+        error.set(None);
+        let args = to_value(&serde_json::json!({
+            "runId": run_id,
+            "files": files,
+            "dirs": dirs,
+        }))
+        .unwrap();
+        spawn_local(async move {
+            match invoke_checked("download_run_files", args).await {
+                Ok(_) => {
+                    selection.set(Default::default());
+                    status.set(Some(t(locale.get_untracked(), "run_review.downloaded")));
+                }
+                Err(value) => error.set(Some(localize_backend(
+                    locale.get_untracked(),
+                    &js_error_text(value),
+                ))),
+            }
+            busy.set(false);
+        });
+    };
+
+    let delete = move |_| {
+        let Some(run_id) = modal.get_untracked() else {
+            return;
+        };
+        let selected: Vec<String> = selection.get_untracked().keys().cloned().collect();
+        if selected.is_empty() {
+            return;
+        }
+        busy.set(true);
+        error.set(None);
+        let args = to_value(&serde_json::json!({ "runId": run_id, "paths": selected })).unwrap();
+        spawn_local(async move {
+            match invoke_checked("delete_run_files", args).await {
+                Ok(_) => {
+                    selection.set(Default::default());
+                    status.set(Some(t(locale.get_untracked(), "run_review.deleted")));
+                    fetch(false);
+                }
+                Err(value) => {
+                    error.set(Some(localize_backend(
+                        locale.get_untracked(),
+                        &js_error_text(value),
+                    )));
+                    busy.set(false);
+                }
+            }
+        });
+    };
+
+    let cleanup_all = move |_| {
+        let Some(run_id) = modal.get_untracked() else {
+            return;
+        };
+        busy.set(true);
+        error.set(None);
+        // User-explicit whole-workspace cleanup accepts unretrieved data loss.
+        let args = to_value(&serde_json::json!({ "runId": run_id, "force": true })).unwrap();
+        spawn_local(async move {
+            match invoke_checked("cleanup_run_workspace", args).await {
+                Ok(_) => {
+                    show_toast(&t(locale.get_untracked(), "runs.cleanup_done"));
+                    refresh_runs(runs, locale);
+                    modal.set(None);
+                }
+                Err(value) => error.set(Some(localize_backend(
+                    locale.get_untracked(),
+                    &js_error_text(value),
+                ))),
+            }
+            busy.set(false);
+        });
+    };
+
+    let toggle_all = move |_| {
+        let rows = entries.get_untracked();
+        selection.update(|selected| {
+            let all_on =
+                !rows.is_empty() && rows.iter().all(|entry| selected.contains_key(&entry.path));
+            if all_on {
+                for entry in &rows {
+                    selected.remove(&entry.path);
+                }
+            } else {
+                for entry in rows {
+                    selected.insert(entry.path, entry.kind);
+                }
+            }
+        });
+    };
+
+    move || {
+        modal.get().map(|run_id| {
+            let (subtitle, subtitle_is_id) = runs.with(|runs| {
+                run_review_subtitle_label(
+                    runs.iter()
+                        .find(|run| run.id == run_id)
+                        .map(|run| run.title.as_str()),
+                    &run_id,
+                )
+            });
+            let subtitle_title = run_id.clone();
+            view! {
+                <div class="overlay">
+                    <div class="modal run-review-modal" role="dialog" aria-modal="true"
+                        aria-labelledby="run-review-title" data-testid="run-review-modal">
+                        <div class="ps-head">
+                            <div class="context-modal-title">
+                                <h2 id="run-review-title">{move || t(locale.get(), "run_review.title")}</h2>
+                                <p class="run-review-subtitle" class:is-id=subtitle_is_id
+                                    data-testid="run-review-subtitle" title=subtitle_title>{subtitle}</p>
+                            </div>
+                            <button type="button" class="ps-close"
+                                title=move || t(locale.get(), "settings.cancel")
+                                aria-label=move || t(locale.get(), "settings.cancel")
+                                on:click=move |_| close()>{compose_icon("close")}</button>
+                        </div>
+                        <p class="run-review-hint">{move || t(locale.get(), "run_review.hint")}</p>
+                        <div class="run-review-toolbar">
+                            {move || {
+                                let current = path.get();
+                                (!current.is_empty()).then(|| {
+                                    let display = format!("/{current}");
+                                    view! {
+                                        <div class="run-review-pathbar">
+                                            <button type="button" class="run-review-up"
+                                                disabled=move || busy.get()
+                                                on:click=move |_| {
+                                                    path.update(|value| {
+                                                        *value = value.rsplit_once('/')
+                                                            .map(|(parent, _)| parent.to_string())
+                                                            .unwrap_or_default();
+                                                    });
+                                                    fetch(false);
+                                                }>
+                                                {compose_icon("arrow-left")}
+                                                {move || t(locale.get(), "run_review.up")}
+                                            </button>
+                                            <code class="run-review-path" title=display.clone()>{display}</code>
+                                        </div>
+                                    }
+                                })
+                            }}
+                            <div class="run-review-filter-wrap">
+                                {compose_icon("search")}
+                                <input type="search" class="run-review-filter" autocomplete="off" spellcheck="false"
+                                    aria-label=move || t(locale.get(), "run_review.filter")
+                                    placeholder=move || t(locale.get(), "run_review.filter")
+                                    prop:value=move || filter.get()
+                                    on:input=move |event| {
+                                        filter.set(event_target_value(&event));
+                                        fetch(false);
+                                    } />
+                            </div>
+                        </div>
+                        {move || error.get().map(|message| view! {
+                            <div class="settings-status fail">{message}</div>
+                        })}
+                        {move || status.get().map(|message| view! {
+                            <div class="settings-status ok" data-testid="run-review-status">{message}</div>
+                        })}
+                        <div class="run-review-list" class:is-busy=move || busy.get()>
+                            <div class="run-review-cols">
+                                <label class="run-review-select"
+                                    title=move || t(locale.get(), "run_review.select_all")>
+                                    <input type="checkbox" data-testid="run-review-select-all"
+                                        aria-label=move || t(locale.get(), "run_review.select_all")
+                                        prop:checked=move || {
+                                            let rows = entries.get();
+                                            !rows.is_empty() && rows.iter().all(|entry| {
+                                                selection.with(|selected| selected.contains_key(&entry.path))
+                                            })
+                                        }
+                                        prop:indeterminate=move || {
+                                            let rows = entries.get();
+                                            let selected = selection.get();
+                                            let n = rows.iter().filter(|entry| selected.contains_key(&entry.path)).count();
+                                            n > 0 && n < rows.len()
+                                        }
+                                        on:change=toggle_all />
+                                </label>
+                                <span>{move || t(locale.get(), "run_review.col_name")}</span>
+                                <span class="run-review-meta">{move || t(locale.get(), "run_review.col_size")}</span>
+                            </div>
+                            {move || {
+                                let loc = locale.get();
+                                let rows = entries.get();
+                                if rows.is_empty() {
+                                    view! { <div class="control-empty">{t(loc, "run_review.empty")}</div> }.into_view()
+                                } else {
+                                    rows.into_iter().map(|entry| {
+                                        let is_dir = entry.kind == "dir";
+                                        let toggle_path = entry.path.clone();
+                                        let toggle_kind = entry.kind.clone();
+                                        let row_path = entry.path.clone();
+                                        let row_kind = entry.kind.clone();
+                                        let enter_path = entry.path.clone();
+                                        let checked_path = entry.path.clone();
+                                        let selected_path = entry.path.clone();
+                                        let name = entry.path.rsplit('/').next().unwrap_or(&entry.path).to_string();
+                                        let icon = run_review_icon(is_dir, &name);
+                                        let count = entry.file_count.unwrap_or(0);
+                                        let meta = if is_dir {
+                                            let files = if count == 1 {
+                                                t(loc, "run_review.dir_file")
+                                            } else {
+                                                tf(loc, "run_review.dir_files", &[("n", &count.to_string())])
+                                            };
+                                            format!("{} · {files}", format_bytes(entry.size_bytes))
+                                        } else {
+                                            format_bytes(entry.size_bytes)
+                                        };
+                                        view! {
+                                            <div class="run-review-row" data-testid="run-review-row"
+                                                class:selected=move || selection.with(|selected| selected.contains_key(&selected_path))
+                                                on:click=move |_| toggle_run_review_selection(
+                                                    selection, row_path.clone(), row_kind.clone(),
+                                                )>
+                                                <label class="run-review-select"
+                                                    on:click=move |event| event.stop_propagation()>
+                                                    <input type="checkbox"
+                                                        prop:checked=move || selection.with(|selected| selected.contains_key(&checked_path))
+                                                        on:change=move |_| toggle_run_review_selection(
+                                                            selection, toggle_path.clone(), toggle_kind.clone(),
+                                                        ) />
+                                                </label>
+                                                {if is_dir {
+                                                    view! {
+                                                        <button type="button" class="run-review-name run-review-dir"
+                                                            on:click=move |event| {
+                                                                event.stop_propagation();
+                                                                path.set(enter_path.clone());
+                                                                fetch(false);
+                                                            }>
+                                                            <span class="run-review-icon">{compose_icon(icon)}</span>
+                                                            <span class="run-review-filename" data-testid="run-review-name">{name}</span>
+                                                        </button>
+                                                    }.into_view()
+                                                } else {
+                                                    view! {
+                                                        <span class="run-review-name">
+                                                            <span class="run-review-icon">{compose_icon(icon)}</span>
+                                                            <span class="run-review-filename" data-testid="run-review-name">{name}</span>
+                                                        </span>
+                                                    }.into_view()
+                                                }}
+                                                <span class="run-review-meta" data-testid="run-review-size">{meta}</span>
+                                            </div>
+                                        }.into_view()
+                                    }).collect_view()
+                                }
+                            }}
+                            {move || truncated.get().then(|| view! {
+                                <button type="button" class="run-review-more" disabled=move || busy.get()
+                                    on:click=move |_| fetch(true)>{move || t(locale.get(), "run_review.more")}</button>
+                            })}
+                        </div>
+                        <p class="run-review-warning">{move || t(locale.get(), "run_review.delete_warning")}</p>
+                        <div class="row run-review-actions">
+                            <button type="button" class="run-review-cleanup"
+                                disabled=move || busy.get()
+                                on:click=cleanup_all>{move || t(locale.get(), "run_review.cleanup_all")}</button>
+                            {move || {
+                                let n = selection.with(|selected| selected.len());
+                                (n > 0).then(|| view! {
+                                    <span class="run-review-count" data-testid="run-review-count">
+                                        {tf(locale.get(), "run_review.selected_n", &[("n", &n.to_string())])}
+                                    </span>
+                                })
+                            }}
+                            <button type="button" class="run-review-delete"
+                                disabled=move || busy.get() || selection.with(|selected| selected.is_empty())
+                                on:click=delete>{move || t(locale.get(), "run_review.delete_selected")}</button>
+                            <button type="button" class="primary run-review-download"
+                                disabled=move || busy.get() || selection.with(|selected| selected.is_empty())
+                                on:click=download>{move || t(locale.get(), "run_review.download_selected")}</button>
+                        </div>
+                    </div>
+                </div>
+            }
+        })
+    }
+}
+
+/// Storage locations for one project × server: where uploads land, where run
+/// workdirs live, and where retrieved outputs are placed in the project.
+/// Auto-opens once when a server is first enabled without saved preferences.
+#[component]
+pub(super) fn StoragePrefsOverlay(
+    locale: RwSignal<Locale>,
+    form: RwSignal<Option<StoragePrefsForm>>,
+) -> impl IntoView {
+    let busy = create_rw_signal(false);
+    let error = create_rw_signal(None::<String>);
+    // Render from the open state only so typing does not rebuild the DOM.
+    let open = create_memo(move |_| form.with(|value| value.is_some()));
+    let save = move |_| {
+        let Some(current) = form.get_untracked() else {
+            return;
+        };
+        busy.set(true);
+        error.set(None);
+        let args = to_value(&serde_json::json!({
+            "contextId": current.context_id,
+            "remoteDataRoot": current.remote_data_root,
+            "remoteWorkdirRoot": current.remote_workdir_root,
+            "localResultsDir": current.local_results_dir,
+        }))
+        .unwrap();
+        spawn_local(async move {
+            match invoke_checked("set_context_storage_prefs", args).await {
+                Ok(_) => {
+                    form.set(None);
+                    show_toast(&t(locale.get_untracked(), "storage_prefs.saved"));
+                }
+                Err(value) => error.set(Some(localize_backend(
+                    locale.get_untracked(),
+                    &js_error_text(value),
+                ))),
+            }
+            busy.set(false);
+        });
+    };
+    let field = move |name: &'static str, event: &leptos::ev::Event| {
+        let value = event_target_value(event);
+        form.update(|current| {
+            if let Some(current) = current {
+                match name {
+                    "data" => current.remote_data_root = value,
+                    "workdir" => current.remote_workdir_root = value,
+                    _ => current.local_results_dir = value,
+                }
+            }
+        });
+    };
+
+    move || {
+        open.get().then(|| view! {
+            <div class="overlay">
+                <div class="modal runtime-config-modal storage-prefs-modal" data-testid="storage-prefs-modal">
+                    <div class="ps-head">
+                        <h2>{move || t(locale.get(), "storage_prefs.title")}</h2>
+                        <button type="button" class="ps-close"
+                            title=move || t(locale.get(), "settings.cancel")
+                            disabled=move || busy.get()
+                            on:click=move |_| form.set(None)>{compose_icon("close")}</button>
+                    </div>
+                    <p class="runtime-config-hint">{
+                        move || {
+                            let context = form.with(|value| value.as_ref()
+                                .map(|value| value.context_label.clone())
+                                .unwrap_or_default());
+                            tf(locale.get(), "storage_prefs.scope", &[("context", &context)])
+                        }
+                    }</p>
+                    <label>
+                        {move || t(locale.get(), "storage_prefs.data_root")}
+                        <input id="storage-prefs-data-root" autocomplete="off"
+                            prop:value=move || form.get().map(|value| value.remote_data_root).unwrap_or_default()
+                            on:input=move |event| field("data", &event) />
+                    </label>
+                    <label>
+                        {move || t(locale.get(), "storage_prefs.workdir_root")}
+                        <input id="storage-prefs-workdir-root" autocomplete="off"
+                            prop:value=move || form.get().map(|value| value.remote_workdir_root).unwrap_or_default()
+                            on:input=move |event| field("workdir", &event) />
+                    </label>
+                    <label>
+                        {move || t(locale.get(), "storage_prefs.results_dir")}
+                        <input id="storage-prefs-results-dir" autocomplete="off"
+                            prop:value=move || form.get().map(|value| value.local_results_dir).unwrap_or_default()
+                            on:input=move |event| field("results", &event) />
+                    </label>
+                    <p class="runtime-config-hint">{move || t(locale.get(), "storage_prefs.hint")}</p>
+                    {move || error.get().map(|message| view! {
+                        <div class="settings-status fail">{message}</div>
+                    })}
+                    <div class="row">
+                        <button type="button" disabled=move || busy.get()
+                            on:click=move |_| form.set(None)>{
+                                move || if form.with(|value| value.as_ref().map(|value| value.first_use).unwrap_or(false)) {
+                                    t(locale.get(), "storage_prefs.later")
+                                } else {
+                                    t(locale.get(), "settings.cancel")
+                                }
+                            }</button>
+                        <button type="button" class="primary" disabled=move || busy.get()
+                            on:click=save>{move || t(locale.get(), "settings.save")}</button>
+                    </div>
+                </div>
+            </div>
+        })
+    }
 }
 
 #[component]
@@ -549,19 +1168,12 @@ pub(super) fn CapabilitiesOverlay(
     busy: RwSignal<bool>,
     open_settings_section: Callback<String>,
     start_env_setup: Callback<web_sys::MouseEvent>,
-    on_capability_action: Callback<CapabilityAction>,
 ) -> impl IntoView {
-    let active_tab = create_rw_signal(CapsOverlayTab::Overview);
-    create_effect(move |_| {
-        if show_capabilities.get() {
-            active_tab.set(CapsOverlayTab::Overview);
-        }
-    });
     move || {
         show_capabilities.get().then(|| view! {
-    <div class="overlay caps-fullscreen-overlay">
-        <div class="modal caps-fullscreen" role="dialog" aria-modal="true"
-            aria-labelledby="capabilities-title" data-testid="capabilities-dialog">
+    <div class="overlay">
+        <div class="modal modal-wide" role="dialog" aria-modal="true"
+            aria-labelledby="capabilities-title">
             <div class="ps-head">
                 <h2 id="capabilities-title">{move || t(locale.get(), "caps.title")}</h2>
                 <button type="button" class="ps-close"
@@ -571,125 +1183,86 @@ pub(super) fn CapabilitiesOverlay(
                     {compose_icon("close")}
                 </button>
             </div>
-            <div class="caps-overlay-tabs" role="tablist" aria-label=move || t(locale.get(), "caps.title")>
-                <button type="button" class="cap-scene-tab" role="tab"
-                    data-testid="caps-tab-overview"
-                    class:active=move || active_tab.get() == CapsOverlayTab::Overview
-                    aria-selected=move || (active_tab.get() == CapsOverlayTab::Overview).to_string()
-                    on:click=move |_| active_tab.set(CapsOverlayTab::Overview)>
-                    {move || t(locale.get(), "caps.tab.overview")}
-                </button>
-                {CapabilityGroup::all().iter().copied().map(|group| {
-                    let group_for_click = group;
-                    view! {
-                        <button type="button" class="cap-scene-tab" role="tab"
-                            data-testid=format!("caps-tab-{}", group.label_key())
-                            class:active=move || active_tab.get() == CapsOverlayTab::Scene(group)
-                            aria-selected=move || (active_tab.get() == CapsOverlayTab::Scene(group)).to_string()
-                            on:click=move |_| active_tab.set(CapsOverlayTab::Scene(group_for_click))>
-                            {move || t(locale.get(), group.label_key())}
-                        </button>
-                    }
-                }).collect_view()}
-            </div>
-            <div class="caps-fullscreen-body">
-            {move || match active_tab.get() {
-                CapsOverlayTab::Overview => view! {
-                    <div class="caps-overview" data-testid="caps-overview">
-                        {move || bootstrap.get().map(|b| {
-                            let loc = locale.get();
-                            view! {
-                            <div class="cap-section">
-                                <h3>{tf(loc, "caps.runtime", &[("version", &b.app_version)])}</h3>
-                                <p class="hint">{tf(loc, "caps.workspace", &[("path", &b.workspace)])}</p>
-                                <p class="hint">{{
-                                    let ready = t(loc, "caps.ready");
-                                    let missing = t(loc, "caps.missing");
-                                    tf(loc, "caps.runtime_status", &[
-                                    ("py", if b.python_ok { &ready } else { &missing }),
-                                    ("uv", if b.uv_ok { &ready } else { &missing }),
-                                    ("node", if b.node_ok { &ready } else { &missing }),
-                                    ("sci", if b.sci_ok { &ready } else { &missing }),
-                                    ("pixi", if b.pixi_ok { &ready } else { &missing }),
-                                    ("skills", &b.skills_loaded.to_string()),
-                                    ("mcp", &b.mcp_catalog.to_string()),
-                                ])}}</p>
-                                {(!b.errors.is_empty()).then(|| view! {
-                                    <div class="settings-status fail">
-                                        {b.errors.join("\n")}
-                                    </div>
-                                })}
-                            </div>
-                        }})}
-                        {move || caps.get().map(|c| view! {
-                            // ponytail: counts only — detail lists (bio-tool tags, skill list,
-                            // permissions hint) live in Settings, not this read-only summary.
-                            <div class="cap-grid">
-                                <button type="button" class="cap-stat"
-                                    on:click=move |_| {
-                                        show_capabilities.set(false);
-                                        open_settings_section.call("skills".into());
-                                    }>
-                                    <span class="cap-num">{c.skill_counts.bundled}</span>
-                                    <span class="cap-label">{move || t(locale.get(), "caps.bundled_skills")}</span>
-                                </button>
-                                <button type="button" class="cap-stat"
-                                    on:click=move |_| {
-                                        show_capabilities.set(false);
-                                        open_settings_section.call("skills".into());
-                                    }>
-                                    <span class="cap-num">{c.skill_counts.project}</span>
-                                    <span class="cap-label">{move || t(locale.get(), "caps.project_skills")}</span>
-                                </button>
-                                <button type="button" class="cap-stat"
-                                    on:click=move |_| {
-                                        show_capabilities.set(false);
-                                        open_settings_section.call("connections".into());
-                                    }>
-                                    <span class="cap-num">{c.mcp_counts.bundled}</span>
-                                    <span class="cap-label">{move || t(locale.get(), "caps.bundled_mcp_servers")}</span>
-                                </button>
-                                <button type="button" class="cap-stat"
-                                    on:click=move |_| {
-                                        show_capabilities.set(false);
-                                        open_settings_section.call("connections".into());
-                                    }>
-                                    <span class="cap-num">{c.mcp_counts.project}</span>
-                                    <span class="cap-label">{move || t(locale.get(), "caps.project_mcp_servers")}</span>
-                                </button>
-                                <button type="button" class="cap-stat"
-                                    on:click=move |_| {
-                                        show_capabilities.set(false);
-                                        open_settings_section.call("memory".into());
-                                    }>
-                                    <span class="cap-num">{c.memory_files.len()}</span>
-                                    <span class="cap-label">{move || t(locale.get(), "caps.memory_files")}</span>
-                                </button>
-                            </div>
-                        })}
-                        <div class="row">
-                            <button on:click=move |_| show_capabilities.set(false)>
-                                {move || t(locale.get(), "caps.close")}
-                            </button>
-                            {move || bootstrap.get().filter(|b| !b.python_initializing && (!b.python_ok || !b.uv_ok || !b.node_ok || !b.sci_ok || !b.pixi_ok)).map(|_| view! {
-                                <button class="primary" disabled=move || busy.get() on:click=move |ev| start_env_setup.call(ev)>
-                                    {move || t(locale.get(), "caps.setup_env")}
-                                </button>
-                            })}
+            {move || bootstrap.get().map(|b| {
+                let loc = locale.get();
+                view! {
+                <div class="cap-section">
+                    <h3>{tf(loc, "caps.runtime", &[("version", &b.app_version)])}</h3>
+                    <p class="hint">{tf(loc, "caps.workspace", &[("path", &b.workspace)])}</p>
+                    <p class="hint">{{
+                        let ready = t(loc, "caps.ready");
+                        let missing = t(loc, "caps.missing");
+                        tf(loc, "caps.runtime_status", &[
+                        ("py", if b.python_ok { &ready } else { &missing }),
+                        ("uv", if b.uv_ok { &ready } else { &missing }),
+                        ("node", if b.node_ok { &ready } else { &missing }),
+                        ("sci", if b.sci_ok { &ready } else { &missing }),
+                        ("pixi", if b.pixi_ok { &ready } else { &missing }),
+                        ("skills", &b.skills_loaded.to_string()),
+                        ("mcp", &b.mcp_catalog.to_string()),
+                    ])}}</p>
+                    {(!b.errors.is_empty()).then(|| view! {
+                        <div class="settings-status fail">
+                            {b.errors.join("\n")}
                         </div>
-                    </div>
-                }.into_view(),
-                CapsOverlayTab::Scene(group) => view! {
-                    <div class="caps-scene-pane">
-                        <p class="cap-scene-subtitle">{move || t(locale.get(), "caps.home.subtitle")}</p>
-                        <CapabilityTileGrid
-                            locale=locale
-                            group=Signal::derive(move || group)
-                            on_activate=on_capability_action
-                        />
-                    </div>
-                }.into_view(),
-            }}
+                    })}
+                </div>
+            }})}
+            {move || caps.get().map(|c| view! {
+                // ponytail: counts only — detail lists (bio-tool tags, skill list,
+                // permissions hint) live in Settings, not this read-only summary.
+                <div class="cap-grid">
+                    <button type="button" class="cap-stat"
+                        on:click=move |_| {
+                            show_capabilities.set(false);
+                            open_settings_section.call("skills".into());
+                        }>
+                        <span class="cap-num">{c.skill_counts.bundled}</span>
+                        <span class="cap-label">{move || t(locale.get(), "caps.bundled_skills")}</span>
+                    </button>
+                    <button type="button" class="cap-stat"
+                        on:click=move |_| {
+                            show_capabilities.set(false);
+                            open_settings_section.call("skills".into());
+                        }>
+                        <span class="cap-num">{c.skill_counts.project}</span>
+                        <span class="cap-label">{move || t(locale.get(), "caps.project_skills")}</span>
+                    </button>
+                    <button type="button" class="cap-stat"
+                        on:click=move |_| {
+                            show_capabilities.set(false);
+                            open_settings_section.call("connections".into());
+                        }>
+                        <span class="cap-num">{c.mcp_counts.bundled}</span>
+                        <span class="cap-label">{move || t(locale.get(), "caps.bundled_mcp_servers")}</span>
+                    </button>
+                    <button type="button" class="cap-stat"
+                        on:click=move |_| {
+                            show_capabilities.set(false);
+                            open_settings_section.call("connections".into());
+                        }>
+                        <span class="cap-num">{c.mcp_counts.project}</span>
+                        <span class="cap-label">{move || t(locale.get(), "caps.project_mcp_servers")}</span>
+                    </button>
+                    <button type="button" class="cap-stat"
+                        on:click=move |_| {
+                            show_capabilities.set(false);
+                            open_settings_section.call("memory".into());
+                        }>
+                        <span class="cap-num">{c.memory_files.len()}</span>
+                        <span class="cap-label">{move || t(locale.get(), "caps.memory_files")}</span>
+                    </button>
+                </div>
+            })}
+            <div class="row">
+                <button on:click=move |_| show_capabilities.set(false)>
+                    {move || t(locale.get(), "caps.close")}
+                </button>
+                {move || bootstrap.get().filter(|b| !b.python_initializing && (!b.python_ok || !b.uv_ok || !b.node_ok || !b.sci_ok || !b.pixi_ok)).map(|_| view! {
+                    <button class="primary" disabled=move || busy.get() on:click=move |ev| start_env_setup.call(ev)>
+                        {move || t(locale.get(), "caps.setup_env")}
+                    </button>
+                })}
             </div>
         </div>
     </div>
@@ -697,164 +1270,107 @@ pub(super) fn CapabilitiesOverlay(
     }
 }
 
-#[component]
-pub(super) fn FeedbackOverlay(
-    locale: RwSignal<Locale>,
-    show_feedback: RwSignal<bool>,
-    diagnostics: RwSignal<String>,
-) -> impl IntoView {
-    let message = create_rw_signal(String::new());
-    let sending = create_rw_signal(false);
-    let status = create_rw_signal::<Option<(bool, String)>>(None);
-    create_effect(move |_| {
-        if show_feedback.get() {
-            message.set(String::new());
-            sending.set(false);
-            status.set(None);
-        }
-    });
-    let send_email = move |_| {
-        if sending.get_untracked() {
-            return;
-        }
-        let body = message.get_untracked();
-        if body.trim().is_empty() {
-            status.set(Some((
-                false,
-                t(locale.get_untracked(), "issue_report.placeholder").into(),
-            )));
-            return;
-        }
-        sending.set(true);
-        status.set(None);
-        let diagnostics = diagnostics.get_untracked();
-        spawn_local(async move {
-            let args = to_value(&serde_json::json!({
-                "message": body.trim(),
-                "diagnostics": diagnostics,
-            }))
-            .unwrap();
-            match invoke_checked("send_feedback_email", args).await {
-                Ok(_) => {
-                    message.set(String::new());
-                    let ok = t(locale.get_untracked(), "issue_report.sent").to_string();
-                    status.set(Some((true, ok.clone())));
-                    show_toast(&ok);
-                }
-                Err(error) => {
-                    let detail =
-                        localize_backend(locale.get_untracked(), &js_error_text(error));
-                    status.set(Some((
-                        false,
-                        tf(
-                            locale.get_untracked(),
-                            "issue_report.send_failed",
-                            &[("msg", detail.as_str())],
-                        ),
-                    )));
-                }
-            }
-            sending.set(false);
-        });
-    };
-    move || {
-        show_feedback.get().then(|| view! {
-            <div class="overlay feedback-overlay" data-testid="feedback-dialog">
-                <div class="modal feedback-modal" role="dialog" aria-modal="true"
-                    aria-labelledby="feedback-title">
-                    <div class="ps-head">
-                        <h2 id="feedback-title">{move || t(locale.get(), "issue_report.title")}</h2>
-                        <button type="button" class="ps-close"
-                            title=move || t(locale.get(), "issue_report.close")
-                            aria-label=move || t(locale.get(), "issue_report.close")
-                            on:click=move |_| show_feedback.set(false)>
-                            {compose_icon("close")}
-                        </button>
-                    </div>
-                    <div class="feedback-body">
-                        <p class="feedback-subtitle">{move || t(locale.get(), "issue_report.subtitle")}</p>
-                        <div class="feedback-qr-placeholder" data-testid="feedback-qr" role="img"
-                            aria-label=move || t(locale.get(), "issue_report.qr_placeholder")>
-                            <span class="feedback-qr-label">{move || t(locale.get(), "issue_report.qr_placeholder")}</span>
-                            <span class="feedback-qr-hint">{move || t(locale.get(), "issue_report.qr_hint")}</span>
-                        </div>
-                        <div class="feedback-compose">
-                            <div class="feedback-context-chip" data-testid="feedback-context">
-                                <strong>{move || t(locale.get(), "issue_report.context")}</strong>
-                                <span>{move || t(locale.get(), "issue_report.context_attached")}</span>
-                            </div>
-                            <textarea
-                                id="feedback-input"
-                                class="feedback-textarea"
-                                data-testid="feedback-input"
-                                placeholder=move || t(locale.get(), "issue_report.placeholder")
-                                prop:value=move || message.get()
-                                on:input=move |ev| message.set(event_target_value(&ev))
-                            ></textarea>
-                            <div class="feedback-actions">
-                                <button type="button" class="primary"
-                                    data-testid="feedback-send"
-                                    disabled=move || sending.get() || message.get().trim().is_empty()
-                                    on:click=send_email>
-                                    {move || t(
-                                        locale.get(),
-                                        if sending.get() {
-                                            "issue_report.sending"
-                                        } else {
-                                            "issue_report.send_email"
-                                        },
-                                    )}
-                                </button>
-                            </div>
-                            {move || status.get().map(|(ok, text)| view! {
-                                <p class="feedback-status" class:ok=ok class:fail=!ok
-                                    data-testid="feedback-status">{text}</p>
-                            })}
-                        </div>
-                    </div>
-                </div>
-            </div>
-        })
-    }
-}
+// ponytail: onboarding only offers DeepSeek; other providers live in Settings › Models.
+const DEEPSEEK_KEY_URL: &str = "https://platform.deepseek.com/api_keys";
 
 #[component]
 pub(super) fn OnboardingOverlay(
     locale: RwSignal<Locale>,
     show_onboarding: RwSignal<bool>,
+    onboard_step: RwSignal<usize>,
+    onboard_key: RwSignal<String>,
+    save_onboard_key: Callback<()>,
     dismiss_onboard: Callback<web_sys::MouseEvent>,
 ) -> impl IntoView {
     move || {
         show_onboarding.get().then(|| {
-            let loc = locale.get();
-            view! {
-                <div class="overlay onboard-overlay" data-testid="onboard-overlay">
-                    <div class="modal onboard">
-                        <h2 data-testid="onboard-title">{t(loc, "onboard.title")}</h2>
-                        <div class="onboard-cards" data-testid="onboard-cards">
-                            <article class="onboard-card" data-testid="onboard-card-1">
-                                <h3 class="onboard-card-title">{t(loc, "onboard.card1.title")}</h3>
-                                <p class="onboard-card-body">{t(loc, "onboard.card1.body")}</p>
-                            </article>
-                            <article class="onboard-card" data-testid="onboard-card-2">
-                                <h3 class="onboard-card-title">{t(loc, "onboard.card2.title")}</h3>
-                                <p class="onboard-card-body">{t(loc, "onboard.card2.body")}</p>
-                            </article>
-                            <article class="onboard-card" data-testid="onboard-card-3">
-                                <h3 class="onboard-card-title">{t(loc, "onboard.card3.title")}</h3>
-                                <p class="onboard-card-body">{t(loc, "onboard.card3.body")}</p>
-                            </article>
-                        </div>
-                        <div class="row onboard-actions">
-                            <button type="button" class="primary" data-testid="onboard-start"
-                                on:click=move |ev| dismiss_onboard.call(ev)>
-                                {move || t(locale.get(), "onboard.start")}
-                            </button>
-                        </div>
-                    </div>
+    let step = onboard_step.get();
+    let loc = locale.get();
+    view! {
+        <div class="overlay onboard-overlay">
+            <div class="modal onboard">
+                {match step {
+                    0 => view! {
+                        <h2>{t(loc, "onboard.apikey.title")}</h2>
+                        <ol class="onboard-steps">
+                            <li>
+                                <p class="hint">{t(loc, "onboard.getkey.body")}</p>
+                                <button type="button" class="linklike onboard-getkey"
+                                    on:click=move |_| open_external_url(DEEPSEEK_KEY_URL.into())>
+                                    {t(loc, "onboard.apikey.get_key")}
+                                </button>
+                            </li>
+                            <li>
+                                <p class="hint">{t(loc, "onboard.apikey.body")}</p>
+                                <label>{t(loc, "settings.api_key")}
+                                    <input type="password" autocomplete="new-password"
+                                        prop:value=move || onboard_key.get()
+                                        on:input=move |ev| onboard_key.set(event_target_value(&ev)) />
+                                </label>
+                            </li>
+                        </ol>
+                    }.into_view(),
+                    1 => view! {
+                        <h2>{t(loc, "onboard.welcome.title")}</h2>
+                        <p class="hint">{t(loc, "onboard.welcome.body")}</p>
+                    }.into_view(),
+                    _ => view! {
+                        <h2>{t(loc, "onboard.features.title")}</h2>
+                        <p class="hint">{t(loc, "onboard.features.body")}</p>
+                    }.into_view(),
+                }}
+                <div class="onboard-dots">
+                    {(0..3).map(|i| view! {
+                        <span class="onboard-dot" class:active=move || onboard_step.get() == i></span>
+                    }).collect_view()}
                 </div>
-            }
-            .into_view()
-        })
+                <div class="row">
+                    {if step > 0 {
+                        view! { <button on:click=move |_| onboard_step.update(|s| *s = s.saturating_sub(1))>{move || t(locale.get(), "onboard.back")}</button> }.into_view()
+                    } else { view! { <span></span> }.into_view() }}
+                    {if step < 2 {
+                        view! { <button class="primary" on:click=move |_| {
+                            if step == 0 { save_onboard_key.call(()); }
+                            onboard_step.update(|s| *s += 1);
+                        }>{move || t(locale.get(), if step == 0 && onboard_key.get().trim().is_empty() {
+                            "onboard.apikey.later"
+                        } else { "onboard.next" })}</button> }.into_view()
+                    } else {
+                        view! {
+                            <button class="primary" on:click=move |ev| dismiss_onboard.call(ev)>{move || t(locale.get(), "onboard.start")}</button>
+                        }.into_view()
+                    }}
+                </div>
+            </div>
+        </div>
+    }.into_view()
+})
+    }
+}
+
+#[cfg(test)]
+mod run_review_label_tests {
+    use super::{run_review_icon, run_review_subtitle_label};
+
+    #[test]
+    fn prefers_the_run_title_over_the_id() {
+        let (label, is_id) = run_review_subtitle_label(Some("Kinase screen QC"), "run-kinase-001");
+        assert_eq!(label, "Kinase screen QC");
+        assert!(!is_id);
+    }
+
+    #[test]
+    fn falls_back_to_the_first_id_segment() {
+        let (label, is_id) =
+            run_review_subtitle_label(Some("   "), "55f3c6ca-fefb-4015-a083-d60d622a830e");
+        assert_eq!(label, "55f3c6ca");
+        assert!(is_id);
+    }
+
+    #[test]
+    fn picks_icons_by_entry_kind() {
+        assert_eq!(run_review_icon(true, "results"), "folder");
+        assert_eq!(run_review_icon(false, "summary.png"), "image");
+        assert_eq!(run_review_icon(false, "summary.tsv"), "doc");
     }
 }

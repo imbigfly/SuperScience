@@ -1,8 +1,10 @@
 use crate::app_support::{
-    compose_icon, FileEntryModal, FolderModal, SessionTransfer, SessionTransferMode,
+    compose_icon, js_error_text, show_toast, FileEntryModal, FolderModal, SessionTransfer,
+    SessionTransferMode,
 };
 use crate::bindings::invoke_checked;
 use crate::dto::*;
+use crate::i18n::localize_backend;
 use crate::i18n::{t, tf, Locale};
 use crate::text::{
     dom_value, event_target_checked, event_target_value, md_document_to_html, parent_path,
@@ -130,7 +132,7 @@ pub(crate) struct RenameSessionOverlayState {
 #[component]
 pub(crate) fn RenameSessionOverlay(
     state: RenameSessionOverlayState,
-    on_renamed: Callback<()>,
+    on_renamed: Callback<(String, String)>,
 ) -> impl IntoView {
     let RenameSessionOverlayState {
         locale,
@@ -171,9 +173,9 @@ pub(crate) fn RenameSessionOverlay(
                                     let id = id_key.clone();
                                     rename_session_target.set(None);
                                     spawn_local(async move {
-                                        let arg = to_value(&serde_json::json!({ "id": id, "title": title })).unwrap();
+                                        let arg = to_value(&serde_json::json!({ "id": id.clone(), "title": title.clone() })).unwrap();
                                         if invoke_checked("rename_session", arg).await.is_ok() {
-                                            on_renamed.call(());
+                                            on_renamed.call((id, title));
                                         }
                                     });
                                 }
@@ -188,9 +190,9 @@ pub(crate) fn RenameSessionOverlay(
                             let id = id_btn.clone();
                             rename_session_target.set(None);
                             spawn_local(async move {
-                                let arg = to_value(&serde_json::json!({ "id": id, "title": title })).unwrap();
+                                let arg = to_value(&serde_json::json!({ "id": id.clone(), "title": title.clone() })).unwrap();
                                 if invoke_checked("rename_session", arg).await.is_ok() {
-                                    on_renamed.call(());
+                                    on_renamed.call((id, title));
                                 }
                             });
                         }>{move || t(locale.get(), "settings.save")}</button>
@@ -614,6 +616,54 @@ pub(crate) fn ProjSettingsOverlay(
         proj_settings,
         proj_settings_busy,
     } = state;
+    // Retention is stored per project and saved immediately on change; empty
+    // means the automatic sweep stays off.
+    let retention_succeeded = create_rw_signal(String::new());
+    let retention_failed = create_rw_signal(String::new());
+    let retention_orphan = create_rw_signal(String::new());
+    create_effect(move |_| {
+        if !show_proj_settings.get() {
+            return;
+        }
+        spawn_local(async move {
+            if let Ok(value) = invoke_checked(
+                "get_project_run_retention",
+                wasm_bindgen::JsValue::UNDEFINED,
+            )
+            .await
+            {
+                if let Ok(retention) = serde_wasm_bindgen::from_value::<serde_json::Value>(value) {
+                    let field = |key: &str| {
+                        retention
+                            .get(key)
+                            .and_then(|value| value.as_i64())
+                            .map(|days| days.to_string())
+                            .unwrap_or_default()
+                    };
+                    retention_succeeded.set(field("run_retention_days"));
+                    retention_failed.set(field("failed_run_retention_days"));
+                    retention_orphan.set(field("orphan_file_retention_days"));
+                }
+            }
+        });
+    });
+    let save_retention = move || {
+        let parse = |value: &str| value.trim().parse::<i64>().ok();
+        let args = to_value(&serde_json::json!({
+            "runRetentionDays": parse(&retention_succeeded.get_untracked()),
+            "failedRunRetentionDays": parse(&retention_failed.get_untracked()),
+            "orphanFileRetentionDays": parse(&retention_orphan.get_untracked()),
+        }))
+        .unwrap();
+        spawn_local(async move {
+            if let Err(error) = invoke_checked("set_project_run_retention", args).await {
+                show_toast(&localize_backend(
+                    locale.get_untracked(),
+                    &js_error_text(error),
+                ));
+            }
+        });
+    };
     view! {
         {move || show_proj_settings.get().then(|| view! {
             <div class="overlay">
@@ -625,23 +675,65 @@ pub(crate) fn ProjSettingsOverlay(
                             on:click=move |_| show_proj_settings.set(false)>{compose_icon("close")}</button>
                     </div>
                     <label>
-                        {move || t(locale.get(), "proj_settings.name")}
+                        <span class="ps-label">{move || t(locale.get(), "proj_settings.name")}</span>
                         <input prop:value=move || proj_settings.get().name
                             on:input=move |ev| { let v = event_target_value(&ev); proj_settings.update(|s| s.name = v); } />
                     </label>
                     <label>
-                        {move || t(locale.get(), "proj_settings.description")}
+                        <span class="ps-label">{move || t(locale.get(), "proj_settings.description")}</span>
                         <span class="ps-hint">{move || t(locale.get(), "proj_settings.description_hint")}</span>
                         <textarea class="ps-textarea" rows="2"
                             prop:value=move || proj_settings.get().description
                             on:input=move |ev| { let v = event_target_value(&ev); proj_settings.update(|s| s.description = v); }></textarea>
                     </label>
                     <label>
-                        {move || t(locale.get(), "proj_settings.agent_context")}
+                        <span class="ps-label">{move || t(locale.get(), "proj_settings.agent_context")}</span>
                         <span class="ps-hint">{move || t(locale.get(), "proj_settings.agent_context_hint")}</span>
                         <textarea class="ps-textarea ps-ctx" rows="8"
                             prop:value=move || proj_settings.get().agent_context
                             on:input=move |ev| { let v = event_target_value(&ev); proj_settings.update(|s| s.agent_context = v); }></textarea>
+                    </label>
+                    <label>
+                        <span class="ps-label">{move || t(locale.get(), "proj_settings.retention")}</span>
+                        <span class="ps-hint">{move || t(locale.get(), "proj_settings.retention_hint")}</span>
+                        <div class="ps-retention-row">
+                            <div class="ps-retention-item">
+                                <span>{move || t(locale.get(), "proj_settings.retention_succeeded")}</span>
+                                <span class="ps-retention-field">
+                                    <input type="number" min="1" max="3650" inputmode="numeric"
+                                        class="ps-retention" data-testid="retention-succeeded"
+                                        placeholder=move || t(locale.get(), "proj_settings.retention_off")
+                                        prop:value=move || retention_succeeded.get()
+                                        on:input=move |ev| retention_succeeded.set(event_target_value(&ev))
+                                        on:change=move |_| save_retention() />
+                                    <span class="ps-retention-unit">{move || t(locale.get(), "proj_settings.retention_days_unit")}</span>
+                                </span>
+                            </div>
+                            <div class="ps-retention-item">
+                                <span>{move || t(locale.get(), "proj_settings.retention_failed")}</span>
+                                <span class="ps-retention-field">
+                                    <input type="number" min="1" max="3650" inputmode="numeric"
+                                        class="ps-retention" data-testid="retention-failed"
+                                        placeholder=move || t(locale.get(), "proj_settings.retention_off")
+                                        prop:value=move || retention_failed.get()
+                                        on:input=move |ev| retention_failed.set(event_target_value(&ev))
+                                        on:change=move |_| save_retention() />
+                                    <span class="ps-retention-unit">{move || t(locale.get(), "proj_settings.retention_days_unit")}</span>
+                                </span>
+                            </div>
+                            <div class="ps-retention-item">
+                                <span>{move || t(locale.get(), "proj_settings.retention_orphan")}</span>
+                                <span class="ps-retention-field">
+                                    <input type="number" min="1" max="3650" inputmode="numeric"
+                                        class="ps-retention" data-testid="retention-orphan"
+                                        placeholder=move || t(locale.get(), "proj_settings.retention_off")
+                                        prop:value=move || retention_orphan.get()
+                                        on:input=move |ev| retention_orphan.set(event_target_value(&ev))
+                                        on:change=move |_| save_retention() />
+                                    <span class="ps-retention-unit">{move || t(locale.get(), "proj_settings.retention_days_unit")}</span>
+                                </span>
+                            </div>
+                        </div>
                     </label>
                     <div class="row">
                         <button type="button" disabled=move || proj_settings_busy.get()
@@ -907,6 +999,9 @@ enum ExplorationConfirm {
     Discard {
         exploration_id: String,
     },
+    ManualResolution {
+        exploration_id: String,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -932,6 +1027,17 @@ fn exploration_status(locale: Locale, status: &str) -> String {
 fn exploration_empty(locale: Locale) -> View {
     view! { <div class="exploration-diff-empty">{t(locale, "exploration.diff_empty")}</div> }
         .into_view()
+}
+
+fn exploration_blocker_message(locale: Locale, blocker: &PromotionBlocker) -> String {
+    let key = match blocker.code.as_str() {
+        "MainlineAdvanced" => "exploration.blocker_mainline_advanced",
+        "ExternalReferenceChanged" => "exploration.blocker_external_reference_changed",
+        "ExplorationBusy" => "exploration.blocker_busy",
+        "ExplorationNotPromotable" => "exploration.blocker_not_promotable",
+        _ => return blocker.message.clone(),
+    };
+    t(locale, key)
 }
 
 fn exploration_diff_body(
@@ -1094,6 +1200,8 @@ pub(crate) fn ExplorationOverlayView(
     on_start: Callback<(String, usize, String)>,
     on_promote: Callback<(String, String)>,
     on_discard: Callback<String>,
+    on_open_manual_resolution: Callback<String>,
+    on_finish_manual_resolution: Callback<String>,
 ) -> impl IntoView {
     let ExplorationOverlayState {
         locale,
@@ -1178,14 +1286,40 @@ pub(crate) fn ExplorationOverlayView(
                                 let promote_id = current.exploration.id.clone();
                                 let promote_guard = current.eligibility.expected_guard_hash.clone();
                                 let blockers = current.eligibility.reasons.clone();
+                                let manual_resolution_available = current.eligibility.manual_resolution_available;
+                                let manual_open_id = current.exploration.id.clone();
+                                let manual_finish_id = current.exploration.id.clone();
                                 view! {
                                     {(!eligible).then(|| view! {
                                         <div class="exploration-eligibility blocked" data-testid="exploration-promotion-blocked">
                                             <strong>{t(locale.get(), "exploration.cannot_promote")}</strong>
-                                            {blockers.into_iter().map(|reason| view! {
-                                                <span data-blocker-code=reason.code>{reason.message}</span>
+                                            {blockers.into_iter().map(|reason| {
+                                                let code = reason.code.clone();
+                                                let message = exploration_blocker_message(locale.get(), &reason);
+                                                view! { <span data-blocker-code=code>{message}</span> }
                                             }).collect_view()}
                                         </div>
+                                    })}
+                                    {manual_resolution_available.then(|| view! {
+                                        <section class="exploration-manual-resolution" data-testid="exploration-manual-resolution">
+                                            <strong>{t(locale.get(), "exploration.manual_title")}</strong>
+                                            <span>{t(locale.get(), "exploration.manual_body")}</span>
+                                            <span class="warning">{t(locale.get(), "exploration.manual_warning")}</span>
+                                            <div class="row">
+                                                <button type="button" disabled=move || busy.get()
+                                                    data-testid="exploration-open-manual-folders"
+                                                    on:click=move |_| on_open_manual_resolution.call(manual_open_id.clone())>
+                                                    {move || t(locale.get(), "exploration.manual_open_folders")}
+                                                </button>
+                                                <button type="button" class="primary" disabled=move || busy.get()
+                                                    data-testid="exploration-finish-manual"
+                                                    on:click=move |_| confirm.set(Some(ExplorationConfirm::ManualResolution {
+                                                        exploration_id: manual_finish_id.clone(),
+                                                    }))>
+                                                    {move || t(locale.get(), "exploration.manual_finish")}
+                                                </button>
+                                            </div>
+                                        </section>
                                     })}
                                     <div class="exploration-tabs" role="tablist">
                                         {[
@@ -1231,11 +1365,33 @@ pub(crate) fn ExplorationOverlayView(
         {move || confirm.get().map(|choice| {
             let choice_for_confirm = choice.clone();
             let promote = matches!(choice, ExplorationConfirm::Promote { .. });
+            let manual = matches!(choice, ExplorationConfirm::ManualResolution { .. });
+            let title_key = if promote {
+                "exploration.promote_confirm_title"
+            } else if manual {
+                "exploration.manual_confirm_title"
+            } else {
+                "exploration.discard_confirm_title"
+            };
+            let body_key = if promote {
+                "exploration.promote_confirm_body"
+            } else if manual {
+                "exploration.manual_confirm_body"
+            } else {
+                "exploration.discard_confirm_body"
+            };
+            let action_key = if promote {
+                "exploration.promote"
+            } else if manual {
+                "exploration.manual_finish"
+            } else {
+                "exploration.discard"
+            };
             view! {
                 <div class="overlay exploration-confirm-overlay" data-testid="exploration-confirm-overlay">
                     <div class="modal confirm-modal exploration-confirm-modal" role="alertdialog" aria-modal="true">
-                        <h2>{t(locale.get(), if promote { "exploration.promote_confirm_title" } else { "exploration.discard_confirm_title" })}</h2>
-                        <div class="hint">{t(locale.get(), if promote { "exploration.promote_confirm_body" } else { "exploration.discard_confirm_body" })}</div>
+                        <h2>{t(locale.get(), title_key)}</h2>
+                        <div class="hint">{t(locale.get(), body_key)}</div>
                         <div class="row">
                             <button type="button" on:click=move |_| confirm.set(None)>{move || t(locale.get(), "settings.cancel")}</button>
                             <button type="button" class="primary" class:danger=!promote data-testid="exploration-confirm-action"
@@ -1244,8 +1400,9 @@ pub(crate) fn ExplorationOverlayView(
                                     match choice_for_confirm.clone() {
                                         ExplorationConfirm::Promote { exploration_id, expected_guard_hash } => on_promote.call((exploration_id, expected_guard_hash)),
                                         ExplorationConfirm::Discard { exploration_id } => on_discard.call(exploration_id),
+                                        ExplorationConfirm::ManualResolution { exploration_id } => on_finish_manual_resolution.call(exploration_id),
                                     }
-                                }>{t(locale.get(), if promote { "exploration.promote" } else { "exploration.discard" })}</button>
+                                }>{t(locale.get(), action_key)}</button>
                         </div>
                     </div>
                 </div>

@@ -1,5 +1,31 @@
 use super::*;
 
+pub(crate) async fn invoke_string_id(cmd: &str, args: JsValue) -> Result<String, String> {
+    match invoke_checked(cmd, args).await {
+        Ok(value) => value
+            .as_string()
+            .filter(|id| !id.is_empty())
+            .ok_or_else(String::new),
+        Err(error) => Err(js_error_text(error)),
+    }
+}
+
+pub(crate) async fn invoke_new_session() -> Result<String, String> {
+    invoke_string_id("new_session", JsValue::UNDEFINED).await
+}
+
+/// Conversation `resume_last_session` should reopen. Named unused drafts stay
+/// out of this path — they are sidebar rows, not "the last conversation".
+pub(crate) async fn invoke_latest_used_session() -> Option<String> {
+    let value = invoke_checked("latest_used_session", JsValue::UNDEFINED)
+        .await
+        .ok()?;
+    serde_wasm_bindgen::from_value::<Option<String>>(value)
+        .ok()
+        .flatten()
+        .filter(|id| !id.is_empty())
+}
+
 pub(crate) fn refresh_sessions(
     sessions: RwSignal<Vec<SessionInfo>>,
     pending: RwSignal<HashMap<String, usize>>,
@@ -94,6 +120,18 @@ pub(crate) fn rebuilt_running_set(
     set
 }
 
+/// Keep the stopping banner only while that session is still the active
+/// running turn. A Stop click after Done (or a missed terminal event) must
+/// not leave "Stopping…" over an idle Send button.
+pub(crate) fn next_stopping_session(
+    stopping: Option<String>,
+    active: Option<&str>,
+    running: &HashSet<String>,
+) -> Option<String> {
+    let sid = stopping?;
+    (active == Some(sid.as_str()) && running.contains(&sid)).then_some(sid)
+}
+
 #[cfg(test)]
 mod rebuilt_running_set_tests {
     use super::*;
@@ -106,6 +144,26 @@ mod rebuilt_running_set_tests {
         assert!(set.contains("a"), "server-running kept");
         assert!(!set.contains("b"), "stale local state dropped");
         assert!(set.contains("c"), "local pending send kept");
+    }
+
+    #[test]
+    fn stopping_banner_clears_when_the_session_is_idle() {
+        let running = HashSet::from(["s1".to_string()]);
+        assert_eq!(
+            next_stopping_session(Some("s1".into()), Some("s1"), &running).as_deref(),
+            Some("s1")
+        );
+        assert_eq!(
+            next_stopping_session(Some("s1".into()), Some("s1"), &HashSet::new()),
+            None,
+            "idle session must not keep Stopping over Send"
+        );
+        assert_eq!(
+            next_stopping_session(Some("s1".into()), Some("s2"), &running),
+            None,
+            "another conversation must not inherit the banner"
+        );
+        assert_eq!(next_stopping_session(None, Some("s1"), &running), None);
     }
 }
 

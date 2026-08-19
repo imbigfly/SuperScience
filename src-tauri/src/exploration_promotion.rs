@@ -13,7 +13,8 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use tauri::State;
-use superscience_store::{
+use tauri_plugin_opener::OpenerExt;
+use wisp_store::{
     ArtifactHead, ArtifactMaterialization, Exploration, ExplorationEffect, ExplorationPromotion,
     ExplorationPromotionStatus, ExplorationStatus, ExternalResource, ResearchEdge, ResearchNode,
     ResearchNodeKind, RunRecord, StateScope, Store, MAINLINE_SCOPE_KEY,
@@ -75,6 +76,7 @@ pub(crate) struct PromotionEligibility {
     pub code: Option<String>,
     pub reasons: Vec<PromotionBlocker>,
     pub expected_guard_hash: String,
+    pub manual_resolution_available: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,6 +107,37 @@ impl ExplorationPromotionService {
 
     fn workspace_backend(&self) -> PersistentExplorationWorkspace {
         PersistentExplorationWorkspace::new(self.app_data.clone())
+    }
+
+    async fn manual_resolution_roots(
+        &self,
+        exploration_id: &str,
+    ) -> Result<(PathBuf, PathBuf), String> {
+        let exploration = self
+            .store
+            .get_exploration(exploration_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| coded(ERR_NOT_PROMOTABLE, "exploration not found"))?;
+        let checkpoint = self
+            .store
+            .get_exploration_checkpoint(&exploration.checkpoint_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| coded(ERR_NOT_PROMOTABLE, "checkpoint not found"))?;
+        let (_, workspace_dir) = self
+            .store
+            .get_project(&checkpoint.project_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| coded(ERR_NOT_PROMOTABLE, "project not found"))?;
+        let project_root = dunce::canonicalize(workspace_dir)
+            .map_err(|error| format!("cannot resolve project root: {error}"))?;
+        let base = self
+            .workspace_backend()
+            .load_snapshot(&checkpoint.workspace_snapshot_id)?;
+        let exploration_root = validated_exploration_root(&exploration, &base, &self.app_data)?;
+        Ok((project_root, exploration_root))
     }
 
     async fn preview(&self, exploration_id: &str) -> Result<ExplorationPromotionPreview, String> {
@@ -260,8 +293,9 @@ impl ExplorationPromotionService {
                 message: "Only an active exploration can be promoted.".into(),
             });
         }
-        let mainline_advanced = family.mainline_frame_id != checkpoint.source_frame_id
-            || family.generation != checkpoint.source_family_generation
+        let family_advanced = family.mainline_frame_id != checkpoint.source_frame_id
+            || family.generation != checkpoint.source_family_generation;
+        let mainline_advanced = family_advanced
             || source_message_head != checkpoint.source_frame_head_seq
             || source_ui_event_head != checkpoint.source_ui_event_seq
             || state_generation != checkpoint.source_state_generation
@@ -289,6 +323,15 @@ impl ExplorationPromotionService {
                 message: "Finish or cancel exploration Runs before promotion.".into(),
             });
         }
+        let manual_resolution_available = exploration.status == ExplorationStatus::Active
+            && !family_advanced
+            && !reasons.is_empty()
+            && reasons.iter().all(|reason| {
+                matches!(
+                    reason.code.as_str(),
+                    ERR_MAINLINE_ADVANCED | ERR_EXTERNAL_REFERENCE_CHANGED
+                )
+            });
         let expected_guard_hash = hash_json(&serde_json::json!({
             "checkpoint_id": checkpoint.id,
             "checkpoint_guard": checkpoint.guard_hash,
@@ -310,6 +353,7 @@ impl ExplorationPromotionService {
                 code: reasons.first().map(|reason| reason.code.clone()),
                 reasons,
                 expected_guard_hash,
+                manual_resolution_available,
             },
         })
     }
@@ -597,7 +641,7 @@ impl ExplorationPromotionService {
         &self,
         candidates: &[Exploration],
         snapshots: &[WorkspaceSnapshot],
-        context_archives: &[superscience_store::ContextArchiveRecord],
+        context_archives: &[wisp_store::ContextArchiveRecord],
     ) {
         let backend = self.workspace_backend();
         for candidate in candidates {
@@ -698,7 +742,7 @@ impl ExplorationPromotionService {
         }
     }
 
-    async fn dispose_context_archive(&self, archive: &superscience_store::ContextArchiveRecord) {
+    async fn dispose_context_archive(&self, archive: &wisp_store::ContextArchiveRecord) {
         match self.store.get_context_archive(&archive.id).await {
             Ok(Some(_)) => return,
             Err(error) => {
@@ -810,6 +854,38 @@ pub(crate) async fn preview_exploration_promotion(
     ExplorationPromotionService::new(state.store.clone(), state.app_data.clone())
         .preview(&exploration_id)
         .await
+}
+
+/// Opens the live mainline and the selected isolated workspace so the user can
+/// manually copy or merge files without weakening the promotion guard. The
+/// roots are resolved from persisted ownership data rather than UI-provided
+/// paths so this command cannot become a general filesystem opener.
+#[tauri::command]
+pub(crate) async fn open_exploration_manual_resolution(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    exploration_id: String,
+) -> Result<(), String> {
+    let service = ExplorationPromotionService::new(state.store.clone(), state.app_data.clone());
+    let preview = service.preview(&exploration_id).await?;
+    if !preview.eligibility.manual_resolution_available {
+        return Err(coded(
+            ERR_NOT_PROMOTABLE,
+            "this exploration does not have a file-level manual resolution path",
+        ));
+    }
+    let (mainline_root, exploration_root) =
+        service.manual_resolution_roots(&exploration_id).await?;
+    app.opener()
+        .open_path(mainline_root.to_string_lossy().into_owned(), None::<String>)
+        .map_err(|error| format!("cannot open the mainline workspace: {error}"))?;
+    app.opener()
+        .open_path(
+            exploration_root.to_string_lossy().into_owned(),
+            None::<String>,
+        )
+        .map_err(|error| format!("cannot open the exploration workspace: {error}"))?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1227,7 +1303,7 @@ async fn load_round_snapshots(
 async fn load_round_context_archives(
     service: &ExplorationPromotionService,
     candidates: &[Exploration],
-) -> Vec<superscience_store::ContextArchiveRecord> {
+) -> Vec<wisp_store::ContextArchiveRecord> {
     let mut archives = Vec::new();
     for candidate in candidates {
         let Ok(Some(checkpoint)) = service
@@ -1246,7 +1322,7 @@ async fn load_round_context_archives(
         };
         if !archives
             .iter()
-            .any(|existing: &superscience_store::ContextArchiveRecord| existing.id == archive.id)
+            .any(|existing: &wisp_store::ContextArchiveRecord| existing.id == archive.id)
         {
             archives.push(archive);
         }
@@ -1255,7 +1331,7 @@ async fn load_round_context_archives(
 }
 
 fn changed_artifact_keys(
-    baseline: &[superscience_store::ExplorationBaselineArtifactHead],
+    baseline: &[wisp_store::ExplorationBaselineArtifactHead],
     current: &[ArtifactHead],
 ) -> Vec<String> {
     let before = baseline
@@ -1287,8 +1363,8 @@ fn changed_artifact_keys(
 }
 
 fn changed_entity_keys(
-    baseline: &[superscience_store::ExplorationBaselineEntity],
-    current: &[superscience_store::ExplorationBaselineEntity],
+    baseline: &[wisp_store::ExplorationBaselineEntity],
+    current: &[wisp_store::ExplorationBaselineEntity],
 ) -> Vec<String> {
     let before = baseline
         .iter()
@@ -1939,7 +2015,7 @@ fn coded(code: &str, message: &str) -> String {
 mod tests {
     use super::*;
     use crate::exploration_commands::ExplorationService;
-    use superscience_store::{
+    use wisp_store::{
         scoped_logical_artifact_id, ArtifactCaptureTiming, ArtifactMaterialization,
         ArtifactVersionDraft, ExternalResource, ResearchNode, RunRecord, RunStatus, StateScope,
     };
@@ -1965,11 +2041,11 @@ mod tests {
             .await
             .unwrap();
         store
-            .append_message("main", 1, &superscience_llm::Message::user("question"))
+            .append_message("main", 1, &wisp_llm::Message::user("question"))
             .await
             .unwrap();
         store
-            .append_message("main", 2, &superscience_llm::Message::assistant("answer"))
+            .append_message("main", 2, &wisp_llm::Message::assistant("answer"))
             .await
             .unwrap();
         let service = ExplorationService::new(store.clone(), app_data.clone());
@@ -1978,7 +2054,7 @@ mod tests {
 
     async fn baseline_artifact(store: &Store) -> (String, String) {
         let logical_key = "path:baseline.txt";
-        let artifact_id = superscience_store::logical_artifact_id("p", logical_key);
+        let artifact_id = wisp_store::logical_artifact_id("p", logical_key);
         let version_id = store
             .save_artifact_version(&ArtifactVersionDraft {
                 version_id: Some("baseline-version".into()),
@@ -2199,7 +2275,7 @@ mod tests {
             .append_message(
                 &selected.frame_id,
                 3,
-                &superscience_llm::Message::user("try selected approach"),
+                &wisp_llm::Message::user("try selected approach"),
             )
             .await
             .unwrap();
@@ -2207,7 +2283,7 @@ mod tests {
             .append_message(
                 &selected.frame_id,
                 4,
-                &superscience_llm::Message::assistant("selected result"),
+                &wisp_llm::Message::assistant("selected result"),
             )
             .await
             .unwrap();
@@ -2514,7 +2590,7 @@ mod tests {
             .append_message(
                 &result.mainline_frame_id,
                 5,
-                &superscience_llm::Message::user("continue"),
+                &wisp_llm::Message::user("continue"),
             )
             .await
             .unwrap();
@@ -2541,6 +2617,16 @@ mod tests {
         let promotion = ExplorationPromotionService::new(store.clone(), app_data.clone());
         let initial = promotion.preview(&exploration.id).await.unwrap();
         assert!(initial.eligibility.eligible);
+        assert!(!initial.eligibility.manual_resolution_available);
+        let (manual_mainline, manual_exploration) = promotion
+            .manual_resolution_roots(&exploration.id)
+            .await
+            .unwrap();
+        assert_eq!(manual_mainline, dunce::canonicalize(&project).unwrap());
+        assert_eq!(
+            manual_exploration,
+            PathBuf::from(&exploration.workspace_dir)
+        );
 
         std::fs::write(
             PathBuf::from(&exploration.workspace_dir).join("branch.txt"),
@@ -2573,6 +2659,7 @@ mod tests {
             Some(ERR_MAINLINE_ADVANCED)
         );
         assert!(!advanced.mainline_changes.files.is_empty());
+        assert!(advanced.eligibility.manual_resolution_available);
         let error = promotion
             .promote_locked(&exploration.id, &refreshed.eligibility.expected_guard_hash)
             .await
@@ -2591,11 +2678,11 @@ mod tests {
             .await
             .unwrap();
         store
-            .append_message("main", 3, &superscience_llm::Message::user("continued mainline"))
+            .append_message("main", 3, &wisp_llm::Message::user("continued mainline"))
             .await
             .unwrap();
         store
-            .append_message("main", 4, &superscience_llm::Message::assistant("done"))
+            .append_message("main", 4, &wisp_llm::Message::assistant("done"))
             .await
             .unwrap();
         let preview = ExplorationPromotionService::new(store.clone(), app_data)
@@ -2607,6 +2694,7 @@ mod tests {
             Some(ERR_MAINLINE_ADVANCED)
         );
         assert_eq!(preview.mainline_changes.source_message_head, 4);
+        assert!(preview.eligibility.manual_resolution_available);
         let _ = std::fs::remove_dir_all(base);
 
         let (creator, store, base, _project, app_data) = fixture("artifact_guard").await;
@@ -2685,6 +2773,32 @@ mod tests {
             .entity_keys
             .iter()
             .any(|key| key == "research_node:mainline-decision"));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[tokio::test]
+    async fn active_exploration_runs_do_not_offer_manual_resolution() {
+        let (creator, store, base, _project, app_data) = fixture("busy_manual_resolution").await;
+        let checkpoint = creator.create_checkpoint("p", "main").await.unwrap();
+        let exploration = creator
+            .create_exploration(&checkpoint.id, "Busy")
+            .await
+            .unwrap();
+        let mut run = RunRecord::new("busy-run", "p", "local", "Busy run", "command");
+        run.frame_id = Some(exploration.frame_id.clone());
+        run.status = RunStatus::Running;
+        store.create_run(&run).await.unwrap();
+
+        let preview = ExplorationPromotionService::new(store, app_data)
+            .preview(&exploration.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            preview.eligibility.code.as_deref(),
+            Some(ERR_EXPLORATION_BUSY)
+        );
+        assert!(!preview.eligibility.manual_resolution_available);
+
         let _ = std::fs::remove_dir_all(base);
     }
 

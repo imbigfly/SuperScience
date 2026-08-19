@@ -6,7 +6,7 @@ fold_cue: "instead_of=guessing-selectors use=web_scan first — it returns a uni
 
 # Browser Use — act inside the user's real Chrome
 
-SuperScience does **not** launch an automation browser. It talks to a small
+Wisp does **not** launch an automation browser. It talks to a small
 extension inside the user's own Chrome/Chromium, so every action runs in
 their real profile — existing cookies, logins, extensions, and normal
 fingerprint all apply. That is the whole point: you can operate pages the
@@ -17,20 +17,36 @@ design. Do not treat that as a bug to route around.
 
 ## Before anything: confirm the bridge is live
 
-Call `browser_setup`. If `status` is not `connected`, relay its `steps`
-(load the unpacked extension from `extension_path`, verbatim) and stop
-until the popup shows *Connected to SuperScience*. Never invent the path.
+Call `browser_setup`. If `status` is not `connected` (or `live_retrieval`
+is false), relay its `steps` (load the unpacked extension from
+`extension_path`, verbatim) and **stop**. Do not answer live, latest,
+current, or URL-specific questions from prior knowledge. Tell the user
+this turn contains no live web retrieval and wait until the popup shows
+*Connected to Wisp*. Only continue from memory if they explicitly ask
+for a knowledge-only answer. Never invent the path.
+
+One exception: the user says the extension is already installed. Chrome
+suspends its service worker when idle and reconnects on a one-minute
+alarm, so `disconnected` can just be a sleeping worker. Try `web_open_tab`
+or `web_scan` once — a successful call proves the bridge is live — and
+relay the install steps only if that call fails too.
 
 ## The loop
 
 1. **`web_open_tab`** `{url}` — open the page (works even with no tab
-   open yet). Returns the new tab id.
-2. **`web_scan`** — read the page. Returns `page.text`, `page.title`, and
+   open yet). Waits until the document is complete, then returns the new
+   tab id plus `ready`. If `ready` is false, the load timed out — call
+   `web_scan` before acting.
+2. **`web_scan`** — read the page (after waiting for document complete).
+   Returns `page.text`, `page.title`, `page.ready_state`, and
    `page.elements[]`, where each element carries a **unique `selector`**,
    its visible `text`/`aria_label`, and a `rect` `[x,y,w,h]`. Use these
-   selectors directly — do not guess. Use `tabs_only:true` first when you
-   are unsure which tab to target; pass `switch_tab_id:<id>` to pin one.
-3. **`web_execute_js`** — act, then re-scan to confirm the effect.
+   selectors directly — do not guess. If `ready` is false, scan again;
+   do not click a partial page. Use `tabs_only:true` first when you are
+   unsure which tab to target; pass `switch_tab_id:<id>` to pin one.
+3. **`web_execute_js`** — act, then re-scan to confirm the effect. The
+   extension waits for complete before running the script, and again if
+   the script navigates.
 
 ## Recipes (`web_execute_js` `script`)
 

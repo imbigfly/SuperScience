@@ -9,7 +9,10 @@ CREATE TABLE IF NOT EXISTS projects (
     description   TEXT,
     workspace_dir TEXT NOT NULL DEFAULT '',
     created_at    INTEGER NOT NULL,
-    updated_at    INTEGER NOT NULL
+    updated_at    INTEGER NOT NULL,
+    run_retention_days        INTEGER,
+    failed_run_retention_days INTEGER,
+    orphan_file_retention_days INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS folders (
@@ -122,6 +125,7 @@ CREATE TABLE IF NOT EXISTS artifact_versions (
     materialization     TEXT NOT NULL DEFAULT 'reference',
     capture_timing      TEXT NOT NULL DEFAULT 'unknown',
     created_at          INTEGER NOT NULL,
+    source_discarded_at INTEGER,
     UNIQUE(artifact_id, version_number)
 );
 CREATE INDEX IF NOT EXISTS ix_artifact_versions_artifact
@@ -307,6 +311,31 @@ CREATE TABLE IF NOT EXISTS session_execution_contexts (
 CREATE INDEX IF NOT EXISTS ix_session_execution_contexts_context
     ON session_execution_contexts(context_id);
 
+CREATE TABLE IF NOT EXISTS context_storage_prefs (
+    project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    context_id          TEXT NOT NULL,
+    remote_data_root    TEXT NOT NULL,
+    remote_workdir_root TEXT NOT NULL,
+    local_results_dir   TEXT NOT NULL,
+    created_at          INTEGER NOT NULL,
+    updated_at          INTEGER NOT NULL,
+    PRIMARY KEY (project_id, context_id)
+);
+
+CREATE TABLE IF NOT EXISTS remote_staging (
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    context_id  TEXT NOT NULL,
+    run_id      TEXT,
+    remote_path TEXT NOT NULL,
+    source      TEXT NOT NULL,
+    checksum    TEXT,
+    size_bytes  INTEGER,
+    created_at  INTEGER NOT NULL,
+    removed_at  INTEGER
+);
+CREATE INDEX IF NOT EXISTS ix_remote_staging_ctx ON remote_staging(context_id, removed_at);
+
 CREATE TABLE IF NOT EXISTS runs (
     id                 TEXT PRIMARY KEY,
     project_id         TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -334,7 +363,11 @@ CREATE TABLE IF NOT EXISTS runs (
     lifecycle_lease_until INTEGER,
     progress_json      TEXT NOT NULL DEFAULT '{}',
     env_snapshot_json  TEXT NOT NULL DEFAULT '{}',
-    exploration_id     TEXT
+    exploration_id     TEXT,
+    harvested_at       INTEGER,
+    cleaned_at         INTEGER,
+    cleanup_error      TEXT,
+    logs_path          TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_runs_project ON runs(project_id, created_at);
 CREATE INDEX IF NOT EXISTS ix_runs_context ON runs(context_id);

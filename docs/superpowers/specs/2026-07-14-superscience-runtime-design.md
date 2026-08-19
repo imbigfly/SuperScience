@@ -18,15 +18,18 @@ superscience needs two different execution planes:
 The existing `superscience-python` crate becomes `superscience-runtime`. Python and R are the two
 explicitly supported languages. This is not a generic language-plugin system.
 
-A runtime is project-scoped and execution-context-scoped, not conversation-scoped.
-The v1 identity is:
+A runtime was originally project-scoped and execution-context-scoped, not
+conversation-scoped, with the v1 identity:
 
 ```text
 (project_id, context_id, language)
 ```
 
-There is at most one default runtime for each identity. Code execution is
-serialized. Switching or deleting a conversation does not destroy the runtime.
+Issue #911 (parallel sessions bleeding into each other) forced a revision:
+agent-driven runtimes are now additionally keyed by the owning conversation.
+See the amendment in §6.1. There is at most one default runtime for each
+identity. Code execution is serialized. Switching a conversation does not
+destroy its runtime; deleting a conversation stops the runtimes it owns.
 
 Runtime v1 persists only for the lifetime of the desktop/CLI process and its
 transport connection. It does not survive an application restart or an SSH
@@ -139,6 +142,8 @@ The durable scientific nouns remain `Project`, `ExecutionContext`, `DataAsset`,
 ```rust
 struct RuntimeKey {
     project_id: String,
+    scope_key: String,   // mainline | exploration id
+    session_id: String,  // owning conversation frame; empty = scope-shared
     context_id: String,
     language: RuntimeLanguage,
 }
@@ -149,10 +154,29 @@ enum RuntimeLanguage {
 }
 ```
 
-The key deliberately excludes conversation/frame ID. It also excludes an
-environment/profile ID in v1: each key has one configured/default interpreter.
-Changing the interpreter or package environment requires a runtime restart. Named
-or profile-specific runtimes can be added after a demonstrated need.
+The key excludes an environment/profile ID in v1: each key has one
+configured/default interpreter. Changing the interpreter or package environment
+requires a runtime restart. Named or profile-specific runtimes can be added
+after a demonstrated need.
+
+**Amendment (2026-08, issue #911).** The original v1 key deliberately excluded
+the conversation/frame ID so one loaded dataset could be reused across
+conversations. Parallel sessions in one project proved that unsafe: concurrent
+conversations shared and clobbered each other's interpreter globals, which
+escalated to overwritten output files and a recursively deleted sibling
+working folder. The key now includes `session_id`, the owning conversation
+frame:
+
+- Agent `python`/`r` calls (including delegated subagents' child frames) run in
+  a per-conversation interpreter. Within one conversation, state still persists
+  across cells, turns, and Agent rebuilds.
+- An empty `session_id` denotes a scope-shared runtime, used by user-driven
+  UI commands when no conversation is being viewed.
+- A deleted or transferred conversation stops its runtimes; `stop_scope`,
+  `stop_project`, and shutdown behave as before and cover session runtimes.
+- Cross-conversation reuse of one in-memory object is no longer implicit.
+  Sharing large data between conversations should go through files or
+  DataAssets, not interpreter globals.
 
 ### 6.2 Runtime status
 

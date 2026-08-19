@@ -26,12 +26,15 @@ mod project_transfer;
 mod projects;
 mod provenance;
 mod publications;
+mod remote_staging;
 mod research;
 mod resources;
 mod runs;
+mod schedules;
 pub mod secrets;
 mod session_imports;
 mod sessions;
+mod storage_prefs;
 mod turn_undo;
 
 pub use acp_sessions::AcpSessionBinding;
@@ -68,11 +71,17 @@ pub use project_sync::ProjectSyncState;
 pub use project_transfer::ProjectTransferStats;
 pub use projects::{is_scratch_project_id, SCRATCH_PROJECT_PREFIX};
 pub use provenance::{canonical_json, canonical_json_sha256};
+pub use remote_staging::RemoteStagingEntry;
+pub use schedules::{next_slot_after, ScheduleRecord, ScheduleRunRecord};
 pub use sessions::{
     ModelTokenUsage, ProjectTokenUsage, SessionBranchDeltaMessage, SessionBranchLink,
     SessionBranchMerge, SessionBranchMergeCard, SessionBranchMergePreview, SessionTokenUsage,
     SessionTokenUsagePage, SessionTranscriptPage, SessionUiEventSnapshot, TokenUsageDay,
     ToolCallUsage,
+};
+pub use storage_prefs::{
+    validate_local_results_dir, validate_remote_data_root, validate_remote_workdir_root,
+    ContextStoragePrefs,
 };
 
 use anyhow::Result;
@@ -148,6 +157,16 @@ const GLOBAL_MEMORIES_MIGRATION_SQL: &str = include_str!("../migrations/0039_glo
 const SESSION_REASONING_EFFORT_MIGRATION: &str = "0040_session_reasoning_effort";
 const SESSION_BRANCH_MERGE_MIGRATION: &str = "0041_session_branch_merge";
 const EXPLORATION_PROMOTION_RECOVERY_MIGRATION: &str = "0042_exploration_promotion_recovery";
+const RUN_HARVEST_STATE_MIGRATION: &str = "0043_run_harvest_state";
+const CONTEXT_STORAGE_PREFS_MIGRATION: &str = "0044_context_storage_prefs";
+const RUN_CLEANUP_STATE_MIGRATION: &str = "0045_run_cleanup_state";
+const REMOTE_STAGING_MIGRATION: &str = "0046_remote_staging";
+const RUN_RETENTION_MIGRATION: &str = "0047_run_retention";
+const SCHEDULES_MIGRATION: &str = "0048_schedules";
+const ARTIFACT_SOURCE_DISCARDED_MIGRATION: &str = "0049_artifact_source_discarded";
+const RUN_LOG_PULL_MIGRATION: &str = "0050_run_log_pull";
+const ORPHAN_FILE_RETENTION_MIGRATION: &str = "0051_orphan_file_retention";
+const RUN_REVIEW_DISMISSED_MIGRATION: &str = "0052_run_review_dismissed";
 
 #[derive(Clone)]
 pub struct Store {
@@ -583,6 +602,234 @@ impl Store {
             Self::apply_exploration_promotion_recovery(pool).await?;
             Self::record_migration(pool, EXPLORATION_PROMOTION_RECOVERY_MIGRATION).await?;
         }
+        if !Self::migration_applied(pool, RUN_HARVEST_STATE_MIGRATION).await? {
+            Self::add_columns_if_missing(pool, "runs", &[("harvested_at", "INTEGER")]).await?;
+            Self::record_migration(pool, RUN_HARVEST_STATE_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, CONTEXT_STORAGE_PREFS_MIGRATION).await? {
+            Self::apply_context_storage_prefs(pool).await?;
+            Self::record_migration(pool, CONTEXT_STORAGE_PREFS_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, RUN_CLEANUP_STATE_MIGRATION).await? {
+            Self::add_columns_if_missing(
+                pool,
+                "runs",
+                &[("cleaned_at", "INTEGER"), ("cleanup_error", "TEXT")],
+            )
+            .await?;
+            Self::record_migration(pool, RUN_CLEANUP_STATE_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, REMOTE_STAGING_MIGRATION).await? {
+            Self::apply_remote_staging(pool).await?;
+            Self::record_migration(pool, REMOTE_STAGING_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, RUN_RETENTION_MIGRATION).await? {
+            Self::add_columns_if_missing(
+                pool,
+                "projects",
+                &[
+                    ("run_retention_days", "INTEGER"),
+                    ("failed_run_retention_days", "INTEGER"),
+                ],
+            )
+            .await?;
+            Self::record_migration(pool, RUN_RETENTION_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, SCHEDULES_MIGRATION).await? {
+            // frame_id stays a plain column on purpose: a schedule must
+            // survive its target session being deleted so it can keep firing
+            // into fresh sessions or be re-pointed by the user.
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS schedules(\
+                 id TEXT PRIMARY KEY, \
+                 project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, \
+                 frame_id TEXT, \
+                 name TEXT NOT NULL, prompt TEXT NOT NULL, skill TEXT, \
+                 interval_secs INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, \
+                 next_run_at INTEGER NOT NULL, last_run_at INTEGER, \
+                 created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
+            )
+            .execute(pool)
+            .await?;
+            sqlx::query(
+                "CREATE INDEX IF NOT EXISTS ix_schedules_due \
+                 ON schedules(enabled, next_run_at)",
+            )
+            .execute(pool)
+            .await?;
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS schedule_runs(\
+                 id TEXT PRIMARY KEY, \
+                 schedule_id TEXT NOT NULL REFERENCES schedules(id) ON DELETE CASCADE, \
+                 frame_id TEXT, status TEXT NOT NULL, error TEXT, \
+                 fired_at INTEGER NOT NULL)",
+            )
+            .execute(pool)
+            .await?;
+            sqlx::query(
+                "CREATE INDEX IF NOT EXISTS ix_schedule_runs_schedule \
+                 ON schedule_runs(schedule_id, fired_at DESC)",
+            )
+            .execute(pool)
+            .await?;
+            Self::record_migration(pool, SCHEDULES_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, ARTIFACT_SOURCE_DISCARDED_MIGRATION).await? {
+            Self::add_columns_if_missing(
+                pool,
+                "artifact_versions",
+                &[("source_discarded_at", "INTEGER")],
+            )
+            .await?;
+            Self::record_migration(pool, ARTIFACT_SOURCE_DISCARDED_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, RUN_LOG_PULL_MIGRATION).await? {
+            Self::add_columns_if_missing(pool, "runs", &[("logs_path", "TEXT")]).await?;
+            Self::record_migration(pool, RUN_LOG_PULL_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, ORPHAN_FILE_RETENTION_MIGRATION).await? {
+            Self::add_columns_if_missing(
+                pool,
+                "projects",
+                &[("orphan_file_retention_days", "INTEGER")],
+            )
+            .await?;
+            Self::record_migration(pool, ORPHAN_FILE_RETENTION_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, RUN_REVIEW_DISMISSED_MIGRATION).await? {
+            Self::add_columns_if_missing(pool, "runs", &[("review_dismissed_at", "INTEGER")])
+                .await?;
+            Self::record_migration(pool, RUN_REVIEW_DISMISSED_MIGRATION).await?;
+        }
+        // Re-apply additive DDL even when a migration marker is already
+        // recorded. Jumping many releases can leave a table/column that was
+        // later folded into 0000_init.sql (or into an already-shipped apply_*
+        // body) missing, and the next query then fails with "no such column".
+        Self::ensure_schema_compat(pool).await?;
+        Ok(())
+    }
+
+    /// Idempotent repair for schema objects that numbered migrations can miss
+    /// after a large version skip. Only CREATE IF NOT EXISTS / ADD COLUMN.
+    async fn ensure_schema_compat(pool: &SqlitePool) -> Result<()> {
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS folders (\
+             id TEXT PRIMARY KEY, \
+             project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, \
+             name TEXT NOT NULL, \
+             created_at INTEGER NOT NULL, \
+             updated_at INTEGER NOT NULL)",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS ix_folders_project ON folders(project_id)")
+            .execute(pool)
+            .await?;
+
+        Self::add_columns_if_missing(
+            pool,
+            "projects",
+            &[
+                ("workspace_dir", "TEXT NOT NULL DEFAULT ''"),
+                ("run_retention_days", "INTEGER"),
+                ("failed_run_retention_days", "INTEGER"),
+                ("orphan_file_retention_days", "INTEGER"),
+            ],
+        )
+        .await?;
+        Self::add_columns_if_missing(pool, "messages", &[("model_name", "TEXT")]).await?;
+        Self::add_columns_if_missing(
+            pool,
+            "frames",
+            &[
+                ("title", "TEXT"),
+                ("folder_id", "TEXT"),
+                ("seen_at", "INTEGER NOT NULL DEFAULT 0"),
+                ("pinned", "INTEGER NOT NULL DEFAULT 0"),
+                ("branched_from", "TEXT"),
+                ("reasoning_effort", "TEXT"),
+                ("branch_point_user_index", "INTEGER"),
+                ("branch_point_kind", "TEXT"),
+                ("exploration_id", "TEXT"),
+            ],
+        )
+        .await?;
+        Self::add_columns_if_missing(
+            pool,
+            "artifacts",
+            &[
+                ("latest_version_id", "TEXT"),
+                ("logical_key", "TEXT"),
+                ("exploration_id", "TEXT"),
+            ],
+        )
+        .await?;
+        Self::add_columns_if_missing(
+            pool,
+            "artifact_versions",
+            &[
+                ("materialization", "TEXT NOT NULL DEFAULT 'reference'"),
+                ("capture_timing", "TEXT NOT NULL DEFAULT 'unknown'"),
+                ("source_discarded_at", "INTEGER"),
+            ],
+        )
+        .await?;
+        Self::add_columns_if_missing(
+            pool,
+            "artifact_dependencies",
+            &[
+                ("basis", "TEXT NOT NULL DEFAULT 'inferred'"),
+                ("confidence", "TEXT NOT NULL DEFAULT 'uncertain'"),
+            ],
+        )
+        .await?;
+        Self::add_columns_if_missing(
+            pool,
+            "env_snapshots",
+            &[
+                ("snapshot_json", "TEXT NOT NULL DEFAULT '{}'"),
+                ("hash_algorithm", "TEXT NOT NULL DEFAULT 'legacy'"),
+            ],
+        )
+        .await?;
+        Self::add_columns_if_missing(
+            pool,
+            "runs",
+            &[
+                ("remote_handle_json", "TEXT"),
+                ("timeout_secs", "INTEGER"),
+                ("last_polled_at", "INTEGER"),
+                ("last_poll_error", "TEXT"),
+                ("lifecycle_owner", "TEXT"),
+                ("lifecycle_lease_until", "INTEGER"),
+                ("progress_json", "TEXT NOT NULL DEFAULT '{}'"),
+                ("harvested_at", "INTEGER"),
+                ("cleaned_at", "INTEGER"),
+                ("cleanup_error", "TEXT"),
+                ("logs_path", "TEXT"),
+                ("exploration_id", "TEXT"),
+                ("review_dismissed_at", "INTEGER"),
+            ],
+        )
+        .await?;
+        for table in ["research_nodes", "research_edges", "external_resources"] {
+            Self::add_columns_if_missing(pool, table, &[("exploration_id", "TEXT")]).await?;
+        }
+        Self::add_columns_if_missing(
+            pool,
+            "message_resource_links",
+            &[
+                ("created_artifact", "INTEGER NOT NULL DEFAULT 0"),
+                ("created_version", "INTEGER NOT NULL DEFAULT 0"),
+            ],
+        )
+        .await?;
+        Self::add_columns_if_missing(
+            pool,
+            "method_search_runs",
+            &[("control_state", "TEXT NOT NULL DEFAULT 'run'")],
+        )
+        .await?;
         Ok(())
     }
 
@@ -1534,6 +1781,43 @@ impl Store {
         .await?;
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS ix_research_edges_project ON research_edges(project_id, source_id, target_id)",
+        )
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn apply_remote_staging(pool: &SqlitePool) -> Result<()> {
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS remote_staging (\
+             id TEXT PRIMARY KEY, \
+             project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, \
+             context_id TEXT NOT NULL, run_id TEXT, \
+             remote_path TEXT NOT NULL, source TEXT NOT NULL, \
+             checksum TEXT, size_bytes INTEGER, \
+             created_at INTEGER NOT NULL, removed_at INTEGER)",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS ix_remote_staging_ctx \
+             ON remote_staging(context_id, removed_at)",
+        )
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn apply_context_storage_prefs(pool: &SqlitePool) -> Result<()> {
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS context_storage_prefs (\
+             project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, \
+             context_id TEXT NOT NULL, \
+             remote_data_root TEXT NOT NULL, \
+             remote_workdir_root TEXT NOT NULL, \
+             local_results_dir TEXT NOT NULL, \
+             created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, \
+             PRIMARY KEY (project_id, context_id))",
         )
         .execute(pool)
         .await?;

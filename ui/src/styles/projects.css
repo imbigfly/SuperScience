@@ -33,8 +33,9 @@ body:has(.window-titlebar) .projects-screen { top: 38px; }
   animation: motion-surface-in var(--motion-duration-medium) var(--motion-ease-decelerate) 20ms both; }
 .projects-brand { display: flex; align-items: center; gap: var(--space-3); min-width: 0; }
 .projects-brand-mark {
-  flex: 0 0 auto; width: 44px; height: 44px;
-  background: center / contain no-repeat url("logo.png");
+  flex: 0 0 auto; width: 32px; height: 32px; border-radius: var(--radius-sm);
+  background: center / contain no-repeat url("logo.svg");
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--clay) 22%, transparent);
 }
 .projects-title { font-family: var(--font-serif); font-size: var(--text-display); line-height: 1.1; color: var(--text); letter-spacing: -0.02em; }
 .projects-actions { display: flex; align-items: center; gap: var(--space-2); flex: 0 0 auto; }
@@ -46,20 +47,14 @@ body:has(.window-titlebar) .projects-screen { top: 38px; }
 .projects-icon-btn:hover { background: var(--bg-elev); border-color: var(--border); }
 .projects-icon-btn svg { width: 18px; height: 18px; opacity: .95; }
 .projects-import { display: inline-flex; align-items: center; gap: 7px; }
-.projects-user { display: inline-flex; align-items: center; gap: 7px; max-width: 180px; }
-.projects-user svg { width: 16px; height: 16px; flex: 0 0 auto; }
-.projects-user-avatar {
-  flex: 0 0 auto; width: 22px; height: 22px; border-radius: 999px;
-  display: inline-flex; align-items: center; justify-content: center;
-  background: color-mix(in srgb, var(--clay) 16%, var(--bg-sunken));
-  color: var(--clay-strong); font-size: 11px; font-weight: 700; line-height: 1;
-}
-.projects-user-name {
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600;
-}
 .new-plus { margin-right: 2px; font-size: 18px; line-height: 0; }
 .projects-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; width: min(100%, 1200px); }
 .projects-col { min-width: 0; }
+.projects-footer { margin-top: auto; padding-top: 40px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+  justify-content: center; font-size: 13px; color: var(--text-faint); }
+.projects-star-link { background: transparent; border: none; padding: 0; font-size: 13px; color: var(--clay);
+  cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.projects-star-link:hover { opacity: .8; }
 .projects-col:first-child { animation: motion-surface-in var(--motion-duration-medium) var(--motion-ease-decelerate) 70ms both; }
 .projects-col:last-child { animation: motion-surface-in var(--motion-duration-medium) var(--motion-ease-decelerate) 120ms both; }
 .projects-col h2 { font-size: 18px; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; color: var(--text); }
@@ -110,16 +105,16 @@ button.proj-card { width: 100%; padding: 16px 18px; color: var(--text); font: in
 /* Card actions share one uniform 28px box with a 16px compose_icon glyph so the
    cluster reads as a single aligned row (previously padding-sized boxes made the
    icons look uneven). */
-.proj-card .pc-del, .proj-card .pc-window, .proj-card .pc-export, .proj-card .pc-sync, .proj-card .pc-sync-code {
+.proj-card .pc-del, .proj-card .pc-window, .proj-card .pc-export, .proj-card .pc-settings, .proj-card .pc-sync, .proj-card .pc-sync-code {
   display: inline-flex; align-items: center; justify-content: center;
   width: 28px; height: 28px; padding: 0; flex: 0 0 auto;
   opacity: .58; color: var(--text-faint); background: none; border: 0; border-radius: var(--radius-xs); cursor: pointer;
 }
 .proj-card .pc-actions button svg { width: 16px; height: 16px; }
-.proj-card:hover .pc-del, .proj-card:hover .pc-window, .proj-card:hover .pc-export, .proj-card:hover .pc-sync, .proj-card:hover .pc-sync-code, .proj-card:focus-within .pc-del, .proj-card:focus-within .pc-window, .proj-card:focus-within .pc-export, .proj-card:focus-within .pc-sync, .proj-card:focus-within .pc-sync-code { opacity: 1; }
-.proj-card .pc-window:hover, .proj-card .pc-export:hover, .proj-card .pc-sync:hover, .proj-card .pc-sync-code:hover, .proj-card .pc-del:hover { color: var(--clay); background: var(--surface-hover); }
+.proj-card:hover .pc-del, .proj-card:hover .pc-window, .proj-card:hover .pc-export, .proj-card:hover .pc-settings, .proj-card:hover .pc-sync, .proj-card:hover .pc-sync-code, .proj-card:focus-within .pc-del, .proj-card:focus-within .pc-window, .proj-card:focus-within .pc-export, .proj-card:focus-within .pc-settings, .proj-card:focus-within .pc-sync, .proj-card:focus-within .pc-sync-code { opacity: 1; }
+.proj-card .pc-window:hover, .proj-card .pc-export:hover, .proj-card .pc-settings:hover, .proj-card .pc-sync:hover, .proj-card .pc-sync-code:hover, .proj-card .pc-del:hover { color: var(--clay); background: var(--surface-hover); }
 .proj-card .pc-sync:disabled { cursor: wait; opacity: .45; }
-.proj-card .pc-del:disabled, .proj-card .pc-window:disabled, .proj-card .pc-export:disabled { cursor: not-allowed; opacity: .35; }
+.proj-card .pc-del:disabled, .proj-card .pc-window:disabled, .proj-card .pc-export:disabled, .proj-card .pc-settings:disabled { cursor: not-allowed; opacity: .35; }
 .projects-sync-notice { position: fixed; right: 24px; bottom: 24px; z-index: 80; max-width: min(440px, calc(100vw - 48px)); padding: 10px 14px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg-elev); color: var(--text); box-shadow: var(--shadow); font-size: 13px; }
 .projects-sync-notice.ok { border-color: color-mix(in srgb, var(--ok) 45%, var(--border)); }
 .project-sync-join-overlay { background: hsl(215 25% 14% / 0.34); backdrop-filter: blur(5px); }

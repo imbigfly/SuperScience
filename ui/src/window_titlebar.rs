@@ -1,6 +1,6 @@
 //! Windows integrated title bar: brand, File/Edit/View/Help menus, window controls.
 
-use crate::bindings::window_control;
+use crate::bindings::{arm_caption_drag, open_external_url, window_control};
 use crate::i18n::{t, Locale};
 use leptos::{ev, window_event_listener, *};
 use wasm_bindgen::JsCast;
@@ -46,16 +46,42 @@ const VIEW_ITEMS: &[MenuItem] = &[
     ("theme-system", "command.theme_system", ""),
 ];
 
+// Projects landing (home) variants: only actions that work without an open
+// project. Anything session-scoped would sit there looking clickable but
+// doing nothing, which reads as a bug.
+const HOME_FILE_ITEMS: &[MenuItem] = &[
+    ("new-project", "projects.new", "Ctrl+N"),
+    ("import-project", "projects.import", ""),
+    ("scratch", "command.scratch", "Ctrl+Shift+N"),
+    ("settings", "command.settings", "Ctrl+,"),
+    ("", "", ""), // separator
+    ("quit", "menu.quit", ""),
+];
+
+const HOME_EDIT_ITEMS: &[MenuItem] = &[
+    ("search", "command.search", "Ctrl+K"),
+    ("commands", "menu.commands", "Ctrl+P"),
+];
+
+const HOME_VIEW_ITEMS: &[MenuItem] = &[
+    ("theme-light", "command.theme_light", ""),
+    ("theme-dark", "command.theme_dark", ""),
+    ("theme-system", "command.theme_system", ""),
+];
+
 const HELP_ITEMS: &[MenuItem] = &[
     ("check-updates", "settings.check_updates", ""),
     ("", "", ""),
-    ("issues", "issue_report.sidebar", ""),
+    ("docs", "menu.docs", ""),
+    ("star-us", "menu.star_us", ""),
+    ("issues", "menu.issues", ""),
 ];
 
 #[component]
 pub(super) fn WindowTitlebar(
     locale: RwSignal<Locale>,
     has_current_project: Signal<bool>,
+    home: Signal<bool>,
     on_action: Callback<&'static str>,
 ) -> impl IntoView {
     let open = create_rw_signal(None::<&'static str>);
@@ -66,16 +92,24 @@ pub(super) fn WindowTitlebar(
             open.set(None);
             match action {
                 "quit" => spawn_local(async { window_control("close").await }),
+                "docs" => {
+                    open_external_url("https://github.com/xuzhougeng/wisp-science#readme".into())
+                }
+                "star-us" => open_external_url("https://github.com/xuzhougeng/wisp-science".into()),
+                "issues" => {
+                    open_external_url("https://github.com/xuzhougeng/wisp-science/issues".into())
+                }
                 other => on_action.call(other),
             }
         })
     };
 
-    let menus: &[(&'static str, &'static str, &[MenuItem])] = &[
-        ("file", "menu.file", FILE_ITEMS),
-        ("edit", "menu.edit", EDIT_ITEMS),
-        ("view", "menu.view", VIEW_ITEMS),
-        ("help", "menu.help", HELP_ITEMS),
+    // (id, label key, session-page items, home-page items)
+    let menus: &[(&'static str, &'static str, &[MenuItem], &[MenuItem])] = &[
+        ("file", "menu.file", FILE_ITEMS, HOME_FILE_ITEMS),
+        ("edit", "menu.edit", EDIT_ITEMS, HOME_EDIT_ITEMS),
+        ("view", "menu.view", VIEW_ITEMS, HOME_VIEW_ITEMS),
+        ("help", "menu.help", HELP_ITEMS, HELP_ITEMS),
     ];
 
     window_event_listener(ev::keydown, move |ev| {
@@ -92,17 +126,19 @@ pub(super) fn WindowTitlebar(
     });
 
     view! {
-        <header class="window-titlebar" data-tauri-drag-region>
-            <div class="window-brand" data-tauri-drag-region>
+        <header class="window-titlebar">
+            <div class="window-brand" data-testid="window-snap-drag"
+                on:mousedown=begin_window_move>
                 <span class="window-brand-icon"></span>
-                <span>"天成科研助手"</span>
+                <span>"wisp science"</span>
                 <span class="window-brand-version">{concat!("v", env!("CARGO_PKG_VERSION"))}</span>
             </div>
             <nav class="window-menu" aria-label="Application menu">
-                {menus.iter().map(|(id, label_key, items)| {
+                {menus.iter().map(|(id, label_key, items, home_items)| {
                     let id = *id;
                     let label_key = *label_key;
                     let items = *items;
+                    let home_items = *home_items;
                     let run = run.clone();
                     view! {
                         <div class="window-menu-group">
@@ -118,6 +154,7 @@ pub(super) fn WindowTitlebar(
                             </button>
                             {move || (open.get() == Some(id)).then(|| {
                                 let run = run.clone();
+                                let items = if home.get() { home_items } else { items };
                                 view! {
                                     <div class="window-menu-drop" role="menu" on:click=|ev| ev.stop_propagation()>
                                         {items.iter().map(|(action, key, shortcut)| {
@@ -150,15 +187,95 @@ pub(super) fn WindowTitlebar(
             {move || open.get().is_some().then(|| view! {
                 <div class="window-menu-backdrop" on:click=move |_| open.set(None)></div>
             })}
-            <div class="window-drag" data-tauri-drag-region></div>
+            <div class="window-drag" data-testid="window-snap-drag"
+                on:mousedown=begin_window_move></div>
             <div class="window-controls">
                 <button type="button" aria-label="Minimize"
                     on:click=move |_| spawn_local(async { window_control("minimize").await })>"−"</button>
-                <button type="button" aria-label="Maximize"
+                <button type="button" id="titlebar-maximize" data-testid="window-maximize"
+                    aria-label="Maximize"
                     on:click=move |_| spawn_local(async { window_control("toggle-maximize").await })>"□"</button>
                 <button type="button" class="window-close" aria-label="Close"
                     on:click=move |_| spawn_local(async { window_control("close").await })>"×"</button>
             </div>
         </header>
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaptionPointerDown {
+    Ignore,
+    ToggleMaximize,
+    ArmDrag,
+}
+
+fn caption_pointer_down(button: i16, detail: i32) -> CaptionPointerDown {
+    if button != 0 {
+        return CaptionPointerDown::Ignore;
+    }
+    if detail >= 2 {
+        CaptionPointerDown::ToggleMaximize
+    } else {
+        CaptionPointerDown::ArmDrag
+    }
+}
+
+fn begin_window_move(ev: web_sys::MouseEvent) {
+    match caption_pointer_down(ev.button(), ev.detail()) {
+        CaptionPointerDown::Ignore => {}
+        CaptionPointerDown::ToggleMaximize => {
+            ev.prevent_default();
+            spawn_local(async { window_control("toggle-maximize").await });
+        }
+        CaptionPointerDown::ArmDrag => {
+            ev.prevent_default();
+            let start_x = f64::from(ev.client_x());
+            let start_y = f64::from(ev.client_y());
+            spawn_local(async move { arm_caption_drag(start_x, start_y).await });
+        }
+    }
+}
+
+#[cfg(test)]
+mod caption_gesture_tests {
+    use super::*;
+
+    /// Typical Windows `SM_CXDRAG` / `SM_CYDRAG`. Keep in sync with `api.js`.
+    const CAPTION_DRAG_THRESHOLD_PX: f64 = 4.0;
+
+    fn caption_drag_ready(dx: f64, dy: f64) -> bool {
+        dx.abs() >= CAPTION_DRAG_THRESHOLD_PX || dy.abs() >= CAPTION_DRAG_THRESHOLD_PX
+    }
+
+    #[test]
+    fn left_click_arms_drag_instead_of_starting_a_move() {
+        assert_eq!(caption_pointer_down(0, 1), CaptionPointerDown::ArmDrag);
+    }
+
+    #[test]
+    fn double_click_toggles_maximize() {
+        assert_eq!(
+            caption_pointer_down(0, 2),
+            CaptionPointerDown::ToggleMaximize
+        );
+        assert_eq!(
+            caption_pointer_down(0, 3),
+            CaptionPointerDown::ToggleMaximize
+        );
+    }
+
+    #[test]
+    fn other_buttons_are_ignored() {
+        assert_eq!(caption_pointer_down(1, 1), CaptionPointerDown::Ignore);
+        assert_eq!(caption_pointer_down(2, 2), CaptionPointerDown::Ignore);
+    }
+
+    #[test]
+    fn drag_starts_only_after_the_windows_threshold() {
+        assert!(!caption_drag_ready(3.0, 0.0));
+        assert!(!caption_drag_ready(0.0, -3.0));
+        assert!(caption_drag_ready(4.0, 0.0));
+        assert!(caption_drag_ready(0.0, -4.0));
+        assert!(caption_drag_ready(3.0, 4.0));
     }
 }

@@ -910,6 +910,22 @@ mod tests {
                 "'/opt/R 4.5/bin/Rscript' --vanilla -e 'cat(requireNamespace(\"jsonlite\", quietly=TRUE))' 2>/dev/null".into(),
                 "TRUE".into(),
             ),
+            // Capabilities this host genuinely lacks: explicit empty output.
+            ("getconf _NPROCESSORS_ONLN".into(), String::new()),
+            ("nvidia-smi -L".into(), String::new()),
+            (
+                "command -v sbatch || command -v qsub || command -v bsub".into(),
+                String::new(),
+            ),
+            ("command -v conda".into(), String::new()),
+            ("command -v mamba".into(), String::new()),
+            ("command -v modulecmd".into(), String::new()),
+            ("printf '%s' \"$HOME\"".into(), String::new()),
+            ("pwd".into(), String::new()),
+            (
+                "if [ \"$(id -u)\" = 0 ]; then printf root; elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then printf sudo; else printf unprivileged; fi".into(),
+                String::new(),
+            ),
         ]);
 
         let probe = probe_context_with_runner(&ctx, &mut runner).unwrap();
@@ -923,6 +939,26 @@ mod tests {
             Some("/opt/R 4.5/bin/Rscript")
         );
         assert_eq!(probe.r_jsonlite, Some(true));
+    }
+
+    #[test]
+    fn empty_probe_output_marks_capabilities_absent_instead_of_failing() {
+        let ctx = wisp_store::ExecutionContext::new("wsl:Ubuntu", "Empty").unwrap();
+        let (specs, _) = probe_specs(&ctx).unwrap();
+        let mut runner = FakeRunner::new(
+            specs
+                .iter()
+                .map(|spec| (spec.script.clone(), String::new()))
+                .collect(),
+        );
+
+        let probe = probe_context_with_runner(&ctx, &mut runner).unwrap();
+        assert_eq!(probe.os, None);
+        assert_eq!(probe.cpu_count, None);
+        assert_eq!(probe.gpu_summary, None);
+        assert_eq!(probe.scheduler, None);
+        assert_eq!(probe.python_executable, None);
+        assert_eq!(probe.rscript_executable, None);
     }
 
     #[test]
@@ -1128,14 +1164,17 @@ mod tests {
 
     impl ProbeRunner for FakeRunner {
         fn run(&mut self, command: &ProbeCommand) -> Result<ProbeCommandOutput, String> {
+            // A forgotten probe must fail loudly instead of silently reading
+            // as "capability absent" (empty stdout).
+            let stdout = self.outputs.get(&command.script).unwrap_or_else(|| {
+                panic!(
+                    "FakeRunner received an unscripted probe command: {}",
+                    command.script
+                )
+            });
             Ok(ProbeCommandOutput {
                 status: 0,
-                stdout: self
-                    .outputs
-                    .get(&command.script)
-                    .cloned()
-                    .unwrap_or_default()
-                    .into_bytes(),
+                stdout: stdout.clone().into_bytes(),
                 stderr: String::new(),
             })
         }

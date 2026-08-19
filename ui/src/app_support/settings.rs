@@ -11,6 +11,7 @@ pub(crate) fn normalize_settings_mut(cfg: &mut Settings) {
     };
     cfg.sync_relay_url = cfg.sync_relay_url.trim().into();
     cfg.sync_folder = cfg.sync_folder.trim().into();
+    cfg.auto_continue_limit = cfg.auto_continue_limit.max(1);
 }
 
 pub(crate) fn normalized_settings(mut cfg: Settings) -> Settings {
@@ -47,8 +48,113 @@ mod project_sync_backend_tests {
         settings.sync_backend = "folder".into();
         assert!(!project_sync_backend_configured(&settings));
 
-        settings.sync_folder = "C:\\SuperScience Sync".into();
+        settings.sync_folder = "C:\\Wisp Sync".into();
         assert!(project_sync_backend_configured(&settings));
+    }
+}
+
+#[cfg(test)]
+mod provider_form_tests {
+    use super::{
+        apply_base_url_suggestions, endpoint_has_stored_key, new_model_form,
+        provider_entries_are_pristine, suggested_base_url_models, ModelProfile,
+        DEEPSEEK_FLASH_MODEL, DEEPSEEK_PRO_MODEL,
+    };
+
+    fn profile(url: &str, has_key: bool) -> ModelProfile {
+        ModelProfile {
+            id: "m1".into(),
+            label: "m".into(),
+            provider: "openai".into(),
+            api_url: url.into(),
+            endpoint_suffix: String::new(),
+            model: "x".into(),
+            has_api_key: has_key,
+            active: false,
+            max_tokens: 0,
+            context_window: 128_000,
+            reasoning_effort: String::new(),
+            supports_vision: false,
+            use_for_vision: false,
+            use_for_image_generation: false,
+            image_size: String::new(),
+            image_quality: String::new(),
+            image_aspect_ratio: String::new(),
+            image_resolution: String::new(),
+            use_for_video_generation: false,
+            video_duration_secs: None,
+            video_aspect_ratio: None,
+            video_resolution: None,
+        }
+    }
+
+    #[test]
+    fn deepseek_add_form_starts_with_flash_and_pro() {
+        let form = new_model_form();
+        let models: Vec<_> = form
+            .entries
+            .iter()
+            .map(|entry| entry.model.as_str())
+            .collect();
+        assert_eq!(models, [DEEPSEEK_FLASH_MODEL, DEEPSEEK_PRO_MODEL]);
+    }
+
+    #[test]
+    fn xai_base_url_suggests_chat_and_imagine_image() {
+        let models: Vec<_> = suggested_base_url_models("https://api.x.ai/v1")
+            .into_iter()
+            .map(|entry| (entry.provider, entry.model, entry.use_for_image_generation))
+            .collect();
+        assert_eq!(
+            models,
+            vec![
+                ("openai".into(), "grok-4.6".into(), false),
+                ("openai".into(), "grok-imagine-image-2.0".into(), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn openai_base_url_suggests_responses_chat_and_image_models() {
+        let models: Vec<_> = suggested_base_url_models("https://api.openai.com/v1")
+            .into_iter()
+            .map(|entry| (entry.provider, entry.model, entry.use_for_image_generation))
+            .collect();
+        assert_eq!(
+            models,
+            vec![
+                ("openai_responses".into(), "gpt-5.5".into(), false),
+                ("openai_responses".into(), "gpt-image-2".into(), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn changing_url_refreshes_only_pristine_suggestions() {
+        let mut form = new_model_form();
+        assert!(provider_entries_are_pristine(&form));
+        apply_base_url_suggestions(&mut form, "https://api.kimi.com/coding/v1");
+        assert_eq!(form.entries[0].model, "kimi-coding");
+        form.entries[0].model = "k3-256k".into();
+        let before = form.entries.clone();
+        // User edited a row — a later URL tweak must not wipe it.
+        let mut edited = form.clone();
+        edited.api_url = "https://api.kimi.com/coding/v1/".into();
+        assert!(!provider_entries_are_pristine(&edited));
+        assert_eq!(edited.entries[0].model, before[0].model);
+    }
+
+    #[test]
+    fn stored_key_matches_the_same_endpoint_only() {
+        let models = vec![profile("https://api.deepseek.com", true)];
+        assert!(endpoint_has_stored_key(
+            &models,
+            "https://api.deepseek.com/v1"
+        ));
+        assert!(!endpoint_has_stored_key(
+            &models,
+            "https://api.openai.com/v1"
+        ));
     }
 }
 
@@ -647,9 +753,9 @@ pub(crate) fn profile_to_form(m: &ModelProfile) -> ModelForm {
     ModelForm {
         id: Some(m.id.clone()),
         label: m.label.clone(),
-        provider_id: m.provider_id.clone(),
         provider: m.provider.clone(),
         api_url: m.api_url.clone(),
+        endpoint_suffix: m.endpoint_suffix.clone(),
         model: m.model.clone(),
         max_tokens: if m.max_tokens >= 16 {
             m.max_tokens
@@ -665,43 +771,151 @@ pub(crate) fn profile_to_form(m: &ModelProfile) -> ModelForm {
         supports_vision: m.supports_vision,
         use_for_vision: m.use_for_vision,
         use_for_image_generation: m.use_for_image_generation,
+        image_size: m.image_size.clone(),
+        image_quality: m.image_quality.clone(),
+        image_aspect_ratio: m.image_aspect_ratio.clone(),
+        image_resolution: m.image_resolution.clone(),
+        use_for_video_generation: m.use_for_video_generation,
+        video_duration_secs: m.video_duration_secs,
+        video_aspect_ratio: m.video_aspect_ratio.clone(),
+        video_resolution: m.video_resolution.clone(),
+        entries: Vec::new(),
     }
+}
+
+fn next_model_row_id() -> u64 {
+    use std::cell::Cell;
+    thread_local! {
+        static NEXT: Cell<u64> = const { Cell::new(1) };
+    }
+    NEXT.with(|next| {
+        let id = next.get();
+        next.set(id + 1);
+        id
+    })
+}
+
+pub(crate) fn model_form_entry(
+    provider: &str,
+    model: &str,
+    endpoint_suffix: &str,
+    image: bool,
+) -> ModelFormEntry {
+    let image = image || crate::dto::is_image_generation_model(model);
+    let video = !image && crate::dto::is_video_generation_model(model);
+    ModelFormEntry {
+        row_id: next_model_row_id(),
+        provider: provider_value(provider).into(),
+        endpoint_suffix: endpoint_suffix.into(),
+        label: String::new(),
+        model: model.into(),
+        supports_vision: false,
+        use_for_vision: false,
+        use_for_image_generation: image,
+        use_for_video_generation: video,
+    }
+}
+
+pub(crate) fn suggested_base_url_models(api_url: &str) -> Vec<ModelFormEntry> {
+    let host = normalize_endpoint(api_url).to_ascii_lowercase();
+    match host.as_str() {
+        host if host.contains("api.anthropic.com") => vec![model_form_entry(
+            "anthropic",
+            "claude-sonnet-5",
+            "",
+            false,
+        )],
+        host if host.contains("api.openai.com") => vec![
+            model_form_entry("openai_responses", "gpt-5.5", "", false),
+            model_form_entry("openai_responses", "gpt-image-2", "", true),
+        ],
+        host if host.contains("api.x.ai") => vec![
+            model_form_entry("openai", "grok-4.6", "", false),
+            model_form_entry("openai", "grok-imagine-image-2.0", "", true),
+        ],
+        host if host.contains("deepseek.com") || host.is_empty() => vec![
+            model_form_entry("openai", DEEPSEEK_FLASH_MODEL, "", false),
+            model_form_entry("openai", DEEPSEEK_PRO_MODEL, "", false),
+        ],
+        host if host.contains("api.kimi.com") && host.contains("/coding") => {
+            vec![model_form_entry("openai", "kimi-coding", "", false)]
+        }
+        host if host.contains("moonshot") || host.contains("api.kimi.com") => {
+            vec![model_form_entry("openai", "kimi-k3", "", false)]
+        }
+        host if host.contains("bigmodel.cn") && host.contains("coding") => {
+            vec![model_form_entry("openai", "glm-5.2", "", false)]
+        }
+        host if host.contains("bigmodel.cn") => {
+            vec![model_form_entry("openai", "glm-5", "", false)]
+        }
+        _ => vec![model_form_entry("openai", "", "", false)],
+    }
+}
+
+pub(crate) fn provider_entries_are_pristine(form: &ModelForm) -> bool {
+    let suggested = suggested_base_url_models(&form.api_url);
+    let current: Vec<_> = form
+        .entries
+        .iter()
+        .map(|entry| {
+            (
+                provider_value(&entry.provider),
+                entry.endpoint_suffix.trim(),
+                entry.label.trim(),
+                entry.model.trim(),
+                entry.supports_vision,
+                entry.use_for_vision,
+                entry.use_for_image_generation,
+            )
+        })
+        .collect();
+    let expected: Vec<_> = suggested
+        .iter()
+        .map(|entry| {
+            (
+                provider_value(&entry.provider),
+                entry.endpoint_suffix.trim(),
+                entry.label.trim(),
+                entry.model.trim(),
+                entry.supports_vision,
+                entry.use_for_vision,
+                entry.use_for_image_generation,
+            )
+        })
+        .collect();
+    current == expected
+}
+
+pub(crate) fn apply_base_url_suggestions(form: &mut ModelForm, api_url: &str) {
+    form.api_url = api_url.into();
+    form.entries = suggested_base_url_models(&form.api_url);
+}
+
+pub(crate) fn endpoint_has_stored_key(models: &[ModelProfile], api_url: &str) -> bool {
+    models
+        .iter()
+        .any(|profile| profile.has_api_key && same_endpoint(&profile.api_url, api_url))
+}
+
+pub(crate) fn sibling_profile_id<'a>(
+    models: &'a [ModelProfile],
+    api_url: &str,
+) -> Option<&'a str> {
+    models
+        .iter()
+        .find(|profile| profile.has_api_key && same_endpoint(&profile.api_url, api_url))
+        .map(|profile| profile.id.as_str())
 }
 
 pub(crate) fn new_model_form() -> ModelForm {
+    let (api_url, _) = provider_defaults("openai");
     ModelForm {
+        provider: "openai".into(),
+        api_url: api_url.into(),
         max_tokens: 8192,
         context_window: 128_000,
-        provider: "openai".into(),
-        ..Default::default()
-    }
-}
-
-pub(crate) fn new_model_form_for_provider(provider: &ModelProvider) -> ModelForm {
-    let mut form = new_model_form();
-    form.provider_id = provider.id.clone();
-    form.provider = provider.protocol.clone();
-    form.api_url = provider.api_url.clone();
-    form
-}
-
-pub(crate) fn provider_to_form(p: &ModelProvider) -> ProviderForm {
-    ProviderForm {
-        id: Some(p.id.clone()),
-        label: p.label.clone(),
-        protocol: if p.protocol.trim().is_empty() {
-            "openai".into()
-        } else {
-            p.protocol.clone()
-        },
-        api_url: p.api_url.clone(),
-        builtin: p.builtin,
-    }
-}
-
-pub(crate) fn new_provider_form() -> ProviderForm {
-    ProviderForm {
-        protocol: "openai".into(),
+        entries: suggested_base_url_models(api_url),
         ..Default::default()
     }
 }
@@ -718,7 +932,7 @@ pub(crate) fn new_acp_form() -> AcpAgentProfile {
 pub(crate) fn model_form_to_settings(form: &ModelForm, has_api_key: bool) -> Settings {
     let mut cfg = Settings::default();
     cfg.provider = provider_value(&form.provider).into();
-    cfg.api_url = form.api_url.trim().into();
+    cfg.api_url = join_api_url(&form.api_url, &form.endpoint_suffix);
     cfg.model = form.model.trim().into();
     cfg.label = form.label.trim().into();
     cfg.has_api_key = has_api_key;

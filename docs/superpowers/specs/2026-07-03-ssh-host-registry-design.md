@@ -1,14 +1,14 @@
 # SSH host registry + agent awareness
 
-Resolves [#30](https://github.com/imbigfly/SuperScience/issues/30) (scope A).
+Resolves [#30](https://github.com/xuzhougeng/wisp-science/issues/30) (scope A).
 
 ## Problem
 
 The agent has no idea which remote machines the user can reach, so it can't
 choose to run heavy jobs on them and it looks for remote files on the local
-box ("file not found"). SuperScience ships `remote-compute-ssh` / `remote-compute-modal`
+box ("file not found"). wisp ships `remote-compute-ssh`
 / `compute-env-setup` skills, but those call a `host.compute` control-plane that
-SuperScience does **not** have. What SuperScience *does* have is a `shell` tool that can already
+wisp does **not** have. What wisp *does* have is a `shell` tool that can already
 run `ssh <alias> "<cmd>"`. The gap is a **registry of hosts** plus **telling the
 agent they exist**.
 
@@ -89,9 +89,9 @@ acceptable for MVP; runtime injection via `ctx.inject_user` is the upgrade path)
 
 ## Risks / cleanup flagged (not done here)
 
-- `remote-compute-ssh` / `remote-compute-modal` / `compute-env-setup` skills
+- `remote-compute-ssh` / `compute-env-setup` skills
   reference the absent `host.compute` control-plane; the agent could `use_skill`
   one and fail. Mitigation: the injected guidance routes it to `ssh <alias>` via
-  shell. Removing/rewriting those 3 skills is a separate follow-up.
+  shell. Removing/rewriting those skills is a separate follow-up.
 - No connectivity check on add — an unreachable alias is stored silently. A
   "Test connection" button is a possible later addition.

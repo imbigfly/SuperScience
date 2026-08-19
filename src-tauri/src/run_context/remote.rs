@@ -438,6 +438,23 @@ pub(super) async fn stage_remote_inputs(
         }
     };
     let result = checked_output("SSH input staging", output).map(|_| ());
+    if result.is_ok() {
+        // Ledger the staged inputs so orphaned files remain findable if the
+        // run record or workdir outlives this app's knowledge of them.
+        for (name, size) in &inputs {
+            let mut entry = wisp_store::RemoteStagingEntry::new(
+                remote.project_id.clone(),
+                format!("ssh:{}", connection.alias),
+                Some(remote.run_id.clone()),
+                format!("~/{workdir}/inputs/{name}"),
+                "run_input",
+            );
+            entry.size_bytes = i64::try_from(*size).ok();
+            if let Err(error) = store.record_remote_staging(&entry).await {
+                tracing::warn!(run_id = %remote.run_id, "remote staging ledger write failed: {error}");
+            }
+        }
+    }
     let final_progress = super::transfer_progress(
         "upload",
         if result.is_ok() { "uploaded" } else { "failed" },
@@ -996,6 +1013,11 @@ pub(super) fn remote_poll_interval(consecutive_transport_errors: u32) -> Duratio
     }
 }
 
+/// Errors that mean we will never reattach a confirmed remote process:
+/// identity, host trust, or a missing supervisor prerequisite. Transient
+/// transport failures (`connection reset`, timed out, no route, …) are
+/// *not* listed — a confirmed `nohup` job keeps running and the poller
+/// must back off instead of marking the Run `lost`.
 pub(super) fn permanent_remote_start_error(error: &str) -> bool {
     let error = error.to_ascii_lowercase();
     [
@@ -1015,12 +1037,6 @@ pub(super) fn permanent_remote_start_error(error: &str) -> bool {
         "no such identity",
         "identity file is not accessible",
         "bad configuration option",
-        "connection reset",
-        "connection closed",
-        "connection timed out",
-        "connect timed out",
-        "no route to host",
-        "network is unreachable",
         "kex_exchange_identification",
         "ssh authentication gate blocked",
         "ssh connectivity gate blocked",

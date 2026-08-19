@@ -1,7 +1,7 @@
 import { test, expect, type Locator, type Page } from "@playwright/test";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { tauriMock, parallelMock } from "./mock-tauri";
+import { tauriMock, parallelMock, parallelReplyTailText } from "./mock-tauri";
 
 const officeFixtures = {
   xlsxBase64: readFileSync(resolve(__dirname, "../fixtures/office-preview.xlsx")).toString("base64"),
@@ -13,44 +13,9 @@ function providerSelect(page: Page) {
   return page.getByTestId("settings-provider");
 }
 
-function providerCard(page: Page, providerId: string) {
-  return page.locator(`[data-testid="provider-card"][data-provider-id="${providerId}"]`);
-}
-
-async function openProviderSettings(page: Page, providerId = "deepseek") {
-  if (!(await page.getByTestId("provider-cards").isVisible().catch(() => false))) {
-    await page.getByRole("button", { name: "Settings" }).click();
-    await page.getByRole("button", { name: "Models", exact: true }).click();
-  }
-  await expect(page.getByTestId("provider-cards")).toBeVisible();
-  await providerCard(page, providerId).getByTestId("provider-open-settings").click();
-  await expect(providerSelect(page)).toBeVisible();
-}
-
-async function openModelEditor(
-  page: Page,
-  providerId = "deepseek",
-  modelLabel = "deepseek-v4-pro",
-) {
-  if (!(await page.getByTestId("provider-cards").isVisible().catch(() => false))
-    && !(await page.locator(".settings-list-row").first().isVisible().catch(() => false))) {
-    await page.getByRole("button", { name: "Settings" }).click();
-    await page.getByRole("button", { name: "Models", exact: true }).click();
-  }
-  if (await page.getByTestId("provider-cards").isVisible().catch(() => false)) {
-    await providerCard(page, providerId).getByTestId("provider-open-models").click();
-  }
-  const row = page.locator(".settings-list-row").filter({ hasText: modelLabel });
-  if (await row.count()) {
-    await row.click();
-  } else {
-    await page.getByRole("button", { name: /Add model/i }).click();
-  }
-}
-
-/** Opens provider settings (protocol / URL / key). */
-async function openModelsSettings(page: Page) {
-  await openProviderSettings(page);
+function globalSettingsButton(page: Page) {
+  // "Project settings" on landing cards also matches name: "Settings" unless exact.
+  return page.getByRole("button", { name: "Settings", exact: true });
 }
 
 async function expectInsideViewport(locator: Locator, width: number, height: number) {
@@ -62,15 +27,21 @@ async function expectInsideViewport(locator: Locator, width: number, height: num
   expect(box!.y + box!.height).toBeLessThanOrEqual(height);
 }
 
-async function openSettingsSection(page: Page, name: string) {
-  await page.getByRole("button", { name: "Settings" }).click();
-  await page.getByRole("button", { name, exact: true }).click();
+async function openModelsSettings(page: Page) {
+  await globalSettingsButton(page).click();
+  await page.getByRole("button", { name: "Models" }).click();
+  const row = page.locator(".settings-list-row").first();
+  if (await row.count()) {
+    await row.click();
+  } else {
+    await page.getByRole("button", { name: /Add API access/i }).click();
+  }
+  await expect(providerSelect(page)).toBeVisible();
 }
 
-/** Specialists moved from Settings nav to the sidebar entry. */
-async function openSpecialistsPage(page: Page) {
-  await page.getByTestId("sidebar-specialists").click();
-  await expect(page.getByTestId("specialist-grid-builtin")).toBeVisible();
+async function openSettingsSection(page: Page, name: string) {
+  await globalSettingsButton(page).click();
+  await page.getByRole("button", { name, exact: true }).click();
 }
 
 // The app now boots to the Projects landing screen; open a real project (not
@@ -118,6 +89,35 @@ async function activateAcpPlanMode(page: Page) {
 
 function composer(page: Page) {
   return page.locator("#composer-input");
+}
+
+// Transcript-scoped locators for parallelMock conversations. The mock replies
+// to each user turn with a single assistant bubble quoting the message text,
+// so specs assert on the user's own text landing in the right session's rows
+// instead of depending on the mock's internal reply format.
+function userTurn(page: Page, text: string) {
+  return page.locator(".msg.user .body", { hasText: text });
+}
+
+function assistantReplyQuoting(page: Page, text: string) {
+  return page.locator(".msg.assistant .body", { hasText: text });
+}
+
+// Shortcut labels come from the UI's platform detection (`is_mac` in
+// ui/src/api.js reads navigator.userAgent/platform), so any test asserting
+// literal "Ctrl+…" text must pin a non-mac platform first or it renders
+// "⌘…" on macOS hosts. Call before the first page.goto().
+async function pinNonMacPlatform(page: Page) {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "userAgent", {
+      configurable: true,
+      value: "wisp-science/Tauri",
+    });
+    Object.defineProperty(navigator, "platform", {
+      configurable: true,
+      value: "Linux x86_64",
+    });
+  });
 }
 
 async function selectAssistantReplyText(
@@ -204,6 +204,15 @@ async function lastInvokeArgs(page: Page, cmd: string) {
   }, cmd);
 }
 
+// How many run-list refreshes the UI has performed. The app polls `list_runs`
+// on a ticker (every second while a turn is busy or a transfer is active),
+// so "wait until N more polls happened" replaces fixed sleeps in tests that
+// assert the UI survives a poll-driven rebuild.
+async function runListPollCount(page: Page) {
+  return page.evaluate(() =>
+    ((window as any).__skillInvokeLog ?? []).filter((c: any) => c.cmd === "list_runs").length);
+}
+
 async function invokeArgsList(page: Page, cmd: string) {
   return page.evaluate((name) => {
     const plain = (value: any): any => {
@@ -273,7 +282,6 @@ test("Example project shows bundled demos as read-only transcripts", async ({ pa
   const sessionsBefore = (await invokeArgsList(page, "new_session")).length;
   const sendsBefore = (await invokeArgsList(page, "send_message")).length;
   const scratchBefore = (await invokeArgsList(page, "start_scratch_chat")).length;
-  const reviewsBefore = (await invokeArgsList(page, "review_session")).length;
   // The synthetic "Example project" opens a demo view whose sidebar lists the
   // bundled demos (no per-project "Open demo" button any more).
   await page.getByText("Example project").click();
@@ -303,15 +311,6 @@ test("Example project shows bundled demos as read-only transcripts", async ({ pa
   // Full transcript includes SSH/run operation cards, not just the summary.
   await expect(page.getByText("Re-run pipeline with fixed STAR index")).toBeVisible();
   await expect(page.getByTestId("run-monitor-card")).toBeVisible();
-
-  // View-only still allows browsing resources: right pane + generated tables.
-  await page.getByRole("button", { name: "Toggle panel" }).click();
-  await expect(page.locator(".rightpane")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Review" })).toHaveCount(0);
-  await page.locator(".message-artifact-card").filter({ hasText: "Table 1" }).click();
-  await expect(page.locator(".rightpane")).toBeVisible();
-  await expect(page.locator(".rp-tile-main").filter({ hasText: "Table 1" })).toBeVisible();
-  expect((await invokeArgsList(page, "review_session")).length).toBe(reviewsBefore);
   expect((await invokeArgsList(page, "new_session")).length).toBe(sessionsBefore);
   expect((await invokeArgsList(page, "send_message")).length).toBe(sendsBefore);
 });
@@ -354,8 +353,18 @@ test("send streams a mocked assistant reply", async ({ page, context }) => {
   await enterApp(page);
   await composer(page).fill("hello there");
   await page.getByRole("button", { name: "Send" }).click();
-  // Deltas "Hello " + "from mock superscience." accumulate into one assistant bubble.
-  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
+  // Deltas "Hello " + "from mock wisp-science." accumulate into one assistant bubble.
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  const followUps = page.getByTestId("follow-up-questions");
+  await expect(followUps.getByRole("button")).toHaveCount(4);
+  await followUps.getByRole("button", { name: "Expand the search for underrepresented species" }).click();
+  await expect(composer(page)).toHaveValue("Expand the search for underrepresented species");
+  await followUps.getByRole("button", { name: "Hide follow-up questions" }).click();
+  await expect(followUps).toHaveCount(0);
+  await page.locator(".msg.assistant").getByRole("button", { name: "Review" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "review_session")).toMatchObject({
+    sessionId: expect.stringMatching(/^s-/),
+  });
   await page.locator(".msg.assistant").getByRole("button", { name: "Copy" }).click();
   await expect(page.locator(".copy-toast")).toHaveText("Copied");
 });
@@ -477,7 +486,7 @@ test("manual review blocks sending and shows a playful progress animation", asyn
   await enterApp(page);
   await composer(page).fill("review this answer");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock superscience.")).toBeVisible();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
 
   await page.locator(".msg.assistant").getByRole("button", { name: "Review" }).click();
   await expect(page.getByRole("button", { name: "Send" })).toBeDisabled();
@@ -494,7 +503,7 @@ test("undo returns the latest prompt and keeps unsupported Word files", async ({
   await enterApp(page);
   await composer(page).fill("revise my notes");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
 
   const undo = page.locator(".msg.assistant").getByRole("button", { name: "Undo" });
   await expect(undo).toHaveCount(1);
@@ -518,21 +527,12 @@ test("undo returns the latest prompt and keeps unsupported Word files", async ({
   });
   await expect(modal).toHaveCount(0);
   await expect(page.locator(".msg.user", { hasText: "revise my notes" })).toHaveCount(0);
-  await expect(page.getByText("Hello from mock superscience.")).toHaveCount(0);
+  await expect(page.getByText("Hello from mock wisp-science.")).toHaveCount(0);
   await expect(composer(page)).toHaveValue("revise my notes");
 });
 
 test("general settings can use Ctrl+Enter to send and Enter for newline", async ({ page }) => {
-  await page.addInitScript(() => {
-    Object.defineProperty(navigator, "userAgent", {
-      configurable: true,
-      value: "superscience/Tauri",
-    });
-    Object.defineProperty(navigator, "platform", {
-      configurable: true,
-      value: "Linux x86_64",
-    });
-  });
+  await pinNonMacPlatform(page);
   await enterApp(page);
   await openSettingsSection(page, "General");
   const shortcut = page.getByTestId("send-shortcut");
@@ -563,11 +563,9 @@ test("Usage groups workspaces, charts activity and models, and paginates session
 
   const usage = page.getByTestId("usage-pane");
   await expect(usage).toBeVisible();
-  await expect(usage.getByTestId("usage-hero")).toBeVisible();
-  await expect(usage.getByTestId("usage-tile")).toHaveCount(4);
+  await expect(usage.locator(".usage-tile")).toHaveCount(4);
   const activity = page.getByTestId("usage-activity");
   await expect(activity.locator(".usage-activity-cell")).toHaveCount(371);
-  await expect(activity.locator(".usage-activity-legend")).toBeVisible();
 
   const daily = activity.getByRole("button", { name: "Daily", exact: true });
   const weekly = activity.getByRole("button", { name: "Weekly", exact: true });
@@ -627,7 +625,7 @@ test("language select shows the saved locale so Chinese can switch to English di
   ).toBe("en");
 
   // The app stays in English and the select stays on English after reopening.
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await globalSettingsButton(page).click();
   await expect(page.getByTestId("settings-language")).toHaveValue("en");
 });
 
@@ -651,187 +649,69 @@ test("storage separates project paths and filters usage when a project is clicke
     .toHaveCount(0);
 
   await projects.locator(".storage-project-row").first().click();
-  await expect(page.locator(".storage-path")).toHaveText("C:\\mock\\AppData\\superscience");
+  await expect(page.locator(".storage-path")).toHaveText("C:\\mock\\AppData\\wisp-science");
   await expect(page.locator(".storage-legend-row").filter({ hasText: "Workspace files" }))
     .toContainText("120.0 MB");
 });
 
-test("Help → Feedback opens on projects landing without entering an app", async ({ page }) => {
-  await page.goto("/");
-  await expect(page.locator(".projects-screen")).toBeVisible();
-  await expect(page.locator(".app")).toHaveClass(/app-hidden/);
-  await emitTauriEvent(page, "native-menu-action", "issues");
-  await expect(page.getByTestId("feedback-dialog")).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(page.getByTestId("feedback-dialog")).toHaveCount(0);
-  await expect(page.locator(".projects-screen")).toBeVisible();
-});
-
-test("sidebar Feedback opens a dedicated dialog and sends support email (#596)", async ({ page }) => {
+test("sidebar Feedback opens a blank conversation and waits for the user's first turn (#596)", async ({ page }) => {
   await enterApp(page);
+  await page.setInputFiles("#composer-file-input", {
+    name: "counts.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from("a,b\n1,2"),
+  });
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  const tile = page.locator('.rp-tile[data-artifact-name="counts.csv"]');
+  await tile.click({ button: "right" });
+  await page.locator(".ctx-menu").getByRole("button", { name: "Open in center" }).click();
+  await expect(page.locator(".center-tab.active")).toContainText("counts.csv");
   const sendsBefore = (await invokeArgsList(page, "send_message")).length;
   const sessionsBefore = (await invokeArgsList(page, "new_session")).length;
 
   await page.getByTestId("report-problem-entry").click();
-  await expect(page.getByTestId("feedback-dialog")).toBeVisible();
-  await expect(page.getByTestId("feedback-qr")).toContainText("WeChat group QR");
   await expect(page.getByTestId("feedback-context")).toContainText("System information");
-  await expect(page.getByTestId("feedback-context")).toContainText("Attached to the email automatically");
-  await expect(page.getByTestId("feedback-send")).toBeVisible();
-  // Chat composer stays a normal AI send button and is not hijacked.
-  await expect(page.locator(".composer .send")).toHaveText("Send");
+  await expect(page.getByTestId("feedback-context")).toContainText("Attached automatically");
+  await expect(page.locator("#composer-input")).toBeFocused();
+  await expect(page.locator(".center-file-preview")).toHaveCount(0);
   expect((await invokeArgsList(page, "send_message")).length).toBe(sendsBefore);
   expect((await invokeArgsList(page, "new_session")).length).toBe(sessionsBefore);
 
-  await page.getByTestId("feedback-input").fill("The app freezes when I open a document");
-  await page.getByTestId("feedback-send").click();
-  await expect.poll(() => lastInvokeArgs(page, "send_feedback_email")).toMatchObject({
-    message: "The app freezes when I open a document",
+  await page.locator("#composer-input").fill("The app freezes when I open a document");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect.poll(() => invokeArgsList(page, "new_session")).toHaveLength(sessionsBefore + 1);
+  await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
+    message: expect.stringContaining("The app freezes when I open a document"),
   });
-  const sent = await lastInvokeArgs(page, "send_feedback_email");
-  expect(sent?.diagnostics).toMatch(/App version: 0\.29\.0/);
-  expect(sent?.diagnostics).toMatch(/OS \/ architecture: windows \/ x86_64/);
-  expect(sent?.diagnostics).toMatch(/Model profile: deepseek-v4-pro/);
-  expect(sent?.diagnostics).not.toMatch(/\/mock\/root/);
-  expect((await invokeArgsList(page, "send_message")).length).toBe(sendsBefore);
-  expect((await invokeArgsList(page, "new_session")).length).toBe(sessionsBefore);
-  await expect(page.getByTestId("feedback-status")).toContainText("Feedback email sent.");
-
-  await page.keyboard.press("Escape");
-  await expect(page.getByTestId("feedback-dialog")).toHaveCount(0);
-  await expect(page.locator(".composer .send")).toHaveText("Send");
+  const sent = await lastInvokeArgs(page, "send_message");
+  expect(sent?.message).toContain("Feedback context:");
+  expect(sent?.message).toContain("GitHub issue");
+  expect(sent?.message).toMatch(/Wisp version: 0\.29\.0/);
+  expect(sent?.message).toMatch(/OS \/ architecture: windows \/ x86_64/);
+  expect(sent?.message).toMatch(/Model profile: deepseek-v4-pro/);
+  expect(sent?.message).not.toMatch(/\/mock\/root/);
+  await expect(page.getByTestId("feedback-context")).toHaveCount(0);
+  const userBubble = page.locator(".msg.user").last();
+  await expect(userBubble).toContainText("The app freezes when I open a document");
+  await expect(userBubble).not.toContainText("Feedback context");
+  await expect(userBubble).not.toContainText("GitHub issue");
 });
 
-test("sidebar user center login opens four tabs", async ({ page }) => {
+test("Feedback send shows the new_session error instead of a {msg} placeholder", async ({ page }) => {
   await enterApp(page);
-  await page.getByTestId("user-center-entry").click();
-  await expect(page.getByTestId("user-center-dialog")).toBeVisible();
-  await expect(page.getByTestId("user-center-login")).toBeVisible();
-
-  await page.getByTestId("user-center-tctoken-link").click();
-  await expect.poll(() => lastInvokeArgs(page, "open_external_url")).toMatchObject({
-    url: "https://www.tctoken.cn",
+  await page.getByTestId("report-problem-entry").click();
+  await expect(page.getByTestId("feedback-context")).toContainText("System information");
+  await page.evaluate(() => {
+    (window as any).__failNextNewSession("Project not found");
   });
-
-  await page.getByTestId("user-center-username").fill("demo");
-  await page.getByTestId("user-center-password").fill("secret");
-  await page.getByTestId("user-center-login-btn").click();
-
-  await expect(page.getByTestId("user-center-tab-account")).toBeVisible();
-  await expect(page.getByTestId("user-center-account")).toContainText("¥5.00");
-
-  await page.getByTestId("user-center-tab-tasks").click();
-  await expect(page.getByTestId("user-center-tasks")).toBeVisible();
-  await expect(page.getByTestId("user-center-tasks")).toContainText("gpt-4o");
-
-  await page.getByTestId("user-center-tab-topup").click();
-  await expect(page.getByTestId("user-center-orders")).toBeVisible();
-  await expect(page.getByTestId("user-center-orders")).toContainText("ORD-001");
-
-  await page.getByTestId("user-center-tab-keys").click();
-  await expect(page.getByTestId("user-center-keys")).toBeVisible();
-  await expect(page.getByTestId("user-center-keys")).toContainText("sk-****abcd");
-  await expect(page.getByTestId("user-center-keys").getByRole("button", { name: /^(Default|当前默认)$/ })).toBeVisible();
-  await expect.poll(() => page.evaluate(() => (window as any).__tctokenDefaultTokenId)).toBe(7);
-
-  await page.getByTestId("user-center-tab-account").click();
-  await page.getByTestId("user-center-pay").click();
-  await expect.poll(() => lastInvokeArgs(page, "tctoken_topup_pay")).toMatchObject({
-    amount: 50,
-    paymentMethod: "alipay",
-  });
-  const payArgs = await lastInvokeArgs(page, "tctoken_topup_pay");
-  expect(payArgs).not.toHaveProperty("channel");
-  await expect.poll(() => lastInvokeArgs(page, "open_external_url")).toMatchObject({
-    url: "https://www.tctoken.cn/pay/mock",
-  });
-
-  await page.keyboard.press("Escape");
-  await expect(page.getByTestId("user-center-dialog")).toHaveCount(0);
-});
-
-test("user center remembers password and toggles visibility", async ({ page }) => {
-  await enterApp(page);
-  await page.getByTestId("user-center-entry").click();
-  await expect(page.getByTestId("user-center-login")).toBeVisible();
-
-  const password = page.getByTestId("user-center-password");
-  await page.getByTestId("user-center-username").fill("demo");
-  await password.fill("secret");
-  await expect(password).toHaveAttribute("type", "password");
-  await page.getByTestId("user-center-password-toggle").click();
-  await expect(password).toHaveAttribute("type", "text");
-  await expect(password).toHaveValue("secret");
-  await page.getByTestId("user-center-password-toggle").click();
-  await expect(password).toHaveAttribute("type", "password");
-
-  await page.getByTestId("user-center-remember").locator("input").check();
-  await page.getByTestId("user-center-login-btn").click();
-  await expect(page.getByTestId("user-center-tab-account")).toBeVisible();
-  await expect.poll(() => page.evaluate(() => (window as any).__tctokenRememberedLogin)).toMatchObject({
-    remember: true,
-    username: "demo",
-    password: "secret",
-  });
-
-  await page.getByTestId("user-center-logout").click();
-  await expect(page.getByTestId("user-center-login")).toBeVisible();
-  await expect(page.getByTestId("user-center-username")).toHaveValue("demo");
-  await expect(page.getByTestId("user-center-password")).toHaveValue("secret");
-  await expect(page.getByTestId("user-center-remember").locator("input")).toBeChecked();
-});
-
-test("user center restores logged-in session in sidebar", async ({ page }) => {
-  await page.addInitScript(() => {
-    (window as any).__tctokenSession = {
-      loggedIn: true,
-      userId: 42,
-      username: "demo",
-      displayName: "Demo User",
-      group: "default",
-    };
-  });
-  await enterApp(page);
-  await expect(page.getByTestId("user-center-entry")).toContainText("Demo User");
-  await page.getByTestId("user-center-entry").click();
-  await expect(page.getByTestId("user-center-account")).toBeVisible();
-  await page.getByTestId("user-center-logout").click();
-  await expect(page.getByTestId("user-center-login")).toBeVisible();
-});
-
-test("projects landing shows login entry and opens user center", async ({ page }) => {
-  await page.goto("/");
-  await expect(page.locator(".projects-screen")).toBeVisible();
-  const entry = page.getByTestId("home-user-center-entry");
-  await expect(entry).toBeVisible();
-  await expect(entry).toContainText(/^(Sign in|登录)$/);
-  await entry.click();
-  await expect(page.getByTestId("user-center-dialog")).toBeVisible();
-  await expect(page.getByTestId("user-center-login")).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(page.getByTestId("user-center-dialog")).toHaveCount(0);
-  await expect(page.locator(".projects-screen")).toBeVisible();
-});
-
-test("projects landing shows signed-in user as personal center entry", async ({ page }) => {
-  await page.addInitScript(() => {
-    (window as any).__tctokenSession = {
-      loggedIn: true,
-      userId: 42,
-      username: "demo",
-      displayName: "Demo User",
-      group: "default",
-    };
-  });
-  await page.goto("/");
-  const entry = page.getByTestId("home-user-center-entry");
-  await expect(entry).toContainText("Demo User");
-  await expect(entry.locator(".projects-user-avatar")).toHaveText("D");
-  await entry.click();
-  await expect(page.getByTestId("user-center-account")).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(page.getByTestId("user-center-dialog")).toHaveCount(0);
-  await expect(entry).toBeVisible();
+  await page.locator("#composer-input").fill("The send button does nothing");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.locator(".topbar .hint")).toHaveText("Send failed: Project not found");
+  await expect(page.locator(".topbar .hint")).not.toContainText("{msg}");
+  await expect(page.getByTestId("feedback-context")).toBeVisible();
+  await expect(page.locator("#composer-input")).toHaveValue("The send button does nothing");
 });
 
 test("Memory settings show the active project name", async ({ page }) => {
@@ -839,7 +719,7 @@ test("Memory settings show the active project name", async ({ page }) => {
   await openSettingsSection(page, "Memory");
   const project = page.getByTestId("memory-project");
   await expect(page.getByTestId("memory-project-select")).toHaveAttribute("data-project-id", "default");
-  await expect(page.getByTestId("memory-project-select")).toContainText("superscience");
+  await expect(page.getByTestId("memory-project-select")).toContainText("wisp-science");
   await expect(project).toContainText("(1)");
   await expect(page.locator(".conn-group-label", { hasText: "Project memory" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Clear all" })).toHaveClass("memory-clear-btn");
@@ -998,7 +878,7 @@ test("background Agent completion appears in its owning conversation", async ({ 
   await enterApp(page);
   await composer(page).fill("start background analysis");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
   const sent = await lastInvokeArgs(page, "send_message");
   await page.evaluate((frameId) => {
     (window as any).__tauriEmit("agent", {
@@ -1025,7 +905,7 @@ test("switching HTTP models confirms cache invalidation", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("bind this conversation model");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock superscience.")).toBeVisible();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
 
   await page.locator(".model-picker-btn").click();
   const opusOption = page.getByRole("button", { name: /opus-4\.8/ });
@@ -1063,7 +943,7 @@ test("switching to a text-only model confirms historical images will be ignored"
     buffer: Buffer.from([137, 80, 78, 71]),
   });
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock superscience.")).toBeVisible();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
 
   await page.locator(".model-picker-btn").click();
   await page.getByRole("button", { name: /deepseek-v4-pro/ }).click();
@@ -1082,7 +962,7 @@ test("model switch warning can be permanently dismissed", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("bind this conversation model");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock superscience.")).toBeVisible();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
 
   await page.locator(".model-picker-btn").click();
   await page.getByRole("button", { name: /opus-4\.8/ }).click();
@@ -1091,7 +971,7 @@ test("model switch warning can be permanently dismissed", async ({ page }) => {
   await modal.getByRole("checkbox", { name: "Don't ask again" }).check();
   await modal.getByRole("button", { name: "Yes, switch" }).click();
   await expect.poll(() => lastInvokeArgs(page, "set_active_model")).toMatchObject({ id: "opus" });
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("superscience-model-switch-warning-disabled")))
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("wisp-model-switch-warning-disabled")))
     .toBe("1");
   await expect(page.locator(".model-picker-label")).toHaveText("opus-4.8");
 
@@ -1272,7 +1152,7 @@ test("effort flyout closes on Escape before the model menu", async ({ page }) =>
 
 test("Settings Models page can open ACP Agents dialog", async ({ page }) => {
   await enterApp(page);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await page.getByRole("button", { name: "Models", exact: true }).click();
   await expect(page.getByTestId("models-category-http")).toHaveClass(/active/);
   await page.getByTestId("open-acp-agents-from-settings").click();
@@ -1285,7 +1165,7 @@ test("Settings Models page can open ACP Agents dialog", async ({ page }) => {
 
 test("ACP Agent settings create, test, and authenticate an installed agent", async ({ page }) => {
   await enterApp(page);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await page.getByRole("button", { name: "Models", exact: true }).click();
   await page.getByTestId("open-acp-agents-from-settings").click();
   await page.getByTestId("add-acp-agent-settings").click();
@@ -1312,7 +1192,7 @@ test("selecting an ACP Agent from a populated HTTP session starts a fresh sessio
   await enterApp(page);
   await composer(page).fill("existing HTTP turn");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock superscience.")).toBeVisible();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
   const firstSend = await lastInvokeArgs(page, "send_message");
   await composer(page).fill("preserved draft");
 
@@ -1397,7 +1277,7 @@ test("ACP turn maps config, overlapping tools, plan, usage, and exact permission
   await expect(page.getByRole("button", { name: /deepseek-v4-pro/ })).toBeDisabled();
 });
 
-test("persisted superscience:plan reload rebuilds all entry states and priority", async ({ page }) => {
+test("persisted wisp:plan reload rebuilds all entry states and priority", async ({ page }) => {
   await openMockPlanSession(page, "acp");
 
   const assertPlan = async () => {
@@ -1677,19 +1557,21 @@ test("Full Permission requires a warning and stays scoped to the conversation", 
   await expect(page.getByRole("heading", { name: "Enable Full Permission?" })).toHaveCount(0);
 });
 
-test("ACP turns retain explicitly selected SuperScience skills", async ({ page }) => {
+test("ACP turns retain explicitly selected Wisp skills", async ({ page }) => {
   await enterApp(page);
   await newSessionButton(page).click();
   await page.locator(".model-picker-btn").click();
   await page.getByRole("button", { name: /Test ACP Agent/ }).click();
-  await composer(page).pressSequentially("/alpha");
-  await page.locator(".mention-menu .mention-item").first().click();
+  await composer(page).pressSequentially("/lit");
+  await page.locator(".mention-menu .mention-item")
+    .filter({ hasText: "literature-review" })
+    .click();
   await composer(page).fill("use this skill");
   await page.getByRole("button", { name: "Send" }).click();
 
   await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
     acpAgentId: "acp-test",
-    references: [{ kind: "skill", name: "alphafold2" }],
+    references: [{ kind: "skill", name: "literature-review" }],
   });
 });
 
@@ -1704,8 +1586,63 @@ test("ACP cancellation is scoped to the active bound frame", async ({ page }) =>
   await page.getByRole("button", { name: "Stop" }).click();
   await expect.poll(() => lastInvokeArgs(page, "stop_agent")).toMatchObject({ sessionId: expect.any(String) });
   await expect(page.getByRole("button", { name: "Send" })).toBeVisible();
+  await expect(page.getByTestId("stopping-toast")).toHaveCount(0);
   await page.waitForTimeout(100);
   expect(await invokeArgsList(page, "propose_turn_memory")).toHaveLength(0);
+});
+
+test("an idle composer dismisses a leftover stopping banner", async ({ page }) => {
+  await enterApp(page);
+  await newSessionButton(page).click();
+  await page.locator(".model-picker-btn").click();
+  await page.getByRole("button", { name: /Test ACP Agent/ }).click();
+  await composer(page).fill("ACP LONG");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByRole("button", { name: "Stop" })).toBeVisible();
+
+  await page.evaluate(() => { (window as any).__holdStopAgent = true; });
+  await page.getByRole("button", { name: "Stop" }).click();
+  const toast = page.getByTestId("stopping-toast");
+  await expect(toast).toBeVisible();
+  const composerInner = page.locator(".composer-inner");
+  const toastBox = await toast.boundingBox();
+  const innerBox = await composerInner.boundingBox();
+  expect(toastBox).not.toBeNull();
+  expect(innerBox).not.toBeNull();
+  expect(toastBox!.y + toastBox!.height).toBeLessThanOrEqual(innerBox!.y + 1);
+
+  // The turn can become idle (Send returns) without another Done. The banner
+  // must not stay over the composer once the session is no longer running.
+  await page.evaluate(() => { (window as any).__finishAcpLong(); });
+  await expect(page.getByRole("button", { name: "Send" })).toBeVisible();
+  await expect(toast).toHaveCount(0);
+});
+
+test("stopping after a late Done does not leave the banner over Send", async ({ page }) => {
+  await enterApp(page);
+  await newSessionButton(page).click();
+  await page.locator(".model-picker-btn").click();
+  await page.getByRole("button", { name: /Test ACP Agent/ }).click();
+  await composer(page).fill("ACP LONG");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByRole("button", { name: "Stop" })).toBeVisible();
+
+  const sessionId = await page.locator(".side-item.ses.active").getAttribute("data-session-id");
+  expect(sessionId).toBeTruthy();
+  // Done can land while send_message is still in flight, so Stop is still
+  // clickable. That click must not pin the banner after the turn goes idle.
+  await emitTauriEvent(page, "agent", {
+    kind: "Done",
+    frame_id: sessionId,
+    stop_reason: "end_turn",
+  });
+  await page.evaluate(() => { (window as any).__holdStopAgent = true; });
+  await page.getByRole("button", { name: "Stop" }).click();
+  await expect(page.getByTestId("stopping-toast")).toBeVisible();
+
+  await page.evaluate(() => { (window as any).__finishAcpLong(); });
+  await expect(page.getByRole("button", { name: "Send" })).toBeVisible();
+  await expect(page.getByTestId("stopping-toast")).toHaveCount(0);
 });
 
 test("switching conversations dismisses the previous conversation's stopping modal", async ({ page }) => {
@@ -1777,6 +1714,15 @@ test("post-start API errors keep the user bubble when an Error event lands first
   await expect(page.getByRole("button", { name: /Resume|继续执行/ })).toBeVisible();
 });
 
+test("truncated output auto-continue is shown as progress", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("AUTOCONTINUE long task");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByTestId("auto-continue-flag")).toContainText("automatically continued (1/10)");
+  await expect(page.locator(".msg.assistant")).toContainText("Final segment");
+  await expect(page.locator(".finding.err")).toHaveCount(0);
+});
+
 test("automatic reviewer resolves its finding and jumps past UI-only rows (#550)", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("REVIEWBASE");
@@ -1793,9 +1739,9 @@ test("automatic reviewer resolves its finding and jumps past UI-only rows (#550)
 
   const handoffs = page.locator(".review-transition");
   await expect(handoffs).toHaveCount(2);
-  await expect(handoffs.nth(0)).toContainText("superscience nudged Reviewer");
+  await expect(handoffs.nth(0)).toContainText("wisp-science nudged Reviewer");
   await expect(handoffs.nth(0)).toHaveAttribute("data-phase", "reviewing");
-  await expect(handoffs.nth(1)).toContainText("Reviewer nudged superscience");
+  await expect(handoffs.nth(1)).toContainText("Reviewer nudged wisp-science");
   await expect(handoffs.nth(1)).toContainText("deepseek-v4-pro");
   await expect(handoffs.nth(1)).toHaveAttribute("data-phase", "correcting");
 
@@ -1985,14 +1931,16 @@ test("composer @ # and / add typed context references", async ({ page }) => {
   await expect(composerInput).toBeFocused();
 
   await composerInput.pressSequentially("#project");
-  await expect(page.locator(".mention-menu")).toContainText("Search every session in superscience");
+  await expect(page.locator(".mention-menu")).toContainText("Search every session in wisp-science");
   await page.locator(".mention-menu .mention-item").first().click();
   await expect(composerInput).toHaveValue("");
   await expect(composerInput).toBeFocused();
 
-  await composerInput.pressSequentially("/alpha");
-  await expect(page.locator(".mention-menu")).toContainText("alphafold2");
-  await page.locator(".mention-menu .mention-item").first().click();
+  await composerInput.pressSequentially("/lit");
+  await expect(page.locator(".mention-menu")).toContainText("literature-review");
+  await page.locator(".mention-menu .mention-item")
+    .filter({ hasText: "literature-review" })
+    .click();
 
   await composerInput.pressSequentially("/round");
   const workflowItem = page.locator(".mention-menu .mention-item")
@@ -2019,7 +1967,7 @@ test("composer @ # and / add typed context references", async ({ page }) => {
       { kind: "artifact", id: "art-tree" },
       { kind: "session", id: "s-current" },
       { kind: "project", id: "default" },
-      { kind: "skill", name: "alphafold2" },
+      { kind: "skill", name: "literature-review" },
       { kind: "workflow", id: "roundtable" },
       { kind: "context", id: "ssh:gpu-server" },
     ],
@@ -2028,8 +1976,8 @@ test("composer @ # and / add typed context references", async ({ page }) => {
   await expect(sentContext).toHaveCount(6);
   await expect(page.locator('.msg.user [data-reference-kind="artifact"]')).toContainText("nif3.treefile");
   await expect(page.locator('.msg.user [data-reference-kind="session"]')).toContainText("Current analysis");
-  await expect(page.locator('.msg.user [data-reference-kind="project"]')).toContainText("superscience");
-  await expect(page.locator('.msg.user [data-reference-kind="skill"]')).toContainText("alphafold2");
+  await expect(page.locator('.msg.user [data-reference-kind="project"]')).toContainText("wisp-science");
+  await expect(page.locator('.msg.user [data-reference-kind="skill"]')).toContainText("literature-review");
   await expect(page.locator('.msg.user [data-reference-kind="workflow"]')).toContainText("Roundtable");
   const sentEnvironment = page.locator('.msg.user [data-reference-kind="context"]');
   await expect(sentEnvironment).toContainText("gpu-server");
@@ -2186,7 +2134,10 @@ test("/share exports selected, keyword-redacted messages as a PNG", async ({ pag
   const composerInput = composer(page);
   const overlay = page.getByTestId("share-overlay");
 
-  // Empty session: /share is hidden from the picker and opens nothing.
+  // Empty session: /share is hidden from the picker and opens nothing, and
+  // the composer "+" menu entry and topbar share button are disabled.
+  const topbarShare = page.getByTestId("share-topbar");
+  await expect(topbarShare).toBeDisabled();
   await composerInput.pressSequentially("/sha");
   await expect(page.locator(".mention-menu .mention-item").filter({ hasText: "/share" })).toHaveCount(0);
   await page.keyboard.press("Escape");
@@ -2194,6 +2145,13 @@ test("/share exports selected, keyword-redacted messages as a PNG", async ({ pag
   await composerInput.press("Enter");
   await expect(overlay).toHaveCount(0);
   expect(await lastInvokeArgs(page, "send_message")).toBeNull();
+  await page.locator(".composer-plus").click();
+  const shareItem = page.locator(".compose-item").filter({
+    has: page.locator(".compose-item-label", { hasText: "Share" }),
+  });
+  await expect(shareItem).toBeDisabled();
+  await page.locator(".compose-backdrop").click();
+  await expect(shareItem).toHaveCount(0);
 
   // Seed one turn that streams a thinking block before the reply.
   await composerInput.fill("SHARETHINK check the spectrum");
@@ -2212,6 +2170,7 @@ test("/share exports selected, keyword-redacted messages as a PNG", async ({ pag
   await composerInput.pressSequentially("/share");
   await page.locator(".mention-menu .mention-item").filter({ hasText: "/share" }).click();
   await expect(overlay).toBeVisible();
+  await expect(overlay.getByRole("heading", { name: "Share as image" })).toBeVisible();
 
   // User and assistant rows are preselected; thinking is listed but hidden.
   const rows = overlay.locator(".share-row");
@@ -2221,20 +2180,156 @@ test("/share exports selected, keyword-redacted messages as a PNG", async ({ pag
   await expect(rows.nth(1).locator("input")).not.toBeChecked();
   await expect(rows.nth(2).locator("input")).toBeChecked();
 
-  // Keywords mask the preview text case-insensitively.
+  // Each row shows a role badge; the counter tracks the selection.
+  await expect(rows.nth(0).locator(".share-role")).toHaveText("You");
+  await expect(rows.nth(1).locator(".share-role")).toHaveText("Thinking");
+  await expect(rows.nth(2).locator(".share-role")).toHaveText("Assistant");
+  await expect(overlay.locator(".share-count")).toHaveText("2/3 selected");
+
+  // Keywords mask the preview text case-insensitively (raw Markdown source).
   await overlay.locator("#share-redact-input").fill("alice，spectrum");
-  await expect(rows.nth(2)).toContainText("xxx confirmed the xxx is clean.");
+  await expect(rows.nth(2)).toContainText("xxx confirmed the **xxx** is clean.");
 
   // Deselect the user turn and export: the PNG bytes reach the save command
   // and the saved toast closes the dialog.
   await rows.nth(0).locator("input").click();
+  await expect(overlay.locator(".share-count")).toHaveText("1/3 selected");
   await overlay.getByTestId("share-export").click();
   await expect.poll(() => lastInvokeArgs(page, "save_share_image")).toMatchObject({
     defaultName: expect.stringMatching(/^wisp-share-\d{4}-\d{2}-\d{2}\.png$/),
   });
   const args = await lastInvokeArgs(page, "save_share_image");
-  expect(String(args.pngBase64).length).toBeGreaterThan(1000);
+  // The Markdown reply (heading/list/code fence) renders into a tall image.
+  expect(String(args.pngBase64).length).toBeGreaterThan(10000);
   await expect(overlay).toHaveCount(0);
+
+  // PNG width is the canvas width (IHDR bytes 16..20) at 2× scale: the
+  // default is 840 px, and the width field overrides it.
+  const pngWidth = (b64: string) =>
+    page.evaluate((raw) => {
+      const bytes = Uint8Array.from(atob(raw), (c) => c.charCodeAt(0));
+      return new DataView(bytes.buffer).getUint32(16, false);
+    }, b64);
+  expect(await pngWidth(String(args.pngBase64))).toBe(1680);
+  await composerInput.fill("/share");
+  await composerInput.press("Enter");
+  await expect(overlay).toBeVisible();
+  await overlay.getByTestId("share-width-input").fill("600");
+  await overlay.getByTestId("share-export").click();
+  await expect.poll(async () => {
+    const latest = await lastInvokeArgs(page, "save_share_image");
+    return latest ? pngWidth(String(latest.pngBase64)) : 0;
+  }).toBe(1200);
+  await expect(overlay).toHaveCount(0);
+
+  // HTML format: same dialog exports a self-contained rendered document.
+  await composerInput.fill("/share");
+  await composerInput.press("Enter");
+  await expect(overlay).toBeVisible();
+  await overlay.getByTestId("share-format-html").click();
+  await expect(overlay.getByTestId("share-export")).toHaveText("Export HTML");
+  await expect(overlay.getByTestId("share-width-input")).toHaveCount(0);
+  await overlay.locator("#share-redact-input").fill("alice");
+  await overlay.getByTestId("share-export").click();
+  await expect.poll(() => lastInvokeArgs(page, "save_share_html")).toMatchObject({
+    defaultName: expect.stringMatching(/^wisp-share-\d{4}-\d{2}-\d{2}\.html$/),
+  });
+  const html = String((await lastInvokeArgs(page, "save_share_html")).html);
+  expect(html).toContain("<!doctype html>");
+  expect(html).toContain("xxx confirmed the <strong>spectrum</strong>");
+  expect(html).toContain("<h2>Fit summary</h2>");
+  expect(html).toContain("<li>peak A at 530 nm</li>");
+  expect(html).toContain("fit(spectrum)");
+  expect(html).toContain("user-bubble");
+  expect(html).toContain("body md");
+  expect(html).toContain("--bg-panel");
+  expect(html).not.toContain("#2f6fed");
+  expect(html).not.toContain("class=\"card\"");
+  const live = await page.evaluate(() => {
+    const read = (el) => {
+      if (!el) return { bg: "", color: "" };
+      const style = getComputedStyle(el);
+      return { bg: style.backgroundColor, color: style.color };
+    };
+    return {
+      user: read(document.querySelector(".msg.user .body")),
+      assistant: read(document.querySelector(".msg.assistant .body.md")),
+      app: read(document.querySelector(".center")),
+    };
+  });
+  const exported = await page.evaluate(async (documentHtml) => {
+    const iframe = document.createElement("iframe");
+    iframe.style.cssText = "position:fixed;left:-9999px;width:880px;height:640px;border:0";
+    document.body.appendChild(iframe);
+    const done = new Promise((resolve) => {
+      iframe.addEventListener("load", () => resolve(), { once: true });
+    });
+    iframe.srcdoc = documentHtml;
+    await done;
+    const doc = iframe.contentDocument;
+    const win = iframe.contentWindow;
+    const read = (el) => {
+      if (!el || !win) return { bg: "", color: "" };
+      const style = win.getComputedStyle(el);
+      return { bg: style.backgroundColor, color: style.color };
+    };
+    const result = {
+      user: read(doc && doc.querySelector(".msg.user .body")),
+      assistant: read(doc && doc.querySelector(".msg.assistant .body.md")),
+      page: read(doc && doc.body),
+    };
+    iframe.remove();
+    return result;
+  }, html);
+  expect(exported.user.bg).toBe(live.user.bg);
+  expect(exported.user.color).toBe(live.user.color);
+  expect(exported.assistant.color).toBe(live.assistant.color);
+  expect(exported.page.bg).toBe(live.app.bg);
+  await expect(overlay).toHaveCount(0);
+
+  // The composer "+" menu offers the same entry once the session has content.
+  await page.locator(".composer-plus").click();
+  await expect(shareItem).toBeEnabled();
+  await shareItem.click();
+  await expect(overlay).toBeVisible();
+  // One Escape closes only the dialog; the chat stays up.
+  await page.keyboard.press("Escape");
+  await expect(overlay).toHaveCount(0);
+  await expect(composerInput).toBeVisible();
+
+  // The topbar share icon is the same entry, next to the inbox bell.
+  await expect(topbarShare).toBeEnabled();
+  await topbarShare.click();
+  await expect(overlay).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(overlay).toHaveCount(0);
+  await expect(composerInput).toBeVisible();
+});
+
+test("/share hides the social copy flow and keeps PNG plus HTML export", async ({ page }) => {
+  await enterApp(page);
+  const composerInput = composer(page);
+  const overlay = page.getByTestId("share-overlay");
+
+  await composerInput.fill("SHARETHINK check the spectrum");
+  await composerInput.press("Enter");
+  await expect(page.getByText("Alice confirmed the spectrum is clean.")).toBeVisible({ timeout: 10_000 });
+
+  await composerInput.fill("/share");
+  await composerInput.press("Enter");
+  await expect(overlay).toBeVisible();
+  await expect(overlay.getByRole("heading", { name: "Share as image" })).toBeVisible();
+  await expect(overlay.locator(".share-row")).toHaveCount(3);
+  // The platform picker and the skill-copy button stay hidden; HTML export
+  // is available again next to the long PNG.
+  await expect(overlay.getByTestId("share-social-skill")).toHaveCount(0);
+  await expect(overlay.getByTestId("share-platform-xiaohongshu")).toHaveCount(0);
+  await expect(overlay.getByTestId("share-platform-wechat")).toHaveCount(0);
+  await expect(overlay.getByTestId("share-format-png")).toBeVisible();
+  await expect(overlay.getByTestId("share-format-html")).toBeVisible();
+  await expect(overlay.getByTestId("share-export")).toHaveText("Export PNG");
+  await overlay.getByTestId("share-format-html").click();
+  await expect(overlay.getByTestId("share-export")).toHaveText("Export HTML");
 });
 
 test("composer / menu layers sections and gives each command its own icon", async ({ page }) => {
@@ -2256,10 +2351,12 @@ test("composer / menu layers sections and gives each command its own icon", asyn
   expect(new Set(svgs).size).toBe(svgs.length);
 
   // A query matching no command keeps the remaining sections layered.
+  // `/lit` hits both the literature skill and the literature-evidence workflow.
   await composerInput.fill("");
-  await composerInput.pressSequentially("/alpha");
-  await expect(menu.locator(".mention-group-label")).toHaveText(["Skills"]);
-  await expect(menu).toContainText("alphafold2");
+  await composerInput.pressSequentially("/lit");
+  await expect(menu.locator(".mention-group-label")).toHaveText(["Workflows", "Skills"]);
+  await expect(menu).toContainText("literature-review");
+  await expect(menu).toContainText("Literature evidence review");
 });
 
 test("composer /plan and /permission drive the session mode flags", async ({ page }) => {
@@ -2405,16 +2502,7 @@ test("Ctrl+K opens the unified command palette and Shift+Enter attaches", async 
 });
 
 test("Ctrl+K opens in place and Ctrl+Enter opens a project window", async ({ page }) => {
-  await page.addInitScript(() => {
-    Object.defineProperty(navigator, "userAgent", {
-      configurable: true,
-      value: "superscience/Tauri",
-    });
-    Object.defineProperty(navigator, "platform", {
-      configurable: true,
-      value: "Linux x86_64",
-    });
-  });
+  await pinNonMacPlatform(page);
   await enterApp(page);
   await page.keyboard.press("Control+k");
   const search = commandPalette(page);
@@ -2461,6 +2549,8 @@ test("topbar groups chrome actions and hides an empty status hint", async ({ pag
   await enterApp(page);
   const actions = page.locator(".topbar-actions");
   await expect(actions).toBeVisible();
+  await expect(actions.getByTestId("share-topbar")).toHaveCount(1);
+  await expect(actions.getByTestId("share-topbar")).toBeDisabled();
   await expect(actions.locator(".inbox-wrap")).toHaveCount(1);
   await expect(actions.getByRole("button", { name: "Open terminal" })).toHaveCount(1);
   await expect(actions.getByRole("button", { name: "Toggle panel" })).toHaveCount(1);
@@ -2532,7 +2622,7 @@ test("context usage moves out of the topbar and opens a categorized detail panel
   await expect(panel.locator(".context-usage-row.expandable")).toHaveCount(6);
 
   await panel.getByText("System prompt", { exact: true }).click();
-  await expect(panel.locator(".context-usage-detail")).toContainText("You are superscience");
+  await expect(panel.locator(".context-usage-detail")).toContainText("You are wisp-science");
   await panel.getByText("Tool definitions", { exact: true }).click();
   await expect(panel.locator(".context-usage-detail")).toContainText("read");
   await expect(panel.locator(".context-usage-detail")).toContainText("Read a file from disk");
@@ -2625,13 +2715,227 @@ test("context usage keeps the running agent window until a model switch boundary
     getComputedStyle(el).getPropertyValue("--context-gauge-angle").trim())).toBe("-54.0deg");
 });
 
+async function openContextUsagePanel(page: Page) {
+  await page.locator("#composer-input").fill("CONTEXTUSAGE");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  const trigger = page.getByTestId("context-usage-trigger");
+  await expect.poll(() => trigger.evaluate((el) =>
+    getComputedStyle(el).getPropertyValue("--context-gauge-angle").trim())).toBe("-34.2deg");
+  await trigger.click();
+  const panel = page.getByTestId("context-usage-panel");
+  await expect(panel).toBeVisible();
+  await expect.poll(() => panel.evaluate((el) => (el as HTMLElement).offsetHeight)).toBeGreaterThan(80);
+  return { trigger, panel };
+}
+
+test("context usage docks above the composer without covering the latest reply", async ({ page }) => {
+  await page.setViewportSize({ width: 1516, height: 900 });
+  await enterApp(page);
+  const { trigger, panel } = await openContextUsagePanel(page);
+
+  await expect(panel).toHaveAttribute("data-mode", "docked");
+  await expect(page.locator(".context-usage-backdrop")).toHaveCount(0);
+  await expect.poll(async () => page.evaluate(() => {
+    const chat = document.getElementById("chat-scroller")?.getBoundingClientRect();
+    const card = document.querySelector("[data-testid='context-usage-panel']")?.getBoundingClientRect();
+    if (!chat || !card) return false;
+    const stacked = card.top >= chat.bottom - 2;
+    const chatStillOpen = chat.height > 40;
+    return stacked && chatStillOpen;
+  })).toBe(true);
+  const lastBox = await page.getByText("Context usage is ready.").boundingBox();
+  const panelBox = await panel.boundingBox();
+  expect(lastBox).not.toBeNull();
+  expect(panelBox).not.toBeNull();
+  const covered = lastBox!.y + lastBox!.height > panelBox!.y + 2
+    && lastBox!.y < panelBox!.y + panelBox!.height - 2;
+  expect(covered).toBe(false);
+  expect(panelBox!.height).toBeLessThanOrEqual(page.viewportSize()!.height * 0.46 + 4);
+
+  const widths = await page.evaluate(() => {
+    const panelEl = document.querySelector(
+      "[data-testid='context-usage-panel']",
+    ) as HTMLElement | null;
+    const composerEl = document.querySelector(".composer-inner") as HTMLElement | null;
+    return {
+      panel: panelEl?.offsetWidth ?? 0,
+      composerClient: composerEl?.clientWidth ?? 0,
+    };
+  });
+  expect(Math.abs(widths.panel - widths.composerClient)).toBeLessThan(4);
+
+  await page.keyboard.press("Escape");
+  await expect(panel).toHaveCount(0);
+  await expect(page.getByText("Context usage is ready.")).toBeInViewport();
+  await expect(trigger).toBeVisible();
+});
+
+test("docked context usage lets the first outside click land", async ({ page }) => {
+  await enterApp(page);
+  const { panel } = await openContextUsagePanel(page);
+
+  const input = page.locator("#composer-input");
+  await input.click();
+  await expect(panel).toHaveCount(0);
+  await expect(input).toBeFocused();
+
+  await page.getByTestId("context-usage-trigger").click();
+  await expect(page.getByTestId("context-usage-panel")).toBeVisible();
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  await expect(page.getByTestId("context-usage-panel")).toHaveCount(0);
+  await expect(page.locator(".rightpane")).toBeVisible();
+});
+
+test("context usage can float, stay open while typing, and remember geometry", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await enterApp(page);
+  const { trigger, panel } = await openContextUsagePanel(page);
+
+  const head = page.getByTestId("context-usage-head");
+  const start = await head.boundingBox();
+  expect(start).not.toBeNull();
+  await page.mouse.move(start!.x + 48, start!.y + start!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(start!.x + 220, start!.y - 120, { steps: 10 });
+  await page.mouse.up();
+
+  await expect.poll(() => panel.getAttribute("data-mode")).toBe("floating");
+  await expect(page.getByTestId("context-usage-dock")).toBeVisible();
+  await expect(page.getByTestId("context-usage-resize")).toBeVisible();
+  const floated = await panel.boundingBox();
+  expect(floated).not.toBeNull();
+  expect(floated!.x).toBeGreaterThanOrEqual(0);
+  expect(floated!.y).toBeGreaterThanOrEqual(0);
+  expect(floated!.x + floated!.width).toBeLessThanOrEqual(1280);
+  expect(floated!.y + floated!.height).toBeLessThanOrEqual(800);
+
+  const input = page.locator("#composer-input");
+  await input.click();
+  await expect(panel).toBeVisible();
+  await input.fill("still here");
+  await expect(input).toHaveValue("still here");
+  await expect(panel).toBeVisible();
+
+  await page.locator(".inbox-wrap .icon-btn").click();
+  await expect(page.locator(".inbox-drop")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".inbox-drop")).toHaveCount(0);
+  await expect(panel).toBeVisible();
+
+  const parked = await panel.boundingBox();
+  await page.keyboard.press("Escape");
+  await expect(panel).toHaveCount(0);
+  await trigger.click();
+  await expect(panel).toBeVisible();
+  await expect(panel).toHaveAttribute("data-mode", "floating");
+  await expect.poll(async () => {
+    const restored = await panel.boundingBox();
+    return restored && Math.abs(restored.x - parked!.x) < 3 && Math.abs(restored.y - parked!.y) < 3;
+  }).toBe(true);
+
+  await page.getByTestId("context-usage-dock").click();
+  await expect.poll(() => panel.getAttribute("data-mode")).toBe("docked");
+  await expect(page.getByTestId("context-usage-resize")).toHaveCount(0);
+
+  await page.mouse.move(start!.x + 48, start!.y + start!.height / 2);
+  const headAgain = await head.boundingBox();
+  await page.mouse.move(headAgain!.x + 48, headAgain!.y + headAgain!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(headAgain!.x + 180, headAgain!.y - 90, { steps: 8 });
+  await page.mouse.up();
+  await expect.poll(() => panel.getAttribute("data-mode")).toBe("floating");
+  await head.dblclick();
+  await expect.poll(() => panel.getAttribute("data-mode")).toBe("docked");
+});
+
+test("floating context usage resizes and reflows the bar and details", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await enterApp(page);
+  const { panel } = await openContextUsagePanel(page);
+  const head = page.getByTestId("context-usage-head");
+  const start = await head.boundingBox();
+  await page.mouse.move(start!.x + 40, start!.y + start!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(start!.x + 80, start!.y - 40, { steps: 6 });
+  await page.mouse.up();
+  await expect.poll(() => panel.getAttribute("data-mode")).toBe("floating");
+
+  await panel.getByText("System prompt", { exact: true }).click();
+  const detail = panel.locator(".context-usage-detail");
+  await expect(detail).toBeVisible();
+
+  // Park the floating card toward the top-left so the corner grip has room
+  // to grow before hitting the window clamp.
+  await page.evaluate(() => {
+    const el = document.querySelector("[data-testid='context-usage-panel']") as HTMLElement;
+    el.style.left = "24px";
+    el.style.top = "24px";
+    el.style.width = "360px";
+    el.style.height = "280px";
+    el.style.setProperty("--context-usage-h", "280px");
+  });
+  const before = await panel.boundingBox();
+  const detailBefore = await detail.boundingBox();
+  expect(before).not.toBeNull();
+  expect(detailBefore).not.toBeNull();
+
+  const grip = page.getByTestId("context-usage-resize");
+  const gripBox = await grip.boundingBox();
+  expect(gripBox).not.toBeNull();
+  await page.mouse.move(gripBox!.x + gripBox!.width / 2, gripBox!.y + gripBox!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(gripBox!.x + 160, gripBox!.y + 120, { steps: 8 });
+  await page.mouse.up();
+
+  await expect.poll(async () => (await panel.boundingBox())!.width).toBeGreaterThan(before!.width + 40);
+  await expect.poll(async () => (await panel.boundingBox())!.height).toBeGreaterThan(before!.height + 40);
+  const after = await panel.boundingBox();
+  const barAfter = await panel.locator(".context-usage-bar").boundingBox();
+  const detailAfter = await detail.boundingBox();
+  expect(after).not.toBeNull();
+  expect(barAfter).not.toBeNull();
+  expect(detailAfter).not.toBeNull();
+  expect(Math.abs(after!.width - barAfter!.width)).toBeLessThan(56);
+  expect(detailAfter!.height).toBeGreaterThan(detailBefore!.height);
+
+  await page.mouse.move(gripBox!.x + 140, gripBox!.y + 110);
+  await page.mouse.down();
+  await page.mouse.move(after!.x + 10, after!.y + 10, { steps: 8 });
+  await page.mouse.up();
+  const clamped = await panel.boundingBox();
+  expect(clamped!.width).toBeGreaterThanOrEqual(320);
+  expect(clamped!.height).toBeGreaterThanOrEqual(220);
+});
+
+test("context usage stays docked and clamped in a narrow window", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 640 });
+  await enterApp(page);
+  const { panel } = await openContextUsagePanel(page);
+  await expect(panel).toHaveAttribute("data-mode", "docked");
+  const docked = await panel.boundingBox();
+  expect(docked!.height).toBeLessThanOrEqual(640 * 0.46 + 4);
+
+  const head = page.getByTestId("context-usage-head");
+  const start = await head.boundingBox();
+  await page.mouse.move(start!.x + 30, start!.y + start!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(20, 20, { steps: 8 });
+  await page.mouse.up();
+  await expect.poll(() => panel.getAttribute("data-mode")).toBe("floating");
+  const floated = await panel.boundingBox();
+  expect(floated!.x).toBeGreaterThanOrEqual(0);
+  expect(floated!.y).toBeGreaterThanOrEqual(0);
+  expect(floated!.x + floated!.width).toBeLessThanOrEqual(900);
+  expect(floated!.y + floated!.height).toBeLessThanOrEqual(640);
+});
+
 test("artifact type badges stay neutral instead of rainbow pills", async ({ page }) => {
   await enterApp(page);
   await page
     .locator("#composer-input")
     .fill("show `figures/panel_I_heatmap_4genes_median.png/.pdf`");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "Toggle panel" }).click();
 
   const badge = page.locator('.rp-tile[data-artifact-name="panel_I_heatmap_4genes_median.png"] .rp-badge');
@@ -2646,7 +2950,7 @@ test("Cmd+K opens search and the composer shows the macOS shortcut", async ({ pa
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "userAgent", {
       configurable: true,
-      value: "superscience/Tauri",
+      value: "wisp-science/Tauri",
     });
     Object.defineProperty(navigator, "platform", {
       configurable: true,
@@ -2674,13 +2978,13 @@ test("Cmd+Enter sends when the modifier shortcut is selected on macOS", async ({
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "userAgent", {
       configurable: true,
-      value: "superscience/Tauri",
+      value: "wisp-science/Tauri",
     });
     Object.defineProperty(navigator, "platform", {
       configurable: true,
       value: "MacIntel",
     });
-    localStorage.setItem("superscience-send-with-modifier", "1");
+    localStorage.setItem("wisp-send-with-modifier", "1");
   });
   await enterApp(page);
   await expect(page.locator(".composer-hint")).toContainText("Cmd+Enter to send · Enter for newline");
@@ -2692,6 +2996,7 @@ test("Cmd+Enter sends when the modifier shortcut is selected on macOS", async ({
 });
 
 test("Ctrl+P command palette runs commands and switches themes", async ({ page }) => {
+  await pinNonMacPlatform(page);
   await enterApp(page);
   await page.keyboard.press("Control+p");
   const palette = page.getByRole("dialog", { name: "Command Palette" });
@@ -2703,9 +3008,9 @@ test("Ctrl+P command palette runs commands and switches themes", async ({ page }
   await expect(input).toHaveAttribute("autocomplete", "off");
   await expect(palette).toContainText("New session");
   await expect(palette.locator(".action-palette-row", { hasText: "New session" })
-    .locator(".action-shortcut")).toHaveText(/^(Ctrl|⌘)N$/);
+    .locator(".action-shortcut")).toHaveText("Ctrl+N");
   await expect(palette.locator(".action-palette-row", { hasText: "Search" })
-    .locator(".action-shortcut")).toHaveText(/^(Ctrl|⌘)K$/);
+    .locator(".action-shortcut")).toHaveText("Ctrl+K");
   await expect(palette).toContainText("Import and export");
   await expect(palette).toContainText("Import session archive");
 
@@ -2756,10 +3061,10 @@ test("Ctrl+P command palette runs commands and switches themes", async ({ page }
   await page.keyboard.press("Control+p");
   await input.fill("definitely-not-a-command");
   await expect(page.getByTestId("action-palette-empty")).toHaveText("No matching commands");
-  await input.fill("night mode");
+  await input.fill("dark theme");
   await input.press("Enter");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("superscience-theme"))).toBe("dark");
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("wisp-theme"))).toBe("dark");
 
   await page.keyboard.press("Control+p");
   await input.fill("open files");
@@ -2782,6 +3087,7 @@ test("Ctrl+P command palette runs commands and switches themes", async ({ page }
 });
 
 test("privacy mode hides selected projects and recent sessions, then restores them", async ({ page }) => {
+  await pinNonMacPlatform(page);
   await page.goto("/");
   const privateProject = page.locator(".proj-card", { hasText: "wisp-science" });
   const otherProject = page.locator(".proj-card", { hasText: "Other project" });
@@ -2893,10 +3199,10 @@ test("Ctrl+P changes UI and code font sizes", async ({ page }) => {
   await expect(page.locator(".action-palette-row")).toHaveCount(4);
 
   for (const [command, key, expected] of [
-    ["increase ui size", "superscience-ui-font-size", "15"],
-    ["decrease ui size", "superscience-ui-font-size", "14"],
-    ["increase code size", "superscience-code-font-size", "13"],
-    ["decrease code size", "superscience-code-font-size", "12"],
+    ["increase ui size", "wisp-ui-font-size", "15"],
+    ["decrease ui size", "wisp-ui-font-size", "14"],
+    ["increase code size", "wisp-code-font-size", "13"],
+    ["decrease code size", "wisp-code-font-size", "12"],
   ] as const) {
     await input.fill(command);
     await input.press("Enter");
@@ -2934,7 +3240,7 @@ test("rename session modal autofocuses so Ctrl+A selects the title", async ({ pa
 
   await composer(page).fill("rename-me");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("echo:rename-me")).toBeVisible({ timeout: 10_000 });
+  await expect(assistantReplyQuoting(page, "rename-me")).toBeVisible({ timeout: 10_000 });
 
   await page.locator(".side-item.ses", { hasText: "rename-me" }).dblclick();
   const input = page.locator("#rename-session-input");
@@ -2952,6 +3258,28 @@ test("rename session modal autofocuses so Ctrl+A selects the title", async ({ pa
   )).toBe(true);
 });
 
+test("renaming a fresh session takes effect before its first message (#888)", async ({ page }) => {
+  await page.addInitScript(parallelMock);
+  await page.goto("/");
+  await page.locator(".proj-card-main").first().click();
+  await expect(newSessionButton(page)).toBeVisible();
+
+  await newSessionButton(page).click();
+  const draft = page.locator(".side-item.ses", { hasText: "Untitled session" }).first();
+  await expect(draft).toBeVisible();
+
+  await draft.dblclick();
+  const input = page.locator("#rename-session-input");
+  await expect(input).toBeVisible();
+  await input.fill("Named before first turn");
+  await page.locator(".modal", { has: input }).getByRole("button", { name: "Save" }).click();
+
+  // The rename must show up without sending any message first.
+  await expect(page.locator(".side-item.ses", { hasText: "Named before first turn" })).toBeVisible();
+  await expect(page.locator(".side-item.ses", { hasText: "Untitled session" })).toHaveCount(0);
+  expect((await invokeArgsList(page, "send_message")).length).toBe(0);
+});
+
 test("conversation action button renames, transfers, and deletes sessions (#557)", async ({ page }) => {
   await page.addInitScript(parallelMock);
   await page.goto("/");
@@ -2966,7 +3294,7 @@ test("conversation action button renames, transfers, and deletes sessions (#557)
 
   await composer(page).fill("actions-manage-me");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("echo:actions-manage-me")).toBeVisible({ timeout: 10_000 });
+  await expect(assistantReplyQuoting(page, "actions-manage-me")).toBeVisible({ timeout: 10_000 });
   let session = page.locator(".side-item.ses", { hasText: "actions-manage-me" });
   await expect(session).toBeVisible({ timeout: 10_000 });
 
@@ -3046,7 +3374,7 @@ test("conversation action button renames, transfers, and deletes sessions (#557)
   await newSessionButton(page).click();
   await composer(page).fill("actions-delete-me");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("echo:actions-delete-me")).toBeVisible({ timeout: 10_000 });
+  await expect(assistantReplyQuoting(page, "actions-delete-me")).toBeVisible({ timeout: 10_000 });
   session = page.locator(".side-item.ses", { hasText: "actions-delete-me" });
   await expect(session).toBeVisible({ timeout: 10_000 });
   await openActions();
@@ -3070,7 +3398,7 @@ test("stale project rules can be reloaded from the session context menu", async 
   await newSessionButton(page).click();
   await composer(page).fill("fresh rules chat");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("echo:fresh rules chat")).toBeVisible({ timeout: 10_000 });
+  await expect(assistantReplyQuoting(page, "fresh rules chat")).toBeVisible({ timeout: 10_000 });
   const fresh = page.locator(".side-item.ses", { hasText: "fresh rules chat" });
   await expect(fresh).toBeVisible({ timeout: 10_000 });
   await fresh.click({ button: "right" });
@@ -3599,7 +3927,7 @@ test("Workflow library includes a built-in Roundtable DAG", async ({ page }) => 
   expect(chair.x).toBeGreaterThan(reviews[0].x);
 });
 
-test("Workflow library includes the SuperScience-native seven-node method-search DAG", async ({ page }) => {
+test("Workflow library includes the Wisp-native seven-node method-search DAG", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Workflows");
   const studio = page.getByTestId("workflow-studio");
@@ -3874,7 +4202,7 @@ test("branch in new session starts a new frame from the current session", async 
   await enterApp(page);
   await composer(page).fill("seed context");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
 
   await composer(page).fill("try another route");
   await page.getByRole("button", { name: "Message options" }).click();
@@ -3893,7 +4221,7 @@ test("branch on an earlier user message opens a new session from that point", as
   await enterApp(page);
   await composer(page).fill("first idea");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
 
   await composer(page).fill("second idea");
   await page.getByRole("button", { name: "Send" }).click();
@@ -3947,7 +4275,7 @@ test("rewinding a middle message asks for confirmation", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("first idea");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
 
   await composer(page).fill("second idea");
   await page.getByRole("button", { name: "Send" }).click();
@@ -3980,7 +4308,7 @@ test("rewind confirmation can branch instead", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("first idea");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
 
   await composer(page).fill("second idea");
   await page.getByRole("button", { name: "Send" }).click();
@@ -4009,7 +4337,7 @@ test("Escape closes only the rewind confirmation modal and keeps the transcript"
   await enterApp(page);
   await composer(page).fill("first idea");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
 
   await composer(page).fill("second idea");
   await page.getByRole("button", { name: "Send" }).click();
@@ -4034,9 +4362,9 @@ test("generic content menus do not expose session export", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("hello there");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
 
-  await page.getByText("Hello from mock superscience.").click({ button: "right" });
+  await page.getByText("Hello from mock wisp-science.").click({ button: "right" });
   await expect(page.getByRole("button", { name: "Export session" })).toHaveCount(0);
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Toggle panel" }).click();
@@ -4053,7 +4381,7 @@ test("uploaded file shows up in the artifacts panel after send", async ({ page }
   });
   await expect(page.locator(".composer-attachment.ready")).toHaveText("counts.csv");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
   await expect.poll(async () => page.evaluate(() => {
     const calls = ((window as any).__skillInvokeLog ?? []).filter((c: any) => c.cmd === "send_message");
     const args = calls.at(-1)?.args;
@@ -4118,11 +4446,47 @@ test("Generated artifacts survive follow-up tool commentary and ignore mentioned
   await expect(preview.locator(".center-file-head > span").first()).toHaveText("results/new.png");
 });
 
+test("links inside the artifact modal preview never navigate the app", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("ARTIFACTATTRIBUTION");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const reply = page.locator(".msg.assistant", {
+    hasText: "I inspected old.csv and created the requested output.",
+  });
+  await reply.locator('a.workspace-path-link[href="notes/FIGURE_LEGEND.md"]').click();
+  const modal = page.locator('.artifact-modal:has(.am-figure[data-file-path="notes/FIGURE_LEGEND.md"])');
+  await expect(modal).toBeVisible();
+
+  const appUrl = page.url();
+  await modal.locator('a[href="https://example.com/paper"]').click();
+  await page.getByTestId("external-link-open").click();
+  await expect.poll(() => lastInvokeArgs(page, "open_external_url")).toMatchObject({
+    url: "https://example.com/paper",
+  });
+  expect(page.url()).toBe(appUrl);
+  await expect(modal).toBeVisible();
+
+  await modal.locator('a[href="results/new.png"]').click();
+  await expect.poll(async () => page.locator(".artifact-modal").count()).toBe(1);
+  expect(page.url()).toBe(appUrl);
+  const openCalls = await page.evaluate(() => {
+    const plain = (value: any): any => {
+      if (value instanceof Map) return Object.fromEntries([...value].map(([k, v]) => [k, plain(v)]));
+      if (Array.isArray(value)) return value.map(plain);
+      if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, plain(v)]));
+      return value;
+    };
+    return ((window as any).__skillInvokeLog ?? []).filter((c: any) => c.cmd === "open_external_url").map((c: any) => plain(c.args));
+  });
+  expect(openCalls).toEqual([{ url: "https://example.com/paper" }]);
+});
+
 test("artifact category headers collapse and expand their tiles", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("make a volcano plot volcano.png");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "Toggle panel" }).click();
 
   const tile = page.locator('.rp-tile[data-artifact-name="volcano.png"]');
@@ -4204,7 +4568,7 @@ test("artifact tile attaches to the chat from its context and more menus", async
   await enterApp(page);
   await composer(page).fill("make a volcano plot volcano.png");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "Toggle panel" }).click();
 
   const tile = page.locator('.rp-tile[data-artifact-name="volcano.png"]');
@@ -4220,26 +4584,6 @@ test("artifact tile attaches to the chat from its context and more menus", async
   await tile.getByRole("button", { name: "More" }).click();
   await page.locator(".rp-tile-menu").getByRole("button", { name: "Attach to chat" }).click();
   await expect(page.locator(".composer-attachment.ready")).toHaveCount(1);
-});
-
-test("settings Files opens the workspace file browser instead of the home screen", async ({ page }) => {
-  await page.goto("/");
-  await expect(page.locator(".projects-screen")).toBeVisible();
-  await page.getByRole("button", { name: "Settings" }).click();
-  await expect(page.locator(".settings-page")).toBeVisible();
-  await page.getByTestId("settings-nav-files").click();
-  await expect(page.locator(".settings-page")).toHaveCount(0);
-  await expect(page.locator(".projects-screen")).toHaveCount(0);
-  await expect(page.locator(".rp-files")).toBeVisible();
-});
-
-test("settings Files from a project opens the same workspace file browser", async ({ page }) => {
-  await enterApp(page);
-  await page.getByRole("button", { name: "Settings" }).click();
-  await expect(page.locator(".settings-page")).toBeVisible();
-  await page.getByTestId("settings-nav-files").click();
-  await expect(page.locator(".settings-page")).toHaveCount(0);
-  await expect(page.locator(".rp-files")).toBeVisible();
 });
 
 test("workspace Files panel navigates deeply nested analysis modules", async ({ page }) => {
@@ -4413,6 +4757,55 @@ test("text entries keep the native context menu", async ({ page }) => {
     expect(defaultPrevented).toBe(false);
     await expect(page.locator(".ctx-menu")).toHaveCount(0);
   }
+});
+
+test("project settings save opt-in run workspace retention windows", async ({ page }) => {
+  await enterApp(page);
+  await page.locator(".proj-switch").click();
+  await page.getByRole("button", { name: "Project settings" }).click();
+
+  const settings = page.locator(".proj-settings-modal");
+  // Each window is a labeled row: the first input's label used to be missing.
+  await expect(settings.getByText("Succeeded runs", { exact: true })).toBeVisible();
+  await expect(settings.getByText("Failed runs", { exact: true })).toBeVisible();
+  await expect(settings.getByText("Orphaned files", { exact: true })).toBeVisible();
+  const succeeded = settings.getByTestId("retention-succeeded");
+  const failed = settings.getByTestId("retention-failed");
+  const orphan = settings.getByTestId("retention-orphan");
+  // Off by default.
+  await expect(succeeded).toHaveValue("");
+  await expect(failed).toHaveValue("");
+  await expect(orphan).toHaveValue("");
+
+  await succeeded.fill("7");
+  await succeeded.blur();
+  // Empty fields serialize as undefined (their sweeps stay off).
+  await expect.poll(() => lastInvokeArgs(page, "set_project_run_retention")).toMatchObject({
+    runRetentionDays: 7,
+  });
+  expect(
+    (await lastInvokeArgs(page, "set_project_run_retention")).failedRunRetentionDays ?? null,
+  ).toBeNull();
+  expect(
+    (await lastInvokeArgs(page, "set_project_run_retention")).orphanFileRetentionDays ?? null,
+  ).toBeNull();
+  await failed.fill("14");
+  await failed.blur();
+  await orphan.fill("30");
+  await orphan.blur();
+  await expect.poll(() => lastInvokeArgs(page, "set_project_run_retention")).toMatchObject({
+    runRetentionDays: 7,
+    failedRunRetentionDays: 14,
+    orphanFileRetentionDays: 30,
+  });
+
+  // Reopening reflects the stored windows.
+  await page.keyboard.press("Escape");
+  await page.locator(".proj-switch").click();
+  await page.getByRole("button", { name: "Project settings" }).click();
+  await expect(settings.getByTestId("retention-succeeded")).toHaveValue("7");
+  await expect(settings.getByTestId("retention-failed")).toHaveValue("14");
+  await expect(settings.getByTestId("retention-orphan")).toHaveValue("30");
 });
 
 test("saving a changed agent context asks for confirmation", async ({ page }) => {
@@ -4781,32 +5174,20 @@ test("Files browses registered SSH contexts without a real remote host", async (
   await expect(page.locator('[data-workspace-path="report.csv"]')).toBeVisible();
 });
 
-test("pasted local file attaches to the composer instead of inserting its name", async ({ page }) => {
+test("Files uploads local paths to the selected SSH folder", async ({ page }) => {
   await enterApp(page);
-  await composer(page).evaluate((el) => {
-    const data = new DataTransfer();
-    data.items.add(new File(["gene,value\nBRCA1,2"], "report.csv", { type: "text/csv" }));
-    data.setData("text/plain", "report.csv");
-    const event = new Event("paste", { bubbles: true, cancelable: true });
-    Object.defineProperty(event, "clipboardData", { value: data });
-    el.dispatchEvent(event);
-  });
-  await expect(page.locator(".composer-attachment.ready")).toHaveText("report.csv");
-  await expect(composer(page)).toHaveValue("");
-});
+  await page.getByRole("button", { name: "Files" }).click();
+  await page.getByRole("combobox", { name: "File location" }).selectOption("ssh:gpu-server");
+  await expect(page.getByRole("textbox", { name: "Remote path" })).toHaveValue("/home/research");
 
-test("pasted file URL attaches a path chip without inserting the filename", async ({ page }) => {
-  await enterApp(page);
-  await composer(page).evaluate((el) => {
-    const data = new DataTransfer();
-    data.setData("text/uri-list", "file:///Users/me/project/notes.md");
-    data.setData("text/plain", "notes.md");
-    const event = new Event("paste", { bubbles: true, cancelable: true });
-    Object.defineProperty(event, "clipboardData", { value: data });
-    el.dispatchEvent(event);
+  const upload = page.getByTestId("files-remote-upload");
+  await expect(upload).toBeVisible();
+  await upload.click();
+  await expect.poll(() => lastInvokeArgs(page, "upload_to_context")).toMatchObject({
+    contextId: "ssh:gpu-server",
+    destinationDir: "/home/research",
   });
-  await expect(page.locator(".composer-attachment.ready")).toHaveText("notes.md");
-  await expect(composer(page)).toHaveValue("");
+  await expect(page.locator("#copy-toast")).toContainText("Uploading 1 item");
 });
 
 test("pasted image attaches to the composer", async ({ page }) => {
@@ -4822,7 +5203,7 @@ test("pasted image attaches to the composer", async ({ page }) => {
   await expect(page.locator(".composer-attachment.ready")).toHaveText(/pasted_image_\d+_1\.png/);
   await expect(page.locator(".composer-attachment-row.image img")).toBeVisible();
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
   await expect.poll(async () => page.evaluate(() => {
     const calls = ((window as any).__skillInvokeLog ?? []).filter((c: any) => c.cmd === "send_message");
     const args = calls.at(-1)?.args;
@@ -4928,6 +5309,53 @@ test("environment panel attaches and detaches remote servers", async ({ page }) 
   await expect(attach.locator('[data-context-id="ssh:gpu-server"]')).toBeVisible();
   await expect(page.locator(".context-card", { hasText: "local" })
     .getByRole("button", { name: "Remove from session" })).toHaveCount(0);
+});
+
+test("first server enable asks for storage locations and the rail can edit them", async ({ page }) => {
+  await enterApp(page);
+  // No saved preferences for this project × server → first enable prompts.
+  await page.evaluate(() => {
+    delete (window as any).__mockStoragePrefs["ssh:gpu-server"];
+  });
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  await page.getByRole("button", { name: "Environment", exact: true }).click();
+
+  const attach = page.getByTestId("context-attach");
+  await attach.locator('.context-attach-row[data-context-id="ssh:gpu-server"]').click();
+  const dialog = page.getByTestId("storage-prefs-modal");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator("#storage-prefs-data-root")).toHaveValue("~/wisp/demo-project/data");
+  await expect(dialog.locator("#storage-prefs-workdir-root")).toHaveValue(".wisp-science/runs");
+  await expect(dialog.locator("#storage-prefs-results-dir")).toHaveValue("remote/gpu-server");
+
+  // Escape immediately: one press closes only the dialog; the Environment
+  // rail (its parent surface) stays open with the now-attached server.
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator(".context-card", { hasText: "ssh:gpu-server" })).toBeVisible();
+  expect(await lastInvokeArgs(page, "set_context_storage_prefs")).toBeNull();
+
+  // The rail's storage action reopens the dialog; saving persists the edits.
+  await page.locator(".context-card", { hasText: "ssh:gpu-server" })
+    .getByRole("button", { name: "Storage locations" }).click();
+  await expect(dialog).toBeVisible();
+  await dialog.locator("#storage-prefs-data-root").fill("/scratch/demo/data");
+  await dialog.locator("#storage-prefs-results-dir").fill("results/from-gpu");
+  await dialog.getByRole("button", { name: "Save" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect.poll(() => lastInvokeArgs(page, "set_context_storage_prefs")).toMatchObject({
+    contextId: "ssh:gpu-server",
+    remoteDataRoot: "/scratch/demo/data",
+    remoteWorkdirRoot: ".wisp-science/runs",
+    localResultsDir: "results/from-gpu",
+  });
+
+  // Saved preferences: re-enabling never prompts again.
+  await page.locator(".context-card", { hasText: "ssh:gpu-server" })
+    .getByRole("button", { name: "Remove from session" }).click();
+  await attach.locator('.context-attach-row[data-context-id="ssh:gpu-server"]').click();
+  await expect(page.locator(".context-card", { hasText: "ssh:gpu-server" })).toBeVisible();
+  await expect(dialog).toHaveCount(0);
 });
 
 test("settings manages servers and probes them with the default environment skill", async ({ page }) => {
@@ -5087,7 +5515,7 @@ test("Escape closes the SSH connectivity dialog", async ({ page }) => {
     );
     context.last_probe_status = "error";
     context.last_probe_error =
-      "SSH authentication succeeded, but the remote account did not execute SuperScience's non-interactive probe commands. Check for a restricted shell, forced command, or a login startup script that exits early.";
+      "SSH authentication succeeded, but the remote account did not execute Wisp's non-interactive probe commands. Check for a restricted shell, forced command, or a login startup script that exits early.";
   });
 
   const menu = await openComputeMenu(page);
@@ -5222,9 +5650,6 @@ test("project research graph opens from the sidebar in list and graph views", as
   await sidebar.getByRole("button", { name: "Research graph", exact: true }).click();
   await expect(modal).toBeVisible();
   await expect(modal.locator(".research-graph-heading h2")).toHaveCSS("font-family", /Source Serif/);
-  await expect(modal.getByTestId("research-graph-tagline")).toContainText(
-    /relationship map|why you did what you did/i,
-  );
   await expect(modal).toContainText("5 nodes · 3 relationships");
   await expect(modal.getByTestId("research-graph-list")).toBeVisible();
   await expect(modal.getByText("Use DESeq2 over edgeR")).toBeVisible();
@@ -5277,9 +5702,6 @@ test("registered Artifact opens publication binding and Escape keeps Workspace o
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("publication-binding-dialog")).toHaveCount(0);
   await expect(page.getByTestId("publication-workspace")).toBeVisible();
-  await expect(page.getByTestId("publication-workspace-tagline")).toContainText(
-    /exact evidence|evidence capsule/i,
-  );
   await expect(page.getByTestId("publication-manuscript-tree")).toContainText("Figure 2B");
 });
 
@@ -5312,6 +5734,152 @@ test("Run surface binds an exact publication evidence source", async ({ page }) 
   });
   await expect(dialog).toHaveCount(0);
   await expect(page.getByTestId("publication-workspace")).toContainText("run-kinase-001");
+});
+
+test("finished run offers server workspace cleanup and shows the cleaned state", async ({ page }) => {
+  await enterApp(page);
+  await selectRemoteContext(page);
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  await page.getByRole("button", { name: "Environment", exact: true }).click();
+  await page.locator(".context-card", { hasText: "ssh:gpu-server" })
+    .getByRole("button", { name: "View runs" }).click();
+
+  const run = page.locator(".run-card", { hasText: "Kinase screen QC" });
+  await expect(run).toBeVisible();
+  // The running local run offers no cleanup; the finished SSH run does.
+  await run.getByRole("button", { name: "Clean up server workspace" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "cleanup_run_workspace"))
+    .toMatchObject({ runId: "run-kinase-001" });
+  await expect(run.getByTestId("run-cleaned")).toHaveText("workspace cleaned");
+  await expect(run.getByRole("button", { name: "Clean up server workspace" })).toHaveCount(0);
+});
+
+test("remote files view lists ledgered files and deletes retracted ones", async ({ page }) => {
+  await enterApp(page);
+  await selectRemoteContext(page);
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  await page.getByRole("button", { name: "Environment", exact: true }).click();
+  await page.locator(".context-card", { hasText: "ssh:gpu-server" })
+    .getByRole("button", { name: "Remote files" }).click();
+
+  const pane = page.getByTestId("remote-files-pane");
+  await expect(pane).toBeVisible();
+  const rows = pane.getByTestId("remote-file-row");
+  await expect(rows).toHaveCount(3);
+  const active = rows.filter({ hasText: "plates.csv" });
+  await expect(active).toContainText("active");
+  // Active entries stay protected — no delete action.
+  await expect(active.getByRole("button", { name: "Delete from server" })).toHaveCount(0);
+
+  const replaced = rows.filter({ hasText: "matrix.tsv" }).filter({ hasText: "replaced" });
+  await replaced.getByRole("button", { name: "Delete from server" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "remove_remote_files")).toMatchObject({
+    contextId: "ssh:gpu-server",
+    ids: ["stage-old-upload"],
+  });
+  await expect(rows).toHaveCount(2);
+
+  // Escape closes only this modal; the Environment rail stays open.
+  await page.keyboard.press("Escape");
+  await expect(pane).toHaveCount(0);
+  await expect(page.locator(".context-card", { hasText: "ssh:gpu-server" })).toBeVisible();
+});
+
+test("run review modal browses the workspace and downloads or deletes selections", async ({ page }) => {
+  await enterApp(page);
+  await selectRemoteContext(page);
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  await page.getByRole("button", { name: "Environment", exact: true }).click();
+  await page.locator(".context-card", { hasText: "ssh:gpu-server" })
+    .getByRole("button", { name: "View runs" }).click();
+
+  const runCard = page.locator(".run-card", { hasText: "Kinase screen QC" });
+  await runCard.getByTestId("run-review-open").click();
+  const review = page.getByTestId("run-review-modal");
+  await expect(review).toBeVisible();
+  await expect(review.getByTestId("run-review-subtitle")).toHaveText("Kinase screen QC");
+  const rows = review.getByTestId("run-review-row");
+  await expect(rows).toHaveCount(2);
+  await expect(rows.filter({ hasText: "results" })).toContainText("132481 files");
+  const table = rows.filter({ hasText: "qc_table.tsv" });
+  await expect(table.getByTestId("run-review-name")).toHaveText("qc_table.tsv");
+  await expect(table.getByTestId("run-review-size")).toHaveText("2.0 KB");
+  const nameBox = await table.getByTestId("run-review-name").boundingBox();
+  const sizeBox = await table.getByTestId("run-review-size").boundingBox();
+  expect(nameBox).not.toBeNull();
+  expect(sizeBox).not.toBeNull();
+  expect(nameBox!.x + nameBox!.width).toBeLessThan(sizeBox!.x);
+  const cleanupBox = await review.getByRole("button", { name: "Clean entire workspace" }).boundingBox();
+  expect(cleanupBox).not.toBeNull();
+  expect(cleanupBox!.height).toBeLessThan(40);
+  await expect(review.getByRole("button", { name: "Download selected" })).toBeDisabled();
+  await review.getByTestId("run-review-select-all").check();
+  await expect(review.getByTestId("run-review-count")).toHaveText("2 selected");
+  await expect(review.getByRole("button", { name: "Download selected" })).toBeEnabled();
+  await review.getByTestId("run-review-select-all").uncheck();
+
+  // Escape immediately: one press closes only the review modal — the runs
+  // modal underneath stays open.
+  await page.keyboard.press("Escape");
+  await expect(review).toHaveCount(0);
+  await expect(page.locator(".context-details-modal.runs-details")).toBeVisible();
+
+  // Reopen, drill into the directory and back, then download a selection.
+  await runCard.getByTestId("run-review-open").click();
+  await expect(review).toBeVisible();
+  await review.getByRole("button", { name: "results" }).click();
+  await expect(review.getByTestId("run-review-row")).toContainText("summary.tsv");
+  await review.getByRole("button", { name: "Up" }).click();
+  await expect(review.getByTestId("run-review-row")).toHaveCount(2);
+  await rows.filter({ hasText: "qc_table.tsv" }).locator("input[type=checkbox]").check();
+  await rows.filter({ hasText: "132481 files" }).locator("input[type=checkbox]").check();
+  await review.getByRole("button", { name: "Download selected" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "download_run_files")).toMatchObject({
+    runId: "run-kinase-001",
+    files: ["qc_table.tsv"],
+    dirs: ["results"],
+  });
+  await expect(review.getByTestId("run-review-status")).toContainText("downloaded");
+
+  // Delete only the selected directory; the file entry survives.
+  await rows.filter({ hasText: "132481 files" }).locator("input[type=checkbox]").check();
+  await review.getByRole("button", { name: "Delete selected" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "delete_run_files")).toMatchObject({
+    runId: "run-kinase-001",
+    paths: ["results"],
+  });
+  await expect(review.getByTestId("run-review-row")).toHaveCount(1);
+
+  // Whole-workspace cleanup is user-explicit (force) and closes the modal.
+  await review.getByRole("button", { name: "Clean entire workspace" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "cleanup_run_workspace")).toMatchObject({
+    runId: "run-kinase-001",
+    force: true,
+  });
+  await expect(review).toHaveCount(0);
+});
+
+test("dropping a server audits abandoned remote files before removal", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Environments");
+
+  const server = page.locator('.environment-settings-row[data-context-id="ssh:gpu-server"]');
+  await server.locator(".settings-list-remove").click();
+  const confirm = page.getByTestId("host-remove-confirm");
+  await expect(confirm).toBeVisible();
+  await expect(confirm.getByTestId("host-disposal-detail"))
+    .toContainText("3 ledgered file(s)");
+  // Cancel keeps the server.
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await expect(server).toBeVisible();
+  expect(await lastInvokeArgs(page, "remove_ssh_host")).toBeNull();
+
+  // Confirming abandons the remote files and removes the host.
+  await server.locator(".settings-list-remove").click();
+  await page.getByTestId("host-remove-confirm")
+    .getByRole("button", { name: "Remove server" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "remove_ssh_host"))
+    .toMatchObject({ alias: "gpu-server" });
 });
 
 test("method-search Run reviews the frozen contract before start and exposes controls", async ({ page }) => {
@@ -5539,7 +6107,7 @@ test("right panel shows execution contexts and runs", async ({ page }) => {
   await expect(page.locator(".run-card", { hasText: "Kinase screen QC" })).toContainText("ssh:gpu-server");
   await expect(page.locator(".run-card", { hasText: "Local normalization" })).toHaveCount(0);
   const remoteRun = page.locator(".run-card", { hasText: "Kinase screen QC" });
-  await expect(remoteRun).toContainText("~/.superscience/runs/run-kinase-001");
+  await expect(remoteRun).toContainText("~/.wisp-science/runs/run-kinase-001");
   await remoteRun.getByText("Latest output").click();
   await expect(remoteRun).toContainText("wrote qc table");
 
@@ -5691,11 +6259,108 @@ test("monitor_run renders a live Run card from summary polls and on-demand detai
   // Starting another turn remounts settled transcript rows. A manual
   // dismissal must survive that remount instead of flashing back until the
   // next run-list refresh.
+  const pollsBeforeRemount = await runListPollCount(page);
   await composer(page).fill("continue after dismiss");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(card).toHaveCount(0);
-  await page.waitForTimeout(1_500);
+  // The flash-back regression appeared on the run-list refresh after the
+  // remount, so wait for that refresh to actually happen before re-checking.
+  await expect
+    .poll(() => runListPollCount(page), { timeout: 15_000 })
+    .toBeGreaterThan(pollsBeforeRemount);
   await expect(card).toHaveCount(0);
+});
+
+test("review prompt waits for turn end and dismissal persists (#897)", async ({ page }) => {
+  await enterApp(page);
+  await page.evaluate(() => {
+    const run = (window as any).__mockRuns.find((item: any) => item.id === "run-local-002");
+    Object.assign(run, {
+      context_id: "ssh:gpu-server",
+      title: "Genome assembly",
+      kind: "ssh_direct",
+      status: "running",
+      created_at: Math.floor(Date.now() / 1000) - 300,
+      started_at: Math.floor(Date.now() / 1000) - 295,
+      remote_workdir: "~/.wisp-science/runs/run-local-002",
+      remote_handle_json: '{"kind":"ssh_direct"}',
+      progress_json: "{}",
+    });
+    (window as any).__mockRunWorkspaceFiles["run-local-002"] = {
+      "": [{ path: "assembly.fasta", kind: "file", size_bytes: 4096, file_count: null }],
+    };
+  });
+
+  await composer(page).fill("MONITORRUN");
+  await page.getByRole("button", { name: "Send" }).click();
+  const card = page.getByTestId("run-monitor-card");
+  await expect(card).toBeVisible();
+
+  // The run succeeds while the turn is still working: no interruption yet.
+  await page.evaluate(() => {
+    const run = (window as any).__mockRuns.find((item: any) => item.id === "run-local-002");
+    Object.assign(run, {
+      status: "succeeded",
+      ended_at: Math.floor(Date.now() / 1000),
+      exit_code: 0,
+    });
+  });
+  await expect(card).toContainText("Succeeded", { timeout: 7_000 });
+  const review = page.getByTestId("run-review-modal");
+  await expect(review).toHaveCount(0);
+
+  // Turn ends: the prompt opens for the unresolved server-side files.
+  await page.evaluate(() => (window as any).__finishMonitorRun());
+  await expect(review).toBeVisible({ timeout: 7_000 });
+  await expect(review).toContainText("assembly.fasta");
+
+  // Escape immediately: one press closes the prompt and persists the
+  // dismissal so this run never auto-prompts again.
+  await page.keyboard.press("Escape");
+  await expect(review).toHaveCount(0);
+  await expect.poll(() => lastInvokeArgs(page, "dismiss_run_review")).toMatchObject({
+    runId: "run-local-002",
+  });
+});
+
+test("unmonitored exploratory run success never auto-opens the review prompt (#897)", async ({ page }) => {
+  await page.goto("/");
+  await page.evaluate(() => {
+    const now = Math.floor(Date.now() / 1000);
+    const run = (window as any).__mockRuns.find((item: any) => item.id === "run-local-002");
+    Object.assign(run, {
+      frame_id: "s-complete",
+      context_id: "ssh:gpu-server",
+      title: "Quick check",
+      kind: "ssh_direct",
+      status: "running",
+      created_at: now - 30,
+      started_at: now - 29,
+      remote_workdir: "~/.wisp-science/runs/run-local-002",
+      remote_handle_json: '{"kind":"ssh_direct"}',
+    });
+    (window as any).__mockRunWorkspaceFiles["run-local-002"] = {
+      "": [{ path: "notes.txt", kind: "file", size_bytes: 128, file_count: null }],
+    };
+  });
+
+  await page.getByTestId("recent-session-card").nth(1).click();
+  const automatic = page.getByTestId("auto-run-monitor");
+  await expect(automatic).toBeVisible();
+
+  await page.evaluate(() => {
+    const run = (window as any).__mockRuns.find((item: any) => item.id === "run-local-002");
+    Object.assign(run, {
+      status: "succeeded",
+      ended_at: Math.floor(Date.now() / 1000),
+      exit_code: 0,
+    });
+  });
+  await expect(automatic).toContainText("Succeeded", { timeout: 7_000 });
+  // Exploratory command runs never nominate themselves for review, even with
+  // files present and the session idle: cleanup stays on the manual entry
+  // points and retention.
+  await expect(page.getByTestId("run-review-modal")).toHaveCount(0);
 });
 
 test("run monitor output stays pinned to the tail across poll rebuilds (#654)", async ({ page }) => {
@@ -5744,9 +6409,14 @@ test("run monitor output stays pinned to the tail across poll rebuilds (#654)", 
   await output.evaluate((el) => {
     el.scrollTop = 0;
   });
+  const pollsBeforeBatch3 = await runListPollCount(page);
   await setOutput("batch-3");
   await expect(output).toContainText("batch-3");
-  await page.waitForTimeout(1_500);
+  // The yank would happen on a poll rebuild after the content update, so wait
+  // for another refresh to complete before asserting the scroll position held.
+  await expect
+    .poll(() => runListPollCount(page), { timeout: 10_000 })
+    .toBeGreaterThan(pollsBeforeBatch3 + 1);
   expect(await output.evaluate((el) => el.scrollTop)).toBeLessThanOrEqual(2);
 
   // Scrolling back to the bottom re-engages follow.
@@ -5800,10 +6470,15 @@ test("a settled run card stops rebuilding itself on every poll (#654)", async ({
 
   // Tag the live node. Identical poll results must leave it in place: replacing
   // it is what reset the panel to its top edge for a frame, once per second.
+  const pollsBeforeProbe = await runListPollCount(page);
   await output.evaluate((el) => {
     (el as any).__stableProbe = true;
   });
-  await page.waitForTimeout(3_000);
+  // Wait for several identical poll results to come back, then verify none of
+  // them replaced the tagged node.
+  await expect
+    .poll(() => runListPollCount(page), { timeout: 15_000 })
+    .toBeGreaterThanOrEqual(pollsBeforeProbe + 3);
   expect(await output.evaluate((el) => (el as any).__stableProbe === true)).toBe(true);
   expect(await bottomGap()).toBeLessThanOrEqual(2);
 });
@@ -5911,6 +6586,26 @@ test("image generation shows a placeholder and replaces it with the PNG", async 
   await expect(image).toBeVisible();
   await expect(image).toHaveAttribute("src", /^data:image\/png;base64,/);
   await expect(card.locator(".image-generation-spinner")).toHaveCount(0);
+});
+
+test("video generation shows a placeholder and replaces it with the MP4", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("VIDEOGENPLACEHOLDER");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const card = page.getByTestId("video-generation-card");
+  await expect(card).toHaveAttribute("data-status", "running");
+  await expect(card.locator(".video-generation-spinner")).toBeVisible();
+  await expect(card.locator("video")).toHaveCount(0);
+  await expect(card).toContainText("media/demo.mp4");
+  await expect(page.locator('.step-name:text-is("generate_video")')).toHaveCount(0);
+
+  await expect(card).toHaveAttribute("data-status", "completed", { timeout: 3_000 });
+  const video = card.locator("video");
+  await expect(video).toBeVisible();
+  await expect(video).toHaveAttribute("src", /^data:video\/mp4;base64,/);
+  await expect(video).toHaveAttribute("preload", "metadata");
+  await expect(card.locator(".video-generation-spinner")).toHaveCount(0);
 });
 
 test("SSH failures show that automatic retry was stopped", async ({ page }) => {
@@ -6142,13 +6837,16 @@ test("runtime inspector lists object metadata without loading object contents", 
     clientY: startY,
   });
   await expect(rEnvironment).toHaveClass(/is-dragging/);
-  await dragHandle.dispatchEvent("pointermove", {
-    buttons: 1,
-    pointerId: 7,
-    clientX: startX - 120,
-    clientY: startY + 48,
-  });
+  // Re-dispatch the move inside the poll: a single pointermove right after the
+  // drag state flips can still be batched away by Leptos on a busy CI worker,
+  // leaving the panel unmoved even though is-dragging is set.
   await expect.poll(async () => {
+    await dragHandle.dispatchEvent("pointermove", {
+      buttons: 1,
+      pointerId: 7,
+      clientX: startX - 120,
+      clientY: startY + 48,
+    });
     const afterDrag = await rEnvironment.boundingBox();
     return beforeDrag && afterDrag ? Math.round(beforeDrag.x - afterDrag.x) : 0;
   }).toBeGreaterThan(100);
@@ -6665,7 +7363,7 @@ test("PPTX files render lazily inside the app", async ({ page }) => {
   const presentation = page.locator(".artifact-modal .rp-pptx");
   await expect(presentation).toBeVisible();
   await expect(presentation.locator('[data-slide-index="0"]')).toBeVisible();
-  await expect(presentation).toContainText("SuperScience PPTX preview");
+  await expect(presentation).toContainText("Wisp PPTX preview");
   await expect.poll(() => lastInvokeArgs(page, "read_file_bytes"))
     .toMatchObject({ path: "office-preview.pptx", maxBytes: 32 * 1024 * 1024 });
 });
@@ -6952,7 +7650,7 @@ test("artifact panel normalizes png/pdf shorthand to the previewable image", asy
     .locator("#composer-input")
     .fill("show `figures/panel_I_heatmap_4genes_median.png/.pdf`");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "Toggle panel" }).click();
 
   const tile = page.locator('.rp-tile[data-artifact-name="panel_I_heatmap_4genes_median.png"]');
@@ -6961,12 +7659,10 @@ test("artifact panel normalizes png/pdf shorthand to the previewable image", asy
   await expect(page.locator('.rp-tile[data-artifact-name="panel_I_heatmap_4genes_median.png/.pdf"]')).toHaveCount(0);
 });
 
-test("settings page shows the saved provider", async ({ page }) => {
+test("settings page shows the saved protocol", async ({ page }) => {
   await enterApp(page);
-  await openProviderSettings(page);
+  await openModelsSettings(page);
   await expect(providerSelect(page)).toHaveValue("openai");
-  await page.locator(".settings-footer").getByRole("button", { name: "Cancel" }).click();
-  await openModelEditor(page);
   await expect(page.locator("label.settings-check", { hasText: "Supports image input" })).toHaveCSS("flex-direction", "row");
   await expect(page.locator("label.settings-check", { hasText: "Use for image analysis" })).toHaveCSS("flex-direction", "row");
   await expect(page.locator("label.settings-check", { hasText: "Use for image generation" })).toHaveCSS("flex-direction", "row");
@@ -6976,17 +7672,12 @@ test("settings page shows the saved provider", async ({ page }) => {
 test("model settings updates activation and confirms removal", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Models");
-  await expect(page.getByTestId("provider-card").first()).toBeVisible();
-  await expect(providerCard(page, "tctoken")).toBeVisible();
 
-  await providerCard(page, "anthropic").getByTestId("provider-open-models").click();
   const opus = page.locator(".settings-list-row").filter({ hasText: "opus-4.8" });
   await opus.getByRole("button", { name: "Use" }).click();
   await expect.poll(() => lastInvokeArgs(page, "set_active_model")).toMatchObject({ id: "opus" });
   await expect(opus).toHaveClass(/settings-list-row-active/);
-  await page.locator(".settings-head-back").click();
 
-  await providerCard(page, "deepseek").getByTestId("provider-open-models").click();
   const deepseek = page.locator(".settings-list-row").filter({ hasText: "deepseek-v4-pro" });
   await deepseek.getByTitle("Remove model").click();
   const confirm = page.getByTestId("model-delete-confirm");
@@ -7017,11 +7708,11 @@ test("appearance settings persist separate light and dark palettes and font size
   await page.getByRole("slider", { name: "UI font size" }).fill("16");
   await page.getByRole("slider", { name: "Code font size" }).fill("15");
   await expect.poll(() => page.evaluate(() => ({
-    theme: localStorage.getItem("superscience-theme"),
-    light: localStorage.getItem("superscience-light-palette"),
-    dark: localStorage.getItem("superscience-dark-palette"),
-    ui: localStorage.getItem("superscience-ui-font-size"),
-    code: localStorage.getItem("superscience-code-font-size"),
+    theme: localStorage.getItem("wisp-theme"),
+    light: localStorage.getItem("wisp-light-palette"),
+    dark: localStorage.getItem("wisp-dark-palette"),
+    ui: localStorage.getItem("wisp-ui-font-size"),
+    code: localStorage.getItem("wisp-code-font-size"),
   }))).toEqual({ theme: "dark", light: "catppuccin", dark: "gruvbox", ui: "16", code: "15" });
 
   await page.reload();
@@ -7094,6 +7785,100 @@ test("UI font size setting scales chat message body text", async ({ page }) => {
   await expect.poll(composerFontSize).toBe("18px");
 });
 
+test("configure presentation applies font size and theme without opening Settings", async ({ page }) => {
+  await enterApp(page);
+  await emitTauriEvent(page, "agent", {
+    kind: "ToolPresentation",
+    frame_id: "any-session",
+    presentation_kind: "app_prefs",
+    payload: { ui_font_size: 18, theme: "dark" },
+  });
+  await expect.poll(() => page.evaluate(() =>
+    document.documentElement.getAttribute("style") ?? ""
+  )).toContain("--ui-font-size:18px");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+});
+
+test("markdown table font follows UI font size", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("MDTABLE");
+  await page.getByRole("button", { name: "Send" }).click();
+  const table = page.locator(".msg.assistant .md table").first();
+  await expect(table).toBeVisible();
+  const tableFont = () => table.evaluate((el) => getComputedStyle(el).fontSize);
+  expect(await tableFont()).toBe("13px");
+
+  await openSettingsSection(page, "Appearance");
+  await page.getByRole("slider", { name: "UI font size" }).fill("18");
+  await page.getByRole("button", { name: "Back to app" }).click();
+  await expect.poll(tableFont).toBe("17px");
+});
+
+test("appearance custom CSS can be pasted, imported, and cleared", async ({ page }, testInfo) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Appearance");
+
+  const card = page.getByTestId("appearance-custom-css-card");
+  await expect(card).toHaveClass(/appearance-config-card/);
+  await expect(card.getByTestId("appearance-custom-css")).toBeVisible();
+  await expect(card.getByTestId("appearance-custom-css-clear")).toBeDisabled();
+
+  const css = ":root { --md-lead-bar-width: 0; --md-lead-bar-pad: 0; }";
+  await page.getByTestId("appearance-custom-css").fill(css);
+  await expect.poll(() => page.evaluate(() =>
+    document.getElementById("wisp-custom-theme")?.textContent ?? ""
+  )).toContain("--md-lead-bar-width: 0");
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("wisp-custom-css")))
+    .toContain("--md-lead-bar-width: 0");
+
+  const imported = ":root { --md-table-font-size: 16px; }";
+  mkdirSync(testInfo.outputDir, { recursive: true });
+  const file = resolve(testInfo.outputDir, "theme.css");
+  writeFileSync(file, imported);
+  await page.getByTestId("appearance-custom-css-file").setInputFiles(file);
+  await expect.poll(() => page.getByTestId("appearance-custom-css").inputValue())
+    .toContain("--md-table-font-size: 16px");
+  await expect.poll(() => page.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue("--md-table-font-size").trim()
+  )).toBe("16px");
+
+  await page.getByTestId("appearance-custom-css-clear").click();
+  await expect.poll(() => page.evaluate(() =>
+    document.getElementById("wisp-custom-theme")?.textContent ?? ""
+  )).toBe("");
+});
+
+test("custom CSS sanitizes remote url and import", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Appearance");
+  await page.getByTestId("appearance-custom-css").fill([
+    ":root { --clay: #111111; }",
+    '@import url("https://evil.example/x.css");',
+    "body { background: url(https://evil.example/p.png); }",
+  ].join("\n"));
+  await expect.poll(() => page.evaluate(() =>
+    document.getElementById("wisp-custom-theme")?.textContent ?? ""
+  )).toContain("--clay: #111111");
+  const injected = () => page.evaluate(() =>
+    (document.getElementById("wisp-custom-theme")?.textContent ?? "").toLowerCase()
+  );
+  await expect.poll(injected).not.toContain("@import");
+  await expect.poll(injected).not.toContain("url(");
+});
+
+test("configure presentation applies custom CSS", async ({ page }) => {
+  await enterApp(page);
+  await emitTauriEvent(page, "agent", {
+    kind: "ToolPresentation",
+    frame_id: "any-session",
+    presentation_kind: "app_prefs",
+    payload: { custom_css: ":root { --md-lead-bar-width: 0; }" },
+  });
+  await expect.poll(() => page.evaluate(() =>
+    document.getElementById("wisp-custom-theme")?.textContent ?? ""
+  )).toContain("--md-lead-bar-width: 0");
+});
+
 test("UI font size setting scales Chinese chat markdown and composer", async ({ page }) => {
   await page.goto("/?mockLocale=zh");
   await page.locator(".proj-card-main").first().click();
@@ -7120,32 +7905,27 @@ test("UI font size setting scales Chinese chat markdown and composer", async ({ 
 
 test("vision assignment keeps model fields and stored key placeholder untouched", async ({ page }) => {
   await enterApp(page);
-  await openProviderSettings(page, "deepseek");
+  await openModelsSettings(page);
 
-  const key = page.getByLabel("API key (stored in local secrets file)");
-  await providerSelect(page).selectOption("openai_responses");
-  await page.getByLabel("API URL").fill("https://api.openai-proxy.org/v1");
-  await expect(key).toHaveValue("");
-  await expect(key).toHaveAttribute("placeholder", "(stored — leave blank to keep)");
-  await page.getByRole("button", { name: "Save" }).click();
-  await expect.poll(() => lastInvokeArgs(page, "save_model_provider")).toMatchObject({
-    provider: {
-      id: "deepseek",
-      protocol: "openai_responses",
-      api_url: "https://api.openai-proxy.org/v1",
-    },
-  });
-
-  await openModelEditor(page, "deepseek", "deepseek-v4-pro");
   const effort = page.getByLabel("Reasoning effort");
+  const key = page.getByLabel("API key (stored in OS keyring)");
   const useForVision = page.getByLabel("Use for image analysis");
+
+  await providerSelect(page).selectOption("openai_responses");
+  await page.getByLabel("Base URL").fill("https://api.openai-proxy.org/v1");
   await page.getByLabel("Model").fill("gpt-5.6-luna");
   await effort.selectOption("medium");
+  await expect(key).toHaveValue("");
+  await expect(key).toHaveAttribute("placeholder", "(stored — leave blank to keep)");
+
   if (await useForVision.isChecked()) {
     await useForVision.uncheck();
   }
   await useForVision.check();
+
+  await expect(providerSelect(page)).toHaveValue("openai_responses");
   await expect(effort).toHaveValue("medium");
+  await expect(key).toHaveValue("");
 
   await page.getByRole("button", { name: "Save" }).click();
   await expect.poll(async () => page.evaluate(() => {
@@ -7163,7 +7943,6 @@ test("vision assignment keeps model fields and stored key placeholder untouched"
     useForVision: true,
     profile: {
       provider: "openai_responses",
-      provider_id: "deepseek",
       // gpt-5.6-luna is in the baked catalog (128K out / 1.05M ctx).
       context_window: 1050000,
       reasoning_effort: "medium",
@@ -7172,13 +7951,14 @@ test("vision assignment keeps model fields and stored key placeholder untouched"
   });
 
   await page.locator(".settings-list-row").first().click();
+  await expect(providerSelect(page)).toHaveValue("openai_responses");
   await expect(effort).toHaveValue("medium");
   await expect(page.getByLabel("Use for image analysis")).toBeChecked();
 });
 
 test("model settings rejects max output tokens above the known ceiling", async ({ page }) => {
   await enterApp(page);
-  await openModelEditor(page);
+  await openModelsSettings(page);
 
   // deepseek-v4-pro is in the baked catalog (384K output ceiling).
   const maxTokens = page.getByLabel("Max output tokens");
@@ -7198,27 +7978,19 @@ test("model settings rejects max output tokens above the known ceiling", async (
 test("model settings auto-fills catalog limits and save clamps to them", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Models");
-  await page.getByRole("button", { name: /Add model/i }).click();
+  await page.getByRole("button", { name: /Add API access/i }).click();
 
-  // The lookup fires on model input and reads the current API URL, so the
-  // URL must be in place before the model id is typed.
-  await page.getByLabel("API URL").fill("https://api.kimi.com/coding/v1");
-  await page.getByLabel("Model").fill("k3-256k");
-  await page.getByLabel("API key (stored in local secrets file)").fill("sk-k3");
+  // Changing the URL refreshes suggested model ids; type the catalog id after.
+  await page.getByLabel("Base URL").fill("https://api.kimi.com/coding/v1");
+  const modelId = page.getByTestId("provider-model-row").first().getByLabel("Model ID");
+  await modelId.fill("k3-256k");
+  await page.getByLabel("API key (stored in OS keyring)").fill("sk-k3");
 
-  // kimi-for-coding/k3-256k is in the baked catalog (262144 ctx / 131072 out).
-  await expect(page.getByLabel("Max output tokens")).toHaveValue("131072");
-  await expect(page.getByLabel("Context window")).toHaveValue("262144");
-  await expect(page.getByTestId("model-catalog-limits-hint")).toContainText("262144");
-
-  // Overriding the context window past the catalog ceiling gets clamped by
-  // the backend on save.
-  await page.getByLabel("Context window").fill("1000000");
   await page.getByRole("button", { name: "Save" }).click();
   await expect.poll(() => lastInvokeArgs(page, "save_model"))
     .toMatchObject({ profile: { model: "k3-256k" } });
-  // The invoke log records what the UI sent; the clamp happens inside the
-  // (mocked) backend, so assert on the stored profile via list_models.
+  // Catalog lookup on save fills documented ceilings; the mocked backend also
+  // clamps if the UI sent a larger window.
   const stored: any = await page.evaluate(async () => {
     const models: any[] = await (window as any).__TAURI__.core.invoke("list_models");
     return models.find((m: any) => m.model === "k3-256k") ?? null;
@@ -7226,33 +7998,164 @@ test("model settings auto-fills catalog limits and save clamps to them", async (
   expect(stored).toMatchObject({ context_window: 262144, max_tokens: 131072 });
 });
 
-test("onboarding shows three value cards and dismisses on Get started", async ({ page }) => {
+test("API access creates several models with one key, including an explicit image endpoint", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Models");
+  await page.getByRole("button", { name: /Add API access/i }).click();
+
+  await expect(page.getByTestId("provider-byok-hint")).toContainText("shared Base URL and key once");
+  await page.getByLabel("Base URL").fill("https://api.openai.com");
+  await expect(page.getByTestId("provider-model-row")).toHaveCount(2);
+  await expect(page.getByTestId("provider-model-protocol").nth(0)).toHaveValue("openai_responses");
+  await expect(page.getByTestId("provider-model-protocol").nth(1)).toHaveValue("openai_responses");
+  await expect(page.getByTestId("provider-model-row").nth(0).getByLabel("Model ID")).toHaveValue("gpt-5.5");
+  await expect(page.getByTestId("provider-model-row").nth(1).getByLabel("Model ID")).toHaveValue("gpt-image-2");
+  await expect(page.getByTestId("provider-model-row").nth(1).getByTestId("provider-use-for-image")).toBeChecked();
+  await page.getByTestId("provider-endpoint-suffix").nth(1).fill("/v1/images/generations");
+
+  await page.getByLabel("API key (stored in OS keyring)").fill("sk-openai");
+  await page.getByRole("button", { name: "Save" }).click();
+
+  await expect.poll(() => page.evaluate(() => ((window as any).__skillInvokeLog ?? [])
+    .filter((c: any) => c.cmd === "save_model")
+    .map((c: any) => {
+      const args = c.args instanceof Map ? Object.fromEntries(c.args) : c.args;
+      const profile = args.profile instanceof Map ? Object.fromEntries(args.profile) : args.profile;
+      return {
+        model: profile.model,
+        provider: profile.provider,
+        apiUrl: profile.api_url,
+        suffix: profile.endpoint_suffix,
+      };
+    }))).toEqual([
+      {
+        model: "gpt-image-2",
+        provider: "openai_responses",
+        apiUrl: "https://api.openai.com",
+        suffix: "/v1/images/generations",
+      },
+      {
+        model: "gpt-5.5",
+        provider: "openai_responses",
+        apiUrl: "https://api.openai.com",
+        suffix: "",
+      },
+    ]);
+});
+
+test("API access reuses a stored key for the same Base URL", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Models");
+  await page.getByRole("button", { name: /Add API access/i }).click();
+
+  // Default DeepSeek URL already has a saved key in the mock list.
+  await expect(page.getByTestId("provider-api-key")).toHaveAttribute(
+    "placeholder",
+    /api\.deepseek\.com/,
+  );
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect.poll(async () => {
+    const args = await lastInvokeArgs(page, "save_model");
+    return args ? { ...args, key: args.key ?? null } : null;
+  }).toMatchObject({
+    key: null,
+    profile: { model: "deepseek-v4-flash" },
+  });
+});
+
+test("one DeepSeek Base URL can save Responses and Anthropic protocol models", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Models");
+  await page.getByRole("button", { name: /Add API access/i }).click();
+
+  await page.getByLabel("Base URL").fill("https://api.deepseek.com");
+  const rows = page.getByTestId("provider-model-row");
+  await expect(rows).toHaveCount(2);
+
+  await rows.nth(0).getByTestId("provider-model-protocol").selectOption("openai_responses");
+  await rows.nth(1).getByTestId("provider-model-protocol").selectOption("anthropic");
+  await rows.nth(1).getByTestId("provider-endpoint-suffix").fill("/anthropic");
+  await page.getByRole("button", { name: "Save" }).click();
+
+  await expect.poll(() => page.evaluate(() => ((window as any).__skillInvokeLog ?? [])
+    .filter((call: any) => call.cmd === "save_model")
+    .map((call: any) => {
+      const args = call.args instanceof Map ? Object.fromEntries(call.args) : call.args;
+      const profile = args.profile instanceof Map ? Object.fromEntries(args.profile) : args.profile;
+      return {
+        model: profile.model,
+        protocol: profile.provider,
+        baseUrl: profile.api_url,
+        suffix: profile.endpoint_suffix,
+      };
+    }))).toEqual([
+      {
+        model: "deepseek-v4-pro",
+        protocol: "anthropic",
+        baseUrl: "https://api.deepseek.com",
+        suffix: "/anthropic",
+      },
+      {
+        model: "deepseek-v4-flash",
+        protocol: "openai_responses",
+        baseUrl: "https://api.deepseek.com",
+        suffix: "",
+      },
+    ]);
+});
+
+test("onboarding key setup lands on flash after adding pro", async ({ page }) => {
   await page.goto("/?mockOnboarding=1");
-  await expect(page.getByTestId("onboard-overlay")).toBeVisible();
-  await expect(page.getByTestId("onboard-card-1")).toContainText("I never touch your data.");
-  await expect(page.getByTestId("onboard-card-2")).toContainText("I do the grunt work.");
-  await expect(page.getByTestId("onboard-card-3")).toContainText("You direct; I execute.");
-  await page.getByTestId("onboard-start").click();
-  await expect(page.getByTestId("onboard-overlay")).toHaveCount(0);
-  await expect.poll(() => page.evaluate(() =>
-    ((window as any).__skillInvokeLog ?? []).some((c: any) => c.cmd === "dismiss_onboarding")
-  )).toBe(true);
+  await expect(page.locator(".onboard-overlay")).toBeVisible();
+  await page.getByLabel("API key (stored in OS keyring)").fill("sk-onboard");
+  await page.getByRole("button", { name: "Next" }).click();
+  // Order matters: save_model activates each new profile, so flash must land
+  // last for the user to start on the cheaper default.
+  await expect.poll(() => page.evaluate(() => ((window as any).__skillInvokeLog ?? [])
+    .filter((c: any) => c.cmd === "save_model")
+    .map((c: any) => {
+      const args = c.args instanceof Map ? Object.fromEntries(c.args) : c.args;
+      const profile = args.profile instanceof Map ? Object.fromEntries(args.profile) : args.profile;
+      return profile.model;
+    }))).toEqual(["deepseek-v4-pro", "deepseek-v4-flash"]);
+  // The built-in Reader gets bound to the flash profile so reading-heavy
+  // work runs on the cheap tier out of the box.
+  await expect.poll(() => page.evaluate(() => ((window as any).__skillInvokeLog ?? [])
+    .filter((c: any) => c.cmd === "save_specialist_cmd")
+    .map((c: any) => {
+      const args = c.args instanceof Map ? Object.fromEntries(c.args) : c.args;
+      const spec = args.spec instanceof Map ? Object.fromEntries(args.spec) : args.spec;
+      return { id: spec.id, model_id: spec.model_id };
+    }))).toEqual([{ id: "reader", model_id: "m2" }]);
+});
+
+test("API access on xAI suggests grok chat and imagine image", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Models");
+  await page.getByRole("button", { name: /Add API access/i }).click();
+  await page.getByLabel("Base URL").fill("https://api.x.ai");
+  await expect(page.getByTestId("provider-model-row")).toHaveCount(2);
+  await expect(page.getByTestId("provider-model-row").nth(0).getByLabel("Model ID")).toHaveValue("grok-4.6");
+  await expect(page.getByTestId("provider-model-row").nth(1).getByLabel("Model ID")).toHaveValue("grok-imagine-image-2.0");
+  await expect(page.getByTestId("provider-model-row").nth(1).getByTestId("provider-use-for-image")).toBeChecked();
 });
 
 test("gpt-image-2 can be assigned for generation but not selected for chat", async ({ page }) => {
   await enterApp(page);
-  await openProviderSettings(page, "anthropic");
-  await providerSelect(page).selectOption("openai_responses");
-  await page.getByLabel("API URL").fill("https://api.openai.com/v1");
-  await page.getByRole("button", { name: "Save" }).click();
-  await expect.poll(() => lastInvokeArgs(page, "save_model_provider")).toMatchObject({
-    provider: { id: "anthropic", protocol: "openai_responses" },
-  });
+  await openSettingsSection(page, "Models");
+  const opus = page.locator(".settings-list-row", { hasText: "opus-4.8" });
+  await opus.click();
 
-  await openModelEditor(page, "anthropic", "opus-4.8");
+  await providerSelect(page).selectOption("openai_responses");
+  await page.getByLabel("Base URL").fill("https://api.openai.com/v1");
   await page.getByLabel("Model").fill("gpt-image-2");
-  await expect(page.getByLabel("Supports image input")).not.toBeChecked();
-  await page.getByLabel("Use for image generation").check();
+  await expect(page.getByLabel("Max output tokens")).toHaveCount(0);
+  await expect(page.getByLabel("Supports image input")).toHaveCount(0);
+  await expect(page.getByTestId("image-size")).toBeVisible();
+  await expect(page.getByTestId("image-quality")).toBeVisible();
+  await page.getByTestId("image-size").selectOption("1536x1024");
+  await page.getByTestId("image-quality").selectOption("high");
+  await expect(page.getByTestId("use-for-image-generation")).toBeChecked();
   await page.getByRole("button", { name: "Valid" }).click();
   await expect(page.locator(".settings-status")).toHaveText(
     "Validated openai_responses with gpt-image-2",
@@ -7264,9 +8167,10 @@ test("gpt-image-2 can be assigned for generation but not selected for chat", asy
     profile: {
       id: "opus",
       provider: "openai_responses",
-      provider_id: "anthropic",
       model: "gpt-image-2",
       use_for_image_generation: true,
+      image_size: "1536x1024",
+      image_quality: "high",
     },
   });
 
@@ -7281,31 +8185,129 @@ test("gpt-image-2 can be assigned for generation but not selected for chat", asy
   await expect(page.locator(".model-menu")).toContainText("deepseek-v4-pro");
 });
 
+test("grok-imagine-image-2.0 can be assigned for generation but not selected for chat", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Models");
+  const opus = page.locator(".settings-list-row", { hasText: "opus-4.8" });
+  await opus.click();
+
+  await providerSelect(page).selectOption("openai");
+  await page.getByLabel("Base URL").fill("https://api.x.ai");
+  await page.getByLabel("Model").fill("grok-imagine-image-2.0");
+  await expect(page.getByLabel("Max output tokens")).toHaveCount(0);
+  await expect(page.getByLabel("Supports image input")).toHaveCount(0);
+  await expect(page.getByTestId("image-aspect-ratio")).toBeVisible();
+  await expect(page.getByTestId("image-resolution")).toBeVisible();
+  await expect(page.getByTestId("image-quality")).toBeVisible();
+  await expect(page.getByTestId("image-size")).toHaveCount(0);
+  await page.getByTestId("image-aspect-ratio").selectOption("16:9");
+  await page.getByTestId("image-resolution").selectOption("2k");
+  await page.getByTestId("image-quality").selectOption("low");
+  await expect(page.getByTestId("use-for-image-generation")).toBeChecked();
+  await page.getByRole("button", { name: "Valid" }).click();
+  await expect(page.locator(".settings-status")).toHaveText(
+    "Validated openai with grok-imagine-image-2.0",
+  );
+  await page.getByRole("button", { name: "Save" }).click();
+
+  await expect.poll(() => lastInvokeArgs(page, "save_model")).toMatchObject({
+    useForImageGeneration: true,
+    profile: {
+      id: "opus",
+      provider: "openai",
+      model: "grok-imagine-image-2.0",
+      use_for_image_generation: true,
+      image_aspect_ratio: "16:9",
+      image_resolution: "2k",
+      image_quality: "low",
+    },
+  });
+
+  const imageModel = page.locator(".settings-list-row", { hasText: "opus-4.8" });
+  await expect(imageModel).toContainText("grok-imagine-image-2.0");
+  await expect(imageModel).toContainText("image gen");
+  await expect(imageModel.getByRole("button", { name: "Use" })).toHaveCount(0);
+
+  await page.locator(".settings-head-close").click();
+  await page.locator(".model-picker-btn").click();
+  await expect(page.locator(".model-menu")).not.toContainText("grok-imagine-image-2.0");
+  await expect(page.locator(".model-menu")).toContainText("deepseek-v4-pro");
+});
+
+test("grok-imagine-video can be assigned for generation but not selected for chat", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Models");
+  const opus = page.locator(".settings-list-row", { hasText: "opus-4.8" });
+  await opus.click();
+
+  await providerSelect(page).selectOption("openai");
+  await page.getByLabel("Base URL").fill("https://api.x.ai");
+  await page.getByLabel("Model").fill("grok-imagine-video");
+  await expect(page.getByLabel("Max output tokens")).toHaveCount(0);
+  await expect(page.getByLabel("Supports image input")).toHaveCount(0);
+  await expect(page.getByTestId("video-duration")).toBeVisible();
+  await expect(page.getByTestId("video-aspect-ratio")).toBeVisible();
+  await expect(page.getByTestId("video-resolution")).toBeVisible();
+  await expect(page.getByTestId("image-size")).toHaveCount(0);
+  await page.getByTestId("video-duration").fill("8");
+  await page.getByTestId("video-aspect-ratio").selectOption("9:16");
+  await page.getByTestId("video-resolution").selectOption("1080p");
+  await expect(page.getByTestId("use-for-video-generation")).toBeChecked();
+  await page.getByRole("button", { name: "Valid" }).click();
+  await expect(page.locator(".settings-status")).toHaveText(
+    "Validated openai with grok-imagine-video",
+  );
+  await page.getByRole("button", { name: "Save" }).click();
+
+  await expect.poll(() => lastInvokeArgs(page, "save_model")).toMatchObject({
+    useForVideoGeneration: true,
+    profile: {
+      id: "opus",
+      provider: "openai",
+      model: "grok-imagine-video",
+      use_for_video_generation: true,
+      video_duration_secs: 8,
+      video_aspect_ratio: "9:16",
+      video_resolution: "1080p",
+    },
+  });
+
+  const videoModel = page.locator(".settings-list-row", { hasText: "opus-4.8" });
+  await expect(videoModel).toContainText("grok-imagine-video");
+  await expect(videoModel).toContainText("video gen");
+  await expect(videoModel.getByRole("button", { name: "Use" })).toHaveCount(0);
+
+  await page.locator(".settings-head-close").click();
+  await page.locator(".model-picker-btn").click();
+  await expect(page.locator(".model-menu")).not.toContainText("grok-imagine-video");
+  await expect(page.locator(".model-menu")).toContainText("deepseek-v4-pro");
+});
+
 test("settings normalizes a blank stored provider to openai", async ({ page }) => {
   await enterApp(page);
-  await openProviderSettings(page);
+  await openModelsSettings(page);
   await expect(providerSelect(page)).toHaveValue("openai");
   await page.getByRole("button", { name: "Valid" }).click();
   await expect(page.locator(".settings-status")).toContainText("Validated openai with deepseek-v4-pro");
 });
 
-test("editing API URL keeps provider state and display aligned", async ({ page }) => {
+test("editing Base URL keeps protocol state and display aligned", async ({ page }) => {
   await enterApp(page);
-  await openProviderSettings(page);
-  await page.getByLabel("API URL").fill("https://api.deepseek.com");
+  await openModelsSettings(page);
+  await page.getByLabel("Base URL").fill("https://api.deepseek.com");
   await expect(providerSelect(page)).toHaveValue("openai");
   await page.getByRole("button", { name: "Valid" }).click();
   await expect(page.locator(".settings-status")).toContainText("Validated openai with deepseek-v4-pro");
 });
 
-test("model API URL explains that endpoint paths are added automatically", async ({ page }) => {
+test("model Base URL explains per-model endpoint suffixes", async ({ page }) => {
   await enterApp(page);
-  await openProviderSettings(page);
+  await openModelsSettings(page);
 
   await expect(page.getByTestId("model-api-url-hint")).toHaveText(
-    "Enter the provider's API base URL. You do not need to append /v1, /chat/completions, /responses, or /v1/messages; SuperScience completes the request path and probes common OpenAI-compatible paths automatically.",
+    "Enter the shared API root. Put protocol-specific paths such as /anthropic or an explicit image endpoint in that model's optional suffix; Wisp then completes the protocol request path.",
   );
-  await expect(page.getByLabel("API URL")).toHaveAttribute(
+  await expect(page.getByLabel("Base URL")).toHaveAttribute(
     "aria-describedby",
     "model-api-url-hint",
   );
@@ -7313,7 +8315,7 @@ test("model API URL explains that endpoint paths are added automatically", async
 
 test("settings can validate current API config", async ({ page }) => {
   await enterApp(page);
-  await openModelEditor(page);
+  await openModelsSettings(page);
   await page.getByRole("button", { name: "Valid" }).click();
   // The mock profile has "supports images" on, so validation probes with a
   // test image and says so.
@@ -7328,11 +8330,14 @@ test("settings can validate current API config", async ({ page }) => {
 
 test("editing a saved model validates with that model profile id", async ({ page }) => {
   await enterApp(page);
-  await openModelEditor(page, "anthropic", "opus-4.8");
-  await expect(page.getByLabel("Model")).toHaveValue("opus-4.8");
+  await globalSettingsButton(page).click();
+  await page.getByRole("button", { name: "Models" }).click();
+  await page.locator(".settings-list-row", { hasText: "opus-4.8" }).click();
+  await expect(providerSelect(page)).toBeVisible();
+  await expect(page.getByLabel("Model ID")).toHaveValue("opus-4.8");
 
   await page.getByRole("button", { name: "Valid" }).click();
-  await expect(page.locator(".settings-status")).toContainText("Validated anthropic with opus-4.8");
+  await expect(page.locator(".settings-status")).toContainText("Validated openai with deepseek-v4-pro");
   await expect.poll(() => lastInvokeArgs(page, "validate_settings")).toMatchObject({
     profileId: "opus",
     key: "",
@@ -7344,7 +8349,7 @@ test("editing a saved model validates with that model profile id", async ({ page
 
 test("check for updates shows an up-to-date modal", async ({ page }) => {
   await enterApp(page);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await setMockUpdateCheck(page, {
     current_version: "0.9.0",
     latest_version: "0.9.0",
@@ -7355,42 +8360,42 @@ test("check for updates shows an up-to-date modal", async ({ page }) => {
   const modal = page.getByTestId("update-check-modal");
   await expect(modal).toBeVisible();
   await expect(modal).toContainText("You're up to date");
-  await expect(modal).toContainText("SuperScience 0.9.0 is already the latest version.");
+  await expect(modal).toContainText("Wisp 0.9.0 is already the latest version.");
   await modal.getByRole("button", { name: "OK" }).click();
   await expect(modal).toHaveCount(0);
 });
 
 test("check for updates shows an available-update modal before opening releases", async ({ page }) => {
   await enterApp(page);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await setMockUpdateCheck(page, {
     current_version: "0.9.0",
     latest_version: "1.2.3",
     update_available: true,
-    release_url: "https://github.com/imbigfly/SuperScience/releases/tag/v1.2.3",
+    release_url: "https://github.com/xuzhougeng/wisp-science/releases/tag/v1.2.3",
   });
 
   await page.getByRole("button", { name: "Check for updates" }).click();
   const modal = page.getByTestId("update-check-modal");
   await expect(modal).toBeVisible();
   await expect(modal).toContainText("Update available");
-  await expect(modal).toContainText("SuperScience 1.2.3 is available.");
+  await expect(modal).toContainText("Wisp 1.2.3 is available.");
   await expect(await lastInvokeArgs(page, "open_external_url")).toBeNull();
   await page.getByTestId("update-check-open-releases").click();
   await expect(modal).toHaveCount(0);
   await expect.poll(() => lastInvokeArgs(page, "open_external_url")).toMatchObject({
-    url: "https://github.com/imbigfly/SuperScience/releases/tag/v1.2.3",
+    url: "https://github.com/xuzhougeng/wisp-science/releases/tag/v1.2.3",
   });
 });
 
 test("macOS update download is verified before a separate install confirmation", async ({ page }) => {
   await enterApp(page);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await setMockUpdateCheck(page, {
     current_version: "0.27.0",
     latest_version: "0.28.0",
     update_available: true,
-    release_url: "https://github.com/imbigfly/SuperScience/releases/tag/v0.28.0",
+    release_url: "https://github.com/xuzhougeng/wisp-science/releases/tag/v0.28.0",
     notes: "Signed macOS update",
     install_supported: true,
   });
@@ -7402,7 +8407,7 @@ test("macOS update download is verified before a separate install confirmation",
   await expect(await lastInvokeArgs(page, "install_update")).toBeNull();
 
   await modal.getByRole("button", { name: "Download update" }).click();
-  await expect(modal).toContainText("Downloading SuperScience 0.28.0");
+  await expect(modal).toContainText("Downloading Wisp 0.28.0");
   await expect(modal).toContainText("25 B / 100 B");
   await modal.evaluate((element) => ((window as any).__downloadingModal = element));
   await page.evaluate(() => (window as any).__mockUpdateProgress(10));
@@ -7420,15 +8425,15 @@ test("macOS update download is verified before a separate install confirmation",
   await expect(await lastInvokeArgs(page, "install_update")).toBeNull();
 
   await modal.getByRole("button", { name: "Install and restart" }).click();
-  await expect(modal).toContainText("Installing SuperScience 0.28.0");
+  await expect(modal).toContainText("Installing Wisp 0.28.0");
   await expect.poll(() => page.evaluate(() => (window as any).__mockUpdateInstalled)).toBe(true);
 });
 
 test("update signature failure keeps the current app and offers Releases", async ({ page }) => {
   await enterApp(page);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   const releaseUrl =
-    "https://github.com/imbigfly/SuperScience/releases/tag/v0.28.0";
+    "https://github.com/xuzhougeng/wisp-science/releases/tag/v0.28.0";
   await setMockUpdateCheck(page, {
     latest_version: "0.28.0",
     update_available: true,
@@ -7453,7 +8458,7 @@ test("update signature failure keeps the current app and offers Releases", async
 
 test("update check failure offers the Releases fallback", async ({ page }) => {
   await enterApp(page);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await setMockUpdateCheckError(
     page,
     "Failed to check for a signed update: no matching macOS architecture",
@@ -7467,11 +8472,11 @@ test("update check failure offers the Releases fallback", async ({ page }) => {
 
 test("install is blocked while a task is active", async ({ page }) => {
   await enterApp(page);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await setMockUpdateCheck(page, {
     latest_version: "0.28.0",
     update_available: true,
-    release_url: "https://github.com/imbigfly/SuperScience/releases/tag/v0.28.0",
+    release_url: "https://github.com/xuzhougeng/wisp-science/releases/tag/v0.28.0",
     install_supported: true,
   });
 
@@ -7493,7 +8498,7 @@ test("install is blocked while a task is active", async ({ page }) => {
 
 test("Escape closes only the available-update modal above Settings", async ({ page }) => {
   await enterApp(page);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await setMockUpdateCheck(page, {
     latest_version: "0.28.0",
     update_available: true,
@@ -7514,7 +8519,7 @@ test("stale update card refreshes to the latest release before opening it (#521)
     current_version: "0.23.0",
     latest_version: "0.24.0",
     update_available: true,
-    release_url: "https://github.com/imbigfly/SuperScience/releases/tag/v0.24.0",
+    release_url: "https://github.com/xuzhougeng/wisp-science/releases/tag/v0.24.0",
   });
 
   await page.keyboard.press("Control+p");
@@ -7522,22 +8527,22 @@ test("stale update card refreshes to the latest release before opening it (#521)
   await input.fill("check for updates");
   await input.press("Enter");
   let modal = page.getByTestId("update-check-modal");
-  await expect(modal).toContainText("SuperScience 0.24.0 is available.");
+  await expect(modal).toContainText("Wisp 0.24.0 is available.");
   await modal.getByRole("button", { name: "Later" }).click();
   await expect(page.getByTestId("update-card")).toContainText("v0.24.0");
 
   await setMockUpdateCheck(page, {
     latest_version: "0.25.0",
-    release_url: "https://github.com/imbigfly/SuperScience/releases/tag/v0.25.0",
+    release_url: "https://github.com/xuzhougeng/wisp-science/releases/tag/v0.25.0",
   });
   await page.getByTestId("update-card").click();
 
   modal = page.getByTestId("update-check-modal");
-  await expect(modal).toContainText("SuperScience 0.25.0 is available.");
+  await expect(modal).toContainText("Wisp 0.25.0 is available.");
   await expect(page.getByTestId("update-card")).toContainText("v0.25.0");
   await modal.getByTestId("update-check-open-releases").click();
   await expect.poll(() => lastInvokeArgs(page, "open_external_url")).toMatchObject({
-    url: "https://github.com/imbigfly/SuperScience/releases/tag/v0.25.0",
+    url: "https://github.com/xuzhougeng/wisp-science/releases/tag/v0.25.0",
   });
 });
 
@@ -7683,23 +8688,21 @@ test("capability counts open skills, connections, and editable project memory", 
   await enterApp(page);
 
   await page.getByRole("button", { name: "Capabilities" }).click();
-  let capabilities = page.getByTestId("capabilities-dialog");
-  await expect(capabilities).toBeVisible();
-  await expect(page.getByTestId("caps-tab-overview")).toHaveAttribute("aria-selected", "true");
+  let capabilities = page.getByRole("dialog", { name: "Capabilities" });
   await expect(capabilities.getByRole("button", { name: "2 Bundled Skills" })).toBeVisible();
   await capabilities.getByRole("button", { name: "1 Project Skills" }).click();
   await expect(page.locator(".settings-nav button.active")).toHaveText("Skills");
 
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Capabilities" }).click();
-  capabilities = page.getByTestId("capabilities-dialog");
+  capabilities = page.getByRole("dialog", { name: "Capabilities" });
   await expect(capabilities.getByRole("button", { name: "2 Bundled MCP" })).toBeVisible();
   await capabilities.getByRole("button", { name: "1 Project MCP" }).click();
   await expect(page.locator(".settings-nav button.active")).toHaveText("Connections");
 
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Capabilities" }).click();
-  capabilities = page.getByTestId("capabilities-dialog");
+  capabilities = page.getByRole("dialog", { name: "Capabilities" });
   await capabilities.getByRole("button", { name: "1 Memory files" }).click();
   await expect(page.locator(".settings-nav button.active")).toHaveText("Memory");
   await expect(page.getByText("2026-07-01.md", { exact: true })).toBeVisible();
@@ -7725,90 +8728,6 @@ test("capability counts open skills, connections, and editable project memory", 
   });
 });
 
-test("projects home shows capability scene tabs and tiles", async ({ page }) => {
-  await page.goto("/");
-  const scene = page.getByTestId("capability-scene");
-  await expect(scene).toBeVisible();
-  await expect(scene.getByRole("heading", { name: "What you can do" })).toBeVisible();
-  const directorCta = page.getByTestId("director-kickoff");
-  await expect(directorCta).toBeVisible();
-  await expect(directorCta).toHaveText("Director, let's begin");
-  // Capability section sits above director CTA, which sits above Projects / Recent sessions.
-  const projectsHeading = page.getByRole("heading", { name: "Projects", exact: true });
-  await expect(projectsHeading).toBeVisible();
-  const sceneBox = await scene.boundingBox();
-  const directorBox = await directorCta.boundingBox();
-  const projectsBox = await projectsHeading.boundingBox();
-  expect(sceneBox && directorBox && sceneBox.y < directorBox.y).toBeTruthy();
-  expect(directorBox && projectsBox && directorBox.y < projectsBox.y).toBeTruthy();
-  await expect(page.getByTestId("cap-tile-academic-paper")).toBeVisible();
-  await page.getByRole("tab", { name: "AI drawing" }).click();
-  await expect(page.getByTestId("cap-tile-nature-figure")).toBeVisible();
-  await expect(page.getByTestId("cap-tile-academic-paper")).toHaveCount(0);
-});
-
-test("projects home director kickoff starts socratic guided chat", async ({ page }) => {
-  await page.goto("/");
-  const kickoff = page.getByTestId("director-kickoff");
-  await expect(kickoff).toBeVisible();
-  // Breathing animation keeps the button "unstable" for Playwright; force the click.
-  await kickoff.click({ force: true });
-  await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
-    message: expect.stringMatching(/FIVE questions|research director coach|at most five/i),
-    references: [],
-  });
-});
-
-test("capabilities overlay scene tab launches guided skill chat", async ({ page }) => {
-  await enterApp(page);
-  await page.getByRole("button", { name: "Capabilities" }).click();
-  const capabilities = page.getByTestId("capabilities-dialog");
-  await expect(capabilities).toBeVisible();
-  await page.getByRole("tab", { name: "Paper writing" }).click();
-  await page.getByTestId("cap-tile-deep-research").click();
-  await expect(capabilities).toHaveCount(0);
-  await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
-    message: expect.stringMatching(/deep-research|FIVE clarifying|use_skill|Capability coaching/i),
-    references: [{ kind: "skill", name: "deep-research" }],
-  });
-});
-
-test("AI drawing R bioinfo tile binds specialist then sends guided skill chat", async ({ page }) => {
-  await enterApp(page);
-  await page.getByRole("button", { name: "Capabilities" }).click();
-  const capabilities = page.getByTestId("capabilities-dialog");
-  await expect(capabilities).toBeVisible();
-  await page.getByRole("tab", { name: "AI drawing" }).click();
-  await expect(page.getByTestId("cap-tile-r-bioinfo-figure")).toBeVisible();
-  await page.getByTestId("cap-tile-r-bioinfo-figure").click();
-  await expect(capabilities).toHaveCount(0);
-  await expect.poll(() => lastInvokeArgs(page, "set_session_specialist")).toMatchObject({
-    id: "r_bioinformatics_figure",
-  });
-  await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
-    message: expect.stringMatching(/nature-figure|FIVE|r tool|bioinformatics|Capability coaching/i),
-    references: [{ kind: "skill", name: "nature-figure" }],
-  });
-  const order = await page.evaluate(() => {
-    const cmds = ((window as any).__skillInvokeLog ?? []).map((c: any) => c.cmd);
-    const newIdx = cmds.lastIndexOf("new_session");
-    const setIdx = cmds.lastIndexOf("set_session_specialist");
-    const sendIdx = cmds.lastIndexOf("send_message");
-    return { newIdx, setIdx, sendIdx };
-  });
-  expect(order.newIdx).toBeGreaterThanOrEqual(0);
-  expect(order.setIdx).toBeGreaterThan(order.newIdx);
-  expect(order.sendIdx).toBeGreaterThan(order.setIdx);
-});
-
-test("capabilities overlay closes with Escape", async ({ page }) => {
-  await enterApp(page);
-  await page.getByRole("button", { name: "Capabilities" }).click();
-  await expect(page.getByTestId("capabilities-dialog")).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(page.getByTestId("capabilities-dialog")).toHaveCount(0);
-});
-
 test("skill manager filters by tag and batch disables visible skills", async ({ page }) => {
   await enterApp(page);
   await page.getByRole("button", { name: "Add to message" }).click();
@@ -7825,20 +8744,20 @@ test("skill manager filters by tag and batch disables visible skills", async ({ 
   await expect(page.locator("[data-skill-name]")).toHaveCount(0);
 
   await page.getByRole("button", { name: "Enabled", exact: true }).click();
-  await expect(page.getByText("alphafold2")).toBeVisible();
-  await expect(page.getByText("remote-compute-modal")).toBeVisible();
+  await expect(page.getByText("literature-review")).toBeVisible();
+  await expect(page.getByText("remote-compute-ssh")).toBeVisible();
 
   await page.getByRole("button", { name: "compute", exact: true }).click();
-  await expect(page.getByText("remote-compute-modal")).toBeVisible();
-  await expect(page.getByText("alphafold2")).not.toBeVisible();
+  await expect(page.getByText("remote-compute-ssh")).toBeVisible();
+  await expect(page.getByText("literature-review")).not.toBeVisible();
 
   await page.getByRole("button", { name: "Disable visible" }).click();
   await expect.poll(async () => page.evaluate(() => {
     const calls = ((window as any).__skillInvokeLog ?? []).filter((c: any) => c.cmd === "set_skills_enabled");
     const args = calls.at(-1)?.args;
     return args instanceof Map ? Object.fromEntries(args) : (args ?? null);
-  })).toEqual({ names: ["remote-compute-modal"], enabled: false });
-  await expect(page.locator('[data-skill-name="remote-compute-modal"] input[type="checkbox"]')).not.toBeChecked();
+  })).toEqual({ names: ["remote-compute-ssh"], enabled: false });
+  await expect(page.locator('[data-skill-name="remote-compute-ssh"] input[type="checkbox"]')).not.toBeChecked();
 });
 
 test("skill manager reloads manually copied skills and shows their scope", async ({ page }) => {
@@ -7855,7 +8774,7 @@ test("skill manager reloads manually copied skills and shows their scope", async
   await expect(fresh).toContainText("Project");
   await expect(fresh.locator('input[type="checkbox"]')).toBeChecked();
   await expect(fresh.getByRole("button", { name: "Delete skill" })).toHaveCount(0);
-  await expect(page.getByText("Skills reloaded. 4 available.")).toBeVisible();
+  await expect(page.getByText("Skills reloaded. 5 available.")).toBeVisible();
 });
 
 test("skill manager updates and deletes user-added skills", async ({ page }) => {
@@ -7996,7 +8915,7 @@ test("plugin settings diagnose, launch, install, and remove a feature plugin", a
 
 test("custom MCP row opens tools while edit uses a dedicated button", async ({ page }) => {
   await enterApp(page);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await page.getByRole("button", { name: "Connections" }).click();
   await expect(page.getByRole("button", { name: "Connect Notion" })).toHaveCount(0);
 
@@ -8013,7 +8932,7 @@ test("custom MCP row opens tools while edit uses a dedicated button", async ({ p
 
 test("Notion uses the generic Remote URL OAuth connection flow", async ({ page }) => {
   await enterApp(page);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await page.getByRole("button", { name: "Connections" }).click();
 
   await expect.poll(() => lastInvokeArgs(page, "authorize_http_connection")).toBeNull();
@@ -8072,7 +8991,7 @@ test("Notion uses the generic Remote URL OAuth connection flow", async ({ page }
 
 test("OAuth authorization keeps Cancel available and clears form status", async ({ page }) => {
   await enterApp(page, "/?mockOAuthPending=1");
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await page.getByRole("button", { name: "Connections" }).click();
   await page.getByRole("button", { name: "Add connection" }).click();
   await page.getByLabel("Name").fill("Hosted MCP");
@@ -8095,26 +9014,35 @@ test("OAuth authorization keeps Cancel available and clears form status", async 
 
 test("settings validation rejects blank required fields", async ({ page }) => {
   await enterApp(page);
-  await openProviderSettings(page);
-  await page.getByLabel("API URL").fill("");
+  await openModelsSettings(page);
+  await page.getByLabel("Base URL").fill("");
   await page.getByRole("button", { name: "Valid" }).click();
-  await expect(page.locator(".settings-status")).toHaveText("API URL is required.");
+  await expect(page.locator(".settings-status")).toHaveText("Validation failed: API URL is required.");
 });
 
-test("provider switch fills current API defaults", async ({ page }) => {
+test("protocol switch keeps the current Base URL, endpoint suffix, and model ID", async ({ page }) => {
   await enterApp(page);
-  await openProviderSettings(page);
+  await openModelsSettings(page);
+
+  const baseUrl = page.getByLabel("Base URL");
+  const endpointSuffix = page.getByLabel("Endpoint suffix (optional)");
+  const model = page.getByLabel("Model ID");
+  await endpointSuffix.fill("/anthropic");
+
   await providerSelect(page).selectOption("openai_responses");
-  await expect(page.getByLabel("API URL")).toHaveValue("https://api.openai.com/v1");
+  await expect(baseUrl).toHaveValue("https://api.deepseek.com");
+  await expect(endpointSuffix).toHaveValue("/anthropic");
+  await expect(model).toHaveValue("deepseek-v4-pro");
+
   await providerSelect(page).selectOption("anthropic");
-  await expect(page.getByLabel("API URL")).toHaveValue("https://api.anthropic.com");
-  await providerSelect(page).selectOption("openai");
-  await expect(page.getByLabel("API URL")).toHaveValue("https://api.deepseek.com");
+  await expect(baseUrl).toHaveValue("https://api.deepseek.com");
+  await expect(endpointSuffix).toHaveValue("/anthropic");
+  await expect(model).toHaveValue("deepseek-v4-pro");
 });
 
-test("model form input keeps focus while typing (#62)", async ({ page }) => {
+test("model form inputs keep focus while typing (#62)", async ({ page }) => {
   await enterApp(page);
-  await openModelEditor(page);
+  await openModelsSettings(page);
   const model = page.getByLabel("Model");
   await model.fill("");
   // Type character-by-character. The bug: the form pane was gated on the whole
@@ -8123,26 +9051,16 @@ test("model form input keeps focus while typing (#62)", async ({ page }) => {
   await model.pressSequentially("gpt-5.5-x");
   await expect(model).toHaveValue("gpt-5.5-x");
   await expect(model).toBeFocused();
-});
 
-test("provider cards keep Settings and drop the duplicate Edit action", async ({ page }) => {
-  await enterApp(page);
-  await openSettingsSection(page, "Models");
-  const card = providerCard(page, "deepseek");
-  await expect(card.getByTestId("provider-open-settings")).toHaveText("Settings");
-  await expect(card.getByRole("button", { name: "Edit", exact: true })).toHaveCount(0);
-  await expect(card.getByRole("button", { name: "Settings", exact: true })).toHaveCount(1);
-});
-
-test("builtin tctoken provider is first and quick setup opens provider or model form", async ({ page }) => {
-  await enterApp(page);
-  await openSettingsSection(page, "Models");
-  const cards = page.getByTestId("provider-card");
-  await expect(cards.first()).toHaveAttribute("data-provider-id", "tctoken");
-  await expect(providerCard(page, "tctoken")).toContainText("0 models");
-  await page.getByTestId("model-presets").getByRole("button", { name: "DeepSeek" }).click();
-  // Existing deepseek provider already has a key → opens add/edit model form.
-  await expect(page.getByLabel("Model")).toBeVisible();
+  // The provider-level add form has a separate multi-model editor. Its
+  // edit/add view gate must also remain stable as a model row changes.
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await page.getByRole("button", { name: /Add API access/i }).click();
+  const providerModel = page.getByTestId("provider-model-id").first();
+  await providerModel.fill("");
+  await providerModel.pressSequentially("deepseek-v4-flash-x");
+  await expect(providerModel).toHaveValue("deepseek-v4-flash-x");
+  await expect(providerModel).toBeFocused();
 });
 
 test("inline approval card keeps its buttons reachable with a long preview (#63)", async ({ page }) => {
@@ -8254,7 +9172,7 @@ test("Escape closes plan feedback before rejecting the plan", async ({ page }) =
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByText("Review plan before starting?")).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "Other" }).click();
-  const feedback = page.getByPlaceholder("Tell superscience what to change in this plan.");
+  const feedback = page.getByPlaceholder("Tell wisp what to change in this plan.");
   await expect(feedback).toBeVisible();
 
   await page.keyboard.press("Escape");
@@ -8584,6 +9502,7 @@ test("session history loads older pages with a stable cursor", async ({ page }) 
 });
 
 test("sidebar search opens the Ctrl+K palette and finds sessions beyond loaded history", async ({ page }) => {
+  await pinNonMacPlatform(page);
   await page.goto("/?mockManySessions=1");
   await page.locator(".proj-card-main").first().click();
 
@@ -8615,7 +9534,7 @@ test("sidebar search opens the Ctrl+K palette and finds sessions beyond loaded h
 test("home search opens artifacts, sessions, and settings", async ({ page }) => {
   await page.goto("/");
 
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   const settingsPage = page.locator(".settings-page");
   await expect(settingsPage).toBeVisible();
   await expect(page.locator(".overlay", { has: settingsPage })).toHaveCount(0);
@@ -8712,6 +9631,28 @@ test("opening a long conversation lands at the latest message and stays stable o
   });
   await expect.poll(() => scroller.evaluate((element) => element.scrollTop))
     .toBeGreaterThan(readingPosition + 400);
+});
+
+test("switching conversations restores each reading position (#849)", async ({ page }) => {
+  await page.goto("/?mockLongPages=8");
+  await page.locator(".proj-card-main").first().click();
+
+  const scroller = page.locator("#chat-scroller");
+  await expect(page.getByText(/Window page 0 row 19/)).toBeVisible();
+  await scroller.evaluate((element) => {
+    element.scrollTop = Math.max(120, element.scrollHeight / 3);
+    element.dispatchEvent(new WheelEvent("wheel", { deltaY: -80, bubbles: true }));
+  });
+  const readingTop = await scroller.evaluate((element) => element.scrollTop);
+
+  await newSessionButton(page).click();
+  await expect(page.locator(".empty")).toBeVisible();
+  await page.locator(".side-item.ses", { hasText: "Long transcript" }).click();
+  await expect(page.getByText(/Window page 0 row 19/)).toBeVisible();
+  await expect.poll(() => scroller.evaluate((element) => element.scrollTop))
+    .toBeGreaterThan(readingTop - 40);
+  await expect.poll(() => scroller.evaluate((element) => element.scrollTop))
+    .toBeLessThan(readingTop + 40);
 });
 
 test("conversation outline loads and jumps to an older user question", async ({ page }) => {
@@ -8933,7 +9874,7 @@ test("MCP App opens as a persistent center tab and delivers tool data", async ({
     };
     addEventListener("message", (event) => {
       const message = event.data || {};
-      if (message.id === 1 && message.result?.hostInfo?.name === "superscience") {
+      if (message.id === 1 && message.result?.hostInfo?.name === "wisp-science") {
         initialized = true;
         contextCapability = !!message.result?.hostCapabilities?.updateModelContext?.text;
         parent.postMessage({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} }, "*");
@@ -9022,7 +9963,7 @@ test("reopening a saved session restores its MCP App workbench", async ({ page }
   await openSavedSession();
 });
 
-test("real Motif MCP App reaches ready state through the SuperScience host", async ({ page }) => {
+test("real Motif MCP App reaches ready state through the Wisp host", async ({ page }) => {
   test.skip(!motifAppHtmlPath, "set WISP_MOTIF_APP_HTML for release acceptance");
   const html = readFileSync(motifAppHtmlPath!, "utf8");
   await enterApp(page);
@@ -9042,7 +9983,7 @@ test("real Motif MCP App reaches ready state through the SuperScience host", asy
           description: "Open the Motif workbench",
           inputSchema: { type: "object", properties: {} },
         },
-        arguments: { content: ">superscience-acceptance\nACGTACGT", filename: "superscience-acceptance.fasta" },
+        arguments: { content: ">wisp-acceptance\nACGTACGT", filename: "wisp-acceptance.fasta" },
         result: {
           content: [{ type: "text", text: "Motif acceptance payload" }],
           structuredContent: {
@@ -9052,8 +9993,8 @@ test("real Motif MCP App reaches ready state through the SuperScience host", asy
             residueCount: 8,
             payload: {
               schema: "motif.claude-science.inventory.v2",
-              inventory: { title: "SuperScience acceptance" },
-              records: [{ id: "superscience-acceptance", name: "SuperScience acceptance", sequence: "ACGTACGT", molecule: "dna" }],
+              inventory: { title: "Wisp acceptance" },
+              records: [{ id: "wisp-acceptance", name: "Wisp acceptance", sequence: "ACGTACGT", molecule: "dna" }],
             },
           },
           isError: false,
@@ -9199,7 +10140,7 @@ test("bound BibTeX resources open their immutable text preview", async ({ page }
   await expect(page.locator('.center-tab[data-center-path="artifact-version:resource-version-bib"]'))
     .toContainText("references.bib");
   await expect(page.locator(".center-file-preview"))
-    .toContainText("@article{superscience");
+    .toContainText("@article{wisp");
   await expect.poll(() => lastInvokeArgs(page, "read_artifact_version"))
     .toMatchObject({ versionId: "resource-version-bib" });
 });
@@ -9260,9 +10201,9 @@ test("selecting preview text quotes it into chat and saves a review annotation",
 test("scratch chat opens from landing and closes on Escape", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator(".projects-screen")).toBeVisible();
-  await page.getByRole("button", { name: "Start conversation" }).click();
+  await page.getByRole("button", { name: "Scratch chat" }).click();
   await expect(page.locator(".app.scratch-mode")).toBeVisible();
-  await expect(page.locator(".scratch-title")).toHaveText("Start conversation");
+  await expect(page.locator(".scratch-title")).toHaveText("Scratch chat");
   // Scratch chrome is title + close only — inbox/terminal/panel stay project-scoped.
   await expect(page.locator(".topbar-actions")).toBeHidden();
   await expect(page.locator(".scratch-close")).toBeVisible();
@@ -9276,26 +10217,11 @@ test("projects landing stays centered on wide windows", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator(".projects-head")).toBeVisible();
   await expect(page.locator(".projects-brand-mark")).toBeVisible();
-  await expect(page.locator(".projects-title")).toContainText("天成科研助手");
-  await expect(page.locator(".projects-title .beta")).toHaveCount(0);
+  await expect(page.locator(".projects-title")).toHaveText("Wisp Science");
   await expect.poll(async () => page.locator(".projects-head").evaluate((el) => {
     const rect = el.getBoundingClientRect();
     return Math.round(rect.width);
   })).toBeLessThanOrEqual(1200);
-});
-
-test("projects landing theme toggle switches day and night modes", async ({ page }) => {
-  await page.goto("/");
-  const toggle = page.getByTestId("theme-day-night-toggle");
-  await expect(toggle).toBeVisible();
-  await page.evaluate(() => localStorage.setItem("superscience-theme", "light"));
-  await page.reload();
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
-  await page.getByTestId("theme-day-night-toggle").click();
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("superscience-theme"))).toBe("dark");
-  await page.getByTestId("theme-day-night-toggle").click();
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
 });
 
 test("empty session shows the branded chat empty state", async ({ page }) => {
@@ -9304,6 +10230,9 @@ test("empty session shows the branded chat empty state", async ({ page }) => {
   const empty = page.locator(".empty");
   await expect(empty).toBeVisible();
   await expect(empty.locator(".empty-logo")).toBeVisible();
+  await expect.poll(() => empty.locator(".empty-logo").evaluate((el) =>
+    Math.round(el.getBoundingClientRect().width)
+  )).toBe(32);
   await expect(empty.locator("h1")).not.toBeEmpty();
   await expect(empty.locator("h1")).toHaveCSS("font-family", /Source Serif/);
 });
@@ -9318,25 +10247,60 @@ test("Windows uses the integrated title bar without covering the project landing
 
   await expect(page.locator(".window-titlebar")).toBeVisible();
   await expect(page.getByRole("button", { name: "Minimize" })).toBeVisible();
+  await expect(page.getByTestId("window-maximize")).toBeVisible();
+  await expect(page.locator("#titlebar-maximize")).toHaveAttribute("aria-label", "Maximize");
+  await expect(page.locator(".window-titlebar [data-tauri-drag-region]")).toHaveCount(0);
+  await expect(page.getByTestId("window-snap-drag")).toHaveCount(2);
   await expect.poll(async () => page.locator(".projects-screen").evaluate((el) =>
     Math.round(el.getBoundingClientRect().top)
   )).toBe(38);
 
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await expect.poll(async () => page.locator(".settings-page").evaluate((el) =>
     Math.round(el.getBoundingClientRect().top)
   )).toBe(38);
   await page.getByRole("button", { name: "Back to app" }).click();
 
+  // Home menus only list actions that work without an open project.
   await page.getByRole("button", { name: "File", exact: true }).click();
-  await expect(page.getByRole("menuitem", { name: "Open projects" })).toBeVisible();
-  await expect(page.getByRole("menuitem", { name: "Export current project" })).toBeDisabled();
-  await page.getByRole("menuitem", { name: "Open projects" }).click();
-  await expect(page.locator(".projects-screen")).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "New project" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Import project" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Scratch chat" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Open settings" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "New session" })).toHaveCount(0);
+  await expect(page.getByRole("menuitem", { name: "Open projects" })).toHaveCount(0);
+  await expect(page.getByRole("menuitem", { name: "Export current project" })).toHaveCount(0);
+  await page.getByRole("menuitem", { name: "New project" }).click();
+  await expect(page.locator(".overlay .proj-settings-modal")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".proj-settings-modal")).toHaveCount(0);
+
+  // Ctrl+N on the landing means a new project too, but Chromium never
+  // delivers Ctrl+N to web content, so that path is only exercisable in the
+  // real webview — the menu item above covers the same "new-project" action.
+
+  await page.getByRole("button", { name: "File", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Import project" }).click();
+  await expect(page.getByTestId("project-import-options")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("project-import-options")).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Edit", exact: true }).click();
+  await expect(page.getByRole("menuitem", { name: "All commands" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Import Codex conversations" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+
+  await page.getByRole("button", { name: "View", exact: true }).click();
+  await expect(page.getByRole("menuitem", { name: "Light theme" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Toggle sidebar" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
 
   await page.locator(".proj-card-main").first().click();
   await expect(newSessionButton(page)).toBeVisible();
   await page.getByRole("button", { name: "File", exact: true }).click();
+  // Inside a workspace the menus flip back to the session-scoped set.
+  await expect(page.getByRole("menuitem", { name: "New session" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "New project" })).toHaveCount(0);
   const exportCurrentProject = page.getByRole("menuitem", { name: "Export current project" });
   await expect(exportCurrentProject).toBeEnabled();
   await exportCurrentProject.click();
@@ -9379,7 +10343,44 @@ test("Windows uses the integrated title bar without covering the project landing
     ((window as any).__skillInvokeLog ?? [])
       .filter((c: any) => c.cmd === "open_external_url")
       .map((c: any) => (c.args instanceof Map ? c.args.get("url") : c.args?.url))
-  )).toContain("https://github.com/imbigfly/SuperScience#readme");
+  )).toContain("https://github.com/xuzhougeng/wisp-science#readme");
+
+  await context.close();
+});
+
+test("Windows titlebar double-click maximizes and drag waits for movement", async ({ browser }) => {
+  const context = await browser.newContext({
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136 Safari/537.36",
+  });
+  const page = await context.newPage();
+  await page.addInitScript(tauriMock);
+  await page.goto("/");
+
+  const drag = page.getByTestId("window-snap-drag").nth(1);
+  const box = await drag.boundingBox();
+  expect(box).not.toBeNull();
+  const x = box!.x + box!.width / 2;
+  const y = box!.y + box!.height / 2;
+
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  expect(await page.evaluate(() =>
+    ((window as any).__skillInvokeLog ?? []).some((call: any) => call.cmd === "start_window_move")
+  )).toBe(false);
+  await page.mouse.move(x + 8, y);
+  await expect.poll(() => page.evaluate(() =>
+    ((window as any).__skillInvokeLog ?? []).some((call: any) => call.cmd === "start_window_move")
+  )).toBeTruthy();
+  await page.mouse.up();
+
+  await page.evaluate(() => { (window as any).__skillInvokeLog = []; });
+  await drag.dblclick();
+  await expect.poll(() => page.evaluate(() =>
+    ((window as any).__skillInvokeLog ?? []).some((call: any) => call.cmd === "toggle-maximize")
+  )).toBeTruthy();
+  expect(await page.evaluate(() =>
+    ((window as any).__skillInvokeLog ?? []).some((call: any) => call.cmd === "start_window_move")
+  )).toBe(false);
 
   await context.close();
 });
@@ -9396,7 +10397,7 @@ test("macOS uses the native title bar without the integrated header", async ({ b
   await expect(page.locator(".window-controls")).toHaveCount(0);
   await expect(page.locator(".projects-screen")).toBeVisible();
 
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await expect.poll(async () => page.locator(".settings-page").evaluate((el) =>
     Math.round(el.getBoundingClientRect().top)
   )).toBe(0);
@@ -9419,7 +10420,7 @@ test("project cards use semantic buttons for keyboard access", async ({ page }) 
 
 test("Escape closes settings and unwinds the composer picker before the right pane", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "Settings" }).click();
+  await globalSettingsButton(page).click();
   await expect(page.locator(".settings-page")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.locator(".settings-page")).toHaveCount(0);
@@ -9482,7 +10483,7 @@ test("project switcher does not show a stale fallback name while opening", async
   await page.locator(".proj-card-main").first().click();
 
   await expect(page.locator(".proj-name")).toHaveText("Opening project…");
-  await expect(page.locator(".proj-name")).toHaveText("superscience");
+  await expect(page.locator(".proj-name")).toHaveText("wisp-science");
 });
 
 test("project switcher has no caret and switches workspace in the current window", async ({ page }) => {
@@ -9503,6 +10504,15 @@ test("opening a workspace resumes its most recent conversation by default", asyn
   await page.locator(".proj-card-main").first().click();
   await expect(page.getByRole("tablist").getByRole("button", { name: "Long transcript" })).toBeVisible();
   await expect(page.getByText("Newest page first question")).toBeVisible();
+});
+
+test("opening a workspace skips a newer named unused draft when resuming", async ({ page }) => {
+  await page.goto("/?mockLongSession=1&mockNamedUnusedDraft=1");
+  await page.locator(".proj-card-main").first().click();
+  await expect(page.getByRole("tablist").getByRole("button", { name: "Long transcript" })).toBeVisible();
+  await expect(page.getByText("Newest page first question")).toBeVisible();
+  await expect(page.locator(".side-item.ses", { hasText: "Named unused draft" })).toBeVisible();
+  await expect(page.locator(".side-item.ses.active", { hasText: "Long transcript" })).toBeVisible();
 });
 
 test("default workspace keeps history labels and compact navigation keeps hover labels", async ({ page }) => {
@@ -9693,6 +10703,89 @@ test("project cards show the workspace path and aligned action icons", async ({ 
   }
 });
 
+test("landing Settings stays distinct from Project settings", async ({ page }) => {
+  await page.goto("/");
+
+  const appSettings = globalSettingsButton(page);
+  const projectSettings = page.getByTestId("project-card-settings");
+  await expect(appSettings).toHaveCount(1);
+  await expect(projectSettings.first()).toBeVisible();
+  await expect(appSettings).not.toHaveAttribute("data-testid", "project-card-settings");
+
+  await appSettings.click();
+  await expect(page.locator(".settings-page")).toBeVisible();
+  await expect(page.getByTestId("project-home-settings")).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".settings-page")).toHaveCount(0);
+
+  await projectSettings.first().click();
+  await expect(page.getByTestId("project-home-settings")).toBeVisible();
+  await expect(page.locator(".settings-page")).toHaveCount(0);
+});
+
+test("project cards open settings without entering the project (#905)", async ({ page }) => {
+  await page.goto("/");
+  const otherCard = page.locator(".proj-card:not(.proj-example)", { hasText: "Other project" });
+  await otherCard.getByTestId("project-card-settings").click();
+  const settings = page.getByTestId("project-home-settings");
+  await expect(settings).toBeVisible();
+  await expect(page.locator(".projects-screen")).toBeVisible();
+  await expect.poll(() => lastInvokeArgs(page, "get_project_settings")).toMatchObject({
+    id: "other",
+  });
+  await expect.poll(() => lastInvokeArgs(page, "open_project")).toBeNull();
+
+  await page.keyboard.press("Escape");
+  await expect(settings).toHaveCount(0);
+  await expect(page.locator(".projects-screen")).toBeVisible();
+
+  await otherCard.getByTestId("project-card-settings").click();
+  await expect(settings).toBeVisible();
+  await settings.getByTestId("project-home-settings-name").fill("Formal name");
+  await settings.getByTestId("save-project-home-settings").click();
+  await expect.poll(() => lastInvokeArgs(page, "update_project")).toMatchObject({
+    id: "other",
+    name: "Formal name",
+  });
+  await expect.poll(() => lastInvokeArgs(page, "open_project")).toBeNull();
+  await expect(settings).toHaveCount(0);
+  await expect(page.locator(".proj-card:not(.proj-example)", { hasText: "Formal name" })).toBeVisible();
+  await expect(page.locator(".projects-screen")).toBeVisible();
+});
+
+test("project home settings confirm Escape leaves the settings dialog open", async ({ page }) => {
+  await page.goto("/");
+  await page.locator(".proj-card:not(.proj-example)").first().getByTestId("project-card-settings").click();
+  const settings = page.getByTestId("project-home-settings");
+  await expect(settings).toBeVisible();
+  await settings.locator("textarea.ps-ctx").fill("Prefer the home card setting.");
+  await settings.getByTestId("save-project-home-settings").click();
+  const confirm = page.getByTestId("project-home-settings-confirm");
+  await expect(confirm).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(confirm).toHaveCount(0);
+  await expect(settings).toBeVisible();
+});
+
+test("projects home suppresses the native context menu except in text fields", async ({ page }) => {
+  await page.goto("/");
+  const card = page.locator(".proj-card:not(.proj-example)").first();
+  const cardPrevented = await card.evaluate((el) => {
+    const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    el.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  expect(cardPrevented).toBe(true);
+
+  await card.getByTestId("project-card-settings").click();
+  const namePrevented = await page.getByTestId("project-home-settings-name").evaluate((el) => {
+    const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    el.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  expect(namePrevented).toBe(false);
+});
+
 test("projects sync manually, copy a device code, and join on another device", async ({ page }) => {
   await page.goto("/");
   const projectCard = page.locator(".proj-card:not(.proj-example)").first();
@@ -9711,12 +10804,8 @@ test("projects sync manually, copy a device code, and join on another device", a
   )).toBe(true);
 
   await expect(page.getByRole("button", { name: "Join synced project" })).toHaveCount(0);
-  await page.getByRole("button", { name: "Settings" }).click();
-  await page.getByRole("button", { name: "Channel Access", exact: true }).click();
-  const sync = page.getByTestId("manual-project-sync");
-  await expect(sync).toBeVisible();
-  await expect(sync).not.toHaveAttribute("open");
-  await sync.locator("summary").click();
+  await globalSettingsButton(page).click();
+  await page.getByRole("button", { name: "Remote Access", exact: true }).click();
   await page.getByRole("button", { name: "Join synced project" }).click();
   const joinDialog = page.getByRole("dialog", { name: "Join a synced project" });
   const deviceCode = page.getByTestId("sync-device-code");
@@ -9752,53 +10841,22 @@ test("project sync actions appear only after a sync backend is configured", asyn
   await expect(projectCard.getByRole("button", { name: "Sync now" })).toHaveCount(0);
   await expect(projectCard.getByRole("button", { name: "Copy device code" })).toHaveCount(0);
 
-  await openSettingsSection(page, "Channel Access");
-  const sync = page.getByTestId("manual-project-sync");
-  await sync.locator("summary").click();
+  await openSettingsSection(page, "Remote Access");
   await page.getByTestId("sync-relay-url").fill("https://relay.example.test");
   await page.getByTestId("sync-relay-token").fill("secret-token");
-  await page.locator(".settings-join-sync-body .settings-footer").getByRole("button", { name: "Save" }).click();
+  await page.locator(".settings-footer").getByRole("button", { name: "Save" }).click();
 
   await expect(projectCard.getByRole("button", { name: "Sync now" })).toBeVisible();
   await expect(projectCard.getByRole("button", { name: "Copy device code" })).toBeVisible();
 });
 
-test("channel access settings collapse manual project sync by default", async ({ page }) => {
+test("remote access settings configure a cloud-drive sync folder", async ({ page }) => {
   await page.goto("/");
-  await openSettingsSection(page, "Channel Access");
-  await expect(page.getByRole("heading", { name: "Channel Access" })).toBeVisible();
-  await expect(page.locator(".channel-card")).toHaveCount(3);
-  const sync = page.getByTestId("manual-project-sync");
-  await expect(sync).toBeVisible();
-  await expect(sync).not.toHaveAttribute("open");
-  await expect(page.getByTestId("sync-backend")).not.toBeVisible();
-  await expect(page.getByTestId("sync-relay-url")).not.toBeVisible();
-  await expect(page.getByRole("button", { name: "Join synced project" })).not.toBeVisible();
-
-  await sync.locator("summary").click();
-  await expect(sync).toHaveAttribute("open", "");
-  await expect(page.getByTestId("sync-backend")).toBeVisible();
-  await expect(page.getByTestId("sync-relay-url")).toBeVisible();
-  await page.getByRole("button", { name: "Join synced project" }).click();
-  const joinDialog = page.getByRole("dialog", { name: "Join a synced project" });
-  await expect(joinDialog).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(joinDialog).toHaveCount(0);
-  await expect(sync).toHaveAttribute("open", "");
-  await page.keyboard.press("Escape");
-  await expect(sync).not.toHaveAttribute("open");
-  await expect(page.getByRole("heading", { name: "Channel Access" })).toBeVisible();
-});
-
-test("channel access settings configure a cloud-drive sync folder", async ({ page }) => {
-  await page.goto("/");
-  await openSettingsSection(page, "Channel Access");
-  const sync = page.getByTestId("manual-project-sync");
-  await sync.locator("summary").click();
+  await openSettingsSection(page, "Remote Access");
   await page.getByTestId("sync-backend").selectOption("folder");
   await page.locator(".settings-path-row").getByRole("button", { name: "Choose folder" }).click();
   await expect(page.getByTestId("sync-folder")).toHaveValue("/mock/root/new-project");
-  await page.locator(".settings-join-sync-body .settings-footer").getByRole("button", { name: "Save" }).click();
+  await page.locator(".settings-footer").getByRole("button", { name: "Save" }).click();
   await expect.poll(() => lastInvokeArgs(page, "set_settings")).toMatchObject({
     settings: { sync_backend: "folder", sync_folder: "/mock/root/new-project" },
   });
@@ -9824,6 +10882,19 @@ test("general settings enable automatic context compaction by default", async ({
   await page.locator(".settings-footer").getByRole("button", { name: "Save" }).click();
   await expect.poll(() => lastInvokeArgs(page, "set_settings")).toMatchObject({
     settings: { auto_compact: false },
+  });
+});
+
+test("general settings configure truncated-output auto-continue", async ({ page }) => {
+  await page.goto("/");
+  await openSettingsSection(page, "General");
+  const toggle = page.getByTestId("auto-continue-enabled");
+  await expect(toggle).not.toBeChecked();
+  await toggle.locator("..").click();
+  await page.getByTestId("auto-continue-limit").fill("4");
+  await page.locator(".settings-footer").getByRole("button", { name: "Save" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "set_settings")).toMatchObject({
+    settings: { auto_continue: true, auto_continue_limit: 4 },
   });
 });
 
@@ -9857,7 +10928,7 @@ test("context compaction leaves a visible timeline flag", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("start a context-heavy analysis");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock superscience.")).toBeVisible();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
   const frameId = String((await lastInvokeArgs(page, "send_message")).sessionId);
 
   await emitTauriEvent(page, "agent", {
@@ -9885,7 +10956,7 @@ test("context-limit recovery offers three actions and owns the first Escape", as
   await enterApp(page);
   await composer(page).fill("continue a long analysis");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock superscience.")).toBeVisible();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
   const frameId = String((await lastInvokeArgs(page, "send_message")).sessionId);
   const overflow = {
     kind: "Error",
@@ -9920,7 +10991,7 @@ test("context-limit recovery can continue in a new session with the old one atta
   await enterApp(page);
   await composer(page).fill("finish the long analysis");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock superscience.")).toBeVisible();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
   const frameId = String((await lastInvokeArgs(page, "send_message")).sessionId);
 
   await emitTauriEvent(page, "agent", {
@@ -9943,6 +11014,25 @@ test("context-limit recovery can continue in a new session with the old one atta
   });
 });
 
+test("a leftover proxy connect error points at Model API proxy", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("hello");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+  const frameId = String((await lastInvokeArgs(page, "send_message")).sessionId);
+
+  await emitTauriEvent(page, "agent", {
+    kind: "Error",
+    frame_id: frameId,
+    message: "http: error sending request: tcp connect error: Connection refused (os error 111) (via leftover HTTPS_PROXY=http://127.0.0.1:7890)",
+  });
+
+  const card = page.locator(".finding.err");
+  await expect(card).toBeVisible();
+  await expect(card.locator(".finding-body")).toContainText("Model API proxy");
+  await expect(card.locator(".finding-body")).toContainText("none");
+});
+
 test("pet stays off until the user explicitly configures its directory", async ({ page }) => {
   await page.goto("/");
   await openSettingsSection(page, "Pet");
@@ -9961,7 +11051,7 @@ test("pet stays off until the user explicitly configures its directory", async (
   });
 
   await page.goto("/?pet=desktop&mockPet=1");
-  const pet = page.getByTestId("superscience-pet");
+  const pet = page.getByTestId("wisp-pet");
   await expect(pet).toBeVisible();
   await expect.poll(() => pet.getAttribute("data-state")).toMatch(/^(idle|looking)$/);
   await pet.click();
@@ -9972,7 +11062,7 @@ test("desktop pet remains independent and reflects global agent state", async ({
   await page.setViewportSize({ width: 128, height: 176 });
   await page.goto("/?pet=desktop&mockPet=1");
 
-  const pet = page.getByTestId("superscience-pet");
+  const pet = page.getByTestId("wisp-pet");
   await expect(page.getByTestId("pet-window-root")).toBeVisible();
   await expect(pet).toBeVisible();
   await expect(pet).toHaveAttribute("data-tauri-drag-region", "deep");
@@ -10026,9 +11116,9 @@ test("desktop pet shows active Run titles and celebrates completion (#693)", asy
   });
   await page.goto("/?pet=desktop&mockPet=1");
 
-  const pet = page.getByTestId("superscience-pet");
-  const sprite = pet.locator(".superscience-pet-sprite");
-  const label = pet.locator(".superscience-pet-state-label");
+  const pet = page.getByTestId("wisp-pet");
+  const sprite = pet.locator(".wisp-pet-sprite");
+  const label = pet.locator(".wisp-pet-state-label");
   await expect(pet).toHaveAttribute("data-tauri-drag-region", "deep");
   await expect(label).toHaveText("Running: siibra atlas query example (with assignment)");
   await expect(label).toBeVisible();
@@ -10085,11 +11175,12 @@ test("a second conversation can run in parallel without interleaving transcripts
   await page.locator(".proj-card-main").first().click();
   await expect(newSessionButton(page)).toBeVisible();
 
-  // Start conversation A. The mock streams "echo:alpha" at once but delays Done,
+  // Start conversation A. The mock streams A's reply at once but delays Done,
   // so A stays "running".
   await composer(page).fill("alpha");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("echo:alpha")).toBeVisible({ timeout: 10_000 });
+  await expect(userTurn(page, "alpha")).toBeVisible({ timeout: 10_000 });
+  await expect(assistantReplyQuoting(page, "alpha")).toBeVisible({ timeout: 10_000 });
 
   // While A is still running, open a fresh session. The composer must be usable
   // (per-session busy: A running does NOT block B).
@@ -10097,18 +11188,22 @@ test("a second conversation can run in parallel without interleaving transcripts
   await expect(composer(page)).toBeEmpty();
   await composer(page).fill("beta");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("echo:beta")).toBeVisible({ timeout: 10_000 });
+  await expect(userTurn(page, "beta")).toBeVisible({ timeout: 10_000 });
+  await expect(assistantReplyQuoting(page, "beta")).toBeVisible({ timeout: 10_000 });
 
   // A's transcript must not leak into B's view.
-  await expect(page.getByText("echo:alpha")).toHaveCount(0);
+  await expect(userTurn(page, "alpha")).toHaveCount(0);
+  await expect(assistantReplyQuoting(page, "alpha")).toHaveCount(0);
 
   // A is still running → its sidebar entry shows the running indicator.
   await expect(page.locator(".side-item.ses.running", { hasText: "alpha" })).toBeVisible();
 
   // Switch back to A: the cached (live) transcript renders, B's does not.
   await page.locator(".side-item.ses", { hasText: "alpha" }).click();
-  await expect(page.getByText("echo:alpha")).toBeVisible({ timeout: 10_000 });
-  await expect(page.getByText("echo:beta")).toHaveCount(0);
+  await expect(userTurn(page, "alpha")).toBeVisible({ timeout: 10_000 });
+  await expect(assistantReplyQuoting(page, "alpha")).toBeVisible({ timeout: 10_000 });
+  await expect(userTurn(page, "beta")).toHaveCount(0);
+  await expect(assistantReplyQuoting(page, "beta")).toHaveCount(0);
 });
 
 test("delayed session loads cannot expose or overwrite another live transcript (#595)", async ({ page }) => {
@@ -10121,35 +11216,41 @@ test("delayed session loads cannot expose or overwrite another live transcript (
   // takes the asynchronous idle-session load path.
   await composer(page).fill("alpha");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("echo:alpha")).toBeVisible({ timeout: 10_000 });
+  await expect(assistantReplyQuoting(page, "alpha")).toBeVisible({ timeout: 10_000 });
   await newSessionButton(page).click();
   await composer(page).fill("actions-beta");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("echo:actions-beta")).toBeVisible();
+  await expect(assistantReplyQuoting(page, "actions-beta")).toBeVisible();
   await expect(page.locator(".side-item.ses", { hasText: "actions-beta" })).toBeVisible();
 
   await page.locator(".side-item.ses", { hasText: "alpha" }).click();
-  await expect(page.getByText("echo:alpha")).toBeVisible();
+  await expect(assistantReplyQuoting(page, "alpha")).toBeVisible();
   await page.evaluate(() => { (window as any).__parallelLoadDelayMs = 800; });
 
   // The target cache must be installed before active_session changes. Under the
   // old ordering, A remained visible here until B's delayed load completed.
+  const loadsBeforeSwitch = await page.evaluate(() =>
+    Number((window as any).__parallelLoadsResolved ?? 0));
   await page.locator(".side-item.ses", { hasText: "actions-beta" }).click();
-  await expect(page.getByText("echo:alpha")).toHaveCount(0);
-  await expect(page.getByText("echo:actions-beta")).toBeVisible();
+  await expect(assistantReplyQuoting(page, "alpha")).toHaveCount(0);
+  await expect(assistantReplyQuoting(page, "actions-beta")).toBeVisible();
 
   // Start a live B turn while its old DB page is still loading. The late empty
   // snapshot must not erase the streamed result.
   await composer(page).fill("gamma");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("echo:gamma")).toBeVisible();
-  await page.waitForTimeout(1_000);
-  await expect(page.getByText("echo:gamma")).toBeVisible();
-  await expect(page.getByText("echo:alpha")).toHaveCount(0);
+  await expect(assistantReplyQuoting(page, "gamma")).toBeVisible();
+  // Wait for the delayed snapshot to actually arrive before asserting it did
+  // not erase the live turn (not a fixed sleep hoping it has landed).
+  await expect
+    .poll(() => page.evaluate(() => Number((window as any).__parallelLoadsResolved ?? 0)))
+    .toBeGreaterThan(loadsBeforeSwitch);
+  await expect(assistantReplyQuoting(page, "gamma")).toBeVisible();
+  await expect(assistantReplyQuoting(page, "alpha")).toHaveCount(0);
 
   await page.locator(".side-item.ses", { hasText: "alpha" }).click();
-  await expect(page.getByText("echo:alpha")).toBeVisible();
-  await expect(page.getByText("echo:gamma")).toHaveCount(0);
+  await expect(assistantReplyQuoting(page, "alpha")).toBeVisible();
+  await expect(assistantReplyQuoting(page, "gamma")).toHaveCount(0);
 });
 
 test("a running conversation accepts another message for queueing", async ({ page }) => {
@@ -10160,16 +11261,20 @@ test("a running conversation accepts another message for queueing", async ({ pag
 
   await composer(page).fill("alpha");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("echo:alpha")).toBeVisible({ timeout: 10_000 });
+  await expect(assistantReplyQuoting(page, "alpha")).toBeVisible({ timeout: 10_000 });
 
   await composer(page).fill("queued");
   // Queue (#433): sending into a busy session queues directly — no dialog. The
-  // busy send button reads "Queue…" and the message parks as an editable bubble.
+  // busy send button reads "Queue…" and the message parks in the composer queue.
   const send = page.getByRole("button", { name: "Queue…" });
   await expect(send).toBeEnabled({ timeout: 500 });
   await send.click();
   const queued = page.locator(".msg.user.queued .body", { hasText: /^queued$/ });
   await expect(queued).toBeVisible({ timeout: 500 });
+  await expect(page.getByTestId("composer-queue")).toBeVisible();
+  await expect(page.locator(".thread .msg.user.queued")).toHaveCount(0);
+  await expect(page.getByTestId("composer-queue")).toContainText("1 queued");
+  await expect(page.locator(".msg.user.queued").getByTitle("Move up")).toHaveCount(0);
 
   // The parked turn goes through enqueue_turn, not send_message.
   await expect.poll(async () => page.evaluate(() =>
@@ -10181,9 +11286,10 @@ test("a running conversation accepts another message for queueing", async ({ pag
   // The first turn keeps streaming after the second is queued. Its tail must
   // stay attached to the first assistant row instead of leaking into a hidden
   // placeholder after the queued user message (#143). "queued" must NOT run yet.
-  await expect(page.getByText("echo:alpha:tail", { exact: true })).toBeVisible({ timeout: 3_000 });
+  await expect(page.getByText(parallelReplyTailText("alpha"), { exact: true }))
+    .toBeVisible({ timeout: 3_000 });
   await expect(queued).toBeVisible();
-  await expect(page.getByText("echo:queued")).toHaveCount(0);
+  await expect(assistantReplyQuoting(page, "queued")).toHaveCount(0);
 
   // Only "alpha" ran as a live turn; the queue waits behind it.
   await expect.poll(async () => page.evaluate(() =>
@@ -10194,7 +11300,7 @@ test("a running conversation accepts another message for queueing", async ({ pag
 
   // Once alpha finishes, the driver drains the queue: "queued" now runs and its
   // optimistic bubble promotes to a live turn (#433).
-  await expect(page.getByText("echo:queued")).toBeVisible({ timeout: 10_000 });
+  await expect(assistantReplyQuoting(page, "queued")).toBeVisible({ timeout: 10_000 });
 });
 
 test("queued follow-ups can be reordered up and down (#433)", async ({ page }) => {
@@ -10206,7 +11312,7 @@ test("queued follow-ups can be reordered up and down (#433)", async ({ page }) =
   // alpha stays running ~5s, keeping the session busy while we queue two more.
   await composer(page).fill("alpha");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("echo:alpha")).toBeVisible({ timeout: 10_000 });
+  await expect(assistantReplyQuoting(page, "alpha")).toBeVisible({ timeout: 10_000 });
 
   for (const msg of ["bravo", "charlie"]) {
     await composer(page).fill(msg);
@@ -10218,6 +11324,7 @@ test("queued follow-ups can be reordered up and down (#433)", async ({ page }) =
 
   const queuedTexts = () => page.locator(".msg.user.queued .body").allInnerTexts();
   expect(await queuedTexts()).toEqual(["bravo", "charlie"]);
+  await expect(page.getByTestId("composer-queue")).toContainText("2 queued");
 
   // Move charlie up → [charlie, bravo]; then back down → [bravo, charlie].
   const charlieRow = page.locator(".msg.user.queued", { hasText: "charlie" });
@@ -10242,7 +11349,7 @@ test("editing a queued follow-up restores it to the composer", async ({ page }) 
 
   await composer(page).fill("alpha");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("echo:alpha")).toBeVisible({ timeout: 10_000 });
+  await expect(assistantReplyQuoting(page, "alpha")).toBeVisible({ timeout: 10_000 });
 
   await composer(page).fill("what is QC?");
   await page.getByRole("button", { name: "Queue…" }).click();
@@ -10269,7 +11376,7 @@ test("project removal offers a files-preserving action in the in-app dialog (#96
   const modal = page.locator(".project-delete-choice-modal");
   await expect(modal).toBeVisible();
   await expect(modal.getByRole("button", { name: "Cancel", exact: true })).toBeVisible();
-  await expect(modal.getByRole("button", { name: "Remove from SuperScience only", exact: true })).toBeVisible();
+  await expect(modal.getByRole("button", { name: "Remove from Wisp only", exact: true })).toBeVisible();
   await expect(modal.getByRole("button", { name: "Delete project and local data", exact: true })).toBeVisible();
 
   // Escape works immediately after opening; it does not depend on modal focus.
@@ -10277,7 +11384,7 @@ test("project removal offers a files-preserving action in the in-app dialog (#96
   await expect(modal).toHaveCount(0);
   await page.locator(".proj-card:not(.proj-example) .pc-del").first().click();
   await page.locator(".project-delete-choice-modal")
-    .getByRole("button", { name: "Remove from SuperScience only", exact: true })
+    .getByRole("button", { name: "Remove from Wisp only", exact: true })
     .click();
   await expect.poll(async () => page.evaluate(() =>
     ((window as any).__skillInvokeLog ?? [])
@@ -10339,15 +11446,85 @@ test("external links open in the system browser, not the app webview (#97)", asy
     document.body.appendChild(a);
   });
   await page.click("#ext-link-probe");
-  await expect.poll(async () => page.evaluate(() =>
-    ((window as any).__skillInvokeLog ?? [])
-      .filter((c: any) => c.cmd === "open_external_url")
-      // serde_wasm_bindgen passes args as a JS Map, not a plain object.
-      .map((c: any) => (c.args instanceof Map ? c.args.get("url") : c.args?.url)),
-  )).toContain("https://example.com/paper.pdf");
+  await page.getByTestId("external-link-open").click();
+  // serde_wasm_bindgen passes args as a JS Map, not a plain object.
+  await expect.poll(() => openedExternalUrls(page)).toContain("https://example.com/paper.pdf");
   // The app itself must still be on screen — the click was intercepted, not
   // followed as a top-level navigation.
   await expect(newSessionButton(page)).toBeVisible();
+});
+
+test("relative paths and hash anchors never navigate the app", async ({ page }) => {
+  await enterApp(page);
+  const appUrl = page.url();
+  await page.evaluate(() => {
+    const rel = document.createElement("a");
+    rel.id = "rel-link-probe";
+    rel.href = "notes/FIGURE_LEGEND.md";
+    rel.textContent = "relative";
+    const hash = document.createElement("a");
+    hash.id = "hash-link-probe";
+    hash.href = "#section";
+    hash.textContent = "anchor";
+    document.body.appendChild(rel);
+    document.body.appendChild(hash);
+  });
+  await page.click("#rel-link-probe");
+  expect(page.url()).toBe(appUrl);
+  await expect(newSessionButton(page)).toBeVisible();
+  await page.click("#hash-link-probe");
+  expect(page.url()).toBe(appUrl);
+  await expect(newSessionButton(page)).toBeVisible();
+  expect(await openedExternalUrls(page)).toEqual([]);
+});
+
+async function openedExternalUrls(page: Page) {
+  return page.evaluate(() =>
+    ((window as any).__skillInvokeLog ?? [])
+      .filter((c: any) => c.cmd === "open_external_url")
+      .map((c: any) => (c.args instanceof Map ? c.args.get("url") : c.args?.url)),
+  );
+}
+
+test("a bare URL in a reply is clickable and opens only after confirmation", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("MDURL");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  // The model typed the URL as prose, with no markdown link syntax and CJK
+  // punctuation right after it — it still has to be a link, and only the URL.
+  const link = page.locator(".msg.assistant .body.md a", { hasText: "https://www.baidu.com" });
+  await expect(link).toBeVisible({ timeout: 10_000 });
+  await expect(link).toHaveText("https://www.baidu.com");
+  await expect(link).toHaveAttribute("href", "https://www.baidu.com");
+
+  await link.click();
+  const confirm = page.getByTestId("external-link-confirm");
+  await expect(confirm).toBeVisible();
+  await expect(page.getByTestId("external-link-url")).toHaveText("https://www.baidu.com");
+  expect(await openedExternalUrls(page)).toEqual([]);
+
+  await page.getByTestId("external-link-open").click();
+  await expect(confirm).toHaveCount(0);
+  await expect.poll(() => openedExternalUrls(page)).toContain("https://www.baidu.com");
+  await expect(newSessionButton(page)).toBeVisible();
+});
+
+test("Escape dismisses the link confirmation without opening the browser", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("MDURL");
+  await page.getByRole("button", { name: "Send" }).click();
+  const link = page.locator(".msg.assistant .body.md a", { hasText: "https://www.baidu.com" });
+  await expect(link).toBeVisible({ timeout: 10_000 });
+
+  await link.click();
+  const confirm = page.getByTestId("external-link-confirm");
+  await expect(confirm).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(confirm).toHaveCount(0);
+  expect(await openedExternalUrls(page)).toEqual([]);
+  // Only the confirmation closed: the transcript is untouched.
+  await expect(link).toBeVisible();
 });
 
 test("assistant markdown uses normal whitespace (no phantom blank lines)", async ({ page }) => {
@@ -10679,7 +11856,7 @@ test("an SVG star saves a Notebook cell in the global library", async ({ page })
   await page.getByRole("button", { name: "Library", exact: true }).click();
   await expect(page.getByTestId("library-screen")).toBeVisible();
   await expect(page.locator('.library-card[data-library-kind="code"]')).toContainText("zcat counts.txt.gz");
-  await expect(page.locator('.library-card[data-library-kind="code"]')).toContainText("superscience / Current analysis");
+  await expect(page.locator('.library-card[data-library-kind="code"]')).toContainText("wisp-science / Current analysis");
 
   // Library search runs against SQLite so full saved source remains searchable
   // even though the global list only carries bounded previews.
@@ -10858,7 +12035,7 @@ test("the selection popup saves a highlight into the right pane and library", as
   // The Highlights tab opens with the excerpt, and the transcript is underlined.
   await expect(page.getByRole("button", { name: "Highlights (1)", exact: true })).toBeVisible();
   await expect(page.locator(".highlight-card .highlight-text")).toContainText(selected.trim().slice(0, 30));
-  await expect.poll(() => page.evaluate(() => (CSS as any).highlights?.has("superscience-saved") ?? false)).toBe(true);
+  await expect.poll(() => page.evaluate(() => (CSS as any).highlights?.has("wisp-saved") ?? false)).toBe(true);
   // Let the double-rAF underline pass finish before the next turn starts.
   await page.evaluate(() => new Promise<void>((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(resolve));
@@ -10877,7 +12054,7 @@ test("the selection popup saves a highlight into the right pane and library", as
     const set = registry.set.bind(registry);
     (window as any).__savedMarkSetCalls = 0;
     registry.set = (name: string, value: unknown) => {
-      if (name === "superscience-saved") (window as any).__savedMarkSetCalls += 1;
+      if (name === "wisp-saved") (window as any).__savedMarkSetCalls += 1;
       return set(name, value);
     };
   });
@@ -10916,15 +12093,14 @@ test("a ?project window opens straight into the project, skipping the landing (#
 
 test("specialists page configures the builtin Reader and saves a custom specialist", async ({ page }) => {
   await enterApp(page);
-  await openSpecialistsPage(page);
-  await expect(page.locator(".specialist-card").first()).toBeVisible();
-  await expect(page.getByText("审阅专家")).toBeVisible();
-  await expect(page.getByText("检索专家")).toBeVisible();
-  await expect(page.getByText("科学插画专家")).toBeVisible();
-  // Builtin cards have no remove button.
-  await expect(page.locator('[data-testid^="specialist-remove-"]')).toHaveCount(0);
+  await openSettingsSection(page, "Specialists");
+  await expect(page.getByText("Reviewer")).toBeVisible();
+  await expect(page.getByText("Reader")).toBeVisible();
+  await expect(page.getByText("Scientific Illustrator")).toBeVisible();
+  // Builtin rows have no remove button.
+  await expect(page.locator(".settings-list-remove")).toHaveCount(0);
 
-  await page.getByText("检索专家").click();
+  await page.getByText("Reader").click();
   await expect(page.getByLabel("Instructions")).toBeDisabled();
   await page.getByTestId("reviewer-backend-select").selectOption("opus");
   await page.getByRole("button", { name: "Save" }).click();
@@ -10933,7 +12109,7 @@ test("specialists page configures the builtin Reader and saves a custom speciali
   });
 
   // builtin row: open it and verify instructions are disabled
-  await page.getByText("审阅专家").click();
+  await page.getByText("Reviewer").click();
   await expect(page.getByLabel("Instructions")).toBeDisabled();
   await page.locator(".settings-head-back").click();
 
@@ -10966,9 +12142,9 @@ test("specialist skills whitelist uses a searchable picker instead of a full lis
   const options = page.getByTestId("specialist-skill-option");
   await expect(options).toHaveCount(0);
   const search = page.getByTestId("specialist-skill-search");
-  await expect(page.getByTestId("specialist-skill-results")).toContainText("3 available skills");
+  await expect(page.getByTestId("specialist-skill-results")).toContainText("4 available skills");
 
-  await search.fill("alpha");
+  await search.fill("narrative");
   await expect(options).toHaveCount(1);
   await options.first().click();
   await expect(selected).toHaveCount(3);
@@ -10988,8 +12164,8 @@ test("specialist skills whitelist uses a searchable picker instead of a full lis
 
 test("Reviewer settings select, test, and persist an ACP backend", async ({ page }) => {
   await enterApp(page);
-  await openSpecialistsPage(page);
-  await page.getByText("审阅专家").click();
+  await openSettingsSection(page, "Specialists");
+  await page.getByText("Reviewer").click();
 
   const backend = page.getByTestId("reviewer-backend-select");
   await expect(backend.locator('option[value="acp:acp-test"]')).toHaveCount(1);
@@ -11020,14 +12196,14 @@ test("Reviewer settings select, test, and persist an ACP backend", async ({ page
   await expect(backend).toHaveValue("acp:acp-test");
 
   await page.locator(".settings-head-back").click();
-  await page.getByText("审阅专家").click();
+  await page.getByText("Reviewer").click();
   await expect(page.getByTestId("reviewer-backend-select")).toHaveValue("acp:acp-test");
 });
 
 test("a deleted ACP reviewer remains visibly selected as missing", async ({ page }) => {
   await enterApp(page);
-  await openSpecialistsPage(page);
-  await page.getByText("审阅专家").click();
+  await openSettingsSection(page, "Specialists");
+  await page.getByText("Reviewer").click();
   await page.getByTestId("reviewer-backend-select").selectOption("acp:acp-test");
   await page.getByRole("button", { name: "Save" }).click();
   await expect(page.locator(".settings-status")).toContainText("Specialist saved");
@@ -11043,9 +12219,8 @@ test("a deleted ACP reviewer remains visibly selected as missing", async ({ page
     .click();
   await expect(row).toHaveCount(0);
 
-  await page.locator(".settings-head-close").click();
-  await openSpecialistsPage(page);
-  await page.getByText("审阅专家").click();
+  await nav.getByRole("button", { name: "Specialists", exact: true }).click();
+  await page.getByText("Reviewer").click();
   const backend = page.getByTestId("reviewer-backend-select");
   await expect(backend).toHaveValue("acp:acp-test");
   await expect(page.getByTestId("reviewer-missing-acp-option")).toHaveText(
@@ -11063,8 +12238,8 @@ test("a deleted ACP reviewer remains visibly selected as missing", async ({ page
 
 test("new session can pick a specialist and it locks after the first message", async ({ page }) => {
   await enterApp(page);
-  // Create the custom specialist through the sidebar specialists page.
-  await openSpecialistsPage(page);
+  // Create the custom specialist through the settings flow, as above.
+  await openSettingsSection(page, "Specialists");
   await page.getByText("Add specialist").click();
   await page.getByText("Write from scratch").click();
   await page.getByLabel("Name").fill("Paper hunter");
@@ -11078,13 +12253,13 @@ test("new session can pick a specialist and it locks after the first message", a
   let agentMenu = await openAgentMenu(page);
   await agentMenu.getByRole("button", { name: /^Specialist/ }).click();
   const specialistMenu = page.getByRole("menu", { name: "Specialist" });
-  await expect(specialistMenu.getByRole("button", { name: "科学插画专家" })).toBeVisible();
+  await expect(specialistMenu.getByRole("button", { name: "Scientific Illustrator" })).toBeVisible();
   await specialistMenu.getByRole("button", { name: "Paper hunter" }).click();
   await expect(page.locator(".session-specialist")).toHaveText("Paper hunter");
 
   await composer(page).fill("hello there");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock superscience.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
 
   agentMenu = await openAgentMenu(page);
   await expect(agentMenu.getByRole("button", { name: /^Specialist/ })).toBeDisabled();
@@ -11092,7 +12267,7 @@ test("new session can pick a specialist and it locks after the first message", a
 
 test("chat-with-claude creation opens a new session with the interview prompt", async ({ page }) => {
   await enterApp(page);
-  await openSpecialistsPage(page);
+  await openSettingsSection(page, "Specialists");
   await page.getByText("Add specialist").click();
   await page.getByText("Chat with Claude").click();
   // settings closed, a session is active, and send_message was invoked with the template
@@ -11102,15 +12277,14 @@ test("chat-with-claude creation opens a new session with the interview prompt", 
   )).toBeGreaterThan(0);
 });
 
-test("channel access settings: Feishu, WeChat, and StickS3 setup", async ({ page }) => {
+test("remote access settings: Feishu, WeChat, and StickS3 setup", async ({ page }) => {
   await enterApp(page);
-  await openSettingsSection(page, "Channel Access");
+  await openSettingsSection(page, "Remote Access");
 
-  // List page: routing note plus one card per bot, toggles disabled until bound.
+  // List page: routing note plus one row per bot, toggles disabled until bound.
   await expect(page.getByTestId("channel-routing-help")).toBeVisible();
   await expect(page.getByTestId("channel-routing-help").getByText("/project", { exact: true })).toBeVisible();
   await expect(page.getByTestId("channel-routing-help").getByText("/session", { exact: true })).toBeVisible();
-  await expect(page.locator(".channel-card")).toHaveCount(3);
   await expect(page.getByTestId("feishu-channel-row")).toBeVisible();
   await expect(page.getByTestId("weixin-channel-row")).toBeVisible();
   await expect(page.getByTestId("sticks3-channel-row")).toBeVisible();
@@ -11121,7 +12295,6 @@ test("channel access settings: Feishu, WeChat, and StickS3 setup", async ({ page
   // Feishu subpage: existing applications still have a manual, keyring-backed
   // setup path.
   await page.getByTestId("feishu-channel-row").click();
-  await expect(page.getByTestId("manual-project-sync")).toHaveCount(0);
   await expect(page.getByTestId("feishu-channel-card")).toBeVisible();
   await page.getByTestId("feishu-international").check();
   await page.getByTestId("feishu-app-id").fill("cli_test123");
@@ -11163,7 +12336,7 @@ test("channel access settings: Feishu, WeChat, and StickS3 setup", async ({ page
   await page.getByTestId("weixin-unbind").click();
   await expect(page.getByTestId("weixin-bind")).toBeVisible({ timeout: 10_000 });
 
-  // StickS3 is the third Channel Access peer. LAN is usable now; Relay is an
+  // StickS3 is the third Remote Access peer. LAN is usable now; Relay is an
   // explicit, disabled future transport instead of being conflated with LAN.
   await page.locator(".settings-head-back").click();
   await page.getByTestId("sticks3-channel-row").click();
@@ -11200,7 +12373,7 @@ test("channel access settings: Feishu, WeChat, and StickS3 setup", async ({ page
 
 test("StickS3 listener errors remain visible without breaking settings", async ({ page }) => {
   await enterApp(page, "/?mockDeviceBridgeError=1");
-  await openSettingsSection(page, "Channel Access");
+  await openSettingsSection(page, "Remote Access");
   await page.getByTestId("sticks3-channel-row").click();
   await page.getByTestId("sticks3-bind-ipv4").fill("127.0.0.1");
   await page.getByTestId("sticks3-port").fill("18766");

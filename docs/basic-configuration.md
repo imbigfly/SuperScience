@@ -2,7 +2,9 @@
 
 本教程面向第一次使用 Wisp Science 的用户，覆盖模型、服务器、浏览器、Skill、MCP、ACP、凭据、插件、飞书/微信、项目迁移、记忆和命令行。界面截图来自 macOS 版；Windows 版菜单位置基本一致，快捷键中的 `Cmd` 请换成 `Ctrl`。
 
-> 建议顺序：先配置模型，再按需要配置服务器、浏览器、Skill/MCP、ACP 和频道接入。API Key、App Secret、OAuth Token 等敏感信息应只填写在 Wisp 的凭据字段中，不要写进提示词、项目文件或截图。
+> 建议顺序：先配置模型，再按需要配置服务器、浏览器、Skill/MCP、ACP 和远程接入。API Key、App Secret、OAuth Token 等敏感信息应只填写在 Wisp 的凭据字段中，不要写进提示词、项目文件或截图。
+>
+> 字号、主题、语言、自动压缩，以及当前项目占用的磁盘空间，可以直接在对话里让 Wisp 用 `configure` 工具读写，不必打开设置页。例如：“把字再大一点”、“改成深色”、“看下这个项目占了多少空间”。API Key、模型、工作区目录和代理仍只在设置里改。自定义专家可以用对话创建或按 id 更新（`save_specialist`），删除仍在 **设置 → 专家**。
 
 ## 目录
 
@@ -56,6 +58,7 @@
 - `401/403`：检查 API Key、账户权限和服务商区域。
 - `404`：通常是 API 基础地址或模型 ID 错误；不要盲目追加接口路径。
 - 上下文溢出：在会话里执行 `/compact`，或在 **设置 → 常规** 开启自动压缩长会话。
+- 输出被 `max_tokens` 截断：可在 **设置 → 常规** 开启“截断后自动继续”并设置每轮上限；达到上限后仍可使用“继续执行”。
 - 图片无法读取：确认至少有一个支持视觉输入并被指定为图片分析模型的 HTTP profile。
 
 字段和模型路由的完整说明见[模型配置](model-configuration.md)。
@@ -100,7 +103,9 @@ Wisp 的真实浏览器控制使用当前 Chrome/Chromium 用户资料，不启�
 2. 在要控制的 Chrome 用户资料中打开 `chrome://extensions`。
 3. 打开右上角 **开发者模式**。
 4. 点击 **加载未打包的扩展程序**，选择 `browser_setup` 返回的 `browser-extension/` 文件夹本身，不要选择里面的单个文件或 ZIP。
-5. 打开扩展弹窗，确认显示 **Connected to Wisp**。
+5. 打开扩展弹窗，确认显示 **Connected to Wisp**。更新 Wisp 后，在 `chrome://extensions` 点一次该扩展的 **重新加载**，否则 service worker 可能还是旧文件。
+
+扩展未连接时，Wisp 会在对话中给出醒目提示：本次回答不包含联网检索结果。涉及“最新/实时”或具体网页的请求时，Agent 应暂停并引导你打开浏览器、连上扩展，而不是直接用模型已有知识作答。连接后可点 **连接后重试**。
 
 ![Chrome 加载未打包扩展](assets/basic-configuration/18-browser-extension.png)
 
@@ -114,7 +119,7 @@ Wisp 的真实浏览器控制使用当前 Chrome/Chromium 用户资料，不启�
 列出我当前 Chrome 中的网页标签，只读取标题和 URL，不要点击页面。
 ```
 
-如果能列出标签页，说明桥接成功。浏览器工具通常仍会出现审批卡；只有当前会话明确开启“完全权限”时才会自动批准。
+如果能列出标签页，说明桥接成功。浏览器工具通常仍会出现审批卡；只有当前会话明确开启“完全权限”时才会自动批准。打开页面或扫描时，扩展会等到该标签的文档 `complete`（或超时）再返回；结果里的 `ready` 为 false 时，说明页面还没加载完。
 
 ### 网址过滤
 
@@ -138,7 +143,7 @@ Wisp 的真实浏览器控制使用当前 Chrome/Chromium 用户资料，不启�
 
 ### 为下一轮手动指定 Skill
 
-在消息输入框输入 `/`，打开“命令、技能与工作流”选择器；继续输入名称可以筛选，然后用方向键和 Enter，或直接点击目标。选中 Skill 或工作流会附加为引用；选中内置命令则执行对应操作（也可以不经过选择器，直接输入命令文本回车）。首页 **统计分析** 里的 **文本知识图谱** 会启动同一套 `knowledge-graph` 技能：从论文或笔记抽出实体关系，并生成可交互 HTML 图谱（与项目「研究图谱」不是同一功能）。
+在消息输入框输入 `/`，打开“命令、技能与工作流”选择器；继续输入名称可以筛选，然后用方向键和 Enter，或直接点击目标。选中 Skill 或工作流会附加为引用；选中内置命令则执行对应操作（也可以不经过选择器，直接输入命令文本回车）。
 
 内置命令：
 
@@ -153,7 +158,7 @@ Wisp 的真实浏览器控制使用当前 Chrome/Chromium 用户资料，不启�
 - `/skills`：打开技能管理设置页。
 - `/files`：打开右侧文件面板。
 - `/upload`：打开文件上传对话框。
-- `/share`：把对话导出为适合分享的长图（PNG）。弹出的预览里可以勾选要展示的消息（思考过程默认不包含），并支持关键词打码——这些词会被替换成 `xxx`。
+- `/share`：打开「分享为长图」：勾选消息、打码关键词，选择导出 PNG 长图或 HTML 网页。导出 PNG 时可设置图片宽度。导出沿用当前对话样式（所见即所得），不会另做一套气泡皮肤。顶栏铃铛左侧的分享按钮、输入框左侧 `+` 菜单的「分享」是同一个入口。会话还没有可分享的消息时，顶栏按钮会禁用。
 
 ![在输入框中手动选择 Skill](assets/basic-configuration/17-manual-skill.png)
 
@@ -302,7 +307,7 @@ Arguments:
 
 ## 8. 配置凭据
 
-进入 **设置 → 凭据**。内置服务和自定义凭据都保存在本地密钥文件中，不写入项目 SQLite。
+进入 **设置 → 凭据**。内置服务和自定义凭据都保存在操作系统钥匙串/凭据库中，不写入项目 SQLite。
 
 ![凭据管理](assets/basic-configuration/05-credentials.png)
 
@@ -345,9 +350,9 @@ Wisp 插件可以把 Skill、本地 stdio MCP 服务和 MCP App 打包为一个�
 
 ## 10. 配置飞书和微信
 
-进入 **设置 → 频道接入**。飞书、微信和设备桥默认关闭，彼此使用独立凭据和安全边界。
+进入 **设置 → 远程接入**。飞书、微信和设备桥默认关闭，彼此使用独立凭据和安全边界。
 
-![频道接入总览](assets/basic-configuration/06-remote-access.png)
+![远程接入总览](assets/basic-configuration/06-remote-access.png)
 
 ### 飞书 / Lark
 
@@ -360,7 +365,7 @@ Wisp 插件可以把 Skill、本地 stdio MCP 服务和 MCP App 打包为一个�
 3. 在飞书开放平台启用机器人能力。
 4. 事件订阅选择 **长连接**，订阅 `im.message.receive_v1`。
 5. 开通消息收发和获取机器人信息所需权限。
-6. 保存后返回频道接入页并启用机器人。
+6. 保存后返回远程接入页并启用机器人。
 
 ![飞书机器人配置](assets/basic-configuration/07-feishu-setup.png)
 
@@ -436,7 +441,7 @@ Wisp 不会直接把一轮对话写成长时记忆。任务完成后，点击回
 
 ## 14. 使用命令行
 
-Wisp CLI 以当前目录作为项目根目录。源码仓库中使用 `cargo run -p wisp-cli`；构建或安装后可直接调用 `wisp-science`。
+Wisp CLI 以当前目录作为项目根目录。源码仓库中使用 `cargo run -p superscience-cli`；构建或安装后可直接调用 `wisp-science`。
 
 ### 配置模型环境变量
 
@@ -463,7 +468,7 @@ $env:WISP_API_KEY  = "<your-provider-key>"
 ### 交互模式
 
 ```bash
-cargo run -p wisp-cli
+cargo run -p superscience-cli
 # 或已安装后：
 wisp-science
 ```
@@ -478,8 +483,8 @@ wisp-science
 ### 单次任务与 JSONL
 
 ```bash
-cargo run -p wisp-cli -- run "总结这个项目中的文件"
-cargo run -p wisp-cli -- run --output jsonl "总结这个项目中的文件"
+cargo run -p superscience-cli -- run "总结这个项目中的文件"
+cargo run -p superscience-cli -- run --output jsonl "总结这个项目中的文件"
 ```
 
 `console` 适合人读；`jsonl` 每行输出一个结构化事件，适合脚本、CI 或日志收集。
@@ -487,8 +492,8 @@ cargo run -p wisp-cli -- run --output jsonl "总结这个项目中的文件"
 ### 回归评测
 
 ```bash
-cargo run -p wisp-cli -- eval --save baseline.json
-cargo run -p wisp-cli -- eval --compare baseline.json --save current.json
+cargo run -p superscience-cli -- eval --save baseline.json
+cargo run -p superscience-cli -- eval --compare baseline.json --save current.json
 ```
 
 ### CLI 中加载 Skill 和 MCP

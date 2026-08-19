@@ -51,12 +51,8 @@ extern "C" {
     pub(crate) fn park_mcp_app(instance_id: &str);
     #[wasm_bindgen(js_name = close_mcp_app)]
     pub(crate) fn close_mcp_app(instance_id: &str);
-    #[wasm_bindgen(js_name = pasted_file_count)]
-    pub(crate) fn pasted_file_count(event: JsValue) -> usize;
     #[wasm_bindgen(js_name = pasted_image_count)]
     pub(crate) fn pasted_image_count(event: JsValue) -> usize;
-    #[wasm_bindgen(js_name = pasted_file_paths)]
-    pub(crate) fn pasted_file_paths(event: JsValue) -> JsValue;
     #[wasm_bindgen(js_name = drag_has_files)]
     pub(crate) fn drag_has_files(event: JsValue) -> bool;
     #[wasm_bindgen(js_name = set_drag_copy)]
@@ -65,12 +61,15 @@ extern "C" {
     pub(crate) fn is_windows() -> bool;
     pub(crate) fn is_mac() -> bool;
     pub(crate) async fn window_control(action: &str);
-    #[wasm_bindgen(js_name = upload_pasted_files)]
-    pub(crate) async fn upload_pasted_files(event: JsValue) -> JsValue;
+    pub(crate) async fn start_window_move();
+    #[wasm_bindgen(js_name = arm_caption_drag)]
+    pub(crate) async fn arm_caption_drag(start_x: f64, start_y: f64);
     #[wasm_bindgen(js_name = upload_pasted_images)]
     pub(crate) async fn upload_pasted_images(event: JsValue) -> JsValue;
     #[wasm_bindgen(js_name = native_drop_in_composer)]
     pub(crate) fn native_drop_in_composer(payload: JsValue) -> bool;
+    #[wasm_bindgen(js_name = native_drop_remote_target)]
+    pub(crate) fn native_drop_remote_target(payload: JsValue) -> JsValue;
     #[wasm_bindgen(js_name = upload_input_files)]
     pub(crate) async fn upload_input_files(input_id: &str) -> JsValue;
     #[wasm_bindgen(js_name = preview_selection)]
@@ -79,6 +78,10 @@ extern "C" {
     pub(crate) fn clear_selection();
     #[wasm_bindgen(catch, js_name = render_share_png)]
     pub(crate) async fn render_share_png(payload_json: &str) -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(js_name = snapshot_share_theme)]
+    pub(crate) fn snapshot_share_theme() -> String;
+    #[wasm_bindgen(catch, js_name = copy_share_pack)]
+    pub(crate) async fn copy_share_pack(text: &str, png_base64: &str) -> Result<JsValue, JsValue>;
     #[wasm_bindgen(js_name = crop_region_to_upload)]
     pub(crate) async fn crop_region_to_upload(
         host_id: &str,
@@ -96,6 +99,7 @@ extern "C" {
     fn attach_chat_scroll(scroller_id: &str, content_id: &str);
     fn notify_chat_scroll(scroller_id: &str);
     fn force_chat_scroll_bottom(scroller_id: &str);
+    fn switch_chat_scroll(scroller_id: &str, session_id: &str);
     fn preserve_chat_scroll_on_prepend(scroller_id: &str, content_id: &str);
     fn jump_chat_scroll(scroller_id: &str, selector: &str);
     fn jump_chat_scroll_last_user(scroller_id: &str);
@@ -135,6 +139,11 @@ pub(crate) fn schedule_chat_follow() {
 /// Force the chat view to jump to the bottom (e.g. after switching sessions).
 pub(crate) fn force_chat_bottom() {
     force_chat_scroll_bottom(CHAT_SCROLLER_ID);
+}
+
+/// Save the previous conversation's position and restore this conversation.
+pub(crate) fn restore_chat_session_scroll(session_id: &str) {
+    switch_chat_scroll(CHAT_SCROLLER_ID, session_id);
 }
 
 /// Re-pin every run output panel to the bottom after a run-list refresh

@@ -89,6 +89,17 @@ files_read    = { p in before : path-string of p appears literally in source }
 trait gains a `fn provenance(&self, _rec: &ProvenanceRecord) {}` default no-op. No
 `ToolEvent` change — the record flows through `Output`, not the UI event enum.
 
+**Amendment (2026-08, issue #911).** Parallel conversations of one project run
+producing tools concurrently against the same workspace, so a bare mtime diff
+credited every overlapping call with every neighbor's writes (up to 34% of
+records pointed at the wrong session). Each producing call now registers a
+window in a per-root registry (`provenance::begin_window`); when it finishes it
+learns which other windows overlapped it and `retain_unambiguous_writes` keeps
+a changed path only when this call's source names it or the file's mtime falls
+when no other call was in flight. Wrong attribution is worse than missing
+attribution: unnamed writes that land during a genuine overlap are dropped
+rather than guessed.
+
 ### 3.2 Environment snapshot — lazy, per session
 
 Environment capture stays **out of the hot superscience-core path**. `TauriOutput::provenance`

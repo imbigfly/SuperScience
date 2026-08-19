@@ -86,6 +86,117 @@ pub(crate) fn provider_defaults(provider: &str) -> (&'static str, &'static str) 
     }
 }
 
+/// Same grouping as `models::normalize_endpoint`: one credential per API
+/// origin. Keep the suffix list in sync with the Tauri helper.
+pub(crate) fn normalize_endpoint(url: &str) -> String {
+    let url = url.trim();
+    if url.is_empty() {
+        return String::new();
+    }
+    let (scheme, rest) = if let Some(rest) = url.strip_prefix("https://") {
+        ("https://", rest)
+    } else if let Some(rest) = url.strip_prefix("http://") {
+        ("http://", rest)
+    } else {
+        ("", url)
+    };
+    let rest = if scheme.is_empty() {
+        rest.to_string()
+    } else {
+        match rest.split_once('/') {
+            Some((host, path)) => format!("{}/{}", host.to_ascii_lowercase(), path),
+            None => rest.to_ascii_lowercase(),
+        }
+    };
+    let mut endpoint = format!("{scheme}{rest}");
+    loop {
+        while endpoint.ends_with('/') {
+            endpoint.pop();
+        }
+        let Some(stripped) = [
+            "/v1/messages",
+            "/v1/chat/completions",
+            "/chat/completions",
+            "/responses",
+            "/v1",
+        ]
+        .into_iter()
+        .find_map(|suffix| endpoint.strip_suffix(suffix).map(str::to_string)) else {
+            break;
+        };
+        endpoint = stripped;
+    }
+    endpoint
+}
+
+pub(crate) fn same_endpoint(left: &str, right: &str) -> bool {
+    let left = normalize_endpoint(left);
+    !left.is_empty() && left == normalize_endpoint(right)
+}
+
+pub(crate) fn join_api_url(base_url: &str, endpoint_suffix: &str) -> String {
+    let base_url = base_url.trim().trim_end_matches('/');
+    let endpoint_suffix = endpoint_suffix.trim().trim_matches('/');
+    if endpoint_suffix.is_empty() {
+        base_url.to_string()
+    } else {
+        format!("{base_url}/{endpoint_suffix}")
+    }
+}
+
+pub(crate) fn endpoint_host(url: &str) -> String {
+    let endpoint = normalize_endpoint(url);
+    endpoint
+        .strip_prefix("https://")
+        .or_else(|| endpoint.strip_prefix("http://"))
+        .unwrap_or(endpoint.as_str())
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
+#[cfg(test)]
+mod endpoint_tests {
+    use super::{endpoint_host, join_api_url, normalize_endpoint, same_endpoint};
+
+    #[test]
+    fn normalize_endpoint_strips_version_and_api_suffixes() {
+        assert_eq!(
+            normalize_endpoint("https://api.openai.com/v1"),
+            "https://api.openai.com"
+        );
+        assert_eq!(
+            normalize_endpoint("https://API.OpenAI.com/v1/"),
+            "https://api.openai.com"
+        );
+        assert!(same_endpoint(
+            "https://api.openai.com",
+            "https://api.openai.com/v1"
+        ));
+        assert!(same_endpoint(
+            "https://api.openai.com",
+            "https://api.openai.com/v1/responses"
+        ));
+        assert!(!same_endpoint(
+            "https://api.deepseek.com",
+            "https://api.openai.com"
+        ));
+        assert_eq!(endpoint_host("https://api.deepseek.com/v1"), "api.deepseek.com");
+    }
+
+    #[test]
+    fn joins_a_per_model_suffix_to_the_shared_base_url() {
+        assert_eq!(
+            join_api_url("https://api.deepseek.com/", "/anthropic"),
+            "https://api.deepseek.com/anthropic"
+        );
+        assert_eq!(
+            join_api_url("https://api.deepseek.com", ""),
+            "https://api.deepseek.com"
+        );
+    }
+}
 
 pub(crate) fn join_path(base: &str, name: &str) -> String {
     if base == "." || base.is_empty() {
@@ -186,7 +297,46 @@ pub(crate) fn md_to_html(src: &str) -> String {
     let parser = Parser::new_ext(src.as_ref(), opts);
     let mut out = String::new();
     html::push_html(&mut out, parser);
+    mark_lead_strong_paragraphs(out)
+}
+
+/// Tag paragraphs whose first *content* is `<strong>` so chat CSS can draw the
+/// section-lead bar. `:first-child` ignores text nodes, so
+/// `该你了，接一个「<strong>点</strong>」` would otherwise match and pick up a
+/// mid-sentence green bar.
+fn mark_lead_strong_paragraphs(html: String) -> String {
+    const OPEN: &str = "<p>";
+    const MARKED: &str = r#"<p class="md-lead-strong">"#;
+    if !html.contains(OPEN) || !html.contains("<strong") {
+        return html;
+    }
+    let mut out = String::with_capacity(html.len() + MARKED.len());
+    let mut rest = html.as_str();
+    let mut changed = false;
+    while let Some(idx) = rest.find(OPEN) {
+        out.push_str(&rest[..idx]);
+        let after = &rest[idx + OPEN.len()..];
+        if after.trim_start().starts_with("<strong") {
+            out.push_str(MARKED);
+            changed = true;
+        } else {
+            out.push_str(OPEN);
+        }
+        rest = after;
+    }
+    if !changed {
+        return html;
+    }
+    out.push_str(rest);
     out
+}
+
+fn unwrap_single_paragraph(html: &str) -> Option<&str> {
+    let rest = html.strip_prefix("<p>").or_else(|| {
+        html.strip_prefix("<p ")
+            .and_then(|after| after.find('>').map(|i| &after[i + 1..]))
+    })?;
+    rest.strip_suffix("</p>")
 }
 
 /// Render a standalone Markdown document, hiding leading YAML front matter.
@@ -639,10 +789,7 @@ pub(crate) fn md_inline_to_html(src: &str) -> String {
     }
     let html = md_to_html(src);
     let s = html.trim();
-    if let Some(inner) = s
-        .strip_prefix("<p>")
-        .and_then(|rest| rest.strip_suffix("</p>"))
-    {
+    if let Some(inner) = unwrap_single_paragraph(s) {
         if !inner.contains("<p>") {
             return inner.to_string();
         }
@@ -770,6 +917,7 @@ mod artifact_group_tests {
             location: None,
             source_item: 0,
             superseded: false,
+            source_discarded: false,
         }
     }
 
@@ -809,6 +957,7 @@ mod artifact_group_tests {
             location: Some("results/report.md".into()),
             source_item: 0,
             superseded: false,
+            source_discarded: false,
         };
         assert_eq!(artifact_group_key(&snapshot, r"D:\project"), "results/");
     }
@@ -1385,9 +1534,9 @@ pub(crate) fn fasta_seq_count(text: &str) -> usize {
 mod md_catalog_tests {
     use super::{
         code_lang, decode_href, fence_identifier_line_runs, file_kind, format_bytes,
-        md_document_to_html, md_to_html, parent_path, parse_notebook, pretty_json, push_nb_output,
-        runtime_language, strip_ansi, tool_card_label, user_message_presentation, NbOutput,
-        MAX_NB_OUTPUT_BYTES, MAX_NB_TOTAL_OUTPUT_BYTES,
+        md_document_to_html, md_inline_to_html, md_to_html, parent_path, parse_notebook,
+        pretty_json, push_nb_output, runtime_language, strip_ansi, tool_card_label,
+        user_message_presentation, NbOutput, MAX_NB_OUTPUT_BYTES, MAX_NB_TOTAL_OUTPUT_BYTES,
     };
 
     #[test]
@@ -1418,6 +1567,44 @@ mod md_catalog_tests {
         // and a separate paragraph.
         let html = md_to_html("- QC passed\n-\n\n\nSeparate paragraph\n");
         assert!(html.contains("<li></li>"), "{html}");
+    }
+
+    #[test]
+    fn marks_only_paragraphs_that_begin_with_strong() {
+        // Chat CSS draws a lead bar on standalone/section-lead bold. `:first-child`
+        // would also match mid-sentence `「**点**」` because text nodes do not count.
+        let html = md_to_html(
+            "哈哈，这个接得妙！\n\n**可圈可点**\n\n该你了，接一个「**点**」字开头的成语！\n\n你接一个以**上一个成语最后一个字**开头的成语。",
+        );
+        assert!(
+            html.contains(r#"<p class="md-lead-strong"><strong>可圈可点</strong></p>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains("<p>该你了，接一个「<strong>点</strong>」字开头的成语！</p>"),
+            "{html}"
+        );
+        assert!(
+            html.contains("<p>你接一个以<strong>上一个成语最后一个字</strong>开头的成语。</p>"),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn marks_lead_strong_with_following_prose() {
+        let html = md_to_html("**Module results** (Seurat 5):\n");
+        assert!(
+            html.contains(
+                r#"<p class="md-lead-strong"><strong>Module results</strong> (Seurat 5):</p>"#
+            ),
+            "{html}"
+        );
+    }
+
+    #[test]
+    fn unwraps_lead_strong_paragraphs_for_inline_html() {
+        assert_eq!(md_inline_to_html("**bold**"), "<strong>bold</strong>");
+        assert_eq!(md_inline_to_html("plain"), "plain");
     }
 
     #[test]

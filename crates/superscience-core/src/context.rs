@@ -230,6 +230,9 @@ pub struct ContextManager {
     /// 80% threshold is crossed. Hosts can turn this off globally while still
     /// retaining the warning and manual `/compact` path.
     auto_compact: bool,
+    /// Retry model responses that stop at their output-token ceiling.
+    auto_continue: bool,
+    auto_continue_limit: usize,
     /// Increments after every successful context rewrite. The desktop host
     /// uses this to replace incrementally persisted rows after a mid-turn
     /// automatic compaction.
@@ -274,6 +277,8 @@ impl ContextManager {
             warn_threshold: (max_context as f64 * 0.8) as usize,
             warned: false,
             auto_compact: true,
+            auto_continue: false,
+            auto_continue_limit: 10,
             compaction_revision: 0,
             runtime_injections: vec![],
             runtime_prefix_len: 0,
@@ -307,6 +312,15 @@ impl ContextManager {
 
     pub fn auto_compact_enabled(&self) -> bool {
         self.auto_compact
+    }
+
+    pub fn set_auto_continue(&mut self, enabled: bool, limit: usize) {
+        self.auto_continue = enabled;
+        self.auto_continue_limit = limit;
+    }
+
+    pub fn auto_continue_limit(&self) -> Option<usize> {
+        self.auto_continue.then_some(self.auto_continue_limit)
     }
 
     /// The threshold is intentionally the same 80% boundary used by the

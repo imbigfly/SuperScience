@@ -1,12 +1,12 @@
 ---
 name: self-awareness
-description: SuperScience-science's actual agent tool surface and runtime boundaries. Load this when deciding which SuperScience tool can perform a task, checking whether Python can reach agent or desktop capabilities, choosing between interactive analysis and persisted Runs, or answering questions about delegation, images, skills, memory, artifacts, lineage, credentials, session history, and other self-introspection capabilities.
+description: Wisp-science's actual agent tool surface and runtime boundaries. Load this when deciding which Wisp tool can perform a task, checking whether Python can reach agent or desktop capabilities, choosing between interactive analysis and persisted Runs, or answering questions about delegation, images, skills, memory, artifacts, lineage, credentials, session history, and other self-introspection capabilities.
 license: Apache-2.0
 ---
 
-# Self-awareness — SuperScience's actual capabilities
+# Self-awareness — Wisp's actual capabilities
 
-Use only tools advertised in the current conversation. SuperScience exposes agent and
+Use only tools advertised in the current conversation. Wisp exposes agent and
 desktop capabilities as explicit tools; do not assume that an SDK documented by
 another application also exists here. Some tools are conditional on the desktop
 session, project settings, execution context, or capability grants. If a tool is
@@ -20,15 +20,15 @@ Their variables and imports persist per project and execution context. Pass a
 run somewhere other than the default local context.
 
 The Python worker initializes an ordinary namespace with common standard-library
-modules and any available convenience packages. It does **not** inject a SuperScience
+modules and any available convenience packages. It does **not** inject a Wisp
 control-plane object. Code executed with `python` therefore cannot directly call
-the agent model, spawn Agents, submit or monitor Runs, inspect SuperScience credentials,
+the agent model, spawn Agents, submit or monitor Runs, inspect Wisp credentials,
 or query internal project/session metadata. Leave the Python cell and call the
-corresponding SuperScience tool instead.
+corresponding Wisp tool instead.
 
 ## Capability reference
 
-| Need | SuperScience interface | Availability and boundary |
+| Need | Wisp interface | Availability and boundary |
 |---|---|---|
 | Read, create, or patch project files | `read`, `write`, `edit` | Operate on normal filesystem paths within the granted workspace. |
 | Find files or text | `search`, `grep` | Use before broad manual inspection. |
@@ -36,7 +36,7 @@ corresponding SuperScience tool instead.
 | Interactive Python or R analysis | `python`, `r` | Persistent per project and execution context; no injected control-plane SDK. |
 | Inspect a local image | `view_image` | Explicit tool call for a supported local image; this is not a Python method. |
 | Track a multi-step plan | `update_plan` | Update task progress when a plan materially helps. |
-| Present the completed result | `attempt_completion` | SuperScience's normal completion path; there is no separate structured-output submission SDK. |
+| Present the completed result | `attempt_completion` | Wisp's normal completion path; there is no separate structured-output submission SDK. |
 | Audit configured workflow guidance | `list_skill_catalog` | Page through discovered/effective records and use its explicit counts. |
 | Discover and load workflow guidance | `search_skills`, `use_skill` | Search by task/domain, then load the exact returned skill name. |
 | Search confirmed project notes | `search_memory` | Available only when project memory is enabled. New notes are proposed after a completed turn and require confirmation in the Wisp UI; there is no direct memory-write tool. |
@@ -45,13 +45,14 @@ corresponding SuperScience tool instead.
 | Read a truncated delegated result | `get_delegated_result` | Desktop-only and available with delegation. Use only when the compact result lacks necessary detail. |
 | Submit long-running work | `run_in_context` | Persist a Run in `local`, `ssh:<alias>`, or `wsl:<distro>`. Prefer this over extending `shell` timeouts. |
 | Read one Run snapshot | `get_run` | Call once for an immediate status check; never poll it in a loop. |
-| Wait for a Run | `monitor_run` | Call exactly once with the Run id. SuperScience waits without repeated model calls. |
+| Wait for a Run | `monitor_run` | Call with the Run id to wait without polling `get_run`. If `wait_interrupted` is true, respond, then call `monitor_run` again; do not resubmit. |
 | Cancel a Run | `cancel_run` | Request cancellation through the persisted Run lifecycle. |
 | Record project research objects | `research_graph` | Desktop-only. Record data assets, papers, or decisions and link existing graph nodes; it is not a generic artifact browser. |
-| Create a specialist | `save_specialist` | Desktop-only and create-only. Editing and deletion remain in Settings. |
+| Read or change app preferences, or show disk storage | `configure` | Desktop-only. `get` / `set` cover allowlisted appearance and general settings (font size, theme, `custom_css`, locale, compaction). `storage` reports this project's workspace plus app-data usage in the conversation. Secrets, API keys, model profiles, workspace directory, and proxy are not writable. For a restyle, load `custom-theme` then set `custom_css`. |
+| Create or update a specialist | `save_specialist` | Desktop-only. Omit `id` to create; pass `id` from `configure` get `specialists` to update. Builtin instruction text stays pinned. Deletion remains in Settings. |
 | Make an extra model call from Python | Not available | Continue through the normal agent turn. For bounded delegated work, use `explore` or advertised `delegate_tasks`. |
 | Resolve artifact ids to paths, list a generic artifact store, or inspect lineage | Not available | Use ordinary project paths plus `read`/`search`/`grep`. Do not invent artifact ids, version ids, or lineage records. Run output registration is limited to the explicit `output_specs` contract of `run_in_context`. |
-| Read credentials from Python or an agent tool | Not available | SuperScience keeps secrets outside SQLite in its keyring path; no credential accessor is exposed to the agent. |
+| Read credentials from Python or an agent tool | Not available | Wisp keeps secrets outside SQLite in its keyring path; no credential accessor is exposed to the agent. |
 | Query frames, token/cost accounting, tool-call history, or the internal metadata DB | Not available | Use only conversation context and tool results already provided. Do not claim access to hidden session tables or telemetry. |
 
 ## Choosing the right execution path
@@ -59,8 +60,9 @@ corresponding SuperScience tool instead.
 1. Use `python` or `r` for interactive analysis whose next step depends on the
    computed result.
 2. Use `run_in_context` for persisted, recoverable, or long-running work. Use
-   `monitor_run` once when the result is needed in the current task, or return
-   the Run id for fire-and-forget work.
+   `monitor_run` when the result is needed in the current task (again after
+   `wait_interrupted`; do not resubmit), or return the Run id for fire-and-forget
+   work.
 3. Use `explore` when codebase understanding requires more than a couple of
    reads. Use `delegate_tasks` only when desktop delegation is currently
    advertised and the work benefits from independent or parallel Agents.
@@ -69,4 +71,4 @@ corresponding SuperScience tool instead.
    Python-side bridge for a capability that is not present.
 
 For SSH-direct details, load `remote-compute-ssh`; its Run workflow and current
-limitations are the authoritative SuperScience contract.
+limitations are the authoritative Wisp contract.

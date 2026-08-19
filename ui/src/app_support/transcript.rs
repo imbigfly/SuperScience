@@ -136,7 +136,10 @@ pub(crate) fn review_message_ui_index(items: &[ChatItem], message_index: usize) 
 
 #[cfg(test)]
 mod review_jump_tests {
-    use super::{composer_text_from_user_message, review_message_ui_index};
+    use super::{
+        browser_offline_notice_from_items, browser_setup_live_retrieval,
+        composer_text_from_user_message, last_user_composer_text, review_message_ui_index,
+    };
     use crate::dto::{ChatItem, ContextUsage, ReviewTransitionPhase};
 
     fn assistant(text: &str) -> ChatItem {
@@ -181,6 +184,287 @@ mod review_jump_tests {
             "The app froze"
         );
     }
+
+    #[test]
+    fn last_user_composer_text_skips_attachment_suffixes() {
+        let items = vec![
+            ChatItem::User("latest rustc\n\nUploaded files: a.png".into()),
+            ChatItem::Assistant {
+                text: "ok".into(),
+                model: None,
+                resources: Vec::new(),
+            },
+        ];
+        assert_eq!(last_user_composer_text(&items), "latest rustc");
+    }
+
+    #[test]
+    fn browser_offline_notice_tracks_disconnect_then_restore() {
+        let mut items = vec![
+            ChatItem::User("latest rustc".into()),
+            ChatItem::Tool {
+                name: "web_scan".into(),
+                ok: Some(false),
+                input: "tabs".into(),
+                output: "real-browser bridge unavailable. WISP_BROWSER_DISCONNECTED".into(),
+                started_at_ms: None,
+                duration_ms: None,
+            },
+        ];
+        let notice = browser_offline_notice_from_items("s1", &items).unwrap();
+        assert_eq!(notice.frame_id, "s1");
+        assert_eq!(notice.retry_text, "latest rustc");
+
+        items.push(ChatItem::Tool {
+            name: "web_scan".into(),
+            ok: Some(true),
+            input: "tabs".into(),
+            output: "{\"tabs\":[]}".into(),
+            started_at_ms: None,
+            duration_ms: None,
+        });
+        assert!(browser_offline_notice_from_items("s1", &items).is_none());
+    }
+
+    fn setup_item(live: bool) -> ChatItem {
+        ChatItem::Tool {
+            name: "browser_setup".into(),
+            ok: Some(true),
+            input: String::new(),
+            output: format!(
+                "{{\n  \"status\": \"{}\",\n  \"live_retrieval\": {}\n}}",
+                if live { "connected" } else { "disconnected" },
+                live
+            ),
+            started_at_ms: None,
+            duration_ms: None,
+        }
+    }
+
+    #[test]
+    fn browser_setup_json_is_the_block_and_restore_signal() {
+        let blocked = vec![ChatItem::User("latest rustc".into()), setup_item(false)];
+        assert!(browser_offline_notice_from_items("s1", &blocked).is_some());
+
+        let restored = vec![
+            ChatItem::User("latest rustc".into()),
+            setup_item(false),
+            setup_item(true),
+        ];
+        assert!(
+            browser_offline_notice_from_items("s1", &restored).is_none(),
+            "connected browser_setup must clear an earlier disconnect"
+        );
+    }
+
+    #[test]
+    fn successful_live_tools_override_an_earlier_disconnected_setup() {
+        let items = vec![
+            ChatItem::User("CLEC12A pubmed".into()),
+            setup_item(false),
+            scan_item(true),
+            ChatItem::Tool {
+                name: "web_execute_js".into(),
+                ok: Some(true),
+                input: "Date()".into(),
+                output: "{\"result\":\"ok\"}".into(),
+                started_at_ms: None,
+                duration_ms: None,
+            },
+            ChatItem::Assistant {
+                text: "PubMed currently lists hits for CLEC12A.".into(),
+                model: None,
+                resources: Vec::new(),
+            },
+        ];
+        assert!(
+            browser_offline_notice_from_items("s1", &items).is_none(),
+            "a later successful scan must not keep the offline banner (#887)"
+        );
+    }
+
+    fn scan_item(ok: bool) -> ChatItem {
+        ChatItem::Tool {
+            name: "web_scan".into(),
+            ok: Some(ok),
+            input: "tabs".into(),
+            output: if ok {
+                "{\"tabs\":[{\"title\":\"PubMed\"}]}".into()
+            } else {
+                "real-browser bridge unavailable. WISP_BROWSER_DISCONNECTED".to_string()
+            },
+            started_at_ms: None,
+            duration_ms: None,
+        }
+    }
+
+    #[test]
+    fn a_reconnecting_extension_after_a_successful_scan_keeps_the_turn_live() {
+        let items = vec![
+            ChatItem::User("latest rustc".into()),
+            setup_item(false),
+            scan_item(true),
+            scan_item(false),
+        ];
+        assert!(
+            browser_offline_notice_from_items("s1", &items).is_none(),
+            "one successful retrieval means the answer has live results (#921)"
+        );
+    }
+
+    #[test]
+    fn the_notice_describes_the_latest_turn_only() {
+        let mut items = vec![
+            ChatItem::User("latest rustc".into()),
+            scan_item(false),
+            ChatItem::Assistant {
+                text: "Connect the extension first.".into(),
+                model: None,
+                resources: Vec::new(),
+            },
+        ];
+        assert!(browser_offline_notice_from_items("s1", &items).is_some());
+
+        items.push(ChatItem::User("read this page".into()));
+        assert!(
+            browser_offline_notice_from_items("s1", &items).is_none(),
+            "a new turn starts without an offline verdict"
+        );
+    }
+
+    #[test]
+    fn a_truncated_setup_dump_still_reports_live_retrieval() {
+        let truncated = format!(
+            "{{\n  \"status\": \"disconnected\",\n  \"live_retrieval\": false,\n  \"steps\": [\"{}",
+            "x".repeat(64)
+        );
+        assert_eq!(browser_setup_live_retrieval(&truncated), Some(false));
+        assert_eq!(
+            browser_setup_live_retrieval("{\"status\":\"connected\"}"),
+            Some(true)
+        );
+        assert_eq!(browser_setup_live_retrieval("not json"), None);
+    }
+}
+
+pub(crate) const BROWSER_DISCONNECTED_MARKER: &str = "WISP_BROWSER_DISCONNECTED";
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct BrowserOfflineNotice {
+    pub frame_id: String,
+    pub retry_text: String,
+}
+
+/// Apply a recomputed verdict for one session without disturbing another
+/// session's banner.
+pub(crate) fn set_browser_offline_notice(
+    notice: RwSignal<Option<BrowserOfflineNotice>>,
+    frame_id: &str,
+    next: Option<BrowserOfflineNotice>,
+) {
+    match next {
+        Some(next) => notice.set(Some(next)),
+        None => notice.update(|current| {
+            if current.as_ref().is_some_and(|row| row.frame_id == frame_id) {
+                *current = None;
+            }
+        }),
+    }
+}
+
+pub(crate) fn last_user_composer_text(items: &[ChatItem]) -> String {
+    items
+        .iter()
+        .rev()
+        .find_map(|item| match item {
+            ChatItem::User(text) => Some(composer_text_from_user_message(text)),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+fn is_live_retrieval_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "web_scan" | "web_open_tab" | "web_execute_js" | "web_screenshot"
+    )
+}
+
+pub(crate) fn is_browser_retrieval_tool(name: &str) -> bool {
+    name == "browser_setup" || is_live_retrieval_tool(name)
+}
+
+/// `browser_setup` returns a long JSON dump that the transcript bounds, so read
+/// the flag as text: a truncated copy still carries the head fields.
+pub(crate) fn browser_setup_live_retrieval(content: &str) -> Option<bool> {
+    if let Some((_, tail)) = content.split_once("\"live_retrieval\"") {
+        let value = tail.trim_start().trim_start_matches(':').trim_start();
+        if value.starts_with("true") {
+            return Some(true);
+        }
+        if value.starts_with("false") {
+            return Some(false);
+        }
+    }
+    let value = serde_json::from_str::<serde_json::Value>(content).ok()?;
+    match value.get("status").and_then(|v| v.as_str()) {
+        Some("connected") => Some(true),
+        Some(_) => Some(false),
+        None => None,
+    }
+}
+
+/// A refused live-retrieval attempt: `browser_setup` reports it as data, the
+/// retrieval tools fail with the bridge's disconnect marker.
+fn browser_retrieval_blocked(name: &str, ok: bool, content: &str) -> bool {
+    if name == "browser_setup" {
+        return browser_setup_live_retrieval(content) == Some(false);
+    }
+    is_live_retrieval_tool(name) && !ok && content.contains(BROWSER_DISCONNECTED_MARKER)
+}
+
+/// Live page data actually reached this turn. The disconnect marker is checked
+/// because a replayed transcript reports every persisted tool row as ok.
+fn browser_retrieval_succeeded(name: &str, ok: bool, content: &str) -> bool {
+    is_live_retrieval_tool(name) && ok && !content.contains(BROWSER_DISCONNECTED_MARKER)
+}
+
+/// The banner speaks about the answer on screen, so only the latest turn counts.
+/// The extension's service worker sleeps and reconnects on a one-minute alarm, so
+/// a turn routinely mixes refused attempts with successful ones; one success
+/// means the answer does contain live results (#887, #921).
+pub(crate) fn browser_offline_notice_from_items(
+    frame_id: &str,
+    items: &[ChatItem],
+) -> Option<BrowserOfflineNotice> {
+    let turn_start = items
+        .iter()
+        .rposition(|item| matches!(item, ChatItem::User(_)))
+        .map_or(0, |index| index + 1);
+    let mut blocked = false;
+    for item in &items[turn_start..] {
+        let ChatItem::Tool {
+            name,
+            ok: Some(ok),
+            output,
+            ..
+        } = item
+        else {
+            continue;
+        };
+        if browser_retrieval_succeeded(name, *ok, output) {
+            return None;
+        }
+        if browser_retrieval_blocked(name, *ok, output) {
+            blocked = true;
+        } else if name == "browser_setup" && browser_setup_live_retrieval(output) == Some(true) {
+            blocked = false;
+        }
+    }
+    blocked.then(|| BrowserOfflineNotice {
+        frame_id: frame_id.to_string(),
+        retry_text: last_user_composer_text(items),
+    })
 }
 
 pub(crate) fn composer_text_from_user_message(text: &str) -> String {
@@ -215,6 +499,35 @@ pub(crate) fn user_message_index(items: &[ChatItem], ui_index: usize) -> Option<
             .count()
             .saturating_sub(1),
     )
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct QueuedTurnRow {
+    pub id: u64,
+    pub text: String,
+    pub user_index: usize,
+}
+
+/// Parked follow-ups for the composer card, with outline `data-user-index`
+/// values that stay aligned with `user_turn_index`.
+pub(crate) fn queued_turn_rows(items: &[ChatItem], user_offset: usize) -> Vec<QueuedTurnRow> {
+    let mut n = 0;
+    let mut rows = Vec::new();
+    for item in items {
+        match item {
+            ChatItem::User(_) => n += 1,
+            ChatItem::QueuedUser { id, text } => {
+                rows.push(QueuedTurnRow {
+                    id: *id,
+                    text: text.clone(),
+                    user_index: user_offset + n,
+                });
+                n += 1;
+            }
+            _ => {}
+        }
+    }
+    rows
 }
 
 pub(crate) fn user_turn_index(items: &[ChatItem], ui_index: usize) -> Option<usize> {
@@ -468,7 +781,8 @@ mod transcript_render_window_tests {
 mod conversation_outline_tests {
     use super::{
         conversation_outline_target_is_loaded, merge_conversation_outline, owning_user_turn_index,
-        transcript_item_timestamp, turn_duration_ms, user_turn_index,
+        queued_turn_rows, transcript_item_timestamp, turn_duration_ms, user_turn_index,
+        QueuedTurnRow,
     };
     use crate::dto::{ChatItem, SessionOutlineItem};
 
@@ -536,6 +850,50 @@ mod conversation_outline_tests {
         assert_eq!(owning_user_turn_index(&items, 2), Some(1));
         assert!(conversation_outline_target_is_loaded(&items, 1, 2));
         assert!(!conversation_outline_target_is_loaded(&items, 1, 0));
+        assert_eq!(
+            queued_turn_rows(&items, 1),
+            vec![QueuedTurnRow {
+                id: 7,
+                text: "third".into(),
+                user_index: 2,
+            }]
+        );
+    }
+
+    #[test]
+    fn composer_queue_rows_skip_sent_turns_and_keep_fifo_order() {
+        let items = vec![
+            ChatItem::User("already sent".into()),
+            ChatItem::Assistant {
+                text: "working".into(),
+                model: None,
+                resources: Vec::new(),
+            },
+            ChatItem::QueuedUser {
+                id: 2,
+                text: "first".into(),
+            },
+            ChatItem::QueuedUser {
+                id: 3,
+                text: "second".into(),
+            },
+        ];
+        assert_eq!(
+            queued_turn_rows(&items, 4),
+            vec![
+                QueuedTurnRow {
+                    id: 2,
+                    text: "first".into(),
+                    user_index: 5,
+                },
+                QueuedTurnRow {
+                    id: 3,
+                    text: "second".into(),
+                    user_index: 6,
+                },
+            ]
+        );
+        assert!(queued_turn_rows(&[ChatItem::User("only sent".into())], 0).is_empty());
     }
 
     #[test]

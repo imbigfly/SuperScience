@@ -178,6 +178,7 @@ pub(crate) fn assemble_artifacts(
                         location: None,
                         source_item,
                         superseded: false,
+                        source_discarded: false,
                     });
                 }
                 ProtoArtifact::Csv(t) => {
@@ -191,6 +192,7 @@ pub(crate) fn assemble_artifacts(
                         location: None,
                         source_item,
                         superseded: false,
+                        source_discarded: false,
                     });
                 }
                 ProtoArtifact::Fasta(body) => {
@@ -203,6 +205,7 @@ pub(crate) fn assemble_artifacts(
                         location: None,
                         source_item,
                         superseded: false,
+                        source_discarded: false,
                     });
                 }
                 ProtoArtifact::Latex(tex) => {
@@ -223,6 +226,7 @@ pub(crate) fn assemble_artifacts(
                         location: None,
                         source_item,
                         superseded: false,
+                        source_discarded: false,
                     });
                 }
                 ProtoArtifact::File { path, kind } => {
@@ -250,6 +254,7 @@ pub(crate) fn assemble_artifacts(
                         location: None,
                         source_item,
                         superseded: false,
+                        source_discarded: false,
                     });
                 }
             }
@@ -707,6 +712,7 @@ pub(crate) fn current_artifacts(
             // inline card under one (`artifacts_for_item` matches on this).
             source_item: usize::MAX,
             superseded: false,
+            source_discarded: info.source_discarded,
         });
     }
     current
@@ -986,6 +992,7 @@ mod artifact_scan_tests {
             size_bytes: None,
             origin: None,
             logical_path: None,
+            source_discarded: false,
         }
     }
 

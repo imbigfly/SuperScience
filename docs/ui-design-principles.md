@@ -26,15 +26,22 @@
 - Chat empty and research-graph empty reuse the logo treatment (`.empty-logo` / `.rp-empty-icon.brand`) instead of dashed placeholders.
 - Research graph headings use Source Serif at `--text-lg`; list/canvas stay utilitarian.
 
+## Queued follow-ups
+
+- Follow-ups typed while a turn is running sit in a compact card above the composer, not as dashed transcript bubbles.
+- The card shows a count, the parked text, and icon actions. Reorder controls appear only when two or more items are waiting. Cut-in stays a labeled clay pill because it is the distinctive action.
+- Icon-only queue controls keep both `title` and `aria-label`.
+
 ## Composer attachments and references
 
 - The composer keeps its top-edge resize affordance invisible at rest while preserving the full-width drag target and persisted custom height.
 - Context usage sits immediately left of the model picker as a number-free gauge; its needle sweeps from upper-left to upper-right as the active conversation fills its context window.
+- The context-usage panel opens docked in the composer column, pushing the transcript up instead of covering it. Dragging the header undocks it into a floating window that stays open while typing; a dock button or double-click returns it. There is no full-screen click-swallowing backdrop.
 - Context-usage category rows use semantic elevated, sunken, hover, and accent tokens rather than native button fills, so every light and dark palette keeps the panel visually consistent.
 - Files, images, skills, artifacts, conversations, execution environments, and runtime references must remain visually distinguishable before and after send.
 - Image attachments use a real thumbnail when the project file is readable. Other files use a document card with a filename and type label.
 - Persisted transcript markers such as `Uploaded files:` and `Selected skills:` are transport metadata. The chat UI renders them as cards instead of exposing the raw marker text.
-- Saved conversations open at their latest message. After the user scrolls up, deferred content growth preserves the visible reading position instead of pulling the viewport toward the middle.
+- Saved conversations open at their latest message. After the user scrolls up, deferred content growth and switching between conversations preserve each conversation's visible reading position instead of pulling the viewport toward the middle or resetting to the latest message.
 - Long attachment names truncate inside the card; the full value remains available through the control's title.
 - Remove controls live inside the related card and retain an accessible label.
 

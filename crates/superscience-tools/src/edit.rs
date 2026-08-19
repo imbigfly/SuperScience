@@ -257,6 +257,45 @@ mod tests {
         std::fs::remove_dir_all(&tmp).ok();
     }
 
+    #[tokio::test]
+    async fn crlf_multibyte_edit_preserves_line_endings_and_applies_once() {
+        let tmp = std::env::temp_dir().join(format!("wisp_edit_crlf_{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(&tmp).unwrap();
+        let original = "第一行：概要\r\n実験結果：陽性\r\n最終行：完了\r\n";
+        std::fs::write(tmp.join("report.txt"), original.as_bytes()).unwrap();
+
+        let result = EditTool
+            .run(
+                &json!({
+                    "path": "report.txt",
+                    "old": "実験結果：陽性",
+                    "new": "実験結果：陰性"
+                }),
+                &TestEnv(tmp.clone()),
+            )
+            .await;
+
+        assert!(result.success, "{}", result.content);
+        assert!(
+            result.content.contains("1 replacement"),
+            "{}",
+            result.content
+        );
+        let bytes = std::fs::read(tmp.join("report.txt")).unwrap();
+        assert_eq!(
+            bytes,
+            "第一行：概要\r\n実験結果：陰性\r\n最終行：完了\r\n".as_bytes(),
+            "CRLF endings and surrounding CJK text must survive the edit byte-for-byte"
+        );
+        assert_eq!(
+            bytes.windows(2).filter(|w| w == b"\r\n").count(),
+            3,
+            "all three CRLF terminators preserved"
+        );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
     #[test]
     fn replacement_size_is_checked_before_allocating() {
         assert_eq!(replaced_len("aaa", "a", "bb", true), Some(6));

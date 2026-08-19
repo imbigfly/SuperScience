@@ -1,4 +1,4 @@
-//! Built-in agent tools for SuperScience, Windows-first.
+//! Built-in agent tools for Wisp, Windows-first.
 //!
 //! Tools implement [`tool::Tool`] and run against a [`env::ToolEnv`] the host
 //! supplies. [`Registry`] bundles the built-ins, exposes their JSON schemas to
@@ -28,7 +28,7 @@ pub use tool::Tool;
 
 use serde_json::Value;
 use std::collections::HashSet;
-use superscience_llm::ToolSchema;
+use wisp_llm::ToolSchema;
 
 /// Where a schema in the model request comes from. This is intentionally a
 /// request-time view rather than tool metadata: deferred MCP tools collapse
@@ -854,7 +854,11 @@ mod approval_tests {
 
     #[tokio::test]
     async fn plan_mode_blocks_writers_and_lets_readers_through() {
-        let dir = std::env::temp_dir().join("superscience-plan-mode-gate");
+        let dir = std::env::temp_dir().join(format!(
+            "wisp-plan-mode-gate-{}-{}",
+            std::process::id(),
+            line!()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("note.txt"), "hello").unwrap();
         let reg = Registry::builtins();
@@ -885,7 +889,11 @@ mod approval_tests {
 
     #[tokio::test]
     async fn project_write_lock_blocks_mutations_but_keeps_conversation_retrieval_available() {
-        let dir = std::env::temp_dir().join("wisp-project-write-lock-gate");
+        let dir = std::env::temp_dir().join(format!(
+            "wisp-project-write-lock-gate-{}-{}",
+            std::process::id(),
+            line!()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("note.txt"), "hello").unwrap();
         let reg = Registry::builtins();

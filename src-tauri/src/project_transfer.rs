@@ -22,15 +22,15 @@ const PROGRESS_EVENT_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ProjectTransferProgress {
-    direction: &'static str,
-    stage: &'static str,
-    project_id: Option<String>,
-    completed_files: u64,
-    total_files: Option<u64>,
-    completed_bytes: u64,
-    total_bytes: Option<u64>,
-    current_path: Option<String>,
+pub(crate) struct ProjectTransferProgress {
+    pub(crate) direction: &'static str,
+    pub(crate) stage: &'static str,
+    pub(crate) project_id: Option<String>,
+    pub(crate) completed_files: u64,
+    pub(crate) total_files: Option<u64>,
+    pub(crate) completed_bytes: u64,
+    pub(crate) total_bytes: Option<u64>,
+    pub(crate) current_path: Option<String>,
 }
 
 #[derive(Clone)]

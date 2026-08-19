@@ -20,21 +20,41 @@ test("composer rests on a hairline border and small shadow until focused", async
   const inner = page.locator(".composer-inner").first();
   const input = page.locator(".composer-inner textarea").first();
 
-  await input.blur();
-  const resting = await inner.evaluate((el) => {
-    const cs = getComputedStyle(el);
-    return { borderColor: cs.borderTopColor, boxShadow: cs.boxShadow };
+  // Structural assertions against theme tokens rather than exact palette
+  // values, so a token tweak does not break the test: the resting composer
+  // uses the soft --border hairline (not --border-strong), and focus is the
+  // only state that adds the big --shadow lift on top of --shadow-sm.
+  const largestBlur = () => inner.evaluate((el) => {
+    const shadow = getComputedStyle(el).boxShadow;
+    if (!shadow || shadow === "none") return 0;
+    // Split layers at top-level commas (not the ones inside rgb()/rgba()).
+    return Math.max(...shadow.split(/,(?![^(]*\))/).map((layer) => {
+      const lengths = layer.match(/-?\d+(?:\.\d+)?px/g) ?? [];
+      // offset-x offset-y blur [spread]
+      return parseFloat(lengths[2] ?? "0");
+    }));
   });
-  // --border (rgba(60,55,45,.1) in the paper palette), not --border-strong (#d6d4cc).
-  expect(resting.borderColor).toBe("rgba(60, 55, 45, 0.1)");
-  // Only --shadow-sm; the big --shadow lift (32px blur) is reserved for focus.
-  // Poll past the .15s box-shadow transition, which pads lists with zero layers.
-  await expect.poll(() => inner.evaluate((el) => getComputedStyle(el).boxShadow))
-    .not.toContain("32px");
+
+  await input.blur();
+  const border = await inner.evaluate((el) => {
+    const swatch = document.createElement("span");
+    document.body.appendChild(swatch);
+    swatch.style.color = "var(--border)";
+    const soft = getComputedStyle(swatch).color;
+    swatch.style.color = "var(--border-strong)";
+    const strong = getComputedStyle(swatch).color;
+    swatch.remove();
+    return { resting: getComputedStyle(el).borderTopColor, soft, strong };
+  });
+  expect(border.resting).toBe(border.soft);
+  expect(border.resting).not.toBe(border.strong);
+
+  // Poll past the .15s box-shadow transition before reading the resting blur.
+  await expect.poll(largestBlur).toBeGreaterThan(0);
+  const restingBlur = await largestBlur();
 
   await input.focus();
-  await expect.poll(() => inner.evaluate((el) => getComputedStyle(el).boxShadow))
-    .toContain("32px");
+  await expect.poll(largestBlur).toBeGreaterThan(restingBlur);
 });
 
 test("composer shortcut hint appears only while the composer is focused or hovered", async ({ page }) => {
@@ -253,6 +273,7 @@ test("assistant markdown rejoins bare list markers and wraps at word boundaries"
   await expect(sectionLead.locator("strong")).toBeVisible();
   expect(await sectionLead.locator("strong").evaluate((el) => getComputedStyle(el).borderLeftWidth))
     .toBe("3px");
+  await expect(sectionLead).toHaveClass(/md-lead-strong/);
 
   const links = body.locator('a[href="plots/pca.png"], a[href="plots/elbow.png"]');
   await expect(links).toHaveCount(2);
@@ -281,4 +302,42 @@ test("assistant markdown rejoins bare list markers and wraps at word boundaries"
   });
   expect(wrap.overflowWrap).toBe("break-word");
   expect(wrap.wordBreak).toBe("normal");
+});
+
+test("inline mid-paragraph strong does not get the section-lead bar", async ({ page }) => {
+  await page.addInitScript(parallelMock);
+  await enterApp(page);
+  // `:first-child` ignores text nodes, so `「**点**」` used to pick up the same
+  // green bar as a standalone `**可圈可点**` term.
+  const payload = [
+    "哈哈，这个接得妙，原样奉还了！",
+    "",
+    "「可」字开头",
+    "",
+    "**可圈可点**",
+    "",
+    "该你了，接一个「**点**」字开头的成语！",
+    "",
+    "规则：你接一个以**上一个成语最后一个字**开头的成语。",
+  ].join("\n");
+  await page.locator(".composer-inner textarea").first().fill(payload);
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const body = page.locator(".msg.assistant .body.md").last();
+  await expect(body).toContainText("可圈可点", { timeout: 10_000 });
+
+  const term = body.locator("p", { hasText: /^可圈可点$/ });
+  await expect(term).toHaveClass(/md-lead-strong/);
+  expect(await term.locator("strong").evaluate((el) => getComputedStyle(el).borderLeftWidth))
+    .toBe("3px");
+
+  const inlinePoint = body.locator("p", { hasText: "该你了" });
+  await expect(inlinePoint).not.toHaveClass(/md-lead-strong/);
+  expect(await inlinePoint.locator("strong").evaluate((el) => getComputedStyle(el).borderLeftWidth))
+    .toBe("0px");
+
+  const inlineMid = body.locator("p", { hasText: "上一个成语最后一个字" });
+  await expect(inlineMid).not.toHaveClass(/md-lead-strong/);
+  expect(await inlineMid.locator("strong").evaluate((el) => getComputedStyle(el).borderLeftWidth))
+    .toBe("0px");
 });

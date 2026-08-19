@@ -99,6 +99,86 @@ impl LlmError {
     }
 }
 
+const PROXY_ENV_KEYS: [&str; 6] = [
+    "HTTPS_PROXY",
+    "https_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+];
+
+/// Process environment proxy vars reqwest follows when Settings proxy is empty.
+pub fn ambient_proxy_env() -> Vec<(String, String)> {
+    PROXY_ENV_KEYS
+        .iter()
+        .filter_map(|key| {
+            std::env::var(key)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| ((*key).to_string(), value))
+        })
+        .collect()
+}
+
+/// How the current proxy setting / leftover env should be named in an error.
+pub fn leftover_proxy_note(configured: Option<&str>, env: &[(String, String)]) -> Option<String> {
+    match configured.map(str::trim) {
+        Some("none") => None,
+        Some(url) if !url.is_empty() => Some(format!("via Model API proxy {url}")),
+        _ => env
+            .iter()
+            .find(|(_, value)| !value.trim().is_empty())
+            .map(|(key, value)| format!("via leftover {key}={value}")),
+    }
+}
+
+/// Connect failures (and leftover-proxy refusals) that look like `http: ...`.
+pub fn is_model_transport_failure(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    m.contains("http: ")
+        && (m.contains("connect")
+            || m.contains("timed out")
+            || m.contains("deadline has elapsed")
+            || m.contains("dns")
+            || m.contains("refused")
+            || m.contains("proxy")
+            || m.contains("socks")
+            || m.contains("tunnel")
+            || m.contains("unreachable"))
+}
+
+/// Dead local proxies and connection-refused should fail the turn immediately.
+/// Retrying them is how a leftover `HTTPS_PROXY` becomes minutes of silence.
+pub fn is_fail_fast_transport(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    m.contains("connection refused")
+        || m.contains("actively refused")
+        || m.contains("os error 10061")
+        || m.contains("os error 111")
+        || (m.contains("proxy")
+            && (m.contains("refused") || m.contains("tunnel") || m.contains("unreachable")))
+        || m.contains("via leftover")
+}
+
+/// Append the active / leftover proxy so the UI can point at Settings.
+pub fn annotate_transport_error(
+    message: &str,
+    configured: Option<&str>,
+    env: &[(String, String)],
+) -> String {
+    if !is_model_transport_failure(message) {
+        return message.to_string();
+    }
+    let Some(note) = leftover_proxy_note(configured, env) else {
+        return message.to_string();
+    };
+    if message.contains(&note) {
+        return message.to_string();
+    }
+    format!("{message} ({note})")
+}
+
 /// True for transient provider failures worth retrying (rate limits, overload, 5xx).
 pub fn is_retriable(err: &LlmError) -> bool {
     match err {
@@ -112,7 +192,16 @@ pub fn is_retriable(err: &LlmError) -> bool {
                 || lower.contains("too many requests")
                 || lower.contains("访问量过大")
         }
-        LlmError::Http(e) => e.is_timeout() || e.is_connect() || e.is_request(),
+        LlmError::Http(e) => {
+            // Connect failures include leftover local proxies. On Windows a
+            // closed Clash/V2Ray port is often `deadline has elapsed`, not
+            // ECONNREFUSED — retrying that looks like "sent, no reply".
+            if e.is_connect() || is_fail_fast_transport(&error_chain(e)) {
+                false
+            } else {
+                e.is_timeout() || e.is_request()
+            }
+        }
         _ => false,
     }
 }
@@ -422,5 +511,66 @@ mod tests {
             status: 400,
             body: "invalid request".into(),
         }));
+    }
+
+    #[test]
+    fn leftover_proxy_note_names_env_or_setting() {
+        assert_eq!(leftover_proxy_note(Some("none"), &[]), None);
+        assert_eq!(
+            leftover_proxy_note(Some("http://127.0.0.1:7890"), &[]).as_deref(),
+            Some("via Model API proxy http://127.0.0.1:7890")
+        );
+        let env = vec![("HTTPS_PROXY".into(), "http://127.0.0.1:7890".into())];
+        assert_eq!(
+            leftover_proxy_note(None, &env).as_deref(),
+            Some("via leftover HTTPS_PROXY=http://127.0.0.1:7890")
+        );
+        assert_eq!(leftover_proxy_note(Some("none"), &env), None);
+    }
+
+    #[test]
+    fn connection_refused_fails_fast_and_is_annotated() {
+        let raw =
+            "http: error sending request: tcp connect error: Connection refused (os error 111)";
+        assert!(is_model_transport_failure(raw));
+        assert!(is_fail_fast_transport(raw));
+        let env = vec![("HTTPS_PROXY".into(), "http://127.0.0.1:7890".into())];
+        let annotated = annotate_transport_error(raw, None, &env);
+        assert!(annotated.contains("via leftover HTTPS_PROXY=http://127.0.0.1:7890"));
+        assert_eq!(
+            annotate_transport_error("api: 401 invalid key", None, &env),
+            "api: 401 invalid key"
+        );
+    }
+
+    #[test]
+    fn windows_proxy_refusal_fails_fast() {
+        assert!(is_fail_fast_transport(
+            "http: error sending request: No connection could be made because the target machine actively refused it. (os error 10061)"
+        ));
+        assert!(is_model_transport_failure(
+            "http: error sending request for url (https://api.example.com/v1/chat/completions): client error (Connect): tcp connect error: deadline has elapsed"
+        ));
+    }
+
+    #[tokio::test]
+    async fn live_connection_refused_is_not_retriable() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        drop(listener);
+        let err = reqwest::Client::builder()
+            .no_proxy()
+            .connect_timeout(std::time::Duration::from_secs(2))
+            .build()
+            .expect("client")
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .expect_err("closed port should refuse");
+        let wrapped = LlmError::Http(err);
+        assert!(
+            !is_retriable(&wrapped),
+            "a dead listener must not enter the multi-minute retry window: {wrapped}"
+        );
     }
 }

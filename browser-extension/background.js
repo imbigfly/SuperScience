@@ -1,9 +1,14 @@
 // Inspired by GenericAgent's GA Web / TMWebDriver real-browser bridge.
-// Independent SuperScience implementation; attribution: https://github.com/lsdefine/GenericAgent
+// Independent Wisp implementation; attribution: https://github.com/lsdefine/GenericAgent
 // GenericAgent is MIT-licensed, Copyright (c) 2025 lsdefine. See NOTICE.md.
 
+importScripts("wait_tab.js");
+
 const BRIDGE_URL = "ws://127.0.0.1:18765";
-const RECONNECT_ALARM = "superscience-browser-reconnect";
+const RECONNECT_ALARM = "wisp-browser-reconnect";
+const DEFAULT_TIMEOUT_MS = 15_000;
+const WAIT_GUARD_MS = 500;
+const tabWaiter = createTabWaiter(chrome);
 
 let socket = null;
 let keepAliveTimer = null;
@@ -65,7 +70,7 @@ function connect() {
     }
   };
   socket.onerror = () => {
-    lastError = "Cannot connect to SuperScience on 127.0.0.1:18765";
+    lastError = "Cannot connect to Wisp on 127.0.0.1:18765";
   };
   socket.onclose = () => {
     clearInterval(keepAliveTimer);
@@ -216,30 +221,95 @@ async function runCommand(tabId, command) {
   }
 }
 
+function parseCommand(code) {
+  if (typeof code !== "string") return code;
+  try {
+    const parsed = JSON.parse(code);
+    if (parsed && typeof parsed === "object" && parsed.cmd) return parsed;
+  } catch (_) {}
+  return code;
+}
+
+function isTabCloseCommand(command) {
+  return typeof command === "object" && command.cmd === "tabs" && command.method === "close";
+}
+
+function isTabCreateCommand(command) {
+  return typeof command === "object" && command.cmd === "tabs" && command.method === "create";
+}
+
+function isNavigationCommand(command) {
+  if (isTabCreateCommand(command)) return true;
+  if (typeof command === "object" && command.cmd === "cdp") {
+    return command.method === "Page.navigate" || command.method === "Target.createTarget";
+  }
+  return false;
+}
+
+function requestDeadline(request) {
+  const timeoutMs = Number(request.timeoutMs);
+  const budget = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_TIMEOUT_MS;
+  return Date.now() + Math.max(0, budget - WAIT_GUARD_MS);
+}
+
+async function tabSnapshot(tabId) {
+  try {
+    return await chrome.tabs.get(tabId);
+  } catch (_) {
+    return null;
+  }
+}
+
+function publicTab(tab) {
+  if (!tab) return null;
+  return { id: tab.id, url: tab.url, title: tab.title, status: tab.status };
+}
+
 async function handleRequest(request) {
   const created = new Set();
   const onCreated = (tab) => created.add(tab.id);
   chrome.tabs.onCreated.addListener(onCreated);
+  const deadline = requestDeadline(request);
+  let waitMeta = null;
   try {
-    let command = request.code;
-    if (typeof command === "string") {
-      try {
-        const parsed = JSON.parse(command);
-        if (parsed && typeof parsed === "object" && parsed.cmd) command = parsed;
-      } catch (_) {}
+    const command = parseCommand(request.code);
+    if (request.tabId && !isTabCloseCommand(command)) {
+      waitMeta = await tabWaiter.waitTabComplete(request.tabId, deadline);
     }
-    const result = typeof command === "string"
+
+    let result = typeof command === "string"
       ? await executeJavaScript(request.tabId, command)
       : await runCommand(request.tabId, command);
-    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    const afterTargets = new Set(created);
+    if (request.tabId) {
+      const after = await tabSnapshot(request.tabId);
+      if (after?.status === "loading" || isNavigationCommand(command)) {
+        afterTargets.add(request.tabId);
+      }
+    }
+    for (const id of afterTargets) {
+      waitMeta = await tabWaiter.waitTabComplete(id, deadline);
+    }
+
+    if (isTabCreateCommand(command) && result?.id) {
+      const tab = await tabSnapshot(result.id);
+      if (tab) result = publicTab(tab);
+    }
+
     const newTabs = [];
     for (const id of created) {
-      try {
-        const tab = await chrome.tabs.get(id);
-        newTabs.push({ id: tab.id, url: tab.url, title: tab.title });
-      } catch (_) {}
+      const tab = await tabSnapshot(id);
+      if (tab) newTabs.push({ id: tab.id, url: tab.url, title: tab.title });
     }
-    send({ type: "result", id: request.id, result, newTabs });
+    send({
+      type: "result",
+      id: request.id,
+      result,
+      newTabs,
+      ready: waitMeta ? waitMeta.ready : true,
+      wait: waitMeta ? waitMeta.wait : { until: "complete", waited_ms: 0 },
+    });
   } catch (error) {
     send({
       type: "error",
@@ -264,13 +334,13 @@ chrome.tabs.onUpdated.addListener((_id, change) => {
   if (change.status === "complete" || change.url) sendTabs();
 });
 chrome.runtime.onMessage.addListener((message, _sender, reply) => {
-  if (message?.type === "superscience_bridge_status") {
+  if (message?.type === "wisp_bridge_status") {
     reply({
       connected: socket?.readyState === WebSocket.OPEN,
       endpoint: BRIDGE_URL,
       error: lastError,
     });
-  } else if (message?.type === "superscience_bridge_connect") {
+  } else if (message?.type === "wisp_bridge_connect") {
     connect();
     reply({ ok: true });
   }

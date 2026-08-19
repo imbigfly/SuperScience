@@ -884,6 +884,10 @@ mod tests {
                 last_poll_error: None,
                 progress_json: "{}".into(),
                 env_snapshot_json: r#"{"python":"3.12"}"#.into(),
+                harvested_at: None,
+                cleaned_at: None,
+                cleanup_error: None,
+                logs_path: None,
             })
             .await
             .unwrap();

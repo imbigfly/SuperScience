@@ -2647,6 +2647,11 @@ impl AgentDelegator for NativeDelegator {
         )
         .await;
         self.active.lock().unwrap().remove(&request.request_id);
+        // Subagent interpreters are keyed by the child frame; free them as
+        // soon as the child ends instead of waiting for project close.
+        self.runtime_manager
+            .stop_session(&runtime_project_id, &child_frame_id)
+            .await;
         let run = match run {
             Ok(result) => result,
             Err(error) => {
