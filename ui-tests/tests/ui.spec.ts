@@ -6203,6 +6203,98 @@ test("monitor_run renders a live Run card from summary polls and on-demand detai
   await expect(card).toHaveCount(0);
 });
 
+test("review prompt waits for turn end and dismissal persists (#897)", async ({ page }) => {
+  await enterApp(page);
+  await page.evaluate(() => {
+    const run = (window as any).__mockRuns.find((item: any) => item.id === "run-local-002");
+    Object.assign(run, {
+      context_id: "ssh:gpu-server",
+      title: "Genome assembly",
+      kind: "ssh_direct",
+      status: "running",
+      created_at: Math.floor(Date.now() / 1000) - 300,
+      started_at: Math.floor(Date.now() / 1000) - 295,
+      remote_workdir: "~/.wisp-science/runs/run-local-002",
+      remote_handle_json: '{"kind":"ssh_direct"}',
+      progress_json: "{}",
+    });
+    (window as any).__mockRunWorkspaceFiles["run-local-002"] = {
+      "": [{ path: "assembly.fasta", kind: "file", size_bytes: 4096, file_count: null }],
+    };
+  });
+
+  await composer(page).fill("MONITORRUN");
+  await page.getByRole("button", { name: "Send" }).click();
+  const card = page.getByTestId("run-monitor-card");
+  await expect(card).toBeVisible();
+
+  // The run succeeds while the turn is still working: no interruption yet.
+  await page.evaluate(() => {
+    const run = (window as any).__mockRuns.find((item: any) => item.id === "run-local-002");
+    Object.assign(run, {
+      status: "succeeded",
+      ended_at: Math.floor(Date.now() / 1000),
+      exit_code: 0,
+    });
+  });
+  await expect(card).toContainText("Succeeded", { timeout: 7_000 });
+  const review = page.getByTestId("run-review-modal");
+  await expect(review).toHaveCount(0);
+
+  // Turn ends: the prompt opens for the unresolved server-side files.
+  await page.evaluate(() => (window as any).__finishMonitorRun());
+  await expect(review).toBeVisible({ timeout: 7_000 });
+  await expect(review).toContainText("assembly.fasta");
+
+  // Escape immediately: one press closes the prompt and persists the
+  // dismissal so this run never auto-prompts again.
+  await page.keyboard.press("Escape");
+  await expect(review).toHaveCount(0);
+  await expect.poll(() => lastInvokeArgs(page, "dismiss_run_review")).toMatchObject({
+    runId: "run-local-002",
+  });
+});
+
+test("unmonitored exploratory run success never auto-opens the review prompt (#897)", async ({ page }) => {
+  await page.goto("/");
+  await page.evaluate(() => {
+    const now = Math.floor(Date.now() / 1000);
+    const run = (window as any).__mockRuns.find((item: any) => item.id === "run-local-002");
+    Object.assign(run, {
+      frame_id: "s-complete",
+      context_id: "ssh:gpu-server",
+      title: "Quick check",
+      kind: "ssh_direct",
+      status: "running",
+      created_at: now - 30,
+      started_at: now - 29,
+      remote_workdir: "~/.wisp-science/runs/run-local-002",
+      remote_handle_json: '{"kind":"ssh_direct"}',
+    });
+    (window as any).__mockRunWorkspaceFiles["run-local-002"] = {
+      "": [{ path: "notes.txt", kind: "file", size_bytes: 128, file_count: null }],
+    };
+  });
+
+  await page.getByTestId("recent-session-card").nth(1).click();
+  const automatic = page.getByTestId("auto-run-monitor");
+  await expect(automatic).toBeVisible();
+
+  await page.evaluate(() => {
+    const run = (window as any).__mockRuns.find((item: any) => item.id === "run-local-002");
+    Object.assign(run, {
+      status: "succeeded",
+      ended_at: Math.floor(Date.now() / 1000),
+      exit_code: 0,
+    });
+  });
+  await expect(automatic).toContainText("Succeeded", { timeout: 7_000 });
+  // Exploratory command runs never nominate themselves for review, even with
+  // files present and the session idle: cleanup stays on the manual entry
+  // points and retention.
+  await expect(page.getByTestId("run-review-modal")).toHaveCount(0);
+});
+
 test("run monitor output stays pinned to the tail across poll rebuilds (#654)", async ({ page }) => {
   // Eight long logical lines wrap far past the 150px pre, so it scrolls.
   const longOutput = (tag: string) =>

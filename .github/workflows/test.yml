@@ -89,7 +89,21 @@ jobs:
             -o Acquire::http::Timeout=30
             -o Acquire::https::Timeout=30
           )
-          sudo timeout 2m apt-get "${APT_OPTS[@]}" update
+          # azure.archive.ubuntu.com also hangs on the index fetch itself,
+          # burning the whole `apt-get update` budget on Ign retries. Point
+          # the runner's mirror list at the canonical archive and retry the
+          # update, so one slow mirror cannot fail the job.
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu/|https://archive.ubuntu.com/ubuntu/|g' /etc/apt/apt-mirrors.txt
+          fi
+          for attempt in 1 2 3; do
+            sudo timeout 4m apt-get "${APT_OPTS[@]}" update && break
+            if [ "$attempt" = 3 ]; then
+              echo "apt-get update failed after ${attempt} attempts" >&2
+              exit 1
+            fi
+            sleep 10
+          done
           sudo timeout 20m apt-get "${APT_OPTS[@]}" install -y \
             libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev \

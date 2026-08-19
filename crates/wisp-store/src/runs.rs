@@ -812,6 +812,31 @@ impl Store {
         Ok(updated.rows_affected() == 1)
     }
 
+    /// Record that the user closed this Run's results-review prompt so it is
+    /// never auto-opened again. Manual review stays available. Idempotent:
+    /// returns false when already dismissed.
+    pub async fn mark_run_review_dismissed(&self, id: &str) -> Result<bool> {
+        let now = chrono::Utc::now().timestamp();
+        let updated = sqlx::query(
+            "UPDATE runs SET review_dismissed_at=? WHERE id=? AND review_dismissed_at IS NULL",
+        )
+        .bind(now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(updated.rows_affected() == 1)
+    }
+
+    /// Whether the user already closed this Run's results-review prompt.
+    pub async fn run_review_dismissed(&self, id: &str) -> Result<bool> {
+        let row: Option<(Option<i64>,)> =
+            sqlx::query_as("SELECT review_dismissed_at FROM runs WHERE id=?")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.is_some_and(|(dismissed,)| dismissed.is_some()))
+    }
+
     pub async fn mark_run_cleaned(&self, id: &str) -> Result<bool> {
         let now = chrono::Utc::now().timestamp();
         let updated = sqlx::query(

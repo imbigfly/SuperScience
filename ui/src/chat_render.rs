@@ -1057,6 +1057,11 @@ pub(crate) fn RunMonitorCard(
     tool_ok: Option<bool>,
     tool_output: String,
     dismissed_runs: RwSignal<HashSet<String>>,
+    /// Only foreground `monitor_run` cards nominate their Run for the
+    /// results-review prompt. AutoRun cards cover exploratory command Runs,
+    /// which must never interrupt with a review modal (#897).
+    #[prop(optional)]
+    auto_review: bool,
 ) -> impl IntoView {
     let locale = use_locale();
     let fallback = serde_json::from_str::<RunRecord>(&tool_output).ok();
@@ -1113,11 +1118,18 @@ pub(crate) fn RunMonitorCard(
     // body every few seconds, which would snap a native `<details>` shut while
     // the user is reading it.
     let env_open = create_rw_signal(false);
-    // When a foreground-monitored SSH Run finishes successfully in this
-    // session, open the results-review modal once so the user can pick what to
-    // download and what to delete from the server.
+    // Manual entry point: the review button on the card opens the modal
+    // directly, for any card.
     let review_modal = use_context::<crate::overlays::RunReviewModal>().map(|modal| modal.0);
-    if let Some(review_modal) = review_modal {
+    // When a foreground-monitored SSH Run finishes successfully in this
+    // session, nominate it for the results-review prompt. The root drains the
+    // queue once the session goes idle and asks the backend whether the Run
+    // has an unresolved product decision before opening the modal, so work in
+    // progress is never interrupted and empty workspaces never prompt (#897).
+    let review_queue = auto_review
+        .then(|| use_context::<crate::overlays::PendingRunReviews>().map(|queue| queue.0))
+        .flatten();
+    if let Some(review_queue) = review_queue {
         let prompted = Rc::new(Cell::new(false));
         create_effect(move |previous: Option<Option<String>>| {
             let Some(run) = selected_run.get() else {
@@ -1135,7 +1147,11 @@ pub(crate) fn RunMonitorCard(
                 && !prompted.get()
             {
                 prompted.set(true);
-                review_modal.set(Some(run.id.clone()));
+                review_queue.update(|ids| {
+                    if !ids.contains(&run.id) {
+                        ids.push(run.id.clone());
+                    }
+                });
             }
             Some(status)
         });
@@ -1502,6 +1518,7 @@ pub(crate) fn render_item(
                 tool_ok=*ok
                 tool_output=output.clone()
                 dismissed_runs=dismissed_runs
+                auto_review=true
             />
         }.into_view(),
         ChatItem::Tool { name, ok, input, output, .. } if is_image_generation_tool(name) => view! {

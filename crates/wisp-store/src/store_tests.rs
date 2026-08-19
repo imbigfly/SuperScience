@@ -3554,6 +3554,7 @@ async fn store_open_records_migrations_and_seeds_local_context() {
             ARTIFACT_SOURCE_DISCARDED_MIGRATION.to_string(),
             RUN_LOG_PULL_MIGRATION.to_string(),
             ORPHAN_FILE_RETENTION_MIGRATION.to_string(),
+            RUN_REVIEW_DISMISSED_MIGRATION.to_string(),
         ]
     );
     let first_open_migrations = store.schema_migrations().await.unwrap();

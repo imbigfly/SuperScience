@@ -4248,6 +4248,130 @@ async fn run_review_browse_and_delete_require_a_terminal_ssh_run() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+#[tokio::test]
+async fn review_prompt_reserved_for_unresolved_product_decisions() {
+    let tmp = std::env::temp_dir().join(format!("wisp_review_prompt_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .upsert_execution_context(&harvest_test_context())
+        .await
+        .unwrap();
+
+    let specs = r#"[{"glob":"results/*.tsv","kind":"table"}]"#;
+    seed_cleanup_run(
+        &store,
+        "run-unharvested",
+        wisp_store::RunStatus::Succeeded,
+        specs,
+        false,
+    )
+    .await;
+    seed_cleanup_run(
+        &store,
+        "run-harvested",
+        wisp_store::RunStatus::Succeeded,
+        specs,
+        true,
+    )
+    .await;
+    seed_cleanup_run(
+        &store,
+        "run-active",
+        wisp_store::RunStatus::Running,
+        "[]",
+        false,
+    )
+    .await;
+    seed_cleanup_run(
+        &store,
+        "run-files",
+        wisp_store::RunStatus::Succeeded,
+        "[]",
+        false,
+    )
+    .await;
+    seed_cleanup_run(
+        &store,
+        "run-empty",
+        wisp_store::RunStatus::Succeeded,
+        "[]",
+        false,
+    )
+    .await;
+
+    let runner = Arc::new(ScriptedRunRunner::new(vec![
+        ok_output("__WISP_LS__:file:1024::out.tsv\n__WISP_LS_DONE__\n"),
+        ok_output("__WISP_LS_DONE__\n"),
+    ]));
+    let manager = RunManager::with_runner(runner.clone());
+
+    // Declared outputs never harvested: results only exist on the server, so
+    // the prompt is warranted — decided from the record alone, no SSH call.
+    assert!(manager
+        .should_prompt_run_review(&store, "run-unharvested")
+        .await
+        .unwrap());
+    // Harvested products are already local; the leftover cleanup decision is
+    // not worth an interruption.
+    assert!(!manager
+        .should_prompt_run_review(&store, "run-harvested")
+        .await
+        .unwrap());
+    // Non-terminal runs never prompt.
+    assert!(!manager
+        .should_prompt_run_review(&store, "run-active")
+        .await
+        .unwrap());
+    assert_eq!(runner.commands.lock().unwrap().len(), 0);
+
+    // No declared outputs: the workspace listing decides. Files present →
+    // prompt; empty workspace → stay silent.
+    assert!(manager
+        .should_prompt_run_review(&store, "run-files")
+        .await
+        .unwrap());
+    assert!(!manager
+        .should_prompt_run_review(&store, "run-empty")
+        .await
+        .unwrap());
+    assert_eq!(runner.commands.lock().unwrap().len(), 2);
+
+    // A dismissed prompt stays dismissed, and dismissal is idempotent.
+    assert!(store
+        .mark_run_review_dismissed("run-unharvested")
+        .await
+        .unwrap());
+    assert!(!store
+        .mark_run_review_dismissed("run-unharvested")
+        .await
+        .unwrap());
+    assert!(store.run_review_dismissed("run-unharvested").await.unwrap());
+    assert!(!manager
+        .should_prompt_run_review(&store, "run-unharvested")
+        .await
+        .unwrap());
+
+    // Exploratory local command runs are out of scope regardless of state.
+    let mut local = wisp_store::RunRecord::new("run-local", "p", "local", "Local", "command");
+    local.frame_id = Some("f".into());
+    local.status = wisp_store::RunStatus::Succeeded;
+    store.create_run(&local).await.unwrap();
+    assert!(!manager
+        .should_prompt_run_review(&store, "run-local")
+        .await
+        .unwrap());
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 // --- retention sweep ---------------------------------------------------------
 
 async fn seed_retention_run(

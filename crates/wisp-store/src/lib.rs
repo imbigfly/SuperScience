@@ -166,6 +166,7 @@ const SCHEDULES_MIGRATION: &str = "0048_schedules";
 const ARTIFACT_SOURCE_DISCARDED_MIGRATION: &str = "0049_artifact_source_discarded";
 const RUN_LOG_PULL_MIGRATION: &str = "0050_run_log_pull";
 const ORPHAN_FILE_RETENTION_MIGRATION: &str = "0051_orphan_file_retention";
+const RUN_REVIEW_DISMISSED_MIGRATION: &str = "0052_run_review_dismissed";
 
 #[derive(Clone)]
 pub struct Store {
@@ -695,6 +696,11 @@ impl Store {
             .await?;
             Self::record_migration(pool, ORPHAN_FILE_RETENTION_MIGRATION).await?;
         }
+        if !Self::migration_applied(pool, RUN_REVIEW_DISMISSED_MIGRATION).await? {
+            Self::add_columns_if_missing(pool, "runs", &[("review_dismissed_at", "INTEGER")])
+                .await?;
+            Self::record_migration(pool, RUN_REVIEW_DISMISSED_MIGRATION).await?;
+        }
         // Re-apply additive DDL even when a migration marker is already
         // recorded. Jumping many releases can leave a table/column that was
         // later folded into 0000_init.sql (or into an already-shipped apply_*
@@ -802,6 +808,7 @@ impl Store {
                 ("cleanup_error", "TEXT"),
                 ("logs_path", "TEXT"),
                 ("exploration_id", "TEXT"),
+                ("review_dismissed_at", "INTEGER"),
             ],
         )
         .await?;

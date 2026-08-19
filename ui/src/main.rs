@@ -6555,6 +6555,64 @@ fn App() -> impl IntoView {
     let storage_prefs_form = create_rw_signal(None::<StoragePrefsForm>);
     let run_review_modal = create_rw_signal(None::<String>);
     provide_context(RunReviewModal(run_review_modal));
+    // Deferred results-review prompting (#897): monitored run cards nominate
+    // candidates here; this root effect waits until the owning session is
+    // idle, asks the backend whether each candidate has an unresolved product
+    // decision, and opens the modal for the newest one that does. Exploratory
+    // command runs never enter the queue, and dismissed or empty workspaces
+    // never prompt.
+    let pending_run_reviews = create_rw_signal(Vec::<String>::new());
+    provide_context(crate::overlays::PendingRunReviews(pending_run_reviews));
+    create_effect(move |_| {
+        if run_review_modal.get().is_some() {
+            return;
+        }
+        let running_now = running.get();
+        let ready: Vec<String> = pending_run_reviews.with(|ids| {
+            ids.iter()
+                .filter(|id| {
+                    run_records.with(|runs| {
+                        runs.iter()
+                            .find(|run| run.id == **id)
+                            .and_then(|run| run.frame_id.clone())
+                            .is_none_or(|frame| !running_now.contains(&frame))
+                    })
+                })
+                .cloned()
+                .collect()
+        });
+        if ready.is_empty() {
+            return;
+        }
+        pending_run_reviews.update(|ids| ids.retain(|id| !ready.contains(id)));
+        spawn_local(async move {
+            for id in ready.iter().rev() {
+                let args = to_value(&serde_json::json!({ "runId": id })).unwrap();
+                match invoke_checked("should_prompt_run_review", args).await {
+                    Ok(value) if value.as_bool() == Some(true) => {
+                        run_review_modal.set(Some(id.clone()));
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
+    });
+    // Closing the review modal (X, Escape, or after cleanup) persists the
+    // dismissal so this run never auto-prompts again; the manual entry points
+    // on run cards and the runs panel stay available.
+    create_effect(move |previous: Option<Option<String>>| {
+        let current = run_review_modal.get();
+        if let Some(Some(previous_id)) = previous {
+            if current.as_deref() != Some(previous_id.as_str()) {
+                spawn_local(async move {
+                    let args = to_value(&serde_json::json!({ "runId": previous_id })).unwrap();
+                    let _ = invoke_checked("dismiss_run_review", args).await;
+                });
+            }
+        }
+        current
+    });
     let runtime_environment = create_rw_signal(None::<RuntimeSlot>);
     let runtime_environment_pinned = create_rw_signal(false);
     let runtime_environment_position = create_rw_signal((16, 16));
