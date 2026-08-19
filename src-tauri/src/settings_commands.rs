@@ -21,11 +21,16 @@ pub(super) struct TokenUsageOverview {
     tools: Vec<wisp_store::ToolCallUsage>,
 }
 
+fn annotate_provider_error(error: impl ToString, proxy: Option<&str>) -> String {
+    wisp_llm::annotate_transport_error(&error.to_string(), proxy, &wisp_llm::ambient_proxy_env())
+}
+
 async fn validate_provider_config(
     provider_name: &str,
     mut cfg: wisp_llm::ProviderConfig,
     supports_vision: bool,
 ) -> Result<(), String> {
+    let proxy = cfg.proxy.clone();
     if models::is_image_generation_model(&cfg.model) {
         if !models::supports_image_generation(provider_name, &cfg.model) {
             return Err(models::IMAGE_GENERATION_UNSUPPORTED.into());
@@ -37,7 +42,8 @@ async fn validate_provider_config(
             cfg.proxy,
         )
         .validate_model_access()
-        .await;
+        .await
+        .map_err(|error| annotate_provider_error(error, proxy.as_deref()));
     }
 
     // Keep the ping cheap but respect API minimum (Responses API needs >= 16).
@@ -54,7 +60,7 @@ async fn validate_provider_config(
         .complete(&[probe], &[])
         .await
         .map(|_| ())
-        .map_err(|error| error.to_string())
+        .map_err(|error| annotate_provider_error(error, proxy.as_deref()))
 }
 
 #[tauri::command]
@@ -639,7 +645,7 @@ pub(super) async fn validate_settings(
         }
     };
     let api_key = effective_api_key(key, stored_key);
-    let cfg = build_provider_config(
+    let mut cfg = build_provider_config(
         &settings.provider,
         &settings.api_url,
         &api_key,
@@ -647,6 +653,10 @@ pub(super) async fn validate_settings(
         settings.max_tokens,
         &settings.reasoning_effort,
     )?;
+    let form_proxy = settings.proxy_url.trim();
+    if !form_proxy.is_empty() {
+        cfg.proxy = Some(form_proxy.to_string());
+    }
 
     tracing::info!(
         target: "wisp",
