@@ -5,8 +5,59 @@ use crate::{
 };
 use async_trait::async_trait;
 use serde_json::json;
+use std::path::Path;
 use wisp_llm::ToolSchema;
 use wisp_tools::{Tool, ToolEnv, ToolEvent, ToolResult};
+
+/// Normalize path separators for comparison. Only meaningful on Windows,
+/// where `\` cannot appear in a filename; on Unix a literal `\` is a legal
+/// filename character and replacing it could redirect the path to a
+/// *different* existing file (`we\ird.txt` vs `we/ird.txt`), i.e. credit a
+/// file the cell never wrote.
+fn normalize_separators(path: &str) -> String {
+    if cfg!(windows) {
+        path.replace('\\', "/")
+    } else {
+        path.to_string()
+    }
+}
+
+/// Relativize worker-reported absolute writes to the project root.
+/// Outside-root paths, the root itself, and empty remainders are dropped;
+/// on Windows `\` is normalized to `/`; duplicates are collapsed; the
+/// result is sorted.
+fn project_relative_writes(root: &Path, reported: &[String]) -> Vec<String> {
+    let root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let mut out = Vec::new();
+    for raw in reported {
+        // Normalize separators before canonicalize/strip so a Windows-style
+        // `out\a.txt` still matches on hosts whose temp root is a symlink.
+        let normalized = normalize_separators(raw);
+        let path = Path::new(&normalized);
+        let abs = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let Ok(relative) = abs.strip_prefix(&root) else {
+            continue;
+        };
+        // When canonicalize failed above, `abs` is the raw reported path and
+        // the remainder could still climb out of the root (`/root/../etc`).
+        // Provenance records feed exports and undo — never let one name a
+        // path outside the root.
+        if relative
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+        {
+            continue;
+        }
+        let relative = normalize_separators(&relative.to_string_lossy());
+        if relative.is_empty() {
+            continue;
+        }
+        out.push(relative);
+    }
+    out.sort();
+    out.dedup();
+    out
+}
 
 pub struct ReplTool {
     manager: RuntimeManager,
@@ -150,6 +201,14 @@ async fn run_runtime(
                     env.emit(ToolEvent::Stdout { chunk }).await;
                 }
                 Some(RuntimeEvent::Finished(Ok(response))) => {
+                    if key.context_id == LOCAL_CONTEXT_ID {
+                        if let Some(reported) = &response.files_written {
+                            let paths = project_relative_writes(env.project_root(), reported);
+                            if !paths.is_empty() {
+                                env.report_written_paths(&paths);
+                            }
+                        }
+                    }
                     let success = response.error.is_none();
                     return ToolResult {
                         success,
@@ -282,8 +341,11 @@ impl Tool for RTool {
 
 #[cfg(test)]
 mod tests {
-    use super::{code_arg, context_id, PYTHON_TOOL_DESCRIPTION, R_TOOL_DESCRIPTION};
+    use super::{
+        code_arg, context_id, project_relative_writes, PYTHON_TOOL_DESCRIPTION, R_TOOL_DESCRIPTION,
+    };
     use crate::MAX_CODE_BYTES;
+    use std::path::PathBuf;
 
     #[test]
     fn python_description_keeps_package_setup_out_of_the_repl() {
@@ -325,5 +387,85 @@ mod tests {
     fn code_size_is_rejected_before_runtime_dispatch() {
         let args = serde_json::json!({"code": "x".repeat(MAX_CODE_BYTES + 1)});
         assert!(code_arg(&args).unwrap_err().contains("byte limit"));
+    }
+
+    fn unique_tmp(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "wisp_rel_{tag}_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn project_relative_writes_drops_outside_root_and_normalizes() {
+        let root = unique_tmp("writes");
+        std::fs::create_dir_all(root.join("out")).unwrap();
+        std::fs::write(root.join("out/a.txt"), b"a").unwrap();
+        std::fs::write(root.join("out/c.txt"), b"c").unwrap();
+        let outside = unique_tmp("writes_out");
+        std::fs::write(outside.join("cache"), b"x").unwrap();
+
+        let a = root.join("out/a.txt").to_string_lossy().into_owned();
+        let c = root.join("out/c.txt").to_string_lossy().into_owned();
+        let mut reported = vec![
+            a.clone(),
+            a.clone(),
+            c,
+            outside.join("cache").to_string_lossy().into_owned(),
+            root.to_string_lossy().into_owned(),
+        ];
+        // Backslash spellings collapse into the same entries — but only on
+        // Windows, where `\` is a separator rather than a filename character.
+        if cfg!(windows) {
+            reported.push(format!(
+                "{}{}out\\a.txt",
+                root.display(),
+                std::path::MAIN_SEPARATOR
+            ));
+            reported.push(format!(
+                "{}{}out\\c.txt",
+                root.display(),
+                std::path::MAIN_SEPARATOR
+            ));
+        }
+        let got = project_relative_writes(&root, &reported);
+        assert_eq!(got, vec!["out/a.txt".to_string(), "out/c.txt".to_string()]);
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&outside).ok();
+    }
+
+    /// On Unix a literal `\` is a legal filename character; the spelling
+    /// must be preserved so the record names the file that was written,
+    /// not a same-identity sibling under a `we/` directory.
+    #[cfg(not(windows))]
+    #[test]
+    fn project_relative_writes_preserves_backslash_filenames_on_unix() {
+        let root = unique_tmp("writes_bs");
+        std::fs::write(root.join(r"we\ird.txt"), b"x").unwrap();
+        let reported = vec![root.join(r"we\ird.txt").to_string_lossy().into_owned()];
+        assert_eq!(
+            project_relative_writes(&root, &reported),
+            vec![r"we\ird.txt".to_string()]
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn project_relative_writes_rejects_parent_traversal_in_fallback() {
+        // A path that does not exist skips canonicalization, so the raw
+        // remainder is stripped verbatim; `..` must never survive into the
+        // provenance record, where undo would resolve it outside the root.
+        let root = unique_tmp("writes_dotdot");
+        let escape = format!(
+            "{}{}..{}escaped.txt",
+            root.display(),
+            std::path::MAIN_SEPARATOR,
+            std::path::MAIN_SEPARATOR
+        );
+        assert!(project_relative_writes(&root, &[escape]).is_empty());
+        std::fs::remove_dir_all(&root).ok();
     }
 }

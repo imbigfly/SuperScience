@@ -7244,6 +7244,7 @@ version = "1.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "dunce",
  "serde",
  "serde_json",
  "tokio",

@@ -28,6 +28,10 @@ pub struct KernelResp {
     pub wall_s: f64,
     pub cpu_s: f64,
     pub rss_kb: u64,
+    /// Absolute paths the worker observed this cell write. `None` means the
+    /// worker did not (or could not) observe; `Some([])` means it observed
+    /// and the cell wrote nothing. Never conflate the two.
+    pub files_written: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +70,8 @@ struct RawResp {
     interrupted: bool,
     #[serde(default)]
     usage: RawUsage,
+    #[serde(default)]
+    files_written: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -431,6 +437,7 @@ async fn read_response<R: AsyncBufRead + Unpin>(
                     wall_s: response.usage.wall_s,
                     cpu_s: response.usage.cpu_s,
                     rss_kb: response.usage.rss_kb,
+                    files_written: response.files_written,
                 });
             }
             other => bail!("unexpected protocol frame '{other}' during execution"),
@@ -630,6 +637,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.stdout, "done\n");
         assert_eq!(response.rss_kb, 123);
+        assert_eq!(response.files_written, None);
         assert!(matches!(
             rx.recv().await,
             Some(RuntimeEvent::Stdout(chunk)) if chunk == "loading\n"
@@ -654,6 +662,70 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.to_string().contains("does not match active request"));
+    }
+
+    #[tokio::test]
+    async fn result_frame_round_trips_files_written() {
+        let (reader, mut writer) = duplex(2048);
+        writer
+            .write_all(
+                br#"{"type":"result","id":"cell-1","stdout":"","stderr":"","error":null,"files_written":["/p/a.txt","/p/b.txt"]}
+"#,
+            )
+            .await
+            .unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let response = read_response(
+            &mut BufReader::new(reader),
+            "cell-1",
+            &RuntimeOutput::new(tx),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            response.files_written,
+            Some(vec!["/p/a.txt".into(), "/p/b.txt".into()])
+        );
+    }
+
+    #[tokio::test]
+    async fn result_frame_without_files_written_is_none() {
+        let (reader, mut writer) = duplex(1024);
+        writer
+            .write_all(
+                b"{\"type\":\"result\",\"id\":\"cell-1\",\"stdout\":\"\",\"stderr\":\"\",\"error\":null}\n",
+            )
+            .await
+            .unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let response = read_response(
+            &mut BufReader::new(reader),
+            "cell-1",
+            &RuntimeOutput::new(tx),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.files_written, None);
+    }
+
+    #[tokio::test]
+    async fn result_frame_with_empty_files_written_is_some_empty() {
+        let (reader, mut writer) = duplex(1024);
+        writer
+            .write_all(
+                b"{\"type\":\"result\",\"id\":\"cell-1\",\"stdout\":\"\",\"stderr\":\"\",\"error\":null,\"files_written\":[]}\n",
+            )
+            .await
+            .unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let response = read_response(
+            &mut BufReader::new(reader),
+            "cell-1",
+            &RuntimeOutput::new(tx),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.files_written, Some(Vec::new()));
     }
 
     #[tokio::test]
