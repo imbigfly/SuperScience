@@ -23,4 +23,3 @@ pub fn from_value(error: Option<&Value>) -> String {
         None => "browser extension returned an unknown error".into(),
     }
 }
-

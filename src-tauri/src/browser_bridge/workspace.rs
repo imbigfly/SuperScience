@@ -108,4 +108,3 @@ pub fn status_json(connected: bool, child_running: bool) -> Value {
         "chrome": chrome_executable().ok().map(|path| path.display().to_string()),
     })
 }
-
