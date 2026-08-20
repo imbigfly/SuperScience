@@ -56,6 +56,13 @@ parks the live app without reloading it; closing its tab tears the app down.
 The latest presented workbench is saved with the conversation and restored when
 that conversation is reopened, including after Wisp restarts.
 
+While that live App is still bound to the MCP server that presented it, Wisp
+advertises `hostCapabilities.serverTools` and forwards standard `tools/call`
+requests to the same server (same-server tools only, including app-only helpers
+that never enter the agent catalog). Restored Apps that no longer have the
+original connection do not get that capability and keep using
+`ui/update-model-context`.
+
 MCP Apps may publish their current selection or other bounded live state through
 the standard `ui/update-model-context` request. Wisp keeps only the latest update
 from each open App and adds it to the next model turn in that conversation.
@@ -77,10 +84,12 @@ rather than its entire workspace.
   released.
 - Third-party MCP tool names may not replace an existing Wisp tool.
 - MCP Apps receive structured tool input/results in a script-only, opaque-origin
-  iframe. Network origins are restricted to the resource's declared CSP. Apps may
-  update the next model turn's bounded text/JSON context, but Wisp does not
-  currently grant app-initiated tool calls, external links, downloads, forms,
-  camera, microphone, or geolocation.
+  iframe. Network origins are restricted to the resource's declared CSP. A live
+  App may call tools on the same MCP server through the host (`tools/call`);
+  those calls use the existing approval policy, are keyed by connector + tool,
+  and cannot reach another server. Apps may also update the next model turn's
+  bounded text/JSON context. Wisp does not grant external links, downloads,
+  forms, camera, microphone, or geolocation.
 - Embedded `text/html` MCP resources are materialized under
   `.wisp/plugin-artifacts/` and opened through Wisp's sandboxed HTML preview.
 

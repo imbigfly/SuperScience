@@ -33,6 +33,11 @@ pub trait McpAppServer: Send + Sync {
     /// Server `readOnlyHint` for a tool, honored by plan-mode and project-write
     /// gates the same way agent calls honor it.
     fn read_only(&self, name: &str) -> bool;
+    /// `inputSchema` for a catalog tool, used to reject malformed App arguments
+    /// before approval or dispatch. Default `None` skips schema validation.
+    fn input_schema(&self, _name: &str) -> Option<Value> {
+        None
+    }
     /// Call a tool on the same MCP server and return the full CallToolResult
     /// object (`content`, `structuredContent`, `_meta`, `isError`).
     async fn call_tool(&self, name: &str, arguments: &Value) -> Result<Value, String>;
@@ -118,9 +123,7 @@ impl std::fmt::Debug for ToolEvent {
             ToolEvent::FileChanged { path } => {
                 f.debug_struct("FileChanged").field("path", path).finish()
             }
-            ToolEvent::Stdout { chunk } => {
-                f.debug_struct("Stdout").field("chunk", chunk).finish()
-            }
+            ToolEvent::Stdout { chunk } => f.debug_struct("Stdout").field("chunk", chunk).finish(),
             ToolEvent::Presentation { kind, payload, .. } => f
                 .debug_struct("Presentation")
                 .field("kind", kind)

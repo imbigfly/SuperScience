@@ -179,11 +179,17 @@ impl McpAppServer for McpAppServerHandle {
     fn read_only(&self, name: &str) -> bool {
         self.tool(name).is_some_and(RemoteTool::read_only)
     }
+    fn input_schema(&self, name: &str) -> Option<Value> {
+        self.tool(name).map(|tool| tool.input_schema.clone())
+    }
     async fn call_tool(&self, name: &str, arguments: &Value) -> Result<Value, String> {
         if !self.visible_to_app(name) {
             return Err(format!(
                 "MCP App tool '{name}' is not visible to apps on this server"
             ));
+        }
+        if let Some(schema) = self.input_schema(name) {
+            validate_tool_arguments(&schema, arguments)?;
         }
         let client = self
             .client
@@ -194,6 +200,83 @@ impl McpAppServer for McpAppServerHandle {
             .await
             .map_err(|error| error.to_string())?;
         serde_json::to_value(&result).map_err(|error| format!("serialize MCP tool result: {error}"))
+    }
+}
+
+/// Lightweight MCP `inputSchema` check: object type, `required`, property
+/// types, and `additionalProperties: false`. Unknown keywords are ignored so
+/// a host can fail closed on the common cases without a full JSON Schema crate.
+pub fn validate_tool_arguments(schema: &Value, arguments: &Value) -> Result<(), String> {
+    validate_against_schema(schema, arguments, "arguments")
+}
+
+fn validate_against_schema(schema: &Value, value: &Value, path: &str) -> Result<(), String> {
+    if schema.get("type").is_none()
+        && schema.get("properties").is_none()
+        && schema.get("required").is_none()
+    {
+        return Ok(());
+    }
+    if let Some(type_constraint) = schema.get("type") {
+        if !value_matches_type(value, type_constraint) {
+            return Err(format!("{path} does not match the tool input schema"));
+        }
+    }
+    if let Some(object) = value.as_object() {
+        if let Some(required) = schema.get("required").and_then(Value::as_array) {
+            for name in required.iter().filter_map(Value::as_str) {
+                if !object.contains_key(name) {
+                    return Err(format!("{path} is missing required property '{name}'"));
+                }
+            }
+        }
+        let properties = schema.get("properties").and_then(Value::as_object);
+        if schema.get("additionalProperties") == Some(&Value::Bool(false)) {
+            if let Some(properties) = properties {
+                if let Some(unknown) = object.keys().find(|key| !properties.contains_key(*key)) {
+                    return Err(format!("{path} has unexpected property '{unknown}'"));
+                }
+            } else if !object.is_empty() {
+                return Err(format!("{path} does not allow additional properties"));
+            }
+        }
+        if let Some(properties) = properties {
+            for (name, child) in object {
+                if let Some(child_schema) = properties.get(name) {
+                    validate_against_schema(child_schema, child, &format!("{path}.{name}"))?;
+                }
+            }
+        }
+    }
+    if let (Some(items), Some(array)) = (schema.get("items"), value.as_array()) {
+        for (index, child) in array.iter().enumerate() {
+            validate_against_schema(items, child, &format!("{path}[{index}]"))?;
+        }
+    }
+    Ok(())
+}
+
+fn value_matches_type(value: &Value, type_constraint: &Value) -> bool {
+    match type_constraint {
+        Value::String(type_name) => value_is_json_type(value, type_name),
+        Value::Array(types) => types.iter().any(|item| {
+            item.as_str()
+                .is_some_and(|type_name| value_is_json_type(value, type_name))
+        }),
+        _ => true,
+    }
+}
+
+fn value_is_json_type(value: &Value, type_name: &str) -> bool {
+    match type_name {
+        "object" => value.is_object(),
+        "array" => value.is_array(),
+        "string" => value.is_string(),
+        "number" => value.is_number(),
+        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+        "boolean" => value.is_boolean(),
+        "null" => value.is_null(),
+        _ => true,
     }
 }
 
@@ -469,5 +552,66 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.contains("not visible to apps"));
+    }
+
+    #[tokio::test]
+    async fn parallel_app_handles_do_not_share_catalogs() {
+        let first = McpAppServerHandle::new(
+            "server-a".into(),
+            "App A".into(),
+            Arc::new(vec![RemoteTool {
+                name: "alpha_only".into(),
+                title: None,
+                description: String::new(),
+                input_schema: json!({ "type": "object" }),
+                output_schema: None,
+                meta: Some(json!({ "ui": { "visibility": ["app"] } })),
+                annotations: None,
+            }]),
+            Weak::new(),
+            false,
+        );
+        let second = McpAppServerHandle::new(
+            "server-b".into(),
+            "App B".into(),
+            Arc::new(vec![RemoteTool {
+                name: "beta_only".into(),
+                title: None,
+                description: String::new(),
+                input_schema: json!({ "type": "object" }),
+                output_schema: None,
+                meta: Some(json!({ "ui": { "visibility": ["app"] } })),
+                annotations: None,
+            }]),
+            Weak::new(),
+            false,
+        );
+        assert!(first.visible_to_app("alpha_only"));
+        assert!(!first.visible_to_app("beta_only"));
+        assert!(second.visible_to_app("beta_only"));
+        assert!(!second.visible_to_app("alpha_only"));
+        let error = first.call_tool("beta_only", &json!({})).await.unwrap_err();
+        assert!(error.contains("not visible to apps"));
+    }
+
+    #[test]
+    fn tool_argument_schema_rejects_missing_and_wrong_types() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "token": { "type": "string" },
+                "count": { "type": "integer" }
+            },
+            "required": ["token"],
+            "additionalProperties": false
+        });
+        validate_tool_arguments(&schema, &json!({ "token": "ok", "count": 2 })).unwrap();
+        let missing = validate_tool_arguments(&schema, &json!({ "count": 1 })).unwrap_err();
+        assert!(missing.contains("token"));
+        let wrong = validate_tool_arguments(&schema, &json!({ "token": 1 })).unwrap_err();
+        assert!(wrong.contains("token"));
+        let extra =
+            validate_tool_arguments(&schema, &json!({ "token": "ok", "nope": true })).unwrap_err();
+        assert!(extra.contains("nope"));
     }
 }
