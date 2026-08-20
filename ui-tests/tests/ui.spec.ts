@@ -41,6 +41,10 @@ async function openModelsSettings(page: Page) {
 
 async function openSettingsSection(page: Page, name: string) {
   await globalSettingsButton(page).click();
+  if (name === "Session") {
+    await page.getByTestId("settings-nav-session").click();
+    return;
+  }
   await page.getByRole("button", { name, exact: true }).click();
 }
 
@@ -11025,9 +11029,10 @@ test("remote access settings configure a cloud-drive sync folder", async ({ page
   });
 });
 
-test("general settings save the maximum agent iterations", async ({ page }) => {
+test("session settings save the maximum agent iterations", async ({ page }) => {
   await page.goto("/");
-  await openSettingsSection(page, "General");
+  await openSettingsSection(page, "Session");
+  await expect(page.getByTestId("session-settings-pane")).toBeVisible();
   await page.getByTestId("max-iter").fill("0");
   await page.locator(".settings-footer").getByRole("button", { name: "Save" }).click();
   await expect.poll(() => lastInvokeArgs(page, "set_settings")).toMatchObject({
@@ -11035,9 +11040,9 @@ test("general settings save the maximum agent iterations", async ({ page }) => {
   });
 });
 
-test("general settings enable automatic context compaction by default", async ({ page }) => {
+test("session settings enable automatic context compaction by default", async ({ page }) => {
   await page.goto("/");
-  await openSettingsSection(page, "General");
+  await openSettingsSection(page, "Session");
   const toggle = page.getByTestId("auto-compact-enabled");
   await expect(toggle).toBeChecked();
   await toggle.locator("..").click();
@@ -11048,9 +11053,9 @@ test("general settings enable automatic context compaction by default", async ({
   });
 });
 
-test("general settings configure truncated-output auto-continue", async ({ page }) => {
+test("session settings configure truncated-output auto-continue", async ({ page }) => {
   await page.goto("/");
-  await openSettingsSection(page, "General");
+  await openSettingsSection(page, "Session");
   const toggle = page.getByTestId("auto-continue-enabled");
   await expect(toggle).not.toBeChecked();
   await toggle.locator("..").click();
@@ -11061,9 +11066,9 @@ test("general settings configure truncated-output auto-continue", async ({ page 
   });
 });
 
-test("general settings enable follow-up question suggestions by default", async ({ page }) => {
+test("session settings enable follow-up question suggestions by default", async ({ page }) => {
   await page.goto("/");
-  await openSettingsSection(page, "General");
+  await openSettingsSection(page, "Session");
   const toggle = page.getByTestId("follow-up-questions-enabled");
   await expect(toggle).toBeChecked();
   await toggle.locator("..").click();
@@ -11071,6 +11076,26 @@ test("general settings enable follow-up question suggestions by default", async 
   await page.locator(".settings-footer").getByRole("button", { name: "Save" }).click();
   await expect.poll(() => lastInvokeArgs(page, "set_settings")).toMatchObject({
     settings: { follow_up_questions: false },
+  });
+});
+
+test("general settings keep workspace prefs without agent loop or proxy controls", async ({ page }) => {
+  await page.goto("/");
+  await openSettingsSection(page, "General");
+  await expect(page.getByTestId("settings-language")).toBeVisible();
+  await expect(page.getByTestId("resume-last-session-enabled")).toBeAttached();
+  await expect(page.getByTestId("max-iter")).toHaveCount(0);
+  await expect(page.getByTestId("proxy-url")).toHaveCount(0);
+});
+
+test("model settings save the model API proxy", async ({ page }) => {
+  await page.goto("/");
+  await openSettingsSection(page, "Models");
+  await expect(page.getByTestId("proxy-url")).toBeVisible();
+  await page.getByTestId("proxy-url").fill("none");
+  await page.locator(".model-settings-pane .settings-footer").getByRole("button", { name: "Save" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "set_settings")).toMatchObject({
+    settings: { proxy_url: "none" },
   });
 });
 

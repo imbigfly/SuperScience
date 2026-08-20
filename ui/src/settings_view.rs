@@ -1308,6 +1308,10 @@ pub(super) fn SettingsView(
                     <button class:active=move || settings_section.get()=="general"
                         on:click=move |_| go_settings_section.call("general".into())>
                         {move || t(locale.get(), "settings.nav.general")}</button>
+                    <button class:active=move || settings_section.get()=="session"
+                        data-testid="settings-nav-session"
+                        on:click=move |_| go_settings_section.call("session".into())>
+                        {move || t(locale.get(), "settings.nav.session")}</button>
                     <button class:active=move || settings_section.get()=="appearance"
                         on:click=move |_| go_settings_section.call("appearance".into())>
                         {move || t(locale.get(), "settings.nav.appearance")}</button>
@@ -1440,62 +1444,6 @@ pub(super) fn SettingsView(
                                 prop:value={move || settings.get().workspace_dir}
                                 placeholder=move || bootstrap.get().map(|b| b.workspace).unwrap_or_default() />
                         </label>
-                        <label class="span-2">{move || t(locale.get(), "settings.max_iter")}
-                            <input data-testid="max-iter" type="number" min="0" step="1"
-                                on:input=move |ev| settings.update(|s| {
-                                    if let Ok(value) = event_target_input(&ev).value().parse() {
-                                        s.max_iter = value;
-                                    }
-                                })
-                                prop:value=move || settings.get().max_iter.to_string() />
-                            <span class="settings-field-hint">{move || t(locale.get(), "settings.max_iter_hint")}</span>
-                        </label>
-                        <div class="span-2 appearance-config-row">
-                            <div>
-                                <strong>{move || t(locale.get(), "settings.auto_compact")}</strong>
-                                <span>{move || t(locale.get(), "settings.auto_compact_hint")}</span>
-                            </div>
-                            <label class="toggle">
-                                <input type="checkbox" data-testid="auto-compact-enabled"
-                                    prop:checked=move || settings.get().auto_compact
-                                    on:change=move |ev| settings.update(|current| current.auto_compact = event_target_checked(&ev)) />
-                                <span class="toggle-track" aria-hidden="true"></span>
-                            </label>
-                        </div>
-                        <div class="span-2 appearance-config-row">
-                            <div>
-                                <strong>{move || t(locale.get(), "settings.auto_continue")}</strong>
-                                <span>{move || t(locale.get(), "settings.auto_continue_hint")}</span>
-                            </div>
-                            <label class="toggle">
-                                <input type="checkbox" data-testid="auto-continue-enabled"
-                                    prop:checked=move || settings.get().auto_continue
-                                    on:change=move |ev| settings.update(|current| current.auto_continue = event_target_checked(&ev)) />
-                                <span class="toggle-track" aria-hidden="true"></span>
-                            </label>
-                        </div>
-                        <label class="span-2">{move || t(locale.get(), "settings.auto_continue_limit")}
-                            <input data-testid="auto-continue-limit" type="number" min="1" step="1"
-                                on:input=move |ev| settings.update(|current| {
-                                    if let Ok(value) = event_target_input(&ev).value().parse() {
-                                        current.auto_continue_limit = value;
-                                    }
-                                })
-                                prop:value=move || settings.get().auto_continue_limit.to_string() />
-                            <span class="settings-field-hint">{move || t(locale.get(), "settings.auto_continue_limit_hint")}</span>
-                        </label>
-                        <div class="span-2 appearance-config-row">
-                            <div>
-                                <strong>{move || t(locale.get(), "settings.follow_up_questions")}</strong>
-                                <span>{move || t(locale.get(), "settings.follow_up_questions_hint")}</span>
-                            </div>
-                            <label class="toggle">
-                                <input type="checkbox" data-testid="follow-up-questions-enabled"
-                                    prop:checked=move || settings.get().follow_up_questions
-                                    on:change=move |ev| settings.update(|current| current.follow_up_questions = event_target_checked(&ev)) />
-                                <span class="toggle-track" aria-hidden="true"></span>
-                            </label>
-                        </div>
                         <div class="span-2 appearance-config-row">
                             <div>
                                 <strong>{move || t(locale.get(), "settings.resume_last_session")}</strong>
@@ -1508,14 +1456,6 @@ pub(super) fn SettingsView(
                                 <span class="toggle-track" aria-hidden="true"></span>
                             </label>
                         </div>
-                        <label class="span-2">{move || t(locale.get(), "settings.proxy_url")}
-                            <input data-testid="proxy-url" placeholder="http://127.0.0.1:7890"
-                                on:input=move |ev| settings.update(|s| {
-                                    s.proxy_url = event_target_input(&ev).value();
-                                })
-                                prop:value=move || settings.get().proxy_url />
-                            <span class="settings-field-hint">{move || t(locale.get(), "settings.proxy_url_hint")}</span>
-                        </label>
                         <label class="span-2">{move || t(locale.get(), "settings.send_shortcut")}
                             <select data-testid="send-shortcut"
                                 prop:value=move || if send_with_modifier.get() { "modifier_enter" } else { "enter" }
@@ -1582,6 +1522,77 @@ pub(super) fn SettingsView(
                                 <button type="button" disabled=move || settings_busy.get() on:click=move |ev| check_updates.call(ev)>{move || t(locale.get(), "settings.check_updates")}</button>
                             <button type="button" disabled=move || settings_busy.get() on:click=move |_| show_settings.set(false)>{move || t(locale.get(), "settings.cancel")}</button>
                                 <button type="button" class="primary" disabled=move || settings_busy.get() on:click=move |ev| save_settings.call(ev)>{move || t(locale.get(), "settings.save")}</button>
+                        </div>
+                    </div>
+                }.into_view())}
+                {move || (settings_section.get() == "session").then(|| view! {
+                    <div class="settings-pane" data-testid="session-settings-pane">
+                        <div class="settings-form-grid">
+                        <label class="span-2">{move || t(locale.get(), "settings.max_iter")}
+                            <input data-testid="max-iter" type="number" min="0" step="1"
+                                on:input=move |ev| settings.update(|s| {
+                                    if let Ok(value) = event_target_input(&ev).value().parse() {
+                                        s.max_iter = value;
+                                    }
+                                })
+                                prop:value=move || settings.get().max_iter.to_string() />
+                            <span class="settings-field-hint">{move || t(locale.get(), "settings.max_iter_hint")}</span>
+                        </label>
+                        <div class="span-2 appearance-config-row">
+                            <div>
+                                <strong>{move || t(locale.get(), "settings.auto_compact")}</strong>
+                                <span>{move || t(locale.get(), "settings.auto_compact_hint")}</span>
+                            </div>
+                            <label class="toggle">
+                                <input type="checkbox" data-testid="auto-compact-enabled"
+                                    prop:checked=move || settings.get().auto_compact
+                                    on:change=move |ev| settings.update(|current| current.auto_compact = event_target_checked(&ev)) />
+                                <span class="toggle-track" aria-hidden="true"></span>
+                            </label>
+                        </div>
+                        <div class="span-2 appearance-config-row">
+                            <div>
+                                <strong>{move || t(locale.get(), "settings.auto_continue")}</strong>
+                                <span>{move || t(locale.get(), "settings.auto_continue_hint")}</span>
+                            </div>
+                            <label class="toggle">
+                                <input type="checkbox" data-testid="auto-continue-enabled"
+                                    prop:checked=move || settings.get().auto_continue
+                                    on:change=move |ev| settings.update(|current| current.auto_continue = event_target_checked(&ev)) />
+                                <span class="toggle-track" aria-hidden="true"></span>
+                            </label>
+                        </div>
+                        <label class="span-2">{move || t(locale.get(), "settings.auto_continue_limit")}
+                            <input data-testid="auto-continue-limit" type="number" min="1" step="1"
+                                on:input=move |ev| settings.update(|current| {
+                                    if let Ok(value) = event_target_input(&ev).value().parse() {
+                                        current.auto_continue_limit = value;
+                                    }
+                                })
+                                prop:value=move || settings.get().auto_continue_limit.to_string() />
+                            <span class="settings-field-hint">{move || t(locale.get(), "settings.auto_continue_limit_hint")}</span>
+                        </label>
+                        <div class="span-2 appearance-config-row">
+                            <div>
+                                <strong>{move || t(locale.get(), "settings.follow_up_questions")}</strong>
+                                <span>{move || t(locale.get(), "settings.follow_up_questions_hint")}</span>
+                            </div>
+                            <label class="toggle">
+                                <input type="checkbox" data-testid="follow-up-questions-enabled"
+                                    prop:checked=move || settings.get().follow_up_questions
+                                    on:change=move |ev| settings.update(|current| current.follow_up_questions = event_target_checked(&ev)) />
+                                <span class="toggle-track" aria-hidden="true"></span>
+                            </label>
+                        </div>
+                        </div>
+                        {move || settings_message.get().map(|(ok, text)| view! {
+                            <div class="settings-status"
+                                class:ok=move || ok
+                                class:fail=move || !ok>{text}</div>
+                        })}
+                        <div class="row settings-footer">
+                            <button type="button" disabled=move || settings_busy.get() on:click=move |_| show_settings.set(false)>{move || t(locale.get(), "settings.cancel")}</button>
+                            <button type="button" class="primary" disabled=move || settings_busy.get() on:click=move |ev| save_settings.call(ev)>{move || t(locale.get(), "settings.save")}</button>
                         </div>
                     </div>
                 }.into_view())}
@@ -3269,6 +3280,16 @@ pub(super) fn SettingsView(
                     } else {
                         view! {
                         <div class="settings-pane settings-pane-list model-settings-pane">
+                            <div class="settings-form-grid">
+                                <label class="span-2">{move || t(locale.get(), "settings.proxy_url")}
+                                    <input data-testid="proxy-url" placeholder="http://127.0.0.1:7890"
+                                        on:input=move |ev| settings.update(|s| {
+                                            s.proxy_url = event_target_input(&ev).value();
+                                        })
+                                        prop:value=move || settings.get().proxy_url />
+                                    <span class="settings-field-hint">{move || t(locale.get(), "settings.proxy_url_hint")}</span>
+                                </label>
+                            </div>
                             <div class="settings-toolbar settings-toolbar-end model-category-toolbar">
                                 <div class="settings-category-tabs" role="tablist" aria-label="Model categories">
                                     <button type="button" role="tab" class="settings-category-tab"
@@ -3597,6 +3618,15 @@ pub(super) fn SettingsView(
                                     })}
                                 }.into_view()
                             }}
+                            {move || settings_message.get().map(|(ok, text)| view! {
+                                <div class="settings-status"
+                                    class:ok=move || ok
+                                    class:fail=move || !ok>{text}</div>
+                            })}
+                            <div class="row settings-footer">
+                                <button type="button" disabled=move || settings_busy.get() on:click=move |_| show_settings.set(false)>{move || t(locale.get(), "settings.cancel")}</button>
+                                <button type="button" class="primary" disabled=move || settings_busy.get() on:click=move |ev| save_settings.call(ev)>{move || t(locale.get(), "settings.save")}</button>
+                            </div>
                         </div>
                         }.into_view()
                     }
