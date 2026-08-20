@@ -4825,7 +4825,7 @@ fn App() -> impl IntoView {
 
     let remove_specialist_fn = move |id: String| model_settings.remove_specialist(id);
 
-    let new_session = move |_| {
+    let start_new_session = Callback::new(move |_: ()| {
         if demo_mode.get_untracked() {
             return;
         }
@@ -4855,7 +4855,35 @@ fn App() -> impl IntoView {
             refresh_session_history();
             focus_composer();
         });
-    };
+    });
+    let new_session = move |_| start_new_session.call(());
+    let compact_from_usage = Callback::new(move |_: ()| {
+        let Some(id) = active_session.get_untracked() else {
+            return;
+        };
+        if busy.get_untracked() {
+            return;
+        }
+        context_usage_open.set(false);
+        spawn_local(async move {
+            let args = to_value(&SendMessageArgs {
+                session_id: Some(id),
+                message: "/compact".into(),
+                attachments: vec![],
+                references: vec![],
+                resume: false,
+                acp_agent_id: None,
+                guide: None,
+                replace: None,
+            })
+            .unwrap();
+            let _ = invoke_checked("send_message", args).await;
+        });
+    });
+    let new_session_from_usage = Callback::new(move |_: ()| {
+        context_usage_open.set(false);
+        start_new_session.call(());
+    });
 
     let start_env_setup = {
         let items = items;
@@ -11090,6 +11118,9 @@ fn App() -> impl IntoView {
                                         on_header_dblclick=on_context_usage_header_dblclick
                                         on_dock=on_context_usage_dock
                                         on_resize_start=on_context_usage_resize_start
+                                        on_compact=compact_from_usage
+                                        on_new_session=new_session_from_usage
+                                        compact_disabled=Signal::derive(move || busy.get())
                                     />
                                 </div>
                             }
@@ -14162,6 +14193,9 @@ fn App() -> impl IntoView {
                             on_header_dblclick=on_context_usage_header_dblclick
                             on_dock=on_context_usage_dock
                             on_resize_start=on_context_usage_resize_start
+                            on_compact=compact_from_usage
+                            on_new_session=new_session_from_usage
+                            compact_disabled=Signal::derive(move || busy.get())
                         />
                     }
                 })
