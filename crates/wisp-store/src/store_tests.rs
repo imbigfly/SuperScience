@@ -2809,6 +2809,97 @@ async fn session_ui_events_keep_insertion_order() {
 }
 
 #[tokio::test]
+async fn session_ui_events_timed_roundtrip() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_ui_events_timed_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "P", "").await.unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+
+    let before = chrono::Utc::now().timestamp_millis();
+    store
+        .append_session_ui_event("f", 1, r#"{"kind":"User","frame_id":"f","text":"q"}"#)
+        .await
+        .unwrap();
+    store
+        .append_session_ui_event("f", 2, r#"{"kind":"Text","frame_id":"f","delta":"a"}"#)
+        .await
+        .unwrap();
+    let after = chrono::Utc::now().timestamp_millis();
+
+    let events = store.load_session_ui_events_timed("f").await.unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].seq, 1);
+    assert_eq!(events[1].seq, 2);
+    assert!(events[0].event_json.contains("\"kind\":\"User\""));
+    for event in &events {
+        let created_at = event.created_at.expect("created_at must be stamped");
+        assert!(
+            (before..=after).contains(&created_at),
+            "created_at {created_at} outside [{before}, {after}]"
+        );
+    }
+    store.pool.close().await;
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn session_ui_events_created_at_backfill_is_idempotent() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_ui_events_created_at_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "P", "").await.unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    assert!(
+        Store::has_column(&store.pool, "session_ui_events", "created_at")
+            .await
+            .unwrap()
+    );
+    // Simulate a pre-upgrade deployment: the table exists without the column
+    // and already holds rows.
+    sqlx::query("ALTER TABLE session_ui_events DROP COLUMN created_at")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO session_ui_events(frame_id,seq,event_json) \
+         VALUES('f',1,'{\"kind\":\"User\",\"frame_id\":\"f\",\"text\":\"old\"}')",
+    )
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    store.pool.close().await;
+
+    let repaired = Store::open(&tmp).await.unwrap();
+    assert!(
+        Store::has_column(&repaired.pool, "session_ui_events", "created_at")
+            .await
+            .unwrap()
+    );
+    let events = repaired.load_session_ui_events_timed("f").await.unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].created_at, None);
+    repaired
+        .append_session_ui_event("f", 2, r#"{"kind":"Text","frame_id":"f","delta":"new"}"#)
+        .await
+        .unwrap();
+    let events = repaired.load_session_ui_events_timed("f").await.unwrap();
+    assert_eq!(events.len(), 2);
+    assert!(events[1].created_at.is_some());
+    // Reopening again must not fail or alter the existing rows.
+    repaired.pool.close().await;
+    let reopened = Store::open(&tmp).await.unwrap();
+    let events = reopened.load_session_ui_events_timed("f").await.unwrap();
+    assert_eq!(events.len(), 2);
+    reopened.pool.close().await;
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
 async fn side_chat_snapshot_survives_compaction_and_stops_at_completed_boundary() {
     let tmp = std::env::temp_dir().join(format!(
         "wisp_side_snapshot_{}.sqlite",

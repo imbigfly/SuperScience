@@ -1922,6 +1922,48 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return demo;
           case "copy_demo_to_project":
             return `copied-${String(arg("id") ?? "demo")}`;
+          case "load_session_trajectory": {
+            const frameId = String(arg("frameId") ?? "t1");
+            const override = (window as any).__trajectorySnapshot;
+            if (override) return { ...override, frame_id: frameId };
+            return {
+              frame_id: frameId,
+              model: "deepseek-v4-pro",
+              turns: [
+                {
+                  index: 1,
+                  started_at: 1755000000000,
+                  cells: [
+                    { kind: "user", summary: "Analyze the ESR1 dataset", detail_input: null, detail_output: null, ok: null, is_error: false, ts: 1755000000000, duration_ms: null, usage: null },
+                    { kind: "assistant", summary: "I will inspect the counts matrix first.", detail_input: null, detail_output: "I will inspect the counts matrix first.", ok: null, is_error: false, ts: 1755000000500, duration_ms: 1200, usage: null },
+                    { kind: "tool", summary: "python · df.describe()", detail_input: "{\"code\": \"df.describe()\"}", detail_output: "count  612.0\nmean  4.2", ok: true, is_error: false, ts: 1755000002000, duration_ms: 3400, usage: null },
+                    { kind: "usage", summary: "", detail_input: null, detail_output: null, ok: null, is_error: false, ts: 1755000005600, duration_ms: null, usage: { round: 1, model: "deepseek-v4-pro", input_tokens: 12300, output_tokens: 1400, reasoning_tokens: 300, cached_input_tokens: 9225 } },
+                  ],
+                },
+                {
+                  index: 2,
+                  started_at: 1755000060000,
+                  cells: [
+                    { kind: "user", summary: "Now plot the volcano", detail_input: null, detail_output: null, ok: null, is_error: false, ts: 1755000060000, duration_ms: null, usage: null },
+                    { kind: "tool", summary: "python · sns.scatterplot()", detail_input: "{\"code\": \"sns.scatterplot()\"}", detail_output: "ValueError: missing column log2fc", ok: false, is_error: true, ts: 1755000060500, duration_ms: 800, usage: null },
+                    { kind: "assistant", summary: "The plot failed; retrying with matplotlib.", detail_input: null, detail_output: "The plot failed; retrying with matplotlib.", ok: null, is_error: false, ts: 1755000061500, duration_ms: 2100, usage: null },
+                    { kind: "usage", summary: "", detail_input: null, detail_output: null, ok: null, is_error: false, ts: 1755000064000, duration_ms: null, usage: { round: 2, model: "deepseek-v4-pro", input_tokens: 15000, output_tokens: 900, reasoning_tokens: 0, cached_input_tokens: 12000 } },
+                  ],
+                },
+              ],
+              stats: {
+                turns: 2,
+                steps: 4,
+                llm_ms: 3300,
+                tool_ms: 4200,
+                input_tokens: 27300,
+                output_tokens: 2300,
+                cached_input_tokens: 21225,
+                cache_hit_pct: 75.0,
+                tokens_per_sec: 12.5,
+              },
+            };
+          }
           case "load_session":
             if (mockExplorationFlow && String(arg("id") ?? "").startsWith("exploration-")) {
               activeMockFrame = String(arg("id"));

@@ -20,6 +20,7 @@ mod session_modals;
 mod settings_view;
 mod sidebar;
 mod text;
+mod trajectory;
 mod window_titlebar;
 
 use agent_workflows::{
@@ -77,6 +78,7 @@ use text::{
     opens_in_system_browser, parent_path, provider_defaults, runtime_language,
     user_message_presentation, DEEPSEEK_FLASH_MODEL, DEEPSEEK_PRO_MODEL,
 };
+use trajectory::{ThreadView, TrajectoryView};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use window_titlebar::WindowTitlebar;
@@ -435,6 +437,43 @@ fn App() -> impl IntoView {
         }
     });
     let sessions = create_rw_signal::<Vec<SessionInfo>>(vec![]);
+    // Trajectory (轨迹) tab: the fetched per-session snapshot plus lightweight
+    // live cells for the in-flight turn. The Done/Error refetch reconciles the
+    // live cells with exact backend data.
+    let thread_view = create_rw_signal(ThreadView::default());
+    let trajectory_snapshot = create_rw_signal::<Option<TrajectorySnapshotDto>>(None);
+    let trajectory_live = create_rw_signal::<Vec<TrajectoryCellDto>>(vec![]);
+    let fetch_trajectory: Rc<dyn Fn(String)> = Rc::new(move |frame_id: String| {
+        spawn_local(async move {
+            let arg = to_value(&serde_json::json!({ "frameId": frame_id })).unwrap();
+            if let Ok(value) = invoke_checked("load_session_trajectory", arg).await {
+                if let Ok(snap) = serde_wasm_bindgen::from_value::<TrajectorySnapshotDto>(value) {
+                    // A slow fetch must not overwrite a newer session's view.
+                    if active_session.get_untracked().as_deref() == Some(snap.frame_id.as_str()) {
+                        trajectory_snapshot.set(Some(snap));
+                    }
+                }
+            }
+        });
+    });
+    // Fetch on tab switch and on session change; never let one session's
+    // timeline bleed into another.
+    let trajectory_session = create_rw_signal::<Option<String>>(None);
+    let fetch_trajectory_fx = fetch_trajectory.clone();
+    create_effect(move |_| {
+        let session = active_session.get();
+        let view = thread_view.get();
+        if trajectory_session.get_untracked() != session {
+            trajectory_session.set(session.clone());
+            trajectory_snapshot.set(None);
+            trajectory_live.set(vec![]);
+        }
+        if view == ThreadView::Trajectory {
+            if let Some(id) = session {
+                fetch_trajectory_fx(id);
+            }
+        }
+    });
     let active_branch_state = create_rw_signal::<Option<String>>(None);
     create_effect(move |_| {
         let active = active_session.get();
@@ -2051,6 +2090,9 @@ fn App() -> impl IntoView {
     let approval_cb = approval_pending;
     let conversation_outlines_cb = conversation_outlines;
     let transcript_projection_epoch_cb = transcript_projection_epoch;
+    let trajectory_live_cb = trajectory_live;
+    let thread_view_cb = thread_view;
+    let fetch_trajectory_cb = fetch_trajectory.clone();
     // Desktop notification for task status (#327). The backend drops it while
     // any app window is focused or when disabled in settings, so callers just
     // fire on every done/error/approval event.
@@ -2236,6 +2278,22 @@ fn App() -> impl IntoView {
                 });
             }
         };
+        // Lightweight trajectory cells for the in-flight turn. Kept minimal on
+        // purpose: the Done/Error refetch replaces them with exact backend
+        // data, so these only bridge the live view while a turn runs.
+        let trajectory_push = |frame_id: &str, cell: TrajectoryCellDto| {
+            if active_cb.get_untracked().as_deref() == Some(frame_id) {
+                trajectory_live_cb.update(|cells| cells.push(cell));
+            }
+        };
+        let trajectory_settle = |frame_id: &str| {
+            if active_cb.get_untracked().as_deref() == Some(frame_id) {
+                trajectory_live_cb.set(vec![]);
+                if thread_view_cb.get_untracked() == ThreadView::Trajectory {
+                    fetch_trajectory_cb(frame_id.to_string());
+                }
+            }
+        };
         match ev {
             AgentEvent::CompactionStarted { frame_id, .. } => {
                 if active_cb.get_untracked().as_deref() == Some(frame_id.as_str()) {
@@ -2249,6 +2307,8 @@ fn App() -> impl IntoView {
                 set_pet_activity(&frame_id, "running");
                 flush_now();
                 let outline_text = text.clone();
+                let live_user_summary: String =
+                    text.lines().next().unwrap_or("").chars().take(160).collect();
                 let model = session_model_label(
                     &models_cb.get_untracked(),
                     &session_models_cb.get_untracked(),
@@ -2270,6 +2330,15 @@ fn App() -> impl IntoView {
                         response_at: None,
                     });
                 });
+                if active_cb.get_untracked().as_deref() == Some(frame_id.as_str()) {
+                    // A user message opens a fresh turn: reset the live cells.
+                    trajectory_live_cb.set(vec![TrajectoryCellDto {
+                        kind: "user".to_string(),
+                        summary: live_user_summary,
+                        ts: Some(now_ms() as i64),
+                        ..Default::default()
+                    }]);
+                }
                 refresh_transcript_projections(&frame_id);
             }
             AgentEvent::MessageBoundary { frame_id, seq } => {
@@ -2327,6 +2396,25 @@ fn App() -> impl IntoView {
                         }
                     });
                 }
+                if active_cb.get_untracked().as_deref() == Some(frame_id.as_str()) {
+                    // One live assistant cell per contiguous text run, seeded
+                    // from the first delta; later deltas only stream into the
+                    // chat bubble.
+                    let seed_assistant = trajectory_live_cb.with_untracked(|cells| {
+                        cells.last().is_none_or(|cell| cell.kind != "assistant")
+                    });
+                    if seed_assistant {
+                        trajectory_push(
+                            &frame_id,
+                            TrajectoryCellDto {
+                                kind: "assistant".to_string(),
+                                summary: delta.trim().chars().take(160).collect(),
+                                ts: Some(now_ms() as i64),
+                                ..Default::default()
+                            },
+                        );
+                    }
+                }
                 queue(frame_id, PendingDelta::Text(delta));
             }
             AgentEvent::Reasoning { frame_id, delta } => {
@@ -2342,6 +2430,19 @@ fn App() -> impl IntoView {
                 finish_compaction(&frame_id);
                 set_pet_activity(&frame_id, "review");
                 flush_now();
+                trajectory_push(
+                    &frame_id,
+                    TrajectoryCellDto {
+                        kind: "tool".to_string(),
+                        summary: if preview.is_empty() {
+                            name.clone()
+                        } else {
+                            format!("{name} · {preview}")
+                        },
+                        ts: Some(now_ms() as i64),
+                        ..Default::default()
+                    },
+                );
                 route_items(active_cb, items_cb, transcripts_cb, &frame_id, |v| {
                     // The plan and question tools have no call card: their
                     // results carry the whole body, and that lands as a card.
@@ -2451,6 +2552,21 @@ fn App() -> impl IntoView {
                             })
                         };
                     set_browser_offline_notice(browser_offline_cb, &frame_id, notice);
+                }
+                if active_cb.get_untracked().as_deref() == Some(frame_id.as_str()) {
+                    trajectory_live_cb.update(|cells| {
+                        if let Some(cell) = cells
+                            .iter_mut()
+                            .rev()
+                            .find(|cell| cell.kind == "tool" && cell.ok.is_none())
+                        {
+                            cell.ok = Some(ok);
+                            cell.is_error = !ok;
+                            if event_ms > 0 {
+                                cell.duration_ms = Some(event_ms as i64);
+                            }
+                        }
+                    });
                 }
                 refresh_transcript_projections(&frame_id);
                 if active_cb.get_untracked().as_deref() == Some(frame_id.as_str()) {
@@ -2622,6 +2738,7 @@ fn App() -> impl IntoView {
                     });
                 }
                 refresh_transcript_projections(&frame_id);
+                trajectory_settle(&frame_id);
                 approval_cb.update(|s| {
                     s.remove(&frame_id);
                 });
@@ -2745,6 +2862,7 @@ fn App() -> impl IntoView {
                     });
                 }
                 refresh_transcript_projections(&frame_id);
+                trajectory_settle(&frame_id);
                 approval_cb.update(|s| {
                     s.remove(&frame_id);
                 });
@@ -10068,7 +10186,22 @@ fn App() -> impl IntoView {
                         selection_popup.set(None);
                     }
                 }>
-                <div class="thread" id=CHAT_THREAD_ID>
+                <div class="thread-tabs" data-testid="thread-tabs">
+                    <button type="button" class="thread-tab" data-testid="thread-tab-chat"
+                        class:active=move || thread_view.get() == ThreadView::Chat
+                        on:click=move |_| thread_view.set(ThreadView::Chat)>
+                        {move || compose_icon("chat")}
+                        <span>{move || t(locale.get(), "thread.tab.chat")}</span>
+                    </button>
+                    <button type="button" class="thread-tab" data-testid="thread-tab-trajectory"
+                        class:active=move || thread_view.get() == ThreadView::Trajectory
+                        on:click=move |_| thread_view.set(ThreadView::Trajectory)>
+                        {move || compose_icon("timeline")}
+                        <span>{move || t(locale.get(), "thread.tab.trajectory")}</span>
+                    </button>
+                </div>
+                <div class="thread" id=CHAT_THREAD_ID
+                    class:thread-hidden=move || thread_view.get() == ThreadView::Trajectory>
                     {move || active_session.get().and_then(|frame_id| {
                         let rows = explorations.get();
                         if let Some(summary) = rows.iter().find(|row| {
@@ -10797,6 +10930,12 @@ fn App() -> impl IntoView {
                         })
                     })}
                 </div>
+                {move || (thread_view.get() == ThreadView::Trajectory).then(|| view! {
+                    <TrajectoryView
+                        snapshot=trajectory_snapshot
+                        live=trajectory_live
+                        busy=busy />
+                })}
             </div>
             // Static element; scroll.js toggles `.visible` — no reactive rebuild.
             <button type="button" id="chat-jump-pill" class="chat-jump-pill"

@@ -4407,3 +4407,86 @@ pub struct ShareSocialCopy {
     #[serde(default)]
     pub variants: Vec<ShareSocialVariant>,
 }
+
+/// Trajectory (轨迹) view: the whole session folded into turns of
+/// user/assistant/tool/usage cells with timing and token statistics.
+/// Returned by the `load_session_trajectory` command.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TrajectorySnapshotDto {
+    pub frame_id: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub turns: Vec<TrajectoryTurnDto>,
+    #[serde(default)]
+    pub stats: TrajectoryStatsDto,
+}
+
+/// One user turn (1-based index) with the cells produced while answering it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TrajectoryTurnDto {
+    pub index: i64,
+    /// Unix epoch milliseconds of the user message that opened the turn.
+    #[serde(default)]
+    pub started_at: Option<i64>,
+    #[serde(default)]
+    pub cells: Vec<TrajectoryCellDto>,
+}
+
+/// One cell inside a trajectory turn. `kind` is one of
+/// `"user" | "assistant" | "tool" | "usage"`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TrajectoryCellDto {
+    pub kind: String,
+    /// One-line summary shown collapsed.
+    #[serde(default)]
+    pub summary: String,
+    /// Tool cells: full arguments JSON.
+    #[serde(default)]
+    pub detail_input: Option<String>,
+    /// Tool cells: full result text; assistant cells: full text.
+    #[serde(default)]
+    pub detail_output: Option<String>,
+    #[serde(default)]
+    pub ok: Option<bool>,
+    #[serde(default)]
+    pub is_error: bool,
+    /// Unix epoch milliseconds.
+    #[serde(default)]
+    pub ts: Option<i64>,
+    /// Tool wall time in milliseconds.
+    #[serde(default)]
+    pub duration_ms: Option<i64>,
+    #[serde(default)]
+    pub usage: Option<TrajectoryUsageDto>,
+}
+
+/// Token accounting for one model round.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrajectoryUsageDto {
+    pub round: i64,
+    #[serde(default)]
+    pub model: Option<String>,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub reasoning_tokens: i64,
+    pub cached_input_tokens: i64,
+}
+
+/// Session-level aggregates for the trajectory header.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TrajectoryStatsDto {
+    pub turns: i64,
+    pub steps: i64,
+    pub llm_ms: i64,
+    pub tool_ms: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cached_input_tokens: i64,
+    /// cached / (input + cached) * 100; `None` when the denominator is zero.
+    #[serde(default)]
+    pub cache_hit_pct: Option<f64>,
+    /// output_tokens / (llm_ms / 1000); `None` when llm_ms is zero.
+    #[serde(default)]
+    pub tokens_per_sec: Option<f64>,
+}
