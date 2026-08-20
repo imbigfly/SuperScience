@@ -40,3 +40,16 @@ The extension never writes project directories and never returns large base64 fi
 - ChatGPT one-shot send/wait/read on an already-logged-in tab
 
 Playwright is not used. The user's daily Chrome User Data directory is never passed as `--user-data-dir`.
+
+## Safety checks
+
+- `web_agent_*` accepts only tabs whose parsed URL host is exactly
+  `chatgpt.com` / `chat.openai.com` (optionally `www.`) over HTTPS. Lookalike
+  hosts such as `chatgpt.com.evil.com` are rejected before any prompt is
+  filled.
+- `web_save_assets` `dest_dir` and `web_screenshot` `save_path` must be
+  project-relative: absolute paths and `..` segments are rejected, so tool
+  arguments cannot write outside the project root.
+- The extension's pause gate parses each incoming command and lets only
+  `cmd:"control"` through while paused; it never sniffs the raw request
+  string.
