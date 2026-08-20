@@ -1203,9 +1203,43 @@ fn render_json(value: &Value) -> String {
     clipped
 }
 
+/// Exact-host check so `https://chatgpt.com.evil.com/` or a `chatgpt.com`
+/// substring in the path/query never passes as an official ChatGPT tab.
 fn is_chatgpt_url(url: &str) -> bool {
-    let lower = url.to_ascii_lowercase();
-    lower.contains("chatgpt.com") || lower.contains("chat.openai.com")
+    let Ok(parsed) = url::Url::parse(url) else {
+        return false;
+    };
+    if parsed.scheme() != "https" {
+        return false;
+    }
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    let host = host.to_ascii_lowercase();
+    let host = host.strip_prefix("www.").unwrap_or(&host);
+    matches!(host, "chatgpt.com" | "chat.openai.com")
+}
+
+/// Resolve a user-supplied project-relative path. Rejects absolute paths and
+/// any `..`/prefix component, so tool arguments cannot escape the project
+/// root ("path traversal").
+fn project_relative_path(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    use std::path::Component;
+    let trimmed = rel.trim();
+    if trimmed.is_empty() {
+        return Err("path must be a non-empty project-relative path".into());
+    }
+    let path = Path::new(trimmed);
+    let inside_root = !path.is_absolute()
+        && path
+            .components()
+            .all(|part| matches!(part, Component::Normal(_) | Component::CurDir));
+    if !inside_root {
+        return Err(format!(
+            "path must stay inside the project (no absolute paths or '..' segments): {trimmed}"
+        ));
+    }
+    Ok(root.join(path))
 }
 
 fn chatgpt_tab_error(tabs: &[BrowserTab], requested: Option<i64>) -> Result<i64, String> {
@@ -1770,8 +1804,11 @@ impl Tool for WebScreenshotTool {
                     Ok(bytes) => bytes,
                     Err(error) => return ToolResult::fail(format!("decode screenshot: {error}")),
                 };
-            let target = match save_path {
-                Some(rel) if !rel.trim().is_empty() => env.project_root().join(rel),
+            let target = match save_path.map(str::trim).filter(|rel| !rel.is_empty()) {
+                Some(rel) => match project_relative_path(env.project_root(), rel) {
+                    Ok(path) => path,
+                    Err(error) => return ToolResult::fail(format!("save_path: {error}")),
+                },
                 _ => {
                     let dir = env
                         .project_root()
@@ -1881,7 +1918,10 @@ impl Tool for WebSaveAssetsTool {
             .get("dest_dir")
             .and_then(Value::as_str)
             .unwrap_or("browser-assets");
-        let dest = env.project_root().join(dest_rel);
+        let dest = match project_relative_path(env.project_root(), dest_rel) {
+            Ok(dest) => dest,
+            Err(error) => return ToolResult::fail(format!("dest_dir: {error}")),
+        };
         if let Err(error) = std::fs::create_dir_all(&dest) {
             return ToolResult::fail(format!("create dest dir: {error}"));
         }
@@ -2873,8 +2913,47 @@ mod tests {
     #[test]
     fn chatgpt_url_helper_accepts_official_hosts_only() {
         assert!(is_chatgpt_url("https://chatgpt.com/"));
+        assert!(is_chatgpt_url("https://www.chatgpt.com/"));
         assert!(is_chatgpt_url("https://chat.openai.com/c/abc"));
+        assert!(is_chatgpt_url("https://CHATGPT.com/c/abc"));
         assert!(!is_chatgpt_url("https://example.com/chatgpt"));
+        // Host suffix/lookalike bypasses must fail: web_agent_* would otherwise
+        // fill prompts into a phishing page.
+        assert!(!is_chatgpt_url("https://chatgpt.com.evil.com/"));
+        assert!(!is_chatgpt_url("https://evilchatgpt.com/"));
+        assert!(!is_chatgpt_url("https://evil.com/?next=chatgpt.com"));
+        assert!(!is_chatgpt_url("https://evil.com/chat.openai.com"));
+        assert!(!is_chatgpt_url("http://chatgpt.com/"));
+        assert!(!is_chatgpt_url("javascript:alert('chatgpt.com')"));
+        assert!(!is_chatgpt_url("not a url chatgpt.com"));
+    }
+
+    #[test]
+    fn project_relative_path_rejects_traversal_and_absolute_paths() {
+        let root = Path::new("/project");
+        assert_eq!(
+            project_relative_path(root, "browser-assets/shot.png").unwrap(),
+            root.join("browser-assets/shot.png")
+        );
+        assert_eq!(
+            project_relative_path(root, "./figures/a.png").unwrap(),
+            root.join("./figures/a.png")
+        );
+        assert!(project_relative_path(root, "../outside.png").is_err());
+        assert!(project_relative_path(root, "a/../../outside.png").is_err());
+        assert!(project_relative_path(root, "/etc/passwd").is_err());
+        assert!(project_relative_path(root, "").is_err());
+        assert!(project_relative_path(root, "   ").is_err());
+    }
+
+    #[test]
+    fn paused_check_parses_the_command_instead_of_sniffing_the_raw_string() {
+        let background_js = std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../browser-extension/background.js"),
+        )
+        .unwrap();
+        assert!(!background_js.contains("indexOf('\"cmd\":\"control\"')"));
+        assert!(background_js.contains("isControlCommand(command)"));
     }
 
     #[tokio::test]

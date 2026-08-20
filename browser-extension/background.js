@@ -307,8 +307,22 @@ async function runChatgpt(tabId, method, payload) {
   return injected[0] && injected[0].result;
 }
 
+function isControlCommand(command) {
+  return typeof command === "object" && command !== null && command.cmd === "control";
+}
+
 async function handleRequest(request) {
-  if (paused && !(request.op === "control" || (typeof request.code === "string" && request.code.indexOf('"cmd":"control"') >= 0))) {
+  var parsed = parseIncomingRequest(request);
+  var command;
+  if (parsed.kind === "v2") {
+    if (parsed.op === "eval") command = parsed.payload && parsed.payload.code != null ? parsed.payload.code : parsed.payload;
+    else command = Object.assign({ cmd: parsed.op }, parsed.payload || {});
+    if (parsed.wait) command.wait = parsed.wait;
+  } else {
+    command = parseCommand(request.code);
+  }
+
+  if (paused && !isControlCommand(command)) {
     send({
       type: "error",
       id: request.id,
@@ -323,16 +337,6 @@ async function handleRequest(request) {
   var deadline = requestDeadline(request);
   var waitMeta = null;
   try {
-    var parsed = parseIncomingRequest(request);
-    var command;
-    if (parsed.kind === "v2") {
-      if (parsed.op === "eval") command = parsed.payload && parsed.payload.code != null ? parsed.payload.code : parsed.payload;
-      else command = Object.assign({ cmd: parsed.op }, parsed.payload || {});
-      if (parsed.wait) command.wait = parsed.wait;
-    } else {
-      command = parseCommand(request.code);
-    }
-
     if (request.tabId && !isTabCloseCommand(command) && !(typeof command === "object" && command.cmd === "wait")) {
       var spec = (typeof command === "object" && command.wait) || { until: "complete" };
       waitMeta = await waitEngine.waitFor(request.tabId, spec, deadline);
