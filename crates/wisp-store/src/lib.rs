@@ -76,8 +76,8 @@ pub use schedules::{next_slot_after, ScheduleRecord, ScheduleRunRecord};
 pub use sessions::{
     ModelTokenUsage, ProjectTokenUsage, SessionBranchDeltaMessage, SessionBranchLink,
     SessionBranchMerge, SessionBranchMergeCard, SessionBranchMergePreview, SessionTokenUsage,
-    SessionTokenUsagePage, SessionTranscriptPage, SessionUiEventSnapshot, TokenUsageDay,
-    ToolCallUsage,
+    SessionTokenUsagePage, SessionTranscriptPage, SessionUiEventRecord, SessionUiEventSnapshot,
+    TokenUsageDay, ToolCallUsage,
 };
 pub use storage_prefs::{
     validate_local_results_dir, validate_remote_data_root, validate_remote_workdir_root,
@@ -830,6 +830,8 @@ impl Store {
             &[("control_state", "TEXT NOT NULL DEFAULT 'run'")],
         )
         .await?;
+        Self::add_columns_if_missing(pool, "session_ui_events", &[("created_at", "INTEGER")])
+            .await?;
         Ok(())
     }
 

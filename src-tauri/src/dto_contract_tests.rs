@@ -218,3 +218,110 @@ fn project_transfer_progress_contract() {
     assert!(!dto.is_complete());
     assert!(!dto.is_failed());
 }
+
+#[test]
+fn trajectory_snapshot_contract() {
+    let backend = crate::trajectory::TrajectorySnapshot {
+        frame_id: "frame-1".into(),
+        model: Some("gpt-x".into()),
+        turns: vec![crate::trajectory::TrajectoryTurn {
+            index: 1,
+            started_at: Some(1_000_000),
+            cells: vec![
+                crate::trajectory::TrajectoryCell {
+                    kind: "user".into(),
+                    summary: "question".into(),
+                    detail_input: None,
+                    detail_output: Some("full question".into()),
+                    ok: None,
+                    is_error: false,
+                    ts: Some(1_000_000),
+                    duration_ms: None,
+                    usage: None,
+                },
+                crate::trajectory::TrajectoryCell {
+                    kind: "tool".into(),
+                    summary: "read_file {\"path\":\"a.rs\"} → contents".into(),
+                    detail_input: Some("{\"path\":\"a.rs\"}".into()),
+                    detail_output: Some("contents".into()),
+                    ok: Some(true),
+                    is_error: false,
+                    ts: Some(1_001_000),
+                    duration_ms: Some(250),
+                    usage: None,
+                },
+                crate::trajectory::TrajectoryCell {
+                    kind: "usage".into(),
+                    summary: "round 1 · 100 in / 50 out".into(),
+                    detail_input: None,
+                    detail_output: None,
+                    ok: None,
+                    is_error: false,
+                    ts: Some(1_004_000),
+                    duration_ms: None,
+                    usage: Some(crate::trajectory::TrajectoryUsage {
+                        round: 1,
+                        model: Some("gpt-x".into()),
+                        input_tokens: 100,
+                        output_tokens: 50,
+                        reasoning_tokens: 10,
+                        cached_input_tokens: 300,
+                    }),
+                },
+            ],
+        }],
+        stats: crate::trajectory::TrajectoryStats {
+            turns: 1,
+            steps: 1,
+            llm_ms: 4000,
+            tool_ms: 250,
+            input_tokens: 100,
+            output_tokens: 50,
+            cached_input_tokens: 300,
+            cache_hit_pct: Some(75.0),
+            tokens_per_sec: Some(12.5),
+        },
+    };
+    let json = serde_json::to_value(&backend).unwrap();
+    // Command payloads are snake_case on the wire; the UI consumes these keys.
+    assert_eq!(json.get("frame_id"), Some(&json!("frame-1")));
+    assert!(json["turns"][0].get("started_at").is_some());
+    assert!(json["turns"][0]["cells"][1].get("detail_input").is_some());
+    assert!(json["turns"][0]["cells"][1].get("duration_ms").is_some());
+    assert!(json["turns"][0]["cells"][2]["usage"]
+        .get("cached_input_tokens")
+        .is_some());
+    assert!(json["stats"].get("cache_hit_pct").is_some());
+    assert!(json["stats"].get("tokens_per_sec").is_some());
+
+    let dto: wisp_dto::TrajectorySnapshotDto = serde_json::from_value(json).unwrap();
+    assert_eq!(dto.frame_id, "frame-1");
+    assert_eq!(dto.model.as_deref(), Some("gpt-x"));
+    assert_eq!(dto.turns.len(), 1);
+    assert_eq!(dto.turns[0].index, 1);
+    assert_eq!(dto.turns[0].started_at, Some(1_000_000));
+    let cells = &dto.turns[0].cells;
+    assert_eq!(cells[0].kind, "user");
+    assert_eq!(cells[0].detail_output.as_deref(), Some("full question"));
+    assert_eq!(cells[1].kind, "tool");
+    assert_eq!(
+        cells[1].detail_input.as_deref(),
+        Some("{\"path\":\"a.rs\"}")
+    );
+    assert_eq!(cells[1].ok, Some(true));
+    assert!(!cells[1].is_error);
+    assert_eq!(cells[1].duration_ms, Some(250));
+    let usage = cells[2].usage.as_ref().expect("usage cell carries usage");
+    assert_eq!(usage.round, 1);
+    assert_eq!(usage.model.as_deref(), Some("gpt-x"));
+    assert_eq!(usage.input_tokens, 100);
+    assert_eq!(usage.output_tokens, 50);
+    assert_eq!(usage.reasoning_tokens, 10);
+    assert_eq!(usage.cached_input_tokens, 300);
+    assert_eq!(dto.stats.turns, 1);
+    assert_eq!(dto.stats.steps, 1);
+    assert_eq!(dto.stats.llm_ms, 4000);
+    assert_eq!(dto.stats.tool_ms, 250);
+    assert_eq!(dto.stats.cache_hit_pct, Some(75.0));
+    assert_eq!(dto.stats.tokens_per_sec, Some(12.5));
+}

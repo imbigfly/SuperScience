@@ -1807,3 +1807,132 @@ button.stop:disabled { opacity: .6; cursor: default; }
 ::highlight(wisp-saved-active) {
   background-color: rgba(13, 148, 136, 0.4);
 }
+
+/* Chat / trajectory (轨迹) tab toggle at the top of the thread area. */
+.thread-tabs {
+  position: sticky; top: 0; z-index: 8;
+  display: flex; gap: 2px;
+  max-width: var(--chat-col-max); width: 100%; margin: 0 auto;
+  padding: 4px 16px 0;
+  background: var(--bg-app);
+}
+.thread-tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 10px 8px; border: 0; border-bottom: 2px solid transparent;
+  background: none; color: var(--text-faint); font: inherit; font-size: 12.5px;
+  cursor: pointer;
+}
+.thread-tab svg { width: 15px; height: 15px; }
+.thread-tab:hover { color: var(--text); }
+.thread-tab.active { color: var(--text); border-bottom-color: var(--clay); font-weight: 600; }
+.thread.thread-hidden { display: none; }
+
+/* Trajectory view: per-turn event timeline with timing bars. */
+.trajectory {
+  --traj-assistant: hsl(262 55% 48%);
+  --traj-assistant-soft: hsl(262 55% 48% / 0.12);
+  max-width: var(--chat-col-max); width: 100%; margin: 0 auto;
+  padding: 8px 16px 40px;
+  display: flex; flex-direction: column; gap: 12px;
+  min-width: 0; box-sizing: border-box;
+}
+:root[data-theme="dark"] .trajectory {
+  --traj-assistant: hsl(262 70% 72%);
+  --traj-assistant-soft: hsl(262 70% 72% / 0.16);
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="system"] .trajectory {
+    --traj-assistant: hsl(262 70% 72%);
+    --traj-assistant-soft: hsl(262 70% 72% / 0.16);
+  }
+}
+.trajectory-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.trajectory-search {
+  display: flex; align-items: center; gap: 6px;
+  flex: 1 1 200px; max-width: 340px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-xs);
+  background: var(--bg-input); color: var(--text-faint);
+}
+.trajectory-search svg { width: 14px; height: 14px; }
+.trajectory-search input {
+  flex: 1 1 auto; min-width: 0; border: 0; outline: none;
+  background: none; color: var(--text); font: inherit; font-size: 12px;
+}
+.trajectory-legend { display: flex; gap: 10px; font-size: 10.5px; color: var(--text-faint); }
+.trajectory-legend span { display: inline-flex; align-items: center; gap: 4px; }
+.traj-swatch { width: 8px; height: 8px; border-radius: 2px; }
+.traj-swatch.input { background: var(--border-strong); }
+.traj-swatch.model { background: var(--info); }
+.traj-swatch.tools { background: var(--warn); }
+
+.traj-turn { display: flex; flex-direction: column; }
+.traj-turn-head {
+  position: sticky; top: 0; z-index: 4;
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 0;
+  background: var(--bg-app);
+  font-size: 11px; font-weight: 700; letter-spacing: .04em; color: var(--text-muted);
+}
+.traj-running {
+  font-size: 9.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--clay-strong); background: var(--clay-soft);
+  border-radius: 999px; padding: 1px 7px;
+}
+.traj-bar {
+  display: flex; height: 5px; margin: 2px 0 6px;
+  border-radius: 3px; overflow: hidden; background: var(--bg-sunken);
+}
+.traj-bar-seg.input { background: var(--border-strong); }
+.traj-bar-seg.model { background: var(--info); }
+.traj-bar-seg.tools { background: var(--warn); }
+
+.traj-rows { display: flex; flex-direction: column; }
+.traj-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 6px; border-radius: var(--radius-xs);
+}
+.traj-row.expandable { cursor: pointer; }
+.traj-row.expandable:hover { background: var(--surface-hover); }
+.traj-row.error .traj-summary { color: var(--err); }
+.traj-row.pending .traj-summary { color: var(--text-faint); }
+.traj-badge {
+  flex: 0 0 auto;
+  font-size: 9.5px; font-weight: 700; letter-spacing: .05em;
+  padding: 1px 6px; border-radius: 999px;
+}
+.traj-badge.user { color: var(--info); background: var(--info-soft); }
+.traj-badge.assistant { color: var(--traj-assistant); background: var(--traj-assistant-soft); }
+.traj-badge.tool { color: var(--warn); background: var(--warn-soft); }
+.traj-badge.usage { color: var(--text-faint); background: var(--bg-sunken); }
+.traj-summary {
+  flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12px; color: var(--text);
+}
+.traj-row.usage .traj-summary {
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint);
+}
+.traj-duration {
+  flex: 0 0 auto;
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint);
+}
+.traj-detail {
+  display: flex; flex-direction: column; gap: 4px;
+  margin: 2px 0 6px 12px; padding: 8px 10px;
+  border-left: 2px solid var(--border-strong);
+}
+.traj-detail-label {
+  font-size: 9.5px; font-weight: 700; letter-spacing: .05em;
+  text-transform: uppercase; color: var(--text-faint);
+}
+.traj-detail pre {
+  margin: 0; max-height: 320px; overflow: auto;
+  font-family: var(--font-mono); font-size: 11px;
+  white-space: pre-wrap; word-break: break-word; color: var(--text-muted);
+}
+.trajectory-footer {
+  border-top: 1px solid var(--border); padding-top: 8px;
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint);
+}
+.trajectory-empty { padding: 40px 0; text-align: center; font-size: 12.5px; color: var(--text-faint); }

@@ -1258,6 +1258,34 @@ pub(super) async fn load_session(
     })
 }
 
+/// Fold a session's stored messages and persisted UI events into the
+/// trajectory (轨迹) view: turns of user/assistant/tool/usage cells with
+/// timing and token statistics. Read-only; does not touch window state.
+#[tauri::command]
+pub(super) async fn load_session_trajectory(
+    state: State<'_, AppState>,
+    frame_id: String,
+) -> Result<trajectory::TrajectorySnapshot, String> {
+    let messages = state
+        .store
+        .load_messages_with_seq(&frame_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let events = state
+        .store
+        .load_session_ui_events_timed(&frame_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let model = state
+        .store
+        .frame_model(&frame_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(trajectory::fold_trajectory(
+        &frame_id, model, &messages, &events,
+    ))
+}
+
 /// Mark which session this window is viewing without loading it. The UI calls
 /// this instead of `load_session` when switching to a *running* session (it
 /// renders the cached streaming transcript), so uploads still attach to the

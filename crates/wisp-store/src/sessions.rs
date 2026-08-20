@@ -110,6 +110,16 @@ pub struct SessionUiEventSnapshot {
     pub events: Vec<(i64, String)>,
 }
 
+/// One persisted visual-transcript event with its wall-clock stamp.
+/// `created_at` is unix epoch milliseconds; `None` for rows written before
+/// the column existed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionUiEventRecord {
+    pub seq: i64,
+    pub created_at: Option<i64>,
+    pub event_json: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct SessionBranchDeltaMessage {
     pub seq: i64,
@@ -1443,12 +1453,18 @@ impl Store {
         seq: i64,
         event_json: &str,
     ) -> Result<()> {
-        sqlx::query("INSERT INTO session_ui_events(frame_id,seq,event_json) VALUES(?,?,?)")
-            .bind(frame_id)
-            .bind(seq)
-            .bind(event_json)
-            .execute(&self.pool)
-            .await?;
+        // Unix epoch milliseconds; ui events join against second-granularity
+        // message timestamps, so the trajectory view needs finer resolution.
+        let created_at = chrono::Utc::now().timestamp_millis();
+        sqlx::query(
+            "INSERT INTO session_ui_events(frame_id,seq,event_json,created_at) VALUES(?,?,?,?)",
+        )
+        .bind(frame_id)
+        .bind(seq)
+        .bind(event_json)
+        .bind(created_at)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -1460,6 +1476,31 @@ impl Store {
                 .await?;
         rows.into_iter()
             .map(|row| row.try_get("event_json").map_err(Into::into))
+            .collect()
+    }
+
+    /// Load the persisted visual transcript with per-event wall-clock stamps
+    /// (unix epoch milliseconds; `None` for rows written before the column
+    /// existed). Used by the trajectory view, which reconstructs timing.
+    pub async fn load_session_ui_events_timed(
+        &self,
+        frame_id: &str,
+    ) -> Result<Vec<SessionUiEventRecord>> {
+        let rows = sqlx::query(
+            "SELECT seq,created_at,event_json FROM session_ui_events \
+             WHERE frame_id=? ORDER BY seq",
+        )
+        .bind(frame_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(SessionUiEventRecord {
+                    seq: row.try_get("seq")?,
+                    created_at: row.try_get("created_at")?,
+                    event_json: row.try_get("event_json")?,
+                })
+            })
             .collect()
     }
 
