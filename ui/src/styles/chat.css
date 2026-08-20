@@ -1336,6 +1336,22 @@ details.tool:not([open]) > summary.head .run-dot { animation: tool-pulse 1.1s ea
 .context-usage-close:hover, .context-usage-dock:hover { color: var(--text); background: var(--surface-hover); }
 .context-usage-close svg, .context-usage-dock svg { width: 16px; height: 16px; }
 .context-usage-summary { justify-content: space-between; gap: 16px; margin-top: 14px; color: var(--text-muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.context-usage-nudge {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px 14px; flex-wrap: wrap;
+  margin-top: 12px; padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--err) 28%, var(--border));
+  border-radius: var(--radius-xs);
+  background: color-mix(in srgb, var(--err) 8%, var(--bg-elev));
+  color: var(--text); font-size: 12.5px; line-height: 1.35;
+}
+.context-usage-nudge-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 12px; }
+.context-usage-nudge-action {
+  border: 0; padding: 0; background: transparent; color: var(--clay-strong);
+  font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer;
+  text-decoration: underline; text-underline-offset: 2px;
+}
+.context-usage-nudge-action:hover { color: var(--text); }
+.context-usage-nudge-action:disabled { opacity: .5; cursor: default; text-decoration: none; }
 .context-usage-bar { display: flex; gap: 2px; width: 100%; height: 8px; margin-top: 10px; overflow: hidden; border-radius: 999px; background: var(--border); }
 .context-usage-segment { display: block; flex: 0 0 auto; min-width: 2px; height: 100%; border-radius: 2px; }
 .context-usage-list { display: grid; gap: 4px; margin-top: 12px; }

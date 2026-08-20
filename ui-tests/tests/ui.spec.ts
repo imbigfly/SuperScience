@@ -2587,6 +2587,7 @@ test("context usage moves out of the topbar and opens a categorized detail panel
   await expect(panel).toBeVisible();
   await expect(panel.getByRole("heading", { name: "Context Usage" })).toBeVisible();
   await expect(panel).toContainText("62% Full");
+  await expect(panel.getByTestId("context-usage-nudge")).toHaveCount(0);
   // The limit tracks the session's bound model (128K), not the stale
   // max_context carried by the last turn's usage event (300K).
   await expect(panel).toContainText("~79.9K / 128K Tokens");
@@ -2706,6 +2707,10 @@ test("context usage trigger colors the live percent at warn and danger threshold
   await expect(trigger).toHaveText("72%");
   await expect(trigger).toHaveAttribute("data-tone", "warn");
   await expect(trigger).toHaveClass(/is-warn/);
+  await trigger.click();
+  await expect(page.getByTestId("context-usage-panel")).toBeVisible();
+  await expect(page.getByTestId("context-usage-nudge")).toHaveCount(0);
+  await page.keyboard.press("Escape");
 
   await newSessionButton(page).click();
   await page.locator("#composer-input").fill("CONTEXTUSAGEDANGER");
@@ -2713,6 +2718,33 @@ test("context usage trigger colors the live percent at warn and danger threshold
   await expect(trigger).toHaveText("91%");
   await expect(trigger).toHaveAttribute("data-tone", "danger");
   await expect(trigger).toHaveClass(/is-danger/);
+});
+
+test("danger context usage panel offers compact and a new session (#931)", async ({ page }) => {
+  await enterApp(page);
+  await page.locator("#composer-input").fill("CONTEXTUSAGEDANGER");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  const trigger = page.getByTestId("context-usage-trigger");
+  await expect(trigger).toHaveText("91%");
+  await trigger.click();
+  const panel = page.getByTestId("context-usage-panel");
+  const nudge = panel.getByTestId("context-usage-nudge");
+  await expect(nudge).toBeVisible();
+  await expect(nudge).toContainText("Window is almost full");
+  await nudge.getByRole("button", { name: "Compact" }).click();
+  await expect(panel).toHaveCount(0);
+  await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
+    message: "/compact",
+    resume: false,
+  });
+
+  await page.locator("#composer-input").fill("CONTEXTUSAGEDANGER");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(trigger).toHaveText("91%");
+  await trigger.click();
+  await page.getByTestId("context-usage-new-session").click();
+  await expect(page.getByTestId("context-usage-panel")).toHaveCount(0);
+  await expect(page.locator(".empty")).toBeVisible();
 });
 
 test("context usage keeps the running agent window until a model switch boundary", async ({ page }) => {
