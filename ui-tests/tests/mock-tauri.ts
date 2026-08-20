@@ -4935,6 +4935,44 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 }, 1_200);
               });
             }
+            if (String(arg("message") ?? "").includes("CONTEXTUSAGEWARN")) {
+              setTimeout(() => {
+                emit("agent", { kind: "User", frame_id: fid, text: msg });
+                emit("agent", { kind: "Text", frame_id: fid, delta: "Context is getting full." });
+                emit("agent", {
+                  kind: "Usage",
+                  frame_id: fid,
+                  round: 1,
+                  input: 90_000,
+                  output: 1_520,
+                  reasoning: 0,
+                  cached: 0,
+                  ctx_tokens: 91_520,
+                  max_context: 128_000,
+                });
+                emit("agent", { kind: "Done", frame_id: fid });
+              }, 30);
+              return fid;
+            }
+            if (String(arg("message") ?? "").includes("CONTEXTUSAGEDANGER")) {
+              setTimeout(() => {
+                emit("agent", { kind: "User", frame_id: fid, text: msg });
+                emit("agent", { kind: "Text", frame_id: fid, delta: "Context is almost full." });
+                emit("agent", {
+                  kind: "Usage",
+                  frame_id: fid,
+                  round: 1,
+                  input: 114_000,
+                  output: 1_840,
+                  reasoning: 0,
+                  cached: 0,
+                  ctx_tokens: 115_840,
+                  max_context: 128_000,
+                });
+                emit("agent", { kind: "Done", frame_id: fid });
+              }, 30);
+              return fid;
+            }
             if (String(arg("message") ?? "").includes("CONTEXTUSAGE")) {
               setTimeout(() => {
                 emit("agent", { kind: "User", frame_id: fid, text: msg });

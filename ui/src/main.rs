@@ -623,6 +623,24 @@ fn App() -> impl IntoView {
             })
         }
     });
+    let context_usage_flash = create_rw_signal(false);
+    {
+        let last_used = Rc::new(Cell::new(None::<usize>));
+        create_effect(move |_| {
+            let Some(snapshot) = active_context_usage.get() else {
+                last_used.set(None);
+                return;
+            };
+            let previous = last_used.replace(Some(snapshot.used));
+            if previous.is_some_and(|previous| snapshot.used < previous) {
+                context_usage_flash.set(true);
+                set_timeout(
+                    move || context_usage_flash.set(false),
+                    std::time::Duration::from_millis(700),
+                );
+            }
+        });
+    }
     create_effect(move |_| {
         let _ = active_session.get();
         context_usage_open.set(false);
@@ -12000,12 +12018,32 @@ fn App() -> impl IntoView {
                             {move || active_context_usage.get().map(|snapshot| {
                                 let pct = context_percent(snapshot.used, snapshot.max);
                                 let gauge_angle = -90.0 + pct as f64 * 0.9;
+                                let tone = context_usage_tone(snapshot.used, snapshot.max);
+                                let percent_label = context_usage_percent_label(snapshot.used, snapshot.max);
+                                let tooltip = context_usage_tooltip(&snapshot, locale.get());
+                                let aria = if snapshot.max == 0 {
+                                    t(locale.get(), "context_usage.open_unknown")
+                                } else {
+                                    tf(
+                                        locale.get(),
+                                        "context_usage.open_pct",
+                                        &[("pct", &pct.to_string())],
+                                    )
+                                };
+                                let tone_warn = tone == ContextUsageTone::Warn;
+                                let tone_danger = tone == ContextUsageTone::Danger;
+                                let tone_unknown = tone == ContextUsageTone::Unknown;
                                 view! {
                                     <button type="button" class="context-usage-trigger"
+                                        class:is-warn=tone_warn
+                                        class:is-danger=tone_danger
+                                        class:is-unknown=tone_unknown
+                                        class:is-compacted=move || context_usage_flash.get()
                                         data-testid="context-usage-trigger"
+                                        data-tone=tone.as_str()
                                         style=format!("--context-gauge-angle:{gauge_angle:.1}deg")
-                                        title=move || t(locale.get(), "context_usage.open")
-                                        aria-label=move || t(locale.get(), "context_usage.open")
+                                        title=tooltip
+                                        aria-label=aria
                                         aria-expanded=move || context_usage_open.get().to_string()
                                         aria-controls="context-usage-panel"
                                         on:click=move |event| {
@@ -12030,6 +12068,7 @@ fn App() -> impl IntoView {
                                             }
                                         }>
                                         {compose_icon("gauge")}
+                                        <span class="context-usage-pct" data-testid="context-usage-percent">{percent_label}</span>
                                     </button>
                                 }
                             })}

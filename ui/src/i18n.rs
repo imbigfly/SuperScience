@@ -1829,6 +1829,17 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "context_usage.total_exact") => Some("{used} / {max} Tokens"),
         (Locale::En, "context_usage.total_used") => Some("{used} Tokens"),
         (Locale::En, "context_usage.open") => Some("Open context usage"),
+        (Locale::En, "context_usage.open_pct") => Some("Open context usage, {pct}%"),
+        (Locale::En, "context_usage.open_unknown") => Some("Open context usage, window unknown"),
+        (Locale::En, "context_usage.tooltip_estimated") => {
+            Some("~{used} / {max} tokens (current model context window)")
+        }
+        (Locale::En, "context_usage.tooltip_exact") => {
+            Some("{used} / {max} tokens (current model context window)")
+        }
+        (Locale::En, "context_usage.tooltip_unknown") => {
+            Some("Context window unknown for this model")
+        }
         (Locale::En, "context_usage.close") => Some("Close context usage"),
         (Locale::En, "context_usage.dock") => Some("Dock panel"),
         (Locale::En, "context_usage.resize") => Some("Resize panel"),
@@ -4173,6 +4184,15 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "context_usage.total_exact") => Some("{used} / {max} Tokens"),
         (Locale::Zh, "context_usage.total_used") => Some("{used} Tokens"),
         (Locale::Zh, "context_usage.open") => Some("查看上下文用量"),
+        (Locale::Zh, "context_usage.open_pct") => Some("查看上下文用量，已用 {pct}%"),
+        (Locale::Zh, "context_usage.open_unknown") => Some("查看上下文用量，窗口未知"),
+        (Locale::Zh, "context_usage.tooltip_estimated") => {
+            Some("约 {used} / {max} tokens（当前模型上下文窗口）")
+        }
+        (Locale::Zh, "context_usage.tooltip_exact") => {
+            Some("{used} / {max} tokens（当前模型上下文窗口）")
+        }
+        (Locale::Zh, "context_usage.tooltip_unknown") => Some("当前模型上下文窗口未知"),
         (Locale::Zh, "context_usage.close") => Some("关闭上下文用量"),
         (Locale::Zh, "context_usage.dock") => Some("停靠面板"),
         (Locale::Zh, "context_usage.resize") => Some("调整面板大小"),
