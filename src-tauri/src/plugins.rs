@@ -1734,7 +1734,7 @@ mod tests {
         assert!(open_result.success, "{}", open_result.content);
         assert!(env.events.lock().unwrap().iter().any(|event| matches!(
             event,
-            ToolEvent::Presentation { kind, payload }
+            ToolEvent::Presentation { kind, payload, .. }
                 if kind == "mcp_app"
                     && payload.pointer("/resource/uri").and_then(serde_json::Value::as_str)
                         == Some("ui://motif/workbench.html")

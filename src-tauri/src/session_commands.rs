@@ -745,6 +745,10 @@ pub(super) async fn delete_session(
         sessions.remove(&id);
     }
     state.remove_notification_window(&id);
+    // MCP Apps presented by this conversation must lose their tool bridge so a
+    // later `tools/call` (e.g. from a reloaded iframe) fails stale instead of
+    // pinning the MCP server process.
+    state.remove_mcp_app_bridges_for_frame(&id);
     if state.active_frame(window.label()).as_deref() == Some(id.as_str()) {
         state.set_active_frame(window.label(), None);
     }

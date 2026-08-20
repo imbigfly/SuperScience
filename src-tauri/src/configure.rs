@@ -363,6 +363,7 @@ For specialists, get the `specialists` key then call save_specialist (pass id to
                         env.emit(wisp_tools::ToolEvent::Presentation {
                             kind: "app_prefs".into(),
                             payload: outcome.presentation,
+                            server: None,
                         })
                         .await;
                     }
@@ -382,6 +383,7 @@ For specialists, get the `specialists` key then call save_specialist (pass id to
                         env.emit(wisp_tools::ToolEvent::Presentation {
                             kind: "storage_usage".into(),
                             payload,
+                            server: None,
                         })
                         .await;
                         ToolResult::ok(text)

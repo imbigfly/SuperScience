@@ -235,6 +235,17 @@ pub(crate) struct ActiveProject {
     pub(crate) memory: Arc<MemoryManager>,
 }
 
+/// Host-side `serverTools` binding for one live MCP App instance. Registered
+/// when an `mcp_app` presentation flows to the UI and revoked on teardown or
+/// session delete; the `server` handle keeps only a `Weak` reference to the
+/// MCP client, so an agent rebuild or connector restart naturally makes the
+/// instance stale instead of pinning the server process.
+#[derive(Clone)]
+pub(crate) struct McpAppToolBridge {
+    pub(crate) frame_id: String,
+    pub(crate) server: Arc<dyn wisp_tools::McpAppServer>,
+}
+
 #[derive(Default)]
 pub(crate) struct ProjectActivityLocks {
     pub(crate) projects: StdMutex<HashMap<String, Arc<tokio::sync::RwLock<()>>>>,
@@ -295,6 +306,13 @@ pub(crate) struct AppState {
     /// Advisory leases for local project resources used by parallel built-in
     /// conversations. External editors remain outside this in-process boundary.
     pub(crate) resource_leases: resource_leases::ProjectResourceCoordinator,
+    /// Live MCP Apps `serverTools` bridges, keyed by `mcp-app:{frame}:{identity}`.
+    /// Each binds one app instance to the MCP connection that presented it so
+    /// the iframe can reuse it through `tools/call` without ever seeing MCP
+    /// URLs, commands, or credentials. Instances are revoked on teardown or
+    /// session delete; after an agent rebuild the embedded `Weak` client dies
+    /// and further calls fail with a stale-instance error.
+    pub(crate) mcp_app_tool_bridges: StdMutex<HashMap<String, McpAppToolBridge>>,
     /// The frame id the UI is currently viewing. Drives artifact attachment
     /// (`upload_file`/`register_artifact`) and `list_artifacts` fallback.
     /// Written only by view-navigation commands (`load_session`/`new_session`/
@@ -400,6 +418,33 @@ impl AppState {
     }
     pub(crate) fn remove_notification_window(&self, frame_id: &str) {
         self.notification_window.write().unwrap().remove(frame_id);
+    }
+    pub(crate) fn register_mcp_app_bridge(&self, instance_id: String, bridge: McpAppToolBridge) {
+        self.mcp_app_tool_bridges
+            .lock()
+            .unwrap()
+            .insert(instance_id, bridge);
+    }
+    pub(crate) fn mcp_app_bridge(&self, instance_id: &str) -> Option<McpAppToolBridge> {
+        self.mcp_app_tool_bridges
+            .lock()
+            .unwrap()
+            .get(instance_id)
+            .cloned()
+    }
+    pub(crate) fn close_mcp_app_bridge(&self, instance_id: &str) -> bool {
+        self.mcp_app_tool_bridges
+            .lock()
+            .unwrap()
+            .remove(instance_id)
+            .is_some()
+    }
+    /// Revoke every app bridge owned by a conversation (session delete).
+    pub(crate) fn remove_mcp_app_bridges_for_frame(&self, frame_id: &str) {
+        self.mcp_app_tool_bridges
+            .lock()
+            .unwrap()
+            .retain(|_, bridge| bridge.frame_id != frame_id);
     }
     pub(crate) fn preferred_notification_window(
         &self,

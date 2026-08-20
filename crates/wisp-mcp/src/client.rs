@@ -79,6 +79,34 @@ impl RemoteTool {
             .and_then(Value::as_array)
             .is_none_or(|visibility| visibility.iter().any(|item| item.as_str() == Some("model")))
     }
+
+    /// Whether a legitimate MCP App instance of this tool may call it. The
+    /// spec defaults unset `_meta.ui.visibility` to `["model", "app"]`, so
+    /// only an explicit visibility that omits `"app"` hides it from apps.
+    pub fn visible_to_app(&self) -> bool {
+        self.meta
+            .as_ref()
+            .and_then(|meta| meta.pointer("/ui/visibility"))
+            .and_then(Value::as_array)
+            .is_none_or(|visibility| visibility.iter().any(|item| item.as_str() == Some("app")))
+    }
+
+    /// Human title for UI and audit: explicit `title`, annotated title, then
+    /// the tool name.
+    pub fn display_title(&self) -> String {
+        self.title
+            .clone()
+            .filter(|title| !title.trim().is_empty())
+            .or_else(|| {
+                self.annotations
+                    .as_ref()
+                    .and_then(|annotations| annotations.get("title"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or_else(|| self.name.clone())
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -867,6 +895,10 @@ mod tests {
         assert!(tools[0].visible_to_model());
         // Plan mode's retrieval passthrough reads exactly this hint.
         assert!(tools[0].read_only());
+        assert_eq!(
+            tools[0].display_title(),
+            "Open Motif for Claude Science"
+        );
 
         let app_only = tools_into_remote(vec![json!({
             "name": "motif_refresh",
@@ -878,6 +910,30 @@ mod tests {
             !app_only[0].read_only(),
             "no hint means unclassified, not read-only"
         );
+        // Unset visibility defaults to ["model", "app"], so the presenter and
+        // siblings stay callable from an App; an explicit model-only list hides
+        // a tool from apps.
+        assert!(tools[0].visible_to_app());
+        assert!(app_only[0].visible_to_app());
+        let model_only = tools_into_remote(vec![json!({
+            "name": "motif_hidden",
+            "inputSchema": { "type": "object" },
+            "_meta": { "ui": { "visibility": ["model"] } }
+        })]);
+        assert!(model_only[0].visible_to_model());
+        assert!(!model_only[0].visible_to_app());
+        // Title falls back to the annotated title, then the raw name.
+        let annotated = tools_into_remote(vec![json!({
+            "name": "motif_named",
+            "inputSchema": { "type": "object" },
+            "annotations": { "title": "Motif Refresh" }
+        })]);
+        assert_eq!(annotated[0].display_title(), "Motif Refresh");
+        let bare = tools_into_remote(vec![json!({
+            "name": "motif_bare",
+            "inputSchema": { "type": "object" }
+        })]);
+        assert_eq!(bare[0].display_title(), "motif_bare");
     }
 
     #[test]

@@ -476,7 +476,7 @@ fn parse_confirm_payload(message: &str) -> (String, String) {
         return ("image_resize".to_string(), rest.to_string());
     }
     if let Some(rest) = message.strip_prefix("Run tool '") {
-        if let Some((tool, _)) = rest.split_once("'?") {
+        if let Some((tool, _)) = rest.split_once('\'') {
             return (tool.to_string(), String::new());
         }
     }
@@ -2191,6 +2191,323 @@ async fn update_mcp_app_context(
     Ok(())
 }
 
+/// Hard ceiling on a single MCP App `tools/call` argument JSON blob.
+const MAX_MCP_APP_ARGUMENT_BYTES: usize = 256 * 1024;
+/// Hard ceiling on a single MCP App `tools/call` result JSON blob.
+const MAX_MCP_APP_RESULT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_MCP_APP_TOOL_NAME_BYTES: usize = 256;
+const MCP_APP_STALE_INSTANCE_ERROR: &str =
+    "stale-instance: the MCP App is no longer bound to a live MCP server";
+
+fn audit_mcp_app_tool(
+    event: &str,
+    instance_id: &str,
+    frame_id: &str,
+    connector_id: &str,
+    tool: &str,
+    duration_ms: u64,
+    error_code: &str,
+) {
+    tracing::info!(
+        audit_event = event,
+        invocation_source = "mcp_app",
+        session = frame_id,
+        app_instance = instance_id,
+        connector = connector_id,
+        tool = tool,
+        duration_ms = duration_ms,
+        error_code = error_code,
+    );
+}
+
+async fn request_mcp_app_tool_confirmation(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    frame_id: &str,
+    project_id: &str,
+    message: String,
+    tool: &str,
+    preview: String,
+) -> wisp_tools::ConfirmDecision {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    state.confirms.lock().unwrap().insert(
+        frame_id.to_string(),
+        PendingConfirm {
+            tx,
+            grant: approval_grant_key(&message),
+            project_id: project_id.to_string(),
+        },
+    );
+    state
+        .awaiting_confirm
+        .lock()
+        .unwrap()
+        .insert(frame_id.to_string());
+    state
+        .device_hub
+        .mark_needs_user(frame_id, Some(project_id));
+    let _ = app.emit(
+        "confirm-request",
+        ConfirmRequest {
+            frame_id: frame_id.to_string(),
+            message,
+            tool: tool.to_string(),
+            preview,
+        },
+    );
+    let decision = receive_confirm_decision(rx).await;
+    state.confirms.lock().unwrap().remove(frame_id);
+    state.awaiting_confirm.lock().unwrap().remove(frame_id);
+    state.device_hub.resolve_needs_user(frame_id);
+    decision
+}
+
+/// MCP Apps `serverTools`: run `tools/call` from an App iframe on the MCP
+/// server that presented the app, reusing the original connection. The bridge
+/// validates instance liveness, same-server tool visibility, plan-mode, and
+/// the normal approval policy before dispatch, and returns the complete
+/// CallToolResult (`content`, `structuredContent`, `_meta`, `isError`).
+#[tauri::command]
+async fn call_mcp_app_tool(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    instance_id: String,
+    name: String,
+    arguments: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let frame_id = mcp_app_frame_id(&instance_id)?.to_string();
+    if name.is_empty() || name.len() > MAX_MCP_APP_TOOL_NAME_BYTES {
+        return Err("MCP App tool name is empty or too long.".into());
+    }
+    if !arguments.is_object() {
+        return Err("MCP App tool arguments must be a JSON object.".into());
+    }
+    let argument_bytes = serde_json::to_vec(&arguments)
+        .map_err(|error| format!("Invalid MCP App tool arguments: {error}"))?
+        .len();
+    if argument_bytes > MAX_MCP_APP_ARGUMENT_BYTES {
+        return Err(format!(
+            "MCP App tool arguments exceed the {} KiB limit.",
+            MAX_MCP_APP_ARGUMENT_BYTES / 1024
+        ));
+    }
+    let Some(bridge) = state.mcp_app_bridge(&instance_id) else {
+        audit_mcp_app_tool(
+            "mcp_app.tool_call_failed",
+            &instance_id,
+            &frame_id,
+            "",
+            &name,
+            0,
+            "stale-instance",
+        );
+        return Err(MCP_APP_STALE_INSTANCE_ERROR.into());
+    };
+    if bridge.frame_id != frame_id {
+        return Err(MCP_APP_STALE_INSTANCE_ERROR.into());
+    }
+    if !bridge.server.visible_to_app(&name) {
+        return Err(format!(
+            "MCP App tool '{name}' is not visible to apps on this server."
+        ));
+    }
+    let project_id = state
+        .store
+        .frame_project_id(&frame_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| MCP_APP_STALE_INSTANCE_ERROR.to_string())?;
+    // Plan mode and frozen-project gates match agent tool calls: read-only
+    // tools stay available, everything else refuses.
+    if plan_mode::session_plan_mode(&state.store, &frame_id).await
+        && !bridge.server.read_only(&name)
+    {
+        return Err(format!(
+            "Tool '{name}' is blocked in plan mode. Plan mode only allows read-only tools."
+        ));
+    }
+    let host_approval = state
+        .approvals
+        .read()
+        .map(|policy| policy.mode_for(&name))
+        .unwrap_or(wisp_tools::Approval::Allow);
+    let full_permission = state
+        .full_permission_sessions
+        .read()
+        .map(|sessions| sessions.contains(&frame_id))
+        .unwrap_or(false);
+    let approval = if host_approval == wisp_tools::Approval::Deny {
+        wisp_tools::Approval::Deny
+    } else if full_permission {
+        wisp_tools::Approval::Allow
+    } else if host_approval == wisp_tools::Approval::Ask || bridge.server.require_approval() {
+        wisp_tools::Approval::Ask
+    } else {
+        wisp_tools::Approval::Allow
+    };
+    if approval == wisp_tools::Approval::Deny {
+        audit_mcp_app_tool(
+            "mcp_app.tool_call_failed",
+            &instance_id,
+            &frame_id,
+            bridge.server.connector_id(),
+            &name,
+            0,
+            "blocked-by-policy",
+        );
+        return Err(format!("tool '{name}' is blocked by the approval policy"));
+    }
+    let started = std::time::Instant::now();
+    audit_mcp_app_tool(
+        "mcp_app.tool_call_requested",
+        &instance_id,
+        &frame_id,
+        bridge.server.connector_id(),
+        &name,
+        0,
+        "",
+    );
+    if approval == wisp_tools::Approval::Ask {
+        let preview = bounded_ui_tool_input(&arguments.to_string());
+        let message = format!(
+            "Run tool '{name}' from MCP App '{}'?",
+            bridge.server.app_name()
+        );
+        let granted = approval_grant_key(&message).is_some_and(|key| {
+            state
+                .approval_grants
+                .lock()
+                .map(|grants| grants.allows(&frame_id, &project_id, &key))
+                .unwrap_or(false)
+        });
+        if !granted {
+            let decision = request_mcp_app_tool_confirmation(
+                &app,
+                state,
+                &frame_id,
+                &project_id,
+                message,
+                &name,
+                preview,
+            )
+            .await;
+            if !decision.approved() {
+                audit_mcp_app_tool(
+                    "mcp_app.tool_call_failed",
+                    &instance_id,
+                    &frame_id,
+                    bridge.server.connector_id(),
+                    &name,
+                    started.elapsed().as_millis() as u64,
+                    "denied-by-user",
+                );
+                return Err(format!("MCP App tool '{name}' was denied by the user."));
+            }
+        }
+    }
+    audit_mcp_app_tool(
+        "mcp_app.tool_call_approved",
+        &instance_id,
+        &frame_id,
+        bridge.server.connector_id(),
+        &name,
+        started.elapsed().as_millis() as u64,
+        "",
+    );
+    match bridge.server.call_tool(&name, &arguments).await {
+        Ok(result) => {
+            let result_bytes = serde_json::to_vec(&result)
+                .map_err(|error| format!("Invalid MCP App tool result: {error}"))?
+                .len();
+            if result_bytes > MAX_MCP_APP_RESULT_BYTES {
+                audit_mcp_app_tool(
+                    "mcp_app.tool_call_failed",
+                    &instance_id,
+                    &frame_id,
+                    bridge.server.connector_id(),
+                    &name,
+                    started.elapsed().as_millis() as u64,
+                    "result-too-large",
+                );
+                return Err(format!(
+                    "MCP App tool result exceeds the {} MiB limit.",
+                    MAX_MCP_APP_RESULT_BYTES / 1024 / 1024
+                ));
+            }
+            audit_mcp_app_tool(
+                "mcp_app.tool_call_completed",
+                &instance_id,
+                &frame_id,
+                bridge.server.connector_id(),
+                &name,
+                started.elapsed().as_millis() as u64,
+                "",
+            );
+            Ok(result)
+        }
+        Err(error) => {
+            audit_mcp_app_tool(
+                "mcp_app.tool_call_failed",
+                &instance_id,
+                &frame_id,
+                bridge.server.connector_id(),
+                &name,
+                started.elapsed().as_millis() as u64,
+                "tool-error",
+            );
+            Err(format!("mcp app tool '{name}' error: {error}"))
+        }
+    }
+}
+
+/// MCP Apps `serverTools`: the app-visible tool catalog of the same server
+/// (the host validates against it, so the iframe never receives connection
+/// details).
+#[tauri::command]
+async fn list_mcp_app_tools(
+    state: State<'_, AppState>,
+    instance_id: String,
+) -> Result<serde_json::Value, String> {
+    let frame_id = mcp_app_frame_id(&instance_id)?.to_string();
+    let Some(bridge) = state.mcp_app_bridge(&instance_id) else {
+        return Err(MCP_APP_STALE_INSTANCE_ERROR.into());
+    };
+    if bridge.frame_id != frame_id {
+        return Err(MCP_APP_STALE_INSTANCE_ERROR.into());
+    }
+    let tools = bridge
+        .server
+        .tools()
+        .into_iter()
+        .filter(|tool| {
+            tool.get("name")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|name| bridge.server.visible_to_app(name))
+        })
+        .collect::<Vec<_>>();
+    Ok(serde_json::json!({ "tools": tools }))
+}
+
+/// Revoke an MCP App instance's host-side bridge when the iframe tears down
+/// (user close, replacement, or session navigation). Later `tools/call`
+/// requests then fail with a stale-instance error. Also drops the instance's
+/// model-context injection so a closed app cannot keep feeding the next turn.
+#[tauri::command]
+async fn close_mcp_app(
+    state: State<'_, AppState>,
+    instance_id: String,
+) -> bool {
+    let removed = state.close_mcp_app_bridge(&instance_id);
+    if removed {
+        if let Ok(frame_id) = mcp_app_frame_id(&instance_id) {
+            if let Some(runtime) = state.sessions.lock().await.get(frame_id).cloned() {
+                runtime.set_mcp_app_context(instance_id, None);
+            }
+        }
+    }
+    removed
+}
+
 /// Ensure `dir` exists and is usable; fall back to `app_data/workspace` if not.
 /// Never panics unless even the fallback can't be created.
 fn ensure_writable(dir: PathBuf, app_data: &std::path::Path) -> PathBuf {
@@ -2445,10 +2762,31 @@ impl Output for TauriOutput {
             duration_ms,
         });
     }
-    fn tool_presentation(&self, kind: &str, payload: &serde_json::Value) {
+    fn tool_presentation(
+        &self,
+        kind: &str,
+        payload: &serde_json::Value,
+        server: Option<std::sync::Arc<dyn wisp_tools::McpAppServer>>,
+    ) {
+        let presentation_id = Uuid::new_v4().to_string();
+        if kind == "mcp_app" && !payload.is_null() {
+            if let Some(server) = server {
+                // The frontend derives the instance id from the same frame id
+                // and presentation id (ui/src/mcp_app.rs), so the host-side
+                // bridge stays keyed exactly like the mounted iframe.
+                let instance_id = format!("mcp-app:{}:{}", self.frame_id, presentation_id);
+                self.app.state::<AppState>().register_mcp_app_bridge(
+                    instance_id,
+                    McpAppToolBridge {
+                        frame_id: self.frame_id.clone(),
+                        server,
+                    },
+                );
+            }
+        }
         self.emit(AgentEvent::ToolPresentation {
             frame_id: self.frame_id.clone(),
-            presentation_id: Uuid::new_v4().to_string(),
+            presentation_id,
             presentation_kind: kind.into(),
             payload: payload.clone(),
         });
@@ -4215,17 +4553,19 @@ async fn finish_custom_mcp_wiring(
             .or_default();
         let index = next_index;
         next_index += 1;
+        let connector_id = launch.connector_id.clone();
         set.spawn(async move {
             let name = launch.display_name.clone();
             let res = connect_plugin_mcp(&launch).await;
-            (index, name, Some(plugin_id), true, res)
+            (index, name, Some(plugin_id), connector_id, true, res)
         });
     }
     for (i, conn) in conns.into_iter().enumerate() {
         let index = next_index + i;
+        let connector_id = conn.id.clone();
         set.spawn(async move {
             let res = connect_mcp(&conn).await;
-            (index, conn.name, None, false, res)
+            (index, conn.name, None, connector_id, false, res)
         });
     }
     let mut results = Vec::new();
@@ -4234,12 +4574,13 @@ async fn finish_custom_mcp_wiring(
             results.push(r);
         }
     }
-    results.sort_by_key(|(i, _, _, _, _)| *i);
-    for (_, name, plugin_id, require_approval, res) in results {
+    results.sort_by_key(|(i, _, _, _, _, _)| *i);
+    for (_, name, plugin_id, connector_id, require_approval, res) in results {
         match res {
             Ok(client) => match register_mcp_with_approval(
                 registry,
                 std::sync::Arc::new(client),
+                &connector_id,
                 require_approval,
             )
             .await
@@ -4277,15 +4618,23 @@ async fn register_mcp(
     registry: &mut wisp_tools::Registry,
     client: std::sync::Arc<wisp_mcp::McpClient>,
 ) -> Result<Vec<String>, String> {
-    register_mcp_with_approval(registry, client, false).await
+    register_mcp_with_approval(registry, client, "", false).await
 }
 
 async fn register_mcp_with_approval(
     registry: &mut wisp_tools::Registry,
     client: std::sync::Arc<wisp_mcp::McpClient>,
+    connector_id: &str,
     require_approval: bool,
 ) -> Result<Vec<String>, String> {
-    register_mcp_filtered_with_approval(registry, client, &HashSet::new(), require_approval).await
+    register_mcp_filtered_with_approval(
+        registry,
+        client,
+        connector_id,
+        &HashSet::new(),
+        require_approval,
+    )
+    .await
 }
 
 /// Like `register_mcp`, but skips any tool whose name is in `skip` (used to drop
@@ -4295,12 +4644,13 @@ async fn register_mcp_filtered(
     client: std::sync::Arc<wisp_mcp::McpClient>,
     skip: &HashSet<String>,
 ) -> Result<Vec<String>, String> {
-    register_mcp_filtered_with_approval(registry, client, skip, false).await
+    register_mcp_filtered_with_approval(registry, client, "", skip, false).await
 }
 
 async fn register_mcp_filtered_with_approval(
     registry: &mut wisp_tools::Registry,
     client: std::sync::Arc<wisp_mcp::McpClient>,
+    connector_id: &str,
     skip: &HashSet<String>,
     require_approval: bool,
 ) -> Result<Vec<String>, String> {
@@ -4318,16 +4668,29 @@ async fn register_mcp_filtered_with_approval(
             if !collisions.is_empty() {
                 return Err(format!("tool name collision: {}", collisions.join(", ")));
             }
+            // Every tool of one connection shares the same catalog snapshot so
+            // an MCP App presented by any of them can bridge sibling tools.
+            let catalog = std::sync::Arc::new(tools);
             let mut names = Vec::new();
-            for t in tools {
+            for t in catalog.iter() {
                 if skip.contains(&t.name) || !t.visible_to_model() {
                     continue;
                 }
                 names.push(t.name.clone());
                 let tool = if require_approval {
-                    wisp_mcp::McpTool::new_requiring_approval(t, client.clone())
+                    wisp_mcp::McpTool::with_catalog_requiring_approval(
+                        t.clone(),
+                        client.clone(),
+                        connector_id,
+                        std::sync::Arc::clone(&catalog),
+                    )
                 } else {
-                    wisp_mcp::McpTool::new(t, client.clone())
+                    wisp_mcp::McpTool::with_catalog(
+                        t.clone(),
+                        client.clone(),
+                        connector_id,
+                        std::sync::Arc::clone(&catalog),
+                    )
                 };
                 registry.add(Box::new(tool));
             }
@@ -6029,6 +6392,7 @@ pub fn run() {
                 completion_dispatches: tokio::sync::Mutex::new(HashSet::new()),
                 project_activity: ProjectActivityLocks::default(),
                 resource_leases: resource_leases::ProjectResourceCoordinator::default(),
+                mcp_app_tool_bridges: StdMutex::new(HashMap::new()),
                 active_frame: std::sync::RwLock::new(HashMap::new()),
                 notification_window: std::sync::RwLock::new(HashMap::new()),
                 confirms: Arc::new(StdMutex::new(HashMap::new())),
@@ -6103,6 +6467,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             agent_turn::send_message,
             update_mcp_app_context,
+            call_mcp_app_tool,
+            list_mcp_app_tools,
+            close_mcp_app,
             agent_turn::enqueue_turn,
             agent_turn::queued_turn_action,
             agent_turn::stop_agent,

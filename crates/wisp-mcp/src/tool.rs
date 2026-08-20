@@ -4,10 +4,10 @@ use crate::client::{McpCallResult, McpClient, RemoteTool};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 use wisp_llm::ToolSchema;
-use wisp_tools::{Approval, Tool, ToolEnv, ToolEvent, ToolResult};
+use wisp_tools::{Approval, McpAppServer, Tool, ToolEnv, ToolEvent, ToolResult};
 
 const MAX_PRESENTATION_HTML_BYTES: usize = 32 * 1024 * 1024;
 
@@ -16,23 +16,53 @@ pub struct McpTool {
     schema: ToolSchema,
     remote: RemoteTool,
     client: Arc<McpClient>,
+    /// Snapshot of the whole server catalog (shared by every tool of one MCP
+    /// connection) so an MCP App can later call sibling tools on the same
+    /// server — including app-only helpers that never entered the registry.
+    catalog: Arc<Vec<RemoteTool>>,
+    connector_id: String,
     require_approval: bool,
 }
 
 impl McpTool {
     pub fn new(tool: RemoteTool, client: Arc<McpClient>) -> Self {
+        Self::with_catalog(tool, client, "", Arc::new(Vec::new()))
+    }
+
+    pub fn new_requiring_approval(tool: RemoteTool, client: Arc<McpClient>) -> Self {
+        let mut wrapped = Self::new(tool, client);
+        wrapped.require_approval = true;
+        wrapped
+    }
+
+    /// Registration path: the caller already fetched the full server catalog,
+    /// so every tool of one connection shares the same snapshot. The
+    /// `catalog` is what an MCP App bridge validates sibling calls against.
+    pub fn with_catalog(
+        tool: RemoteTool,
+        client: Arc<McpClient>,
+        connector_id: impl Into<String>,
+        catalog: Arc<Vec<RemoteTool>>,
+    ) -> Self {
         let schema = ToolSchema::new(&tool.name, &tool.description, tool.input_schema.clone());
         Self {
             name: tool.name.clone(),
             schema,
             remote: tool,
             client: Arc::clone(&client),
+            catalog,
+            connector_id: connector_id.into(),
             require_approval: false,
         }
     }
 
-    pub fn new_requiring_approval(tool: RemoteTool, client: Arc<McpClient>) -> Self {
-        let mut wrapped = Self::new(tool, client);
+    pub fn with_catalog_requiring_approval(
+        tool: RemoteTool,
+        client: Arc<McpClient>,
+        connector_id: impl Into<String>,
+        catalog: Arc<Vec<RemoteTool>>,
+    ) -> Self {
+        let mut wrapped = Self::with_catalog(tool, client, connector_id, catalog);
         wrapped.require_approval = true;
         wrapped
     }
@@ -69,6 +99,13 @@ impl McpTool {
             tracing::warn!("MCP App resource '{uri}' exceeds presentation size cap");
             return;
         }
+        let server = McpAppServerHandle::new(
+            self.connector_id.clone(),
+            self.remote.display_title(),
+            Arc::clone(&self.catalog),
+            Arc::downgrade(&self.client),
+            self.require_approval,
+        );
         env.emit(ToolEvent::Presentation {
             kind: "mcp_app".into(),
             payload: json!({
@@ -77,8 +114,86 @@ impl McpTool {
                 "result": result,
                 "resource": resource,
             }),
+            server: Some(Arc::new(server)),
         })
         .await;
+    }
+}
+
+/// Host-side `serverTools` bridge handed to the desktop host when an MCP App
+/// is presented. The host stores it keyed by the app instance so `tools/call`
+/// from the iframe reuses the exact MCP connection that presented the app.
+/// Holds a `Weak` client on purpose: when the owning agent drops its tools
+/// (session end, connector restart, agent rebuild), the bridge reports a
+/// stale instance instead of pinning the MCP server process forever.
+pub struct McpAppServerHandle {
+    connector_id: String,
+    app_name: String,
+    catalog: Arc<Vec<RemoteTool>>,
+    client: Weak<McpClient>,
+    require_approval: bool,
+}
+
+impl McpAppServerHandle {
+    pub(crate) fn new(
+        connector_id: String,
+        app_name: String,
+        catalog: Arc<Vec<RemoteTool>>,
+        client: Weak<McpClient>,
+        require_approval: bool,
+    ) -> Self {
+        Self {
+            connector_id,
+            app_name,
+            catalog,
+            client,
+            require_approval,
+        }
+    }
+
+    fn tool(&self, name: &str) -> Option<&RemoteTool> {
+        self.catalog.iter().find(|tool| tool.name == name)
+    }
+}
+
+#[async_trait]
+impl McpAppServer for McpAppServerHandle {
+    fn connector_id(&self) -> &str {
+        &self.connector_id
+    }
+    fn app_name(&self) -> &str {
+        &self.app_name
+    }
+    fn require_approval(&self) -> bool {
+        self.require_approval
+    }
+    fn tools(&self) -> Vec<Value> {
+        self.catalog
+            .iter()
+            .filter_map(|tool| serde_json::to_value(tool).ok())
+            .collect()
+    }
+    fn visible_to_app(&self, name: &str) -> bool {
+        self.tool(name).is_some_and(RemoteTool::visible_to_app)
+    }
+    fn read_only(&self, name: &str) -> bool {
+        self.tool(name).is_some_and(RemoteTool::read_only)
+    }
+    async fn call_tool(&self, name: &str, arguments: &Value) -> Result<Value, String> {
+        if !self.visible_to_app(name) {
+            return Err(format!(
+                "MCP App tool '{name}' is not visible to apps on this server"
+            ));
+        }
+        let client = self
+            .client
+            .upgrade()
+            .ok_or_else(|| "the MCP server connection for this App is closed")?;
+        let result = client
+            .tool_call_rich(name, arguments)
+            .await
+            .map_err(|error| error.to_string())?;
+        serde_json::to_value(&result).map_err(|error| format!("serialize MCP tool result: {error}"))
     }
 }
 
@@ -286,5 +401,73 @@ mod tests {
             &[paths[0].to_string_lossy().to_string()]
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn mcp_app_server_handle_serves_catalog_and_reports_stale_clients() {
+        let catalog = Arc::new(vec![
+            RemoteTool {
+                name: "figure_visualize".into(),
+                title: None,
+                description: String::new(),
+                input_schema: json!({ "type": "object" }),
+                output_schema: None,
+                meta: None,
+                annotations: None,
+            },
+            RemoteTool {
+                name: "figure_preview_exact".into(),
+                title: None,
+                description: String::new(),
+                input_schema: json!({ "type": "object" }),
+                output_schema: None,
+                meta: Some(json!({ "ui": { "visibility": ["app"] } })),
+                annotations: Some(json!({ "readOnlyHint": true })),
+            },
+            RemoteTool {
+                name: "figure_edit".into(),
+                title: None,
+                description: String::new(),
+                input_schema: json!({ "type": "object" }),
+                output_schema: None,
+                meta: Some(json!({ "ui": { "visibility": ["model"] } })),
+                annotations: None,
+            },
+        ]);
+        let handle = McpAppServerHandle::new(
+            "figure-library".into(),
+            "Figure Library".into(),
+            catalog,
+            Weak::new(),
+            true,
+        );
+        assert_eq!(handle.connector_id(), "figure-library");
+        assert_eq!(handle.app_name(), "Figure Library");
+        assert!(handle.require_approval());
+        // Unset visibility and explicit app visibility both allow App calls;
+        // model-only tools must be refused.
+        assert!(handle.visible_to_app("figure_visualize"));
+        assert!(handle.visible_to_app("figure_preview_exact"));
+        assert!(!handle.visible_to_app("figure_edit"));
+        assert!(!handle.visible_to_app("figure_nope"));
+        // The server's readOnlyHint comes through for plan-mode gating.
+        assert!(handle.read_only("figure_preview_exact"));
+        assert!(!handle.read_only("figure_visualize"));
+        let listed = handle.tools();
+        assert_eq!(listed.len(), 3);
+        assert_eq!(listed[0]["name"], "figure_visualize");
+        assert_eq!(listed[1]["annotations"]["readOnlyHint"], true);
+        // A dead Weak client is the stale-instance the host reports after the
+        // owning agent drops its Arc (session end, rebuild, connector restart).
+        let error = handle
+            .call_tool("figure_preview_exact", &json!({}))
+            .await
+            .unwrap_err();
+        assert!(error.contains("connection for this App is closed"));
+        let error = handle
+            .call_tool("figure_edit", &json!({}))
+            .await
+            .unwrap_err();
+        assert!(error.contains("not visible to apps"));
     }
 }

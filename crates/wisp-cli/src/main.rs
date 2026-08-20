@@ -583,7 +583,12 @@ impl<W: Write + Send> Output for JsonlOutput<W> {
         self.emit(serde_json::json!({"type": "stdout", "chunk": chunk}));
     }
 
-    fn tool_presentation(&self, kind: &str, payload: &serde_json::Value) {
+    fn tool_presentation(
+        &self,
+        kind: &str,
+        payload: &serde_json::Value,
+        _server: Option<std::sync::Arc<dyn wisp_tools::McpAppServer>>,
+    ) {
         self.emit(serde_json::json!({
             "type": "tool_presentation",
             "kind": kind,
