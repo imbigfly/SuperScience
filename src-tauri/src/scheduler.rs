@@ -10,9 +10,9 @@
 
 use crate::{create_session_frame, send_message_inner, AppState, ComposerReferenceArg};
 use std::time::Duration;
+use superscience_store::{next_slot_after, ScheduleRecord, ScheduleRunRecord};
 use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
-use wisp_store::{next_slot_after, ScheduleRecord, ScheduleRunRecord};
 
 /// Due schedules are picked up within one poll interval of their slot.
 const POLL_INTERVAL: Duration = Duration::from_secs(30);

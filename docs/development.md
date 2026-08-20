@@ -13,7 +13,7 @@ Prerequisites:
 - **uv**: <https://docs.astral.sh/uv/>
 - **Trunk**: `cargo install --locked trunk`
 - **Tauri CLI v2**: `cargo install tauri-cli --version "^2"`
-- Optional: **R** with `jsonlite` for the persistent `r` tool. Wisp locates
+- Optional: **R** with `jsonlite` for the persistent `r` tool. SuperScience locates
   `Rscript` via Settings, then PATH, then well-known install locations
   (for example `C:\Program Files\R\R-*\bin` on Windows). It never installs R
   packages automatically.
@@ -46,10 +46,10 @@ cargo tauri build --target universal-apple-darwin
 
 If the window never appears after install, **Quit** from the tray icon and
 repair the [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/#download-section)
-(Evergreen Standalone Installer, run as administrator), then reopen Wisp.
+(Evergreen Standalone Installer, run as administrator), then reopen SuperScience.
 
 Packaged Windows builds have no console. Each launch writes
-`%APPDATA%\science.wisp-science\wisp-science\logs\wisp.log` (overwritten on the
+`%APPDATA%\science.superscience\superscience\logs\superscience.log` (overwritten on the
 next launch). The `startup finished` line breaks pre-first-paint work by phase
 (`total=…ms store=…ms skills=…ms …`). Recovery sweeps, the scratch sandbox
 purge, and restoring project windows run after the window is interactive and
@@ -58,12 +58,12 @@ are logged as `deferred startup finished`.
 ## Headless CLI
 
 ```bash
-export WISP_API_KEY=<your provider key>
-export WISP_PROVIDER=openai            # openai | openai_responses | anthropic
-export WISP_MODEL=deepseek-v4-flash
-cargo run -p wisp-cli                  # interactive agent
-cargo run -p wisp-cli -- run "Summarize the files in this project"
-cargo run -p wisp-cli -- run --output jsonl "Summarize the files in this project"
+export SUPERSCIENCE_API_KEY=<your provider key>
+export SUPERSCIENCE_PROVIDER=openai            # openai | openai_responses | anthropic
+export SUPERSCIENCE_MODEL=deepseek-v4-flash
+cargo run -p superscience-cli                  # interactive agent
+cargo run -p superscience-cli -- run "Summarize the files in this project"
+cargo run -p superscience-cli -- run --output jsonl "Summarize the files in this project"
 ```
 
 Eval and the long-lived JSONL RPC protocol:
@@ -73,29 +73,29 @@ Eval and the long-lived JSONL RPC protocol:
 
 | Variable             | Purpose                                                       |
 |----------------------|---------------------------------------------------------------|
-| `WISP_API_KEY`       | Provider API key (CLI). Desktop uses the OS keyring.          |
-| `WISP_PROVIDER`      | CLI API provider: `openai` (default), `openai_responses`, or `anthropic` |
-| `WISP_API_URL`       | API root; defaults to DeepSeek / OpenAI / Anthropic           |
-| `WISP_MODEL`         | Model name                                                    |
-| `WISP_MAX_CONTEXT`   | Context budget (default 1,000,000)                            |
-| `WISP_MAX_ITER`      | Max agent iterations per turn (default 100; 0 = unlimited)    |
-| `WISP_SKILLS_PATH`   | Extra `;`/`:`-separated SKILL.md catalog dirs                 |
-| `WISP_KERNEL_WORKER` | Override path to `kernel_worker.py` (bundled by default)      |
-| `WISP_MCP_COMMAND`   | Launch an arbitrary stdio MCP server (full command line)      |
-| `WISP_MCP_PKG`       | Launch a bundled bio-tools server, e.g. `mcp_pubmed`          |
+| `SUPERSCIENCE_API_KEY` | Provider API key (CLI). Desktop uses the OS keyring.        |
+| `SUPERSCIENCE_PROVIDER` | CLI API provider: `openai` (default), `openai_responses`, or `anthropic` |
+| `SUPERSCIENCE_API_URL` | API root; defaults to DeepSeek / OpenAI / Anthropic         |
+| `SUPERSCIENCE_MODEL` | Model name                                                    |
+| `SUPERSCIENCE_MAX_CONTEXT` | Context budget (default 1,000,000)                      |
+| `SUPERSCIENCE_MAX_ITER` | Max agent iterations per turn (default 100; 0 = unlimited) |
+| `SUPERSCIENCE_SKILLS_PATH` | Extra `;`/`:`-separated SKILL.md catalog dirs            |
+| `SUPERSCIENCE_KERNEL_WORKER` | Override path to `kernel_worker.py` (bundled by default) |
+| `SUPERSCIENCE_MCP_COMMAND` | Launch an arbitrary stdio MCP server (full command line) |
+| `SUPERSCIENCE_MCP_PKG` | Launch a bundled bio-tools server, e.g. `mcp_pubmed`       |
 
-Desktop stores API keys in the OS keyring and model profiles in
-`.wisp/wisp.sqlite`. Custom credentials map a display name to an environment
-variable and are injected only into newly launched local Python and bundled MCP
-processes — never copied to SSH/WSL hosts.
+Desktop stores API keys in the OS keyring and model profiles in the app-data
+SQLite store (`superscience.sqlite`). Custom credentials map a display name to an
+environment variable and are injected only into newly launched local Python and
+bundled MCP processes — never copied to SSH/WSL hosts.
 
-Wisp reads `AGENTS.md` from the project root when a new session starts.
-Instructions in **Project Settings → Agent Context** live in `.wisp/WISP.md`
-and take precedence when both exist.
+SuperScience reads `AGENTS.md` from the project root when a new session starts.
+Instructions in **Project Settings → Agent Context** live in
+`.superscience/SUPERSCIENCE.md` and take precedence when both exist.
 
 ### Bundled bio-tools MCP
 
-`WISP_MCP_PKG=mcp_pubmed` launches `mcp-servers/bio-tools/run_server.py
+`SUPERSCIENCE_MCP_PKG=mcp_pubmed` launches `mcp-servers/bio-tools/run_server.py
 mcp_pubmed` inside the uv venv. Install the server's dependencies first:
 
 ```bash
@@ -108,23 +108,27 @@ selected one through `use_mcp_tool`; the full server catalog is never copied
 into every model request.
 
 Desktop users add remote MCP (Notion, Parallel Search, …) under
-**Settings → Connections**. See [basic configuration](basic-configuration.md).
+**Settings → Connections**. Bundled biology domains appear in the Featured
+list with familiar titles first (`PubMed`, `GEO (Omics Archives)`,
+`UniProt (Genes Ontologies)`, `PDB (Structures Interactions)`). There is no
+standalone connection named `bio-tools` or `academic-search`. See
+[basic configuration](basic-configuration.md).
 
 ## Repository layout
 
 ```
-wisp-science/
+SuperScience/
 ├─ crates/
-│  ├─ wisp-llm/     Provider trait + OpenAI-compatible + Anthropic + SSE + RoutedProvider
-│  ├─ wisp-core/    ContextManager (3-tier compaction), SystemPrompt, agent_loop, memory
-│  ├─ wisp-tools/   read/write/edit/search/grep/shell/attempt_completion + Windows safety
-│  ├─ wisp-store/   sqlx SQLite (projects/frames/messages/artifacts/settings) + OS keyring
-│  ├─ wisp-skills/  SKILL.md discovery + search_skills/use_skill progressive loading
-│  ├─ wisp-runtime/ project-scoped Python/R runtime manager + REPL tools
-│  ├─ wisp-mcp/     stdio JSON-RPC MCP client + McpTool adapter (bundled bio-tools)
-│  ├─ wisp-acp/     ACP v1 stdio client for external coding agents
-│  ├─ wisp-sync/    Encrypted snapshot protocol + self-hosted relay server
-│  └─ wisp-cli/     `wisp-science` headless binary
+│  ├─ superscience-llm/     Provider trait + OpenAI-compatible + Anthropic + SSE + RoutedProvider
+│  ├─ superscience-core/    ContextManager (3-tier compaction), SystemPrompt, agent_loop, memory
+│  ├─ superscience-tools/   read/write/edit/search/grep/shell/attempt_completion + Windows safety
+│  ├─ superscience-store/   sqlx SQLite (projects/frames/messages/artifacts/settings) + OS keyring
+│  ├─ superscience-skills/  SKILL.md discovery + search_skills/use_skill progressive loading
+│  ├─ superscience-runtime/ project-scoped Python/R runtime manager + REPL tools
+│  ├─ superscience-mcp/     stdio JSON-RPC MCP client + McpTool adapter (bundled bio-tools)
+│  ├─ superscience-acp/     ACP v1 stdio client for external coding agents
+│  ├─ superscience-sync/    Encrypted snapshot protocol + self-hosted relay server
+│  └─ superscience-cli/     `superscience` headless binary
 ├─ src-tauri/       Tauri v2 desktop shell (commands + agent event stream)
 ├─ ui/              Leptos CSR frontend (built by Trunk, loaded in WebView2)
 ├─ python/          kernel_worker.py + mock MCP server (uv-managed)
@@ -132,27 +136,36 @@ wisp-science/
 ├─ skills/          Bundled SKILL.md catalog for reusable scientific workflows
 │                   (knowledge-graph visualizer is stdlib-only; extraction uses the in-app model)
 ├─ mcp-servers/     Bundled MCP servers (bio-tools: ~80 DB clients)
-└─ seed/            Bundled demo session recordings (ESR1 / GSE153250 ×5)
+└─ seed/            Bundled demo session recordings (stats two-way ANOVA + ESR1 / GSE153250 ×5 + memory)
+                    User-saved examples live in app data `user-demos/` and appear first.
+                    Right-click → Export as bundled example copies a saved demo into `seed/`.
+                    Removing a bundled demo hides it for this install (`user-demos/hidden_ids.json`).
 ```
+
+The upstream merge source is [`xuzhougeng/wisp-science`](https://github.com/xuzhougeng/wisp-science).
+That name is the git remote, not the product brand. After merging vendor skill
+packs, if a `SKILL.md` again ships a `wisp:` frontmatter key, run skill
+auto-update (it rewrites the key to `superscience:`) rather than restoring a
+serde alias on the parser.
 
 ## Architecture
 
-- **Agent loop** (`wisp-core::agent`): read → think → tool-call → verify,
+- **Agent loop** (`superscience-core::agent`): read → think → tool-call → verify,
   streaming tokens to an `Output` sink. Stops on `attempt_completion` or when
   the model returns no tool calls.
-- **Context compaction** (`wisp-core::context`): an archive-first pipeline fires
+- **Context compaction** (`superscience-core::context`): an archive-first pipeline fires
   before each model call at 80% of the context budget — prune tool/media noise
   older than the protected recent agent rounds, then summarize sanitized
   history, keeping one incremental checkpoint plus an 8K-token recent tail. The
   post-compact target adapts to measured per-iteration growth instead of a
   fixed percentage, and a failed attempt suppresses automatic retries until the
   estimate grows further. Old turns are never silently dropped.
-- **Providers** (`wisp-llm`): one trait, two wire formats (OpenAI
+- **Providers** (`superscience-llm`): one trait, two wire formats (OpenAI
   `/chat/completions` and Anthropic `/v1/messages`), both with SSE streaming.
   `RoutedProvider` picks a low/medium/high tier per turn.
-- **Tools** (`wisp-tools`): filesystem + shell tools with Windows-aware
+- **Tools** (`superscience-tools`): filesystem + shell tools with Windows-aware
   dangerous-command gating and a path sandbox rooted at the project directory.
-- **Python/R REPLs** (`wisp-runtime`): one manager-owned process per
+- **Python/R REPLs** (`superscience-runtime`): one manager-owned process per
   project/context/language keeps its namespace across cells and conversations;
   local, WSL, and SSH contexts share one versioned protocol.
 - **MCP** (`wisp-mcp`): a newline-JSON-RPC client launches any stdio MCP
@@ -186,7 +199,7 @@ wisp-science/
 
 - Real-browser automation is inspired by
   [GenericAgent's GA Web / TMWebDriver](https://github.com/lsdefine/GenericAgent)
-  (MIT, Copyright 2025 lsdefine). Wisp's Rust bridge and Manifest V3 extension
+  (MIT, Copyright 2025 lsdefine). SuperScience's Rust bridge and Manifest V3 extension
   are an independent implementation; see
   [`browser-extension/NOTICE.md`](../browser-extension/NOTICE.md).
 - The agent core is based on

@@ -8,10 +8,10 @@ use crate::{delegation_runtime, dynamic_workflow, skill_portfolio, ActiveProject
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
-use tauri::State;
 use superscience_llm::{Message, ToolSchema};
 use superscience_store::Store;
 use superscience_tools::{Tool, ToolEnv, ToolResult};
+use tauri::State;
 
 const QUICK_ACTIONS_KEY: &str = "quick_actions";
 const WORKFLOW_TEMPLATES_KEY: &str = "workflow_templates";
@@ -1906,7 +1906,10 @@ mod tests {
             ["literature_methods", "data_audit", "baseline_analysis"]
         );
         let activity = &proposal.tasks[4];
-        assert_eq!(activity.task_kind, superscience_core::WorkflowTaskKind::RunActivity);
+        assert_eq!(
+            activity.task_kind,
+            superscience_core::WorkflowTaskKind::RunActivity
+        );
         assert_eq!(activity.depends_on, ["prepare_contract"]);
         let activity_spec = activity.run_activity.as_ref().unwrap();
         assert_eq!(activity_spec.activity, "method_search");

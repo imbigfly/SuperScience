@@ -10,8 +10,6 @@ use std::{
     },
     time::Duration,
 };
-use tauri::State;
-use tokio::sync::Mutex;
 use superscience_acp::{
     acp::schema::v1::{ContentBlock, SessionId, TextContent},
     AcpPermissionKind, AcpSessionEvent, AcpSessionHandle, AcpStopReason, AcpUpdateKind,
@@ -33,6 +31,8 @@ use superscience_store::{
     AgentWorkflowAttemptStart, AgentWorkflowAttemptStatus, AgentWorkflowStatus, AgentWorkflowStep,
     Store, MAX_ROOT_AGENT_TASKS,
 };
+use tauri::State;
+use tokio::sync::Mutex;
 
 const RESULT_INSTRUCTIONS: &str = "Return one JSON object and no Markdown fence. Include summary (string), files_changed (array), diff_summary (string), artifacts (array), evidence (array), tests (array), and risks (array).";
 const DELEGATION_PROMPT_START: &str = "\n\n<delegation_capability>";
@@ -2528,7 +2528,8 @@ impl AgentDelegator for NativeDelegator {
             .cloned()
             .collect::<HashSet<_>>();
         let skills = Arc::new(project_skills.filtered_by_names(Some(&skill_allow)));
-        let mut tools = superscience_core::build_registry(skills, self.project.memory.clone(), false);
+        let mut tools =
+            superscience_core::build_registry(skills, self.project.memory.clone(), false);
         tools.add(Box::new(
             crate::session_context_tool::SessionExecutionContextTool::new(
                 Box::new(crate::run_context::RunInContextTool::new(
@@ -2557,12 +2558,13 @@ impl AgentDelegator for NativeDelegator {
                 child_frame_id.clone(),
             ),
         ));
-        let runtime_project_id =
-            if request.spec.workspace_policy == Some(superscience_core::AgentWorkspacePolicy::Isolated) {
-                isolated_runtime_scope(&self.project.id, &request.request_id)
-            } else {
-                self.project.id.clone()
-            };
+        let runtime_project_id = if request.spec.workspace_policy
+            == Some(superscience_core::AgentWorkspacePolicy::Isolated)
+        {
+            isolated_runtime_scope(&self.project.id, &request.request_id)
+        } else {
+            self.project.id.clone()
+        };
         let wiring = crate::wire_runtimes_and_mcp(
             &mut tools,
             &self.runtime_manager,
@@ -5502,7 +5504,9 @@ mod tests {
             .unwrap();
         for id in ["ssh:selected", "ssh:stale"] {
             store
-                .upsert_execution_context(&superscience_store::ExecutionContext::new(id, id).unwrap())
+                .upsert_execution_context(
+                    &superscience_store::ExecutionContext::new(id, id).unwrap(),
+                )
                 .await
                 .unwrap();
         }
@@ -6695,7 +6699,10 @@ mod tests {
                 },
                 &crate::delegation_resources::ScientificTaskGrant::default()
             ),
-            ["superscience_delegate_tasks", "superscience_get_delegated_result"]
+            [
+                "superscience_delegate_tasks",
+                "superscience_get_delegated_result"
+            ]
         );
         assert_eq!(
             acp_bridge_tool_allowlist(
@@ -6995,7 +7002,8 @@ mod tests {
 
     #[test]
     fn bound_skill_prompt_rejects_catalog_drift() {
-        let root = std::env::temp_dir().join(format!("superscience-bound-skill-{}", uuid::Uuid::new_v4()));
+        let root =
+            std::env::temp_dir().join(format!("superscience-bound-skill-{}", uuid::Uuid::new_v4()));
         let dir = root.join("demo");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("SKILL.md");

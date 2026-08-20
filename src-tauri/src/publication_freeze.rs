@@ -1658,11 +1658,15 @@ async fn prepare_publication_freeze(
                         ("context.kind", parsed.pointer("/context/kind")),
                         (
                             "superscience_host.os",
-                            parsed.pointer("/superscience_host/os"),
+                            parsed
+                                .pointer("/superscience_host/os")
+                                .or_else(|| parsed.pointer("/wisp_host/os")),
                         ),
                         (
                             "superscience_host.arch",
-                            parsed.pointer("/superscience_host/arch"),
+                            parsed
+                                .pointer("/superscience_host/arch")
+                                .or_else(|| parsed.pointer("/wisp_host/arch")),
                         ),
                     ]
                     .into_iter()

@@ -1894,10 +1894,13 @@ function injectResponsiveHtmlPreview(html, baseHref) {
   const withBase = injectBaseHref(html, baseHref);
   const viewportTag = '<meta name="viewport" content="width=device-width, initial-scale=1">';
   const previewStyle = `<style>
-html, body { max-width: 100%; overflow-x: hidden; }
+html, body { height: 100%; max-width: 100%; overflow-x: hidden; }
 body { margin-left: auto !important; margin-right: auto !important; }
 img, svg, canvas, video, iframe, embed, object { max-width: 100% !important; height: auto !important; }
 table { max-width: 100%; }
+/* knowledge-graph and similar canvas stages: fill the iframe instead of a 70vh band. */
+#graph-stage { flex: 1 1 auto !important; height: auto !important; min-height: 0 !important; }
+#graph { height: 100% !important; }
 </style>`;
   const resizeScript = `<script>
 (() => {

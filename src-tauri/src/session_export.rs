@@ -95,7 +95,7 @@ struct ExportManifest {
 
 /// Normalize a UI path (absolute or relative) to the workspace-relative form used
 /// in `execution_log.files_written`.
-pub(super) fn to_workspace_rel(root: &std::path::Path, path: &str) -> String {
+pub(crate) fn to_workspace_rel(root: &std::path::Path, path: &str) -> String {
     let p = std::path::Path::new(path);
     p.strip_prefix(root)
         .unwrap_or(p)

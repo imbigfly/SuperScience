@@ -4,10 +4,11 @@
 use crate::exploration_commands;
 use crate::AppState;
 use serde::Serialize;
+use superscience_store::ContextStoragePrefs;
 use tauri::State;
-use wisp_store::ContextStoragePrefs;
 
-pub(crate) const DEFAULT_REMOTE_WORKDIR_ROOT: &str = ".wisp-science/runs";
+pub(crate) const DEFAULT_REMOTE_WORKDIR_ROOT: &str =
+    superscience_paths::DEFAULT_REMOTE_WORKDIR_ROOT;
 
 fn slug(value: &str) -> String {
     let sanitized: String = value
@@ -43,7 +44,7 @@ pub(crate) fn default_prefs(
     ContextStoragePrefs {
         project_id: project_id.into(),
         context_id: context_id.into(),
-        remote_data_root: format!("~/wisp/{}/data", slug(project_name)),
+        remote_data_root: superscience_paths::default_remote_data_root(&slug(project_name)),
         remote_workdir_root: DEFAULT_REMOTE_WORKDIR_ROOT.into(),
         local_results_dir: format!("remote/{}", slug(context_label)),
         created_at: now,
@@ -54,7 +55,7 @@ pub(crate) fn default_prefs(
 /// Stored preferences when present, deterministic defaults otherwise. The
 /// second value reports whether the user has confirmed (persisted) them.
 pub(crate) async fn effective_prefs(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     project_id: &str,
     context_id: &str,
 ) -> Result<(ContextStoragePrefs, bool), String> {
@@ -163,7 +164,7 @@ mod tests {
     #[test]
     fn defaults_follow_project_and_context_names() {
         let prefs = default_prefs("p", "T-cell Atlas", "ssh:gpu", "GPU Box");
-        assert_eq!(prefs.remote_data_root, "~/wisp/t-cell-atlas/data");
+        assert_eq!(prefs.remote_data_root, "~/superscience/t-cell-atlas/data");
         assert_eq!(prefs.remote_workdir_root, DEFAULT_REMOTE_WORKDIR_ROOT);
         assert_eq!(prefs.local_results_dir, "remote/gpu-box");
         assert!(prefs.validate().is_ok());

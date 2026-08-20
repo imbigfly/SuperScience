@@ -30,7 +30,7 @@ async function expectInsideViewport(locator: Locator, width: number, height: num
 async function openModelsSettings(page: Page) {
   await globalSettingsButton(page).click();
   await page.getByRole("button", { name: "Models" }).click();
-  const row = page.locator(".settings-list-row").first();
+  const row = page.locator(".model-card").first();
   if (await row.count()) {
     await row.click();
   } else {
@@ -111,7 +111,7 @@ async function pinNonMacPlatform(page: Page) {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "userAgent", {
       configurable: true,
-      value: "wisp-science/Tauri",
+      value: "superscience/Tauri",
     });
     Object.defineProperty(navigator, "platform", {
       configurable: true,
@@ -353,8 +353,8 @@ test("send streams a mocked assistant reply", async ({ page, context }) => {
   await enterApp(page);
   await composer(page).fill("hello there");
   await page.getByRole("button", { name: "Send" }).click();
-  // Deltas "Hello " + "from mock wisp-science." accumulate into one assistant bubble.
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  // Deltas "Hello " + "from mock SuperScience." accumulate into one assistant bubble.
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible({ timeout: 10_000 });
   const followUps = page.getByTestId("follow-up-questions");
   await expect(followUps.getByRole("button")).toHaveCount(4);
   await followUps.getByRole("button", { name: "Expand the search for underrepresented species" }).click();
@@ -373,7 +373,7 @@ test("sending a follow-up hides suggestions before the User event arrives", asyn
   await enterApp(page);
   await composer(page).fill("hello there");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible({ timeout: 10_000 });
   const followUps = page.getByTestId("follow-up-questions");
   await expect(followUps.getByRole("button")).toHaveCount(4);
 
@@ -390,7 +390,7 @@ test("completed turns propose editable memory and require confirmation", async (
   await enterApp(page);
   await composer(page).fill("summarize this project convention");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible();
   await page.getByRole("button", { name: "Toggle panel" }).click();
   await expect(page.locator(".rightpane")).toBeVisible();
 
@@ -410,7 +410,7 @@ test("completed turns propose editable memory and require confirmation", async (
   await page.keyboard.press("Escape");
   await expect(modal).toHaveCount(0);
   await expect(page.locator(".rightpane")).toBeVisible();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible();
 
   await page.locator(".msg.assistant").getByRole("button", { name: "Memory" }).click();
   await page.getByTestId("turn-memory-content").fill("Always prefer reproducible local workflows.");
@@ -486,7 +486,7 @@ test("manual review blocks sending and shows a playful progress animation", asyn
   await enterApp(page);
   await composer(page).fill("review this answer");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible();
 
   await page.locator(".msg.assistant").getByRole("button", { name: "Review" }).click();
   await expect(page.getByRole("button", { name: "Send" })).toBeDisabled();
@@ -503,7 +503,7 @@ test("undo returns the latest prompt and keeps unsupported Word files", async ({
   await enterApp(page);
   await composer(page).fill("revise my notes");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible({ timeout: 10_000 });
 
   const undo = page.locator(".msg.assistant").getByRole("button", { name: "Undo" });
   await expect(undo).toHaveCount(1);
@@ -527,7 +527,7 @@ test("undo returns the latest prompt and keeps unsupported Word files", async ({
   });
   await expect(modal).toHaveCount(0);
   await expect(page.locator(".msg.user", { hasText: "revise my notes" })).toHaveCount(0);
-  await expect(page.getByText("Hello from mock wisp-science.")).toHaveCount(0);
+  await expect(page.getByText("Hello from mock SuperScience.")).toHaveCount(0);
   await expect(composer(page)).toHaveValue("revise my notes");
 });
 
@@ -649,7 +649,7 @@ test("storage separates project paths and filters usage when a project is clicke
     .toHaveCount(0);
 
   await projects.locator(".storage-project-row").first().click();
-  await expect(page.locator(".storage-path")).toHaveText("C:\\mock\\AppData\\wisp-science");
+  await expect(page.locator(".storage-path")).toHaveText("C:\\mock\\AppData\\superscience");
   await expect(page.locator(".storage-legend-row").filter({ hasText: "Workspace files" }))
     .toContainText("120.0 MB");
 });
@@ -662,7 +662,7 @@ test("sidebar Feedback opens a blank conversation and waits for the user's first
     buffer: Buffer.from("a,b\n1,2"),
   });
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible();
   await page.getByRole("button", { name: "Toggle panel" }).click();
   const tile = page.locator('.rp-tile[data-artifact-name="counts.csv"]');
   await tile.click({ button: "right" });
@@ -688,7 +688,7 @@ test("sidebar Feedback opens a blank conversation and waits for the user's first
   const sent = await lastInvokeArgs(page, "send_message");
   expect(sent?.message).toContain("Feedback context:");
   expect(sent?.message).toContain("GitHub issue");
-  expect(sent?.message).toMatch(/Wisp version: 0\.29\.0/);
+  expect(sent?.message).toMatch(/SuperScience version: 0\.29\.0/);
   expect(sent?.message).toMatch(/OS \/ architecture: windows \/ x86_64/);
   expect(sent?.message).toMatch(/Model profile: deepseek-v4-pro/);
   expect(sent?.message).not.toMatch(/\/mock\/root/);
@@ -719,7 +719,7 @@ test("Memory settings show the active project name", async ({ page }) => {
   await openSettingsSection(page, "Memory");
   const project = page.getByTestId("memory-project");
   await expect(page.getByTestId("memory-project-select")).toHaveAttribute("data-project-id", "default");
-  await expect(page.getByTestId("memory-project-select")).toContainText("wisp-science");
+  await expect(page.getByTestId("memory-project-select")).toContainText("superscience");
   await expect(project).toContainText("(1)");
   await expect(page.locator(".conn-group-label", { hasText: "Project memory" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Clear all" })).toHaveClass("memory-clear-btn");
@@ -878,7 +878,7 @@ test("background Agent completion appears in its owning conversation", async ({ 
   await enterApp(page);
   await composer(page).fill("start background analysis");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible({ timeout: 10_000 });
   const sent = await lastInvokeArgs(page, "send_message");
   await page.evaluate((frameId) => {
     (window as any).__tauriEmit("agent", {
@@ -905,7 +905,7 @@ test("switching HTTP models confirms cache invalidation", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("bind this conversation model");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible();
 
   await page.locator(".model-picker-btn").click();
   const opusOption = page.getByRole("button", { name: /opus-4\.8/ });
@@ -943,7 +943,7 @@ test("switching to a text-only model confirms historical images will be ignored"
     buffer: Buffer.from([137, 80, 78, 71]),
   });
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible();
 
   await page.locator(".model-picker-btn").click();
   await page.getByRole("button", { name: /deepseek-v4-pro/ }).click();
@@ -962,7 +962,7 @@ test("model switch warning can be permanently dismissed", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("bind this conversation model");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible();
 
   await page.locator(".model-picker-btn").click();
   await page.getByRole("button", { name: /opus-4\.8/ }).click();
@@ -971,7 +971,7 @@ test("model switch warning can be permanently dismissed", async ({ page }) => {
   await modal.getByRole("checkbox", { name: "Don't ask again" }).check();
   await modal.getByRole("button", { name: "Yes, switch" }).click();
   await expect.poll(() => lastInvokeArgs(page, "set_active_model")).toMatchObject({ id: "opus" });
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("wisp-model-switch-warning-disabled")))
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("superscience-model-switch-warning-disabled")))
     .toBe("1");
   await expect(page.locator(".model-picker-label")).toHaveText("opus-4.8");
 
@@ -1192,7 +1192,7 @@ test("selecting an ACP Agent from a populated HTTP session starts a fresh sessio
   await enterApp(page);
   await composer(page).fill("existing HTTP turn");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible();
   const firstSend = await lastInvokeArgs(page, "send_message");
   await composer(page).fill("preserved draft");
 
@@ -1739,9 +1739,9 @@ test("automatic reviewer resolves its finding and jumps past UI-only rows (#550)
 
   const handoffs = page.locator(".review-transition");
   await expect(handoffs).toHaveCount(2);
-  await expect(handoffs.nth(0)).toContainText("wisp-science nudged Reviewer");
+  await expect(handoffs.nth(0)).toContainText("天成科研助手 nudged Reviewer");
   await expect(handoffs.nth(0)).toHaveAttribute("data-phase", "reviewing");
-  await expect(handoffs.nth(1)).toContainText("Reviewer nudged wisp-science");
+  await expect(handoffs.nth(1)).toContainText("Reviewer nudged 天成科研助手");
   await expect(handoffs.nth(1)).toContainText("deepseek-v4-pro");
   await expect(handoffs.nth(1)).toHaveAttribute("data-phase", "correcting");
 
@@ -1931,7 +1931,7 @@ test("composer @ # and / add typed context references", async ({ page }) => {
   await expect(composerInput).toBeFocused();
 
   await composerInput.pressSequentially("#project");
-  await expect(page.locator(".mention-menu")).toContainText("Search every session in wisp-science");
+  await expect(page.locator(".mention-menu")).toContainText("Search every session in superscience");
   await page.locator(".mention-menu .mention-item").first().click();
   await expect(composerInput).toHaveValue("");
   await expect(composerInput).toBeFocused();
@@ -1976,7 +1976,7 @@ test("composer @ # and / add typed context references", async ({ page }) => {
   await expect(sentContext).toHaveCount(6);
   await expect(page.locator('.msg.user [data-reference-kind="artifact"]')).toContainText("nif3.treefile");
   await expect(page.locator('.msg.user [data-reference-kind="session"]')).toContainText("Current analysis");
-  await expect(page.locator('.msg.user [data-reference-kind="project"]')).toContainText("wisp-science");
+  await expect(page.locator('.msg.user [data-reference-kind="project"]')).toContainText("superscience");
   await expect(page.locator('.msg.user [data-reference-kind="skill"]')).toContainText("literature-review");
   await expect(page.locator('.msg.user [data-reference-kind="workflow"]')).toContainText("Roundtable");
   const sentEnvironment = page.locator('.msg.user [data-reference-kind="context"]');
@@ -2072,7 +2072,7 @@ test("composer slash commands run the matching shell actions", async ({ page }) 
   // A completed turn unlocks the turn-bound commands.
   await composerInput.fill("hello there");
   await composerInput.press("Enter");
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible({ timeout: 10_000 });
 
   // Picked action commands run immediately without filling the composer.
   await composerInput.pressSequentially("/rev");
@@ -2196,7 +2196,7 @@ test("/share exports selected, keyword-redacted messages as a PNG", async ({ pag
   await expect(overlay.locator(".share-count")).toHaveText("1/3 selected");
   await overlay.getByTestId("share-export").click();
   await expect.poll(() => lastInvokeArgs(page, "save_share_image")).toMatchObject({
-    defaultName: expect.stringMatching(/^wisp-share-\d{4}-\d{2}-\d{2}\.png$/),
+    defaultName: expect.stringMatching(/^superscience-share-\d{4}-\d{2}-\d{2}\.png$/),
   });
   const args = await lastInvokeArgs(page, "save_share_image");
   // The Markdown reply (heading/list/code fence) renders into a tall image.
@@ -2232,7 +2232,7 @@ test("/share exports selected, keyword-redacted messages as a PNG", async ({ pag
   await overlay.locator("#share-redact-input").fill("alice");
   await overlay.getByTestId("share-export").click();
   await expect.poll(() => lastInvokeArgs(page, "save_share_html")).toMatchObject({
-    defaultName: expect.stringMatching(/^wisp-share-\d{4}-\d{2}-\d{2}\.html$/),
+    defaultName: expect.stringMatching(/^superscience-share-\d{4}-\d{2}-\d{2}\.html$/),
   });
   const html = String((await lastInvokeArgs(page, "save_share_html")).html);
   expect(html).toContain("<!doctype html>");
@@ -2622,7 +2622,7 @@ test("context usage moves out of the topbar and opens a categorized detail panel
   await expect(panel.locator(".context-usage-row.expandable")).toHaveCount(6);
 
   await panel.getByText("System prompt", { exact: true }).click();
-  await expect(panel.locator(".context-usage-detail")).toContainText("You are wisp-science");
+  await expect(panel.locator(".context-usage-detail")).toContainText("You are SuperScience");
   await panel.getByText("Tool definitions", { exact: true }).click();
   await expect(panel.locator(".context-usage-detail")).toContainText("read");
   await expect(panel.locator(".context-usage-detail")).toContainText("Read a file from disk");
@@ -2935,7 +2935,7 @@ test("artifact type badges stay neutral instead of rainbow pills", async ({ page
     .locator("#composer-input")
     .fill("show `figures/panel_I_heatmap_4genes_median.png/.pdf`");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "Toggle panel" }).click();
 
   const badge = page.locator('.rp-tile[data-artifact-name="panel_I_heatmap_4genes_median.png"] .rp-badge');
@@ -2950,7 +2950,7 @@ test("Cmd+K opens search and the composer shows the macOS shortcut", async ({ pa
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "userAgent", {
       configurable: true,
-      value: "wisp-science/Tauri",
+      value: "superscience/Tauri",
     });
     Object.defineProperty(navigator, "platform", {
       configurable: true,
@@ -2978,13 +2978,13 @@ test("Cmd+Enter sends when the modifier shortcut is selected on macOS", async ({
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "userAgent", {
       configurable: true,
-      value: "wisp-science/Tauri",
+      value: "superscience/Tauri",
     });
     Object.defineProperty(navigator, "platform", {
       configurable: true,
       value: "MacIntel",
     });
-    localStorage.setItem("wisp-send-with-modifier", "1");
+    localStorage.setItem("superscience-send-with-modifier", "1");
   });
   await enterApp(page);
   await expect(page.locator(".composer-hint")).toContainText("Cmd+Enter to send · Enter for newline");
@@ -3064,7 +3064,7 @@ test("Ctrl+P command palette runs commands and switches themes", async ({ page }
   await input.fill("dark theme");
   await input.press("Enter");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("wisp-theme"))).toBe("dark");
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("superscience-theme"))).toBe("dark");
 
   await page.keyboard.press("Control+p");
   await input.fill("open files");
@@ -3089,7 +3089,7 @@ test("Ctrl+P command palette runs commands and switches themes", async ({ page }
 test("privacy mode hides selected projects and recent sessions, then restores them", async ({ page }) => {
   await pinNonMacPlatform(page);
   await page.goto("/");
-  const privateProject = page.locator(".proj-card", { hasText: "wisp-science" });
+  const privateProject = page.locator(".proj-card", { hasText: "superscience" });
   const otherProject = page.locator(".proj-card", { hasText: "Other project" });
   await expect(privateProject).toBeVisible();
   await expect(page.getByTestId("recent-session-card")).toHaveCount(2);
@@ -3109,7 +3109,7 @@ test("privacy mode hides selected projects and recent sessions, then restores th
 
   await page.keyboard.press("Control+Shift+h");
   await expect(modal).toBeVisible();
-  const projectRow = modal.locator(".privacy-project-row", { hasText: "wisp-science" });
+  const projectRow = modal.locator(".privacy-project-row", { hasText: "superscience" });
   await expect(projectRow).toHaveCSS("flex-direction", "row");
   await projectRow.locator('input[type="checkbox"]').check();
   await modal.getByRole("button", { name: "Hide selected" }).click();
@@ -3118,7 +3118,7 @@ test("privacy mode hides selected projects and recent sessions, then restores th
   await expect(otherProject).toBeVisible();
   await expect(page.getByTestId("recent-session-card")).toHaveCount(0);
   await expect(page.locator(".privacy-mode-banner")).toHaveCount(0);
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("wisp-privacy-mode-active"))).toBe("1");
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("superscience-privacy-mode-active"))).toBe("1");
 
   await page.reload();
   await expect(otherProject).toBeVisible();
@@ -3128,22 +3128,22 @@ test("privacy mode hides selected projects and recent sessions, then restores th
   await expect(page.getByTestId("recent-session-card")).toHaveCount(0);
   await page.keyboard.press("Control+k");
   const search = page.getByRole("dialog", { name: "Search" });
-  await expect(search).not.toContainText("wisp-science");
+  await expect(search).not.toContainText("superscience");
   await expect(search).not.toContainText("Enumerate MCP bio-tools databases");
   await page.keyboard.press("Escape");
 
   await page.keyboard.press("Control+Shift+h");
-  await expect(modal.locator(".privacy-project-row", { hasText: "wisp-science" })
+  await expect(modal.locator(".privacy-project-row", { hasText: "superscience" })
     .locator('input[type="checkbox"]')).toBeChecked();
   await modal.getByRole("button", { name: "Restore all" }).click();
   await expect(privateProject).toBeVisible();
   await expect(page.getByTestId("recent-session-card")).toHaveCount(2);
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("wisp-privacy-mode-active"))).toBeNull();
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("superscience-privacy-mode-active"))).toBeNull();
 });
 
 test("privacy mode select all toggles every project at once", async ({ page }) => {
   await page.goto("/");
-  const privateProject = page.locator(".proj-card", { hasText: "wisp-science" });
+  const privateProject = page.locator(".proj-card", { hasText: "superscience" });
   const otherProject = page.locator(".proj-card", { hasText: "Other project" });
   await expect(privateProject).toBeVisible();
   await expect(otherProject).toBeVisible();
@@ -3173,7 +3173,7 @@ test("privacy mode select all toggles every project at once", async ({ page }) =
   await expect(privateProject).toBeHidden();
   await expect(otherProject).toBeHidden();
   await expect(page.getByTestId("recent-session-card")).toHaveCount(0);
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("wisp-privacy-mode-active"))).toBe("1");
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("superscience-privacy-mode-active"))).toBe("1");
 
   await page.keyboard.press("Control+Shift+h");
   await expect(selectAll).toBeChecked();
@@ -3199,10 +3199,10 @@ test("Ctrl+P changes UI and code font sizes", async ({ page }) => {
   await expect(page.locator(".action-palette-row")).toHaveCount(4);
 
   for (const [command, key, expected] of [
-    ["increase ui size", "wisp-ui-font-size", "15"],
-    ["decrease ui size", "wisp-ui-font-size", "14"],
-    ["increase code size", "wisp-code-font-size", "13"],
-    ["decrease code size", "wisp-code-font-size", "12"],
+    ["increase ui size", "superscience-ui-font-size", "15"],
+    ["decrease ui size", "superscience-ui-font-size", "14"],
+    ["increase code size", "superscience-code-font-size", "13"],
+    ["decrease code size", "superscience-code-font-size", "12"],
   ] as const) {
     await input.fill(command);
     await input.press("Enter");
@@ -4202,7 +4202,7 @@ test("branch in new session starts a new frame from the current session", async 
   await enterApp(page);
   await composer(page).fill("seed context");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible({ timeout: 10_000 });
 
   await composer(page).fill("try another route");
   await page.getByRole("button", { name: "Message options" }).click();
@@ -4221,7 +4221,7 @@ test("branch on an earlier user message opens a new session from that point", as
   await enterApp(page);
   await composer(page).fill("first idea");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible({ timeout: 10_000 });
 
   await composer(page).fill("second idea");
   await page.getByRole("button", { name: "Send" }).click();
@@ -4250,12 +4250,12 @@ test("assistant actions are icon-only and can branch from the preceding user tur
   await enterApp(page);
   await composer(page).fill("branch from this answer");
   await page.getByRole("button", { name: "Send" }).click();
-  const assistant = page.locator(".msg.assistant").filter({ hasText: "Hello from mock wisp-science." }).first();
+  const assistant = page.locator(".msg.assistant").filter({ hasText: "Hello from mock SuperScience." }).first();
   await expect(assistant).toBeVisible({ timeout: 10_000 });
 
   await composer(page).fill("a later turn");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.locator(".msg.assistant").filter({ hasText: "Hello from mock wisp-science." })).toHaveCount(2);
+  await expect(page.locator(".msg.assistant").filter({ hasText: "Hello from mock SuperScience." })).toHaveCount(2);
 
   for (const name of ["Memory", "Review", "Branch"]) {
     const action = assistant.getByRole("button", { name, exact: true });
@@ -4275,7 +4275,7 @@ test("rewinding a middle message asks for confirmation", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("first idea");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible({ timeout: 10_000 });
 
   await composer(page).fill("second idea");
   await page.getByRole("button", { name: "Send" }).click();
@@ -4308,7 +4308,7 @@ test("rewind confirmation can branch instead", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("first idea");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible({ timeout: 10_000 });
 
   await composer(page).fill("second idea");
   await page.getByRole("button", { name: "Send" }).click();
@@ -4337,7 +4337,7 @@ test("Escape closes only the rewind confirmation modal and keeps the transcript"
   await enterApp(page);
   await composer(page).fill("first idea");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible({ timeout: 10_000 });
 
   await composer(page).fill("second idea");
   await page.getByRole("button", { name: "Send" }).click();
@@ -4362,9 +4362,9 @@ test("generic content menus do not expose session export", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("hello there");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible({ timeout: 10_000 });
 
-  await page.getByText("Hello from mock wisp-science.").click({ button: "right" });
+  await page.getByText("Hello from mock SuperScience.").click({ button: "right" });
   await expect(page.getByRole("button", { name: "Export session" })).toHaveCount(0);
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Toggle panel" }).click();
@@ -4381,7 +4381,7 @@ test("uploaded file shows up in the artifacts panel after send", async ({ page }
   });
   await expect(page.locator(".composer-attachment.ready")).toHaveText("counts.csv");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible({ timeout: 10_000 });
   await expect.poll(async () => page.evaluate(() => {
     const calls = ((window as any).__skillInvokeLog ?? []).filter((c: any) => c.cmd === "send_message");
     const args = calls.at(-1)?.args;
@@ -4486,7 +4486,7 @@ test("artifact category headers collapse and expand their tiles", async ({ page 
   await enterApp(page);
   await composer(page).fill("make a volcano plot volcano.png");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "Toggle panel" }).click();
 
   const tile = page.locator('.rp-tile[data-artifact-name="volcano.png"]');
@@ -4568,7 +4568,7 @@ test("artifact tile attaches to the chat from its context and more menus", async
   await enterApp(page);
   await composer(page).fill("make a volcano plot volcano.png");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "Toggle panel" }).click();
 
   const tile = page.locator('.rp-tile[data-artifact-name="volcano.png"]');
@@ -4820,7 +4820,7 @@ test("saving a changed agent context asks for confirmation", async ({ page }) =>
 
   const confirm = page.locator(".confirm-modal");
   await expect(confirm).toBeVisible();
-  await expect(confirm).toContainText(".wisp/WISP.md");
+  await expect(confirm).toContainText(".superscience/SUPERSCIENCE.md");
   await expect(confirm).toContainText("Existing conversations");
   await page.keyboard.press("Escape");
   await expect(confirm).toHaveCount(0);
@@ -4832,7 +4832,7 @@ test("saving a changed agent context asks for confirmation", async ({ page }) =>
   await settings.getByRole("button", { name: "Save", exact: true }).click();
   await confirm.getByRole("button", { name: "Save agent context", exact: true }).click();
   await expect.poll(() => lastInvokeArgs(page, "update_project")).toMatchObject({
-    name: "wisp-science",
+    name: "superscience",
     agentContext: "Prefer the project UI setting.",
   });
   await expect(settings).toHaveCount(0);
@@ -5203,7 +5203,7 @@ test("pasted image attaches to the composer", async ({ page }) => {
   await expect(page.locator(".composer-attachment.ready")).toHaveText(/pasted_image_\d+_1\.png/);
   await expect(page.locator(".composer-attachment-row.image img")).toBeVisible();
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible({ timeout: 10_000 });
   await expect.poll(async () => page.evaluate(() => {
     const calls = ((window as any).__skillInvokeLog ?? []).filter((c: any) => c.cmd === "send_message");
     const args = calls.at(-1)?.args;
@@ -5325,7 +5325,7 @@ test("first server enable asks for storage locations and the rail can edit them"
   const dialog = page.getByTestId("storage-prefs-modal");
   await expect(dialog).toBeVisible();
   await expect(dialog.locator("#storage-prefs-data-root")).toHaveValue("~/wisp/demo-project/data");
-  await expect(dialog.locator("#storage-prefs-workdir-root")).toHaveValue(".wisp-science/runs");
+  await expect(dialog.locator("#storage-prefs-workdir-root")).toHaveValue(".superscience/runs");
   await expect(dialog.locator("#storage-prefs-results-dir")).toHaveValue("remote/gpu-server");
 
   // Escape immediately: one press closes only the dialog; the Environment
@@ -5346,7 +5346,7 @@ test("first server enable asks for storage locations and the rail can edit them"
   await expect.poll(() => lastInvokeArgs(page, "set_context_storage_prefs")).toMatchObject({
     contextId: "ssh:gpu-server",
     remoteDataRoot: "/scratch/demo/data",
-    remoteWorkdirRoot: ".wisp-science/runs",
+    remoteWorkdirRoot: ".superscience/runs",
     localResultsDir: "results/from-gpu",
   });
 
@@ -6107,7 +6107,7 @@ test("right panel shows execution contexts and runs", async ({ page }) => {
   await expect(page.locator(".run-card", { hasText: "Kinase screen QC" })).toContainText("ssh:gpu-server");
   await expect(page.locator(".run-card", { hasText: "Local normalization" })).toHaveCount(0);
   const remoteRun = page.locator(".run-card", { hasText: "Kinase screen QC" });
-  await expect(remoteRun).toContainText("~/.wisp-science/runs/run-kinase-001");
+  await expect(remoteRun).toContainText("~/.superscience/runs/run-kinase-001");
   await remoteRun.getByText("Latest output").click();
   await expect(remoteRun).toContainText("wrote qc table");
 
@@ -6282,7 +6282,7 @@ test("review prompt waits for turn end and dismissal persists (#897)", async ({ 
       status: "running",
       created_at: Math.floor(Date.now() / 1000) - 300,
       started_at: Math.floor(Date.now() / 1000) - 295,
-      remote_workdir: "~/.wisp-science/runs/run-local-002",
+      remote_workdir: "~/.superscience/runs/run-local-002",
       remote_handle_json: '{"kind":"ssh_direct"}',
       progress_json: "{}",
     });
@@ -6336,7 +6336,7 @@ test("unmonitored exploratory run success never auto-opens the review prompt (#8
       status: "running",
       created_at: now - 30,
       started_at: now - 29,
-      remote_workdir: "~/.wisp-science/runs/run-local-002",
+      remote_workdir: "~/.superscience/runs/run-local-002",
       remote_handle_json: '{"kind":"ssh_direct"}',
     });
     (window as any).__mockRunWorkspaceFiles["run-local-002"] = {
@@ -7650,7 +7650,7 @@ test("artifact panel normalizes png/pdf shorthand to the previewable image", asy
     .locator("#composer-input")
     .fill("show `figures/panel_I_heatmap_4genes_median.png/.pdf`");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "Toggle panel" }).click();
 
   const tile = page.locator('.rp-tile[data-artifact-name="panel_I_heatmap_4genes_median.png"]');
@@ -7673,12 +7673,12 @@ test("model settings updates activation and confirms removal", async ({ page }) 
   await enterApp(page);
   await openSettingsSection(page, "Models");
 
-  const opus = page.locator(".settings-list-row").filter({ hasText: "opus-4.8" });
+  const opus = page.locator(".model-card").filter({ hasText: "opus-4.8" });
   await opus.getByRole("button", { name: "Use" }).click();
   await expect.poll(() => lastInvokeArgs(page, "set_active_model")).toMatchObject({ id: "opus" });
-  await expect(opus).toHaveClass(/settings-list-row-active/);
+  await expect(opus).toHaveClass(/active/);
 
-  const deepseek = page.locator(".settings-list-row").filter({ hasText: "deepseek-v4-pro" });
+  const deepseek = page.locator(".model-card").filter({ hasText: "deepseek-v4-pro" });
   await deepseek.getByTitle("Remove model").click();
   const confirm = page.getByTestId("model-delete-confirm");
   await expect(confirm).toContainText("Remove deepseek-v4-pro? This cannot be undone.");
@@ -7708,11 +7708,11 @@ test("appearance settings persist separate light and dark palettes and font size
   await page.getByRole("slider", { name: "UI font size" }).fill("16");
   await page.getByRole("slider", { name: "Code font size" }).fill("15");
   await expect.poll(() => page.evaluate(() => ({
-    theme: localStorage.getItem("wisp-theme"),
-    light: localStorage.getItem("wisp-light-palette"),
-    dark: localStorage.getItem("wisp-dark-palette"),
-    ui: localStorage.getItem("wisp-ui-font-size"),
-    code: localStorage.getItem("wisp-code-font-size"),
+    theme: localStorage.getItem("superscience-theme"),
+    light: localStorage.getItem("superscience-light-palette"),
+    dark: localStorage.getItem("superscience-dark-palette"),
+    ui: localStorage.getItem("superscience-ui-font-size"),
+    code: localStorage.getItem("superscience-code-font-size"),
   }))).toEqual({ theme: "dark", light: "catppuccin", dark: "gruvbox", ui: "16", code: "15" });
 
   await page.reload();
@@ -7745,10 +7745,10 @@ test("appearance settings customize font families and allow 0-30px sizes", async
   await page.getByRole("slider", { name: "UI font size" }).fill("30");
   await page.getByRole("slider", { name: "Code font size" }).fill("0");
   await expect.poll(() => page.evaluate(() => ({
-    ui: localStorage.getItem("wisp-ui-font-size"),
-    code: localStorage.getItem("wisp-code-font-size"),
-    uiFont: localStorage.getItem("wisp-font-ui"),
-    codeFont: localStorage.getItem("wisp-font-mono"),
+    ui: localStorage.getItem("superscience-ui-font-size"),
+    code: localStorage.getItem("superscience-code-font-size"),
+    uiFont: localStorage.getItem("superscience-font-ui"),
+    codeFont: localStorage.getItem("superscience-font-mono"),
   }))).toEqual({ ui: "30", code: "0", uiFont: "Noto Sans SC", codeFont: "Fira Code" });
 
   await page.reload();
@@ -7762,7 +7762,7 @@ test("appearance settings customize font families and allow 0-30px sizes", async
   await page.getByTestId("appearance-ui-font").fill("");
   await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement)
     .getPropertyValue("--font-user-ui").trim())).toBe("");
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("wisp-font-ui"))).toBeNull();
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("superscience-font-ui"))).toBeNull();
 });
 
 test("UI font size setting scales chat message body text", async ({ page }) => {
@@ -7826,9 +7826,9 @@ test("appearance custom CSS can be pasted, imported, and cleared", async ({ page
   const css = ":root { --md-lead-bar-width: 0; --md-lead-bar-pad: 0; }";
   await page.getByTestId("appearance-custom-css").fill(css);
   await expect.poll(() => page.evaluate(() =>
-    document.getElementById("wisp-custom-theme")?.textContent ?? ""
+    document.getElementById("superscience-custom-theme")?.textContent ?? ""
   )).toContain("--md-lead-bar-width: 0");
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("wisp-custom-css")))
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("superscience-custom-css")))
     .toContain("--md-lead-bar-width: 0");
 
   const imported = ":root { --md-table-font-size: 16px; }";
@@ -7844,7 +7844,7 @@ test("appearance custom CSS can be pasted, imported, and cleared", async ({ page
 
   await page.getByTestId("appearance-custom-css-clear").click();
   await expect.poll(() => page.evaluate(() =>
-    document.getElementById("wisp-custom-theme")?.textContent ?? ""
+    document.getElementById("superscience-custom-theme")?.textContent ?? ""
   )).toBe("");
 });
 
@@ -7857,10 +7857,10 @@ test("custom CSS sanitizes remote url and import", async ({ page }) => {
     "body { background: url(https://evil.example/p.png); }",
   ].join("\n"));
   await expect.poll(() => page.evaluate(() =>
-    document.getElementById("wisp-custom-theme")?.textContent ?? ""
+    document.getElementById("superscience-custom-theme")?.textContent ?? ""
   )).toContain("--clay: #111111");
   const injected = () => page.evaluate(() =>
-    (document.getElementById("wisp-custom-theme")?.textContent ?? "").toLowerCase()
+    (document.getElementById("superscience-custom-theme")?.textContent ?? "").toLowerCase()
   );
   await expect.poll(injected).not.toContain("@import");
   await expect.poll(injected).not.toContain("url(");
@@ -7875,7 +7875,7 @@ test("configure presentation applies custom CSS", async ({ page }) => {
     payload: { custom_css: ":root { --md-lead-bar-width: 0; }" },
   });
   await expect.poll(() => page.evaluate(() =>
-    document.getElementById("wisp-custom-theme")?.textContent ?? ""
+    document.getElementById("superscience-custom-theme")?.textContent ?? ""
   )).toContain("--md-lead-bar-width: 0");
 });
 
@@ -7950,7 +7950,7 @@ test("vision assignment keeps model fields and stored key placeholder untouched"
     },
   });
 
-  await page.locator(".settings-list-row").first().click();
+  await page.locator(".model-card").first().click();
   await expect(providerSelect(page)).toHaveValue("openai_responses");
   await expect(effort).toHaveValue("medium");
   await expect(page.getByLabel("Use for image analysis")).toBeChecked();
@@ -8143,7 +8143,7 @@ test("API access on xAI suggests grok chat and imagine image", async ({ page }) 
 test("gpt-image-2 can be assigned for generation but not selected for chat", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Models");
-  const opus = page.locator(".settings-list-row", { hasText: "opus-4.8" });
+  const opus = page.locator(".model-card", { hasText: "opus-4.8" });
   await opus.click();
 
   await providerSelect(page).selectOption("openai_responses");
@@ -8174,7 +8174,7 @@ test("gpt-image-2 can be assigned for generation but not selected for chat", asy
     },
   });
 
-  const imageModel = page.locator(".settings-list-row", { hasText: "opus-4.8" });
+  const imageModel = page.locator(".model-card", { hasText: "opus-4.8" });
   await expect(imageModel).toContainText("gpt-image-2");
   await expect(imageModel).toContainText("image gen");
   await expect(imageModel.getByRole("button", { name: "Use" })).toHaveCount(0);
@@ -8188,7 +8188,7 @@ test("gpt-image-2 can be assigned for generation but not selected for chat", asy
 test("grok-imagine-image-2.0 can be assigned for generation but not selected for chat", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Models");
-  const opus = page.locator(".settings-list-row", { hasText: "opus-4.8" });
+  const opus = page.locator(".model-card", { hasText: "opus-4.8" });
   await opus.click();
 
   await providerSelect(page).selectOption("openai");
@@ -8223,7 +8223,7 @@ test("grok-imagine-image-2.0 can be assigned for generation but not selected for
     },
   });
 
-  const imageModel = page.locator(".settings-list-row", { hasText: "opus-4.8" });
+  const imageModel = page.locator(".model-card", { hasText: "opus-4.8" });
   await expect(imageModel).toContainText("grok-imagine-image-2.0");
   await expect(imageModel).toContainText("image gen");
   await expect(imageModel.getByRole("button", { name: "Use" })).toHaveCount(0);
@@ -8237,7 +8237,7 @@ test("grok-imagine-image-2.0 can be assigned for generation but not selected for
 test("grok-imagine-video can be assigned for generation but not selected for chat", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Models");
-  const opus = page.locator(".settings-list-row", { hasText: "opus-4.8" });
+  const opus = page.locator(".model-card", { hasText: "opus-4.8" });
   await opus.click();
 
   await providerSelect(page).selectOption("openai");
@@ -8272,7 +8272,7 @@ test("grok-imagine-video can be assigned for generation but not selected for cha
     },
   });
 
-  const videoModel = page.locator(".settings-list-row", { hasText: "opus-4.8" });
+  const videoModel = page.locator(".model-card", { hasText: "opus-4.8" });
   await expect(videoModel).toContainText("grok-imagine-video");
   await expect(videoModel).toContainText("video gen");
   await expect(videoModel.getByRole("button", { name: "Use" })).toHaveCount(0);
@@ -8332,7 +8332,7 @@ test("editing a saved model validates with that model profile id", async ({ page
   await enterApp(page);
   await globalSettingsButton(page).click();
   await page.getByRole("button", { name: "Models" }).click();
-  await page.locator(".settings-list-row", { hasText: "opus-4.8" }).click();
+  await page.locator(".model-card", { hasText: "opus-4.8" }).click();
   await expect(providerSelect(page)).toBeVisible();
   await expect(page.getByLabel("Model ID")).toHaveValue("opus-4.8");
 
@@ -8365,7 +8365,7 @@ test("check for updates shows an up-to-date modal", async ({ page }) => {
   await expect(modal).toHaveCount(0);
 });
 
-test("check for updates shows an available-update modal before opening releases", async ({ page }) => {
+test("check for updates shows an available-update modal without a download-page button", async ({ page }) => {
   await enterApp(page);
   await globalSettingsButton(page).click();
   await setMockUpdateCheck(page, {
@@ -8380,12 +8380,11 @@ test("check for updates shows an available-update modal before opening releases"
   await expect(modal).toBeVisible();
   await expect(modal).toContainText("Update available");
   await expect(modal).toContainText("Wisp 1.2.3 is available.");
+  await expect(modal.getByTestId("update-check-open-releases")).toHaveCount(0);
+  await expect(modal.getByRole("button", { name: "Open Releases" })).toHaveCount(0);
   await expect(await lastInvokeArgs(page, "open_external_url")).toBeNull();
-  await page.getByTestId("update-check-open-releases").click();
+  await modal.getByRole("button", { name: "Later" }).click();
   await expect(modal).toHaveCount(0);
-  await expect.poll(() => lastInvokeArgs(page, "open_external_url")).toMatchObject({
-    url: "https://github.com/xuzhougeng/wisp-science/releases/tag/v1.2.3",
-  });
 });
 
 test("macOS update download is verified before a separate install confirmation", async ({ page }) => {
@@ -8422,14 +8421,19 @@ test("macOS update download is verified before a separate install confirmation",
   await resolveMockUpdateDownload(page);
   await expect(modal).toContainText("Ready to install");
   await expect(modal).toContainText("signature verified");
+  await expect(modal.getByTestId("update-check-open-releases")).toHaveCount(0);
   await expect(await lastInvokeArgs(page, "install_update")).toBeNull();
 
   await modal.getByRole("button", { name: "Install and restart" }).click();
   await expect(modal).toContainText("Installing Wisp 0.28.0");
+  await expect(modal.getByTestId("update-check-close")).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as any).__mockUpdateInstalled)).toBe(true);
+  await page.keyboard.press("Escape");
+  await expect(modal).toHaveCount(0);
+  await expect(page.locator(".settings-page")).toBeVisible();
 });
 
-test("update signature failure keeps the current app and offers Releases", async ({ page }) => {
+test("update signature failure keeps the current app without a download-page button", async ({ page }) => {
   await enterApp(page);
   await globalSettingsButton(page).click();
   const releaseUrl =
@@ -8449,14 +8453,11 @@ test("update signature failure keeps the current app and offers Releases", async
   await modal.getByRole("button", { name: "Download update" }).click();
   await expect(modal).toContainText("signature verification failed");
   expect(await page.evaluate(() => (window as any).__mockUpdateInstalled)).toBe(false);
-
-  await modal.getByTestId("update-check-open-releases").click();
-  await expect.poll(() => lastInvokeArgs(page, "open_external_url")).toMatchObject({
-    url: releaseUrl,
-  });
+  await expect(modal.getByTestId("update-check-open-releases")).toHaveCount(0);
+  await expect(await lastInvokeArgs(page, "open_external_url")).toBeNull();
 });
 
-test("update check failure offers the Releases fallback", async ({ page }) => {
+test("update check failure does not offer a download-page fallback", async ({ page }) => {
   await enterApp(page);
   await globalSettingsButton(page).click();
   await setMockUpdateCheckError(
@@ -8467,7 +8468,7 @@ test("update check failure offers the Releases fallback", async ({ page }) => {
   await page.getByRole("button", { name: "Check for updates" }).click();
   const modal = page.getByTestId("update-check-modal");
   await expect(modal).toContainText("no matching macOS architecture");
-  await expect(modal.getByTestId("update-check-open-releases")).toBeVisible();
+  await expect(modal.getByTestId("update-check-open-releases")).toHaveCount(0);
 });
 
 test("install is blocked while a task is active", async ({ page }) => {
@@ -8513,7 +8514,7 @@ test("Escape closes only the available-update modal above Settings", async ({ pa
   await expect(page.locator(".settings-page")).toBeVisible();
 });
 
-test("stale update card refreshes to the latest release before opening it (#521)", async ({ page }) => {
+test("stale update card refreshes to the latest release before showing it (#521)", async ({ page }) => {
   await enterApp(page);
   await setMockUpdateCheck(page, {
     current_version: "0.23.0",
@@ -8540,10 +8541,8 @@ test("stale update card refreshes to the latest release before opening it (#521)
   modal = page.getByTestId("update-check-modal");
   await expect(modal).toContainText("Wisp 0.25.0 is available.");
   await expect(page.getByTestId("update-card")).toContainText("v0.25.0");
-  await modal.getByTestId("update-check-open-releases").click();
-  await expect.poll(() => lastInvokeArgs(page, "open_external_url")).toMatchObject({
-    url: "https://github.com/xuzhougeng/wisp-science/releases/tag/v0.25.0",
-  });
+  await expect(modal.getByTestId("update-check-open-releases")).toHaveCount(0);
+  await expect(await lastInvokeArgs(page, "open_external_url")).toBeNull();
 });
 
 test("command palette check for updates also shows the result modal", async ({ page }) => {
@@ -8684,51 +8683,62 @@ test("credentials settings add, replace, clear, and remove a custom credential",
     .toMatchObject({ id: "custom-1" });
 });
 
-test("capability counts open skills, connections, and editable project memory", async ({ page }) => {
+test("capability overlay uses the same homepage capability scene", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByTestId("capability-scene")).toBeVisible();
+  await expect(page.getByTestId("cap-tile-deep-research")).toBeVisible();
+
   await enterApp(page);
-
   await page.getByRole("button", { name: "Capabilities" }).click();
-  let capabilities = page.getByRole("dialog", { name: "Capabilities" });
-  await expect(capabilities.getByRole("button", { name: "2 Bundled Skills" })).toBeVisible();
-  await capabilities.getByRole("button", { name: "1 Project Skills" }).click();
-  await expect(page.locator(".settings-nav button.active")).toHaveText("Skills");
+  const dialog = page.getByTestId("capabilities-dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByTestId("capability-scene")).toBeVisible();
+  await expect(dialog.getByTestId("cap-tile-deep-research")).toBeVisible();
 
-  await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: "Capabilities" }).click();
-  capabilities = page.getByRole("dialog", { name: "Capabilities" });
-  await expect(capabilities.getByRole("button", { name: "2 Bundled MCP" })).toBeVisible();
-  await capabilities.getByRole("button", { name: "1 Project MCP" }).click();
-  await expect(page.locator(".settings-nav button.active")).toHaveText("Connections");
-
-  await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: "Capabilities" }).click();
-  capabilities = page.getByRole("dialog", { name: "Capabilities" });
-  await capabilities.getByRole("button", { name: "1 Memory files" }).click();
-  await expect(page.locator(".settings-nav button.active")).toHaveText("Memory");
-  await expect(page.getByText("2026-07-01.md", { exact: true })).toBeVisible();
-
-  await page.getByRole("button", { name: "Add note" }).click();
-  const editor = page.locator(".memory-editor-text");
-  await expect(editor).toHaveValue("");
-  await editor.fill("Prefer reproducible local workflows.");
-  await page.getByRole("button", { name: "Save note" }).click();
-  await expect.poll(() => lastInvokeArgs(page, "write_memory_file")).toMatchObject({
-    name: "2026-07-04.md",
-    content: "Prefer reproducible local workflows.",
-  });
-
-  await page.locator(".settings-head-back").click();
-  await page.getByText("2026-07-04.md", { exact: true }).click();
-  await expect(editor).toHaveValue("Prefer reproducible local workflows.");
-  await editor.fill("Prefer editable, reproducible local workflows.");
-  await page.getByRole("button", { name: "Save note" }).click();
-  await expect.poll(() => lastInvokeArgs(page, "write_memory_file")).toMatchObject({
-    name: "2026-07-04.md",
-    content: "Prefer editable, reproducible local workflows.",
-  });
+  await dialog.locator(".ps-close").click();
+  await expect(dialog).toHaveCount(0);
 });
 
-test("skill manager filters by tag and batch disables visible skills", async ({ page }) => {
+test("Escape closes the PII firewall page before the capabilities overlay", async ({ page }) => {
+  await enterApp(page);
+  await page.getByRole("button", { name: "Capabilities" }).click();
+  const capabilities = page.getByTestId("capabilities-dialog");
+  await expect(capabilities).toBeVisible();
+  await page.getByRole("tab", { name: "Efficiency tools" }).click();
+  await page.getByTestId("cap-tile-pii-firewall").click();
+  const pii = page.getByTestId("pii-firewall-info-overlay");
+  await expect(pii).toBeVisible();
+  await expect(pii.getByTestId("pii-firewall-terms")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(pii).toHaveCount(0);
+  await expect(capabilities).toBeVisible();
+});
+
+test("PPT Master shows install confirm before guided chat", async ({ page }) => {
+  await enterApp(page);
+  await page.getByRole("button", { name: "Capabilities" }).click();
+  const capabilities = page.getByTestId("capabilities-dialog");
+  await expect(capabilities).toBeVisible();
+  await page.getByRole("tab", { name: "AI drawing" }).click();
+  await page.getByTestId("cap-tile-ppt-master").click();
+  const dialog = page.getByTestId("catalog-skill-install-dialog");
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("Install PPT Master?");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(capabilities).toBeVisible();
+
+  await page.getByTestId("cap-tile-ppt-master").click();
+  await expect(dialog).toBeVisible();
+  await page.getByTestId("catalog-skill-install-confirm").click();
+  await expect.poll(() => lastInvokeArgs(page, "install_catalog_skill")).toMatchObject({
+    id: "ppt-master",
+  });
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator("#composer-input")).toBeVisible();
+});
+
+test("skill manager filters by status and batch disables visible skills", async ({ page }) => {
   await enterApp(page);
   await page.getByRole("button", { name: "Add to message" }).click();
   await page.getByRole("button", { name: "Manage skills" }).click();
@@ -8736,8 +8746,8 @@ test("skill manager filters by tag and batch disables visible skills", async ({ 
   await expect(page.locator(".settings-search")).toHaveAttribute("type", "text");
   await expect(page.locator(".settings-search")).toHaveAttribute("inputmode", "search");
   await expect(page.locator(".settings-search")).toHaveAttribute("autocomplete", "off");
-  await expect(page.locator(".settings-filter")).toContainText(/visible.*enabled/);
-  await expect(page.locator(".skill-tags-editor").first()).not.toHaveAttribute("open", "");
+  await expect(page.getByTestId("skill-update-enabled")).toBeChecked();
+  await expect(page.locator(".skills-enabled-frac")).toContainText(/\d+\/\d+/);
 
   await page.getByRole("button", { name: "Disabled", exact: true }).click();
   await expect(page.getByText("No skills match the current filters.")).toBeVisible();
@@ -8747,17 +8757,18 @@ test("skill manager filters by tag and batch disables visible skills", async ({ 
   await expect(page.getByText("literature-review")).toBeVisible();
   await expect(page.getByText("remote-compute-ssh")).toBeVisible();
 
-  await page.getByRole("button", { name: "compute", exact: true }).click();
+  await page.locator(".settings-search").fill("compute");
   await expect(page.getByText("remote-compute-ssh")).toBeVisible();
   await expect(page.getByText("literature-review")).not.toBeVisible();
 
+  await page.getByTestId("skills-overflow-menu").locator("summary").click();
   await page.getByRole("button", { name: "Disable visible" }).click();
   await expect.poll(async () => page.evaluate(() => {
     const calls = ((window as any).__skillInvokeLog ?? []).filter((c: any) => c.cmd === "set_skills_enabled");
     const args = calls.at(-1)?.args;
     return args instanceof Map ? Object.fromEntries(args) : (args ?? null);
   })).toEqual({ names: ["remote-compute-ssh"], enabled: false });
-  await expect(page.locator('[data-skill-name="remote-compute-ssh"] input[type="checkbox"]')).not.toBeChecked();
+  await expect(page.locator('[data-skill-name="remote-compute-ssh"]')).toHaveCount(0);
 });
 
 test("skill manager reloads manually copied skills and shows their scope", async ({ page }) => {
@@ -8766,6 +8777,7 @@ test("skill manager reloads manually copied skills and shows their scope", async
 
   await expect(page.locator('[data-skill-name="fresh-project-skill"]')).toHaveCount(0);
   await expect(page.locator('[data-skill-name="paper-narrative"]')).toContainText("Global");
+  await page.getByTestId("skills-overflow-menu").locator("summary").click();
   await page.getByRole("button", { name: "Reload skills" }).click();
 
   const fresh = page.locator('[data-skill-name="fresh-project-skill"]');
@@ -8773,7 +8785,7 @@ test("skill manager reloads manually copied skills and shows their scope", async
   await expect(fresh).toContainText("Newly copied project skill");
   await expect(fresh).toContainText("Project");
   await expect(fresh.locator('input[type="checkbox"]')).toBeChecked();
-  await expect(fresh.getByRole("button", { name: "Delete skill" })).toHaveCount(0);
+  await expect(fresh.getByTestId("skill-row-menu")).toHaveCount(1);
   await expect(page.getByText("Skills reloaded. 5 available.")).toBeVisible();
 });
 
@@ -8795,6 +8807,7 @@ test("skill manager updates and deletes user-added skills", async ({ page }) => 
   await expect(page.getByText("Skill added or updated.")).toBeVisible();
 
   const skill = page.locator('[data-skill-name="paper-narrative"]');
+  await skill.getByTestId("skill-row-menu").locator("summary").click();
   await expect(skill.getByRole("button", { name: "Delete skill" })).toBeVisible();
   await skill.getByRole("button", { name: "Delete skill" }).click();
   const confirm = page.getByTestId("skill-remove-confirm");
@@ -8916,7 +8929,7 @@ test("plugin settings diagnose, launch, install, and remove a feature plugin", a
 test("custom MCP row opens tools while edit uses a dedicated button", async ({ page }) => {
   await enterApp(page);
   await globalSettingsButton(page).click();
-  await page.getByRole("button", { name: "Connections" }).click();
+  await page.getByRole("button", { name: "MCP Links" }).click();
   await expect(page.getByRole("button", { name: "Connect Notion" })).toHaveCount(0);
 
   const row = page.locator(".settings-list-row", { hasText: "wolai_cmp" });
@@ -8933,7 +8946,7 @@ test("custom MCP row opens tools while edit uses a dedicated button", async ({ p
 test("Notion uses the generic Remote URL OAuth connection flow", async ({ page }) => {
   await enterApp(page);
   await globalSettingsButton(page).click();
-  await page.getByRole("button", { name: "Connections" }).click();
+  await page.getByRole("button", { name: "MCP Links" }).click();
 
   await expect.poll(() => lastInvokeArgs(page, "authorize_http_connection")).toBeNull();
   await expect.poll(() => lastInvokeArgs(page, "test_oauth_mcp_connection")).toBeNull();
@@ -8992,7 +9005,7 @@ test("Notion uses the generic Remote URL OAuth connection flow", async ({ page }
 test("OAuth authorization keeps Cancel available and clears form status", async ({ page }) => {
   await enterApp(page, "/?mockOAuthPending=1");
   await globalSettingsButton(page).click();
-  await page.getByRole("button", { name: "Connections" }).click();
+  await page.getByRole("button", { name: "MCP Links" }).click();
   await page.getByRole("button", { name: "Add connection" }).click();
   await page.getByLabel("Name").fill("Hosted MCP");
   await page.getByLabel("Type").selectOption("http");
@@ -9172,7 +9185,7 @@ test("Escape closes plan feedback before rejecting the plan", async ({ page }) =
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByText("Review plan before starting?")).toBeVisible({ timeout: 10_000 });
   await page.getByRole("button", { name: "Other" }).click();
-  const feedback = page.getByPlaceholder("Tell wisp what to change in this plan.");
+  const feedback = page.getByPlaceholder("Tell SuperScience what to change in this plan.");
   await expect(feedback).toBeVisible();
 
   await page.keyboard.press("Escape");
@@ -9551,7 +9564,7 @@ test("home search opens artifacts, sessions, and settings", async ({ page }) => 
   await expect(page.getByRole("button", { name: "Back to app" })).toBeVisible();
   await page.locator(".settings-head-close").click();
 
-  await page.getByRole("button", { name: "Search" }).click();
+  await page.getByRole("button", { name: "Search", exact: true }).click();
   const search = commandPalette(page);
   await expect(search).toBeVisible();
   await expect(page.locator(".project-search-row", { hasText: "nif3.treefile" })).toBeVisible();
@@ -9566,7 +9579,7 @@ test("home search opens artifacts, sessions, and settings", async ({ page }) => 
   await expect(page.locator(".am-name")).toHaveText("nif3.treefile");
   await page.locator(".artifact-modal").getByRole("button", { name: "Close panel" }).click();
 
-  await page.getByRole("button", { name: "Search" }).click();
+  await page.getByRole("button", { name: "Search", exact: true }).click();
   await search.fill("Enumerate");
   await expect(page.locator(".project-search-row", { hasText: "Enumerate MCP bio-tools databases" })).toBeVisible();
   await search.press("Enter");
@@ -9739,7 +9752,7 @@ test("a continuously open conversation unloads old live rows after a completed t
   await enterApp(page);
   await composer(page).fill("seed turn");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.locator(".msg.assistant")).toContainText("Hello from mock wisp-science.");
+  await expect(page.locator(".msg.assistant")).toContainText("Hello from mock SuperScience.");
   const sent = await lastInvokeArgs(page, "send_message");
   const frameId = String(sent?.sessionId ?? "");
   expect(frameId).not.toBe("");
@@ -9830,7 +9843,7 @@ test("branching from a paged transcript uses the global user-turn index", async 
 
 test("HTML artifact modal uses a desktop preview viewport", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "Search" }).click();
+  await page.getByRole("button", { name: "Search", exact: true }).click();
   const search = commandPalette(page);
   await search.fill("dashboard");
   await search.press("Enter");
@@ -9874,7 +9887,7 @@ test("MCP App opens as a persistent center tab and delivers tool data", async ({
     };
     addEventListener("message", (event) => {
       const message = event.data || {};
-      if (message.id === 1 && message.result?.hostInfo?.name === "wisp-science") {
+      if (message.id === 1 && message.result?.hostInfo?.name === "superscience") {
         initialized = true;
         contextCapability = !!message.result?.hostCapabilities?.updateModelContext?.text;
         parent.postMessage({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} }, "*");
@@ -10015,7 +10028,7 @@ test("real Motif MCP App reaches ready state through the Wisp host", async ({ pa
 
 test("Markdown artifact modal opens its rendered preview in center", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "Search" }).click();
+  await page.getByRole("button", { name: "Search", exact: true }).click();
   const search = commandPalette(page);
   await search.fill("analysis-report");
   await search.press("Enter");
@@ -10034,7 +10047,7 @@ test("Markdown artifact modal opens its rendered preview in center", async ({ pa
 
 test("reverse preview selections anchor the action popup above the first selected line (#779)", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "Search" }).click();
+  await page.getByRole("button", { name: "Search", exact: true }).click();
   const search = commandPalette(page);
   await search.fill("analysis-report");
   await search.press("Enter");
@@ -10075,7 +10088,7 @@ test("reverse preview selections anchor the action popup above the first selecte
 
 test("bound Markdown resources use immutable versions and a scrollable center preview", async ({ page }) => {
   await page.goto("/?mockResourceSession=1");
-  await page.getByRole("button", { name: "Search" }).click();
+  await page.getByRole("button", { name: "Search", exact: true }).click();
   const search = commandPalette(page);
   await search.fill("Enumerate");
   await search.press("Enter");
@@ -10107,7 +10120,7 @@ test("bound Markdown resources use immutable versions and a scrollable center pr
 
 test("bound DOCX resources open their immutable preview", async ({ page }) => {
   await page.goto("/?mockResourceSession=1");
-  await page.getByRole("button", { name: "Search" }).click();
+  await page.getByRole("button", { name: "Search", exact: true }).click();
   const search = commandPalette(page);
   await search.fill("Enumerate");
   await search.press("Enter");
@@ -10127,7 +10140,7 @@ test("bound DOCX resources open their immutable preview", async ({ page }) => {
 
 test("bound BibTeX resources open their immutable text preview", async ({ page }) => {
   await page.goto("/?mockResourceSession=1");
-  await page.getByRole("button", { name: "Search" }).click();
+  await page.getByRole("button", { name: "Search", exact: true }).click();
   const search = commandPalette(page);
   await search.fill("Enumerate");
   await search.press("Enter");
@@ -10163,7 +10176,7 @@ async function selectCenterPreviewText(page: Page) {
 
 test("selecting preview text quotes it into chat and saves a review annotation", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "Search" }).click();
+  await page.getByRole("button", { name: "Search", exact: true }).click();
   const search = commandPalette(page);
   await search.fill("analysis-report");
   await search.press("Enter");
@@ -10217,7 +10230,7 @@ test("projects landing stays centered on wide windows", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator(".projects-head")).toBeVisible();
   await expect(page.locator(".projects-brand-mark")).toBeVisible();
-  await expect(page.locator(".projects-title")).toHaveText("Wisp Science");
+  await expect(page.locator(".projects-title")).toHaveText("天成科研助手");
   await expect.poll(async () => page.locator(".projects-head").evaluate((el) => {
     const rect = el.getBoundingClientRect();
     return Math.round(rect.width);
@@ -10343,7 +10356,7 @@ test("Windows uses the integrated title bar without covering the project landing
     ((window as any).__skillInvokeLog ?? [])
       .filter((c: any) => c.cmd === "open_external_url")
       .map((c: any) => (c.args instanceof Map ? c.args.get("url") : c.args?.url))
-  )).toContain("https://github.com/xuzhougeng/wisp-science#readme");
+  )).toContain("https://github.com/imbigfly/SuperScience#readme");
 
   await context.close();
 });
@@ -10483,7 +10496,7 @@ test("project switcher does not show a stale fallback name while opening", async
   await page.locator(".proj-card-main").first().click();
 
   await expect(page.locator(".proj-name")).toHaveText("Opening project…");
-  await expect(page.locator(".proj-name")).toHaveText("wisp-science");
+  await expect(page.locator(".proj-name")).toHaveText("superscience");
 });
 
 test("project switcher has no caret and switches workspace in the current window", async ({ page }) => {
@@ -10928,7 +10941,7 @@ test("context compaction leaves a visible timeline flag", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("start a context-heavy analysis");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible();
   const frameId = String((await lastInvokeArgs(page, "send_message")).sessionId);
 
   await emitTauriEvent(page, "agent", {
@@ -10956,7 +10969,7 @@ test("context-limit recovery offers three actions and owns the first Escape", as
   await enterApp(page);
   await composer(page).fill("continue a long analysis");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible();
   const frameId = String((await lastInvokeArgs(page, "send_message")).sessionId);
   const overflow = {
     kind: "Error",
@@ -10991,7 +11004,7 @@ test("context-limit recovery can continue in a new session with the old one atta
   await enterApp(page);
   await composer(page).fill("finish the long analysis");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible();
   const frameId = String((await lastInvokeArgs(page, "send_message")).sessionId);
 
   await emitTauriEvent(page, "agent", {
@@ -11018,7 +11031,7 @@ test("a leftover proxy connect error points at Model API proxy", async ({ page }
   await enterApp(page);
   await composer(page).fill("hello");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible();
   const frameId = String((await lastInvokeArgs(page, "send_message")).sessionId);
 
   await emitTauriEvent(page, "agent", {
@@ -11051,7 +11064,7 @@ test("pet stays off until the user explicitly configures its directory", async (
   });
 
   await page.goto("/?pet=desktop&mockPet=1");
-  const pet = page.getByTestId("wisp-pet");
+  const pet = page.getByTestId("superscience-pet");
   await expect(pet).toBeVisible();
   await expect.poll(() => pet.getAttribute("data-state")).toMatch(/^(idle|looking)$/);
   await pet.click();
@@ -11062,7 +11075,7 @@ test("desktop pet remains independent and reflects global agent state", async ({
   await page.setViewportSize({ width: 128, height: 176 });
   await page.goto("/?pet=desktop&mockPet=1");
 
-  const pet = page.getByTestId("wisp-pet");
+  const pet = page.getByTestId("superscience-pet");
   await expect(page.getByTestId("pet-window-root")).toBeVisible();
   await expect(pet).toBeVisible();
   await expect(pet).toHaveAttribute("data-tauri-drag-region", "deep");
@@ -11105,6 +11118,7 @@ test("desktop pet remains independent and reflects global agent state", async ({
     (window as any).__tauriEmit("agent", { kind: "Done", frame_id: "pet-frame" });
   });
   await expect(pet).toHaveAttribute("data-state", "jumping");
+  await expect(pet.getByText("Done")).toBeVisible();
 });
 
 test("desktop pet shows active Run titles and celebrates completion (#693)", async ({ page }) => {
@@ -11116,11 +11130,11 @@ test("desktop pet shows active Run titles and celebrates completion (#693)", asy
   });
   await page.goto("/?pet=desktop&mockPet=1");
 
-  const pet = page.getByTestId("wisp-pet");
-  const sprite = pet.locator(".wisp-pet-sprite");
-  const label = pet.locator(".wisp-pet-state-label");
+  const pet = page.getByTestId("superscience-pet");
+  const sprite = pet.locator(".superscience-pet-sprite");
+  const label = pet.locator(".superscience-pet-state-label");
   await expect(pet).toHaveAttribute("data-tauri-drag-region", "deep");
-  await expect(label).toHaveText("Running: siibra atlas query example (with assignment)");
+  await expect(label).toHaveText("siibra atlas query example (with assignment)");
   await expect(label).toBeVisible();
   await expect(pet).toHaveAttribute("data-state", "running");
   const [spriteBox, labelBox] = await Promise.all([sprite.boundingBox(), label.boundingBox()]);
@@ -11131,7 +11145,8 @@ test("desktop pet shows active Run titles and celebrates completion (#693)", asy
     (window as any).__mockPetActiveRuns = [];
   });
   await expect(pet).toHaveAttribute("data-state", "jumping", { timeout: 5_000 });
-  await expect(pet.getByText("Done")).toBeVisible();
+  await expect(label).toHaveText("Done");
+  await expect(label).toBeVisible();
 });
 
 test("notification navigation opens the project and session that need the user (#499)", async ({ page }) => {
@@ -11856,7 +11871,7 @@ test("an SVG star saves a Notebook cell in the global library", async ({ page })
   await page.getByRole("button", { name: "Library", exact: true }).click();
   await expect(page.getByTestId("library-screen")).toBeVisible();
   await expect(page.locator('.library-card[data-library-kind="code"]')).toContainText("zcat counts.txt.gz");
-  await expect(page.locator('.library-card[data-library-kind="code"]')).toContainText("wisp-science / Current analysis");
+  await expect(page.locator('.library-card[data-library-kind="code"]')).toContainText("superscience / Current analysis");
 
   // Library search runs against SQLite so full saved source remains searchable
   // even though the global list only carries bounded previews.
@@ -12035,7 +12050,7 @@ test("the selection popup saves a highlight into the right pane and library", as
   // The Highlights tab opens with the excerpt, and the transcript is underlined.
   await expect(page.getByRole("button", { name: "Highlights (1)", exact: true })).toBeVisible();
   await expect(page.locator(".highlight-card .highlight-text")).toContainText(selected.trim().slice(0, 30));
-  await expect.poll(() => page.evaluate(() => (CSS as any).highlights?.has("wisp-saved") ?? false)).toBe(true);
+  await expect.poll(() => page.evaluate(() => (CSS as any).highlights?.has("superscience-saved") ?? false)).toBe(true);
   // Let the double-rAF underline pass finish before the next turn starts.
   await page.evaluate(() => new Promise<void>((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(resolve));
@@ -12054,7 +12069,7 @@ test("the selection popup saves a highlight into the right pane and library", as
     const set = registry.set.bind(registry);
     (window as any).__savedMarkSetCalls = 0;
     registry.set = (name: string, value: unknown) => {
-      if (name === "wisp-saved") (window as any).__savedMarkSetCalls += 1;
+      if (name === "superscience-saved") (window as any).__savedMarkSetCalls += 1;
       return set(name, value);
     };
   });
@@ -12259,7 +12274,7 @@ test("new session can pick a specialist and it locks after the first message", a
 
   await composer(page).fill("hello there");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible({ timeout: 10_000 });
 
   agentMenu = await openAgentMenu(page);
   await expect(agentMenu.getByRole("button", { name: /^Specialist/ })).toBeDisabled();

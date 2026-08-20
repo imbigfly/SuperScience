@@ -400,7 +400,7 @@ pub(super) async fn list_sessions_page(
     })
 }
 
-/// Frames whose persisted system prompt was built from AGENTS.md / WISP.md
+/// Frames whose persisted system prompt was built from AGENTS.md / SUPERSCIENCE.md
 /// contents that differ from the files on disk. Undecidable prompts (missing
 /// or legacy layout) are never flagged.
 async fn stale_prompt_frames(
@@ -408,8 +408,12 @@ async fn stale_prompt_frames(
     root: &std::path::Path,
     frame_ids: &[String],
 ) -> HashSet<String> {
-    let expected = superscience_core::SystemPrompt::new(root, &superscience_skills::SkillIndex::default(), None)
-        .rules_section();
+    let expected = superscience_core::SystemPrompt::new(
+        root,
+        &superscience_skills::SkillIndex::default(),
+        None,
+    )
+    .rules_section();
     let Ok(stored) = store.load_system_messages(frame_ids).await else {
         return HashSet::new();
     };
@@ -427,7 +431,7 @@ async fn stale_prompt_frames(
 }
 
 /// Rebuild a session's persisted system prompt with the current AGENTS.md /
-/// WISP.md contents. Only the rules section is spliced; every other section
+/// SUPERSCIENCE.md contents. Only the rules section is spliced; every other section
 /// (skills guidance, delegation/plan-mode/specialist additions) is preserved.
 /// The cached agent is dropped so the next turn rebuilds from the new prompt,
 /// which invalidates the provider's prompt cache for one turn.
@@ -465,9 +469,14 @@ pub(super) async fn reload_project_rules(
     let text = serde_json::from_str::<superscience_llm::Content>(json)
         .map(|content| content.as_text())
         .map_err(|error| error.to_string())?;
-    let rules = superscience_core::SystemPrompt::new(&ap.root, &superscience_skills::SkillIndex::default(), None)
-        .rules_section();
-    let Some(updated) = superscience_core::SystemPrompt::replace_rules_section(&text, &rules) else {
+    let rules = superscience_core::SystemPrompt::new(
+        &ap.root,
+        &superscience_skills::SkillIndex::default(),
+        None,
+    )
+    .rules_section();
+    let Some(updated) = superscience_core::SystemPrompt::replace_rules_section(&text, &rules)
+    else {
         return Err(
             "This session's prompt predates the rules layout and cannot be reloaded.".into(),
         );

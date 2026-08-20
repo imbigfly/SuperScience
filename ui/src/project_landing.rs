@@ -1,5 +1,6 @@
 use crate::app_support::ProjectsScreen;
 use crate::bindings::invoke;
+use crate::capabilities_home::CapabilityAction;
 use crate::dto::*;
 use crate::i18n::Locale;
 use leptos::*;
@@ -37,6 +38,7 @@ pub(super) fn ProjectLanding(
     open_settings: Callback<Option<String>>,
     open_library: Callback<()>,
     open_project_export: Callback<(String, String)>,
+    on_capability_action: Callback<CapabilityAction>,
 ) -> impl IntoView {
     let ProjectLandingState {
         show_projects,
@@ -93,6 +95,7 @@ pub(super) fn ProjectLanding(
                     on_open_demo=on_open_demo
                     on_open_scratch=open_scratch
                     on_search=Callback::new(move |_| command_palette_open.set(true))
+                    on_capability_action=on_capability_action
                     on_export_project=open_project_export
                     project_transfer=project_transfer
                     privacy_mode_active=privacy_mode_active

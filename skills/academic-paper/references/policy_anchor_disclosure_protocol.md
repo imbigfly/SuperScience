@@ -19,7 +19,7 @@ ARS's v3.2 `disclosure` mode renders a venue-targeted applicability/status bundl
 ## 1. Inputs
 
 1. **Paper draft** (same as v3.2): manuscript text plus pipeline log if available.
-2. **Selector**: `--policy-anchor=<a>` where `a ∈ {prisma-trAIce, icmje, nature, ieee}`. **Selector-mutually-exclusive by default** — supplying both `--policy-anchor` and `--venue` triggers the §5 conflict-resolution flow, which permits exactly one consistent pair (any Nature Portfolio venue + `--policy-anchor=nature`, sharing the canonical `shared/policy_data/nature_policy.md` source) and rejects every other combination with explicit error. See §5 for the full enumeration.
+2. **Selector**: `--policy-anchor=<a>` where `a ∈ {prisma-trAIce, icmje, nature, ieee}`. **Selector-mutually-exclusive by default** — supplying both `--policy-anchor` and `--venue` triggers the §5 conflict-resolution flow, which permits exactly one consistent pair (any Nature Portfolio venue + `--policy-anchor=nature`, sharing the canonical `../academic-shared/policy_data/nature_policy.md` source) and rejects every other combination with explicit error. See §5 for the full enumeration.
 3. **Pipeline signal**: `slr_lineage=true|false` set by the upstream pipeline orchestrator when an SLR-mode stage appears in the run history. Drives the §4.3 G2 invariant track gate (concern #1 resolution: explicit `slr_lineage` input).
 4. **Cold-start fallback**: when the renderer runs outside a pipeline (no `slr_lineage` set), the author supplies `mode=<value>` explicitly. Silent fallback to general track on missing input is **forbidden** by §4.3 G2 invariant.
 5. **v3.2 Phase 2 AI usage categorization**: the same input shape v3.2 uses. Each AI usage category carries state ∈ `{USED, NOT USED, UNCERTAIN}`.
@@ -92,7 +92,7 @@ When gate 3 fails (SLR manuscript whose only LLM use is editorial), the renderer
 
 **Track gate:** no SLR lineage requirement.
 
-**Dedup with v3.2 Nature venue path:** the Nature substantive policy text is co-cited from `shared/policy_data/nature_policy.md` (canonical source pointer). Both consumers — the v3.2 Nature venue renderer in `venue_disclosure_policies.md` and this Nature anchor renderer — derive their substantive content from that shared source. **G4 invariant**: edits to Nature-specific policy quotes must go through the shared source first, never directly into either consumer.
+**Dedup with v3.2 Nature venue path:** the Nature substantive policy text is co-cited from `../academic-shared/policy_data/nature_policy.md` (canonical source pointer). Both consumers — the v3.2 Nature venue renderer in `venue_disclosure_policies.md` and this Nature anchor renderer — derive their substantive content from that shared source. **G4 invariant**: edits to Nature-specific policy quotes must go through the shared source first, never directly into either consumer.
 
 **Render fields:**
 - Rows 9–10 (both explicit-mandate): emit the human-accountability statement using Nature's "In all cases, there must be human accountability for the final version of the text" verbatim language. Combine with the authorship-rejection clause from row 10's second quote when the manuscript proposes any AI co-authorship.
@@ -195,6 +195,6 @@ For audit traceability, this protocol implements each Decision Doc §4.4 open co
 - Anchor data table (consumer of this protocol): `policy_anchor_table.md`
 - v3.2 disclosure mode protocol (parallel track): `disclosure_mode_protocol.md`
 - v3.2 venue disclosure policies (Nature dedup peer): `venue_disclosure_policies.md`
-- Shared Nature policy source (canonical pointer, forthcoming): `shared/policy_data/nature_policy.md`
+- Shared Nature policy source (canonical pointer, forthcoming): `../academic-shared/policy_data/nature_policy.md`
 - Lint contract: `../../scripts/check_policy_anchor_protocol.py`
 - Conformance test suite: `../../scripts/test_policy_anchor_disclosure.py` (Task #7)

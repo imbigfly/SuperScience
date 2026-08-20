@@ -6,8 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use superscience_store::secrets::Secret;
 use tauri::State;
-use wisp_store::secrets::Secret;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -106,8 +106,10 @@ fn decorate_host(mut host: SshHost) -> SshHost {
 }
 
 impl SshConnection {
-    pub fn from_execution_context(context: &wisp_store::ExecutionContext) -> Result<Self, String> {
-        if context.kind != wisp_store::ExecutionContextKind::Ssh {
+    pub fn from_execution_context(
+        context: &superscience_store::ExecutionContext,
+    ) -> Result<Self, String> {
+        if context.kind != superscience_store::ExecutionContextKind::Ssh {
             return Err(format!("Execution context is not SSH: {}", context.id));
         }
         let id_alias = context
@@ -475,8 +477,8 @@ pub const SSH_NOT_CONFIRMED_MARKER: &str = "SSH connectivity is not confirmed";
 /// Gate every managed SSH use: known-good probe, open circuit breaker, and a
 /// resolvable identity file. Agent tools must call this before spawning SSH so
 /// they only use the configured `SshConnection` when the host is known reachable.
-pub fn require_managed_ssh_ready(ctx: &wisp_store::ExecutionContext) -> Result<(), String> {
-    if ctx.kind != wisp_store::ExecutionContextKind::Ssh {
+pub fn require_managed_ssh_ready(ctx: &superscience_store::ExecutionContext) -> Result<(), String> {
+    if ctx.kind != superscience_store::ExecutionContextKind::Ssh {
         return Ok(());
     }
     crate::ssh_guard::assert_allowed(&ctx.id)?;
@@ -616,15 +618,16 @@ pub fn parse_ssh_config_aliases(config: &str) -> Vec<String> {
 }
 
 pub fn render_contexts_section(
-    contexts: &[wisp_store::ExecutionContext],
-    default: Option<&wisp_store::ExecutionContext>,
+    contexts: &[superscience_store::ExecutionContext],
+    default: Option<&superscience_store::ExecutionContext>,
 ) -> Option<String> {
     let contexts: Vec<_> = contexts
         .iter()
         .filter(|c| {
             matches!(
                 c.kind,
-                wisp_store::ExecutionContextKind::Ssh | wisp_store::ExecutionContextKind::Wsl
+                superscience_store::ExecutionContextKind::Ssh
+                    | superscience_store::ExecutionContextKind::Wsl
             )
         })
         .collect();
@@ -679,7 +682,7 @@ using the probed capabilities, and continue.\n\n",
     for ctx in contexts {
         let cfg: serde_json::Value = serde_json::from_str(&ctx.config_json).unwrap_or_default();
         match ctx.kind {
-            wisp_store::ExecutionContextKind::Ssh => {
+            superscience_store::ExecutionContextKind::Ssh => {
                 let (conn, port) = match SshConnection::from_execution_context(ctx) {
                     Ok(connection) => (
                         connection
@@ -711,7 +714,7 @@ using the probed capabilities, and continue.\n\n",
                     ));
                 }
             }
-            wisp_store::ExecutionContextKind::Wsl => {
+            superscience_store::ExecutionContextKind::Wsl => {
                 let distro = cfg
                     .get("distro")
                     .and_then(|v| v.as_str())
@@ -721,7 +724,7 @@ using the probed capabilities, and continue.\n\n",
                     ctx.id
                 ));
             }
-            wisp_store::ExecutionContextKind::Local => {}
+            superscience_store::ExecutionContextKind::Local => {}
         }
         if let Some(summary) = capability_summary(&ctx.capabilities_json) {
             s.push_str(&format!(" — capabilities: {summary}"));
@@ -824,7 +827,7 @@ fn capability_summary(capabilities_json: &str) -> Option<String> {
 
 const KEY: &str = "ssh_hosts";
 
-async fn load(store: &wisp_store::Store) -> Vec<SshHost> {
+async fn load(store: &superscience_store::Store) -> Vec<SshHost> {
     store
         .get_setting(KEY)
         .await
@@ -834,7 +837,7 @@ async fn load(store: &wisp_store::Store) -> Vec<SshHost> {
         .unwrap_or_default()
 }
 
-async fn save(store: &wisp_store::Store, hosts: &[SshHost]) -> Result<(), String> {
+async fn save(store: &superscience_store::Store, hosts: &[SshHost]) -> Result<(), String> {
     let json = serde_json::to_string(hosts).map_err(|e| e.to_string())?;
     store
         .set_setting(KEY, &json)
@@ -846,7 +849,7 @@ fn ssh_context_id(alias: &str) -> Result<String, String> {
     let alias = alias.trim();
     validate_connection_name("SSH alias", alias)?;
     let id = format!("ssh:{alias}");
-    wisp_store::ExecutionContextKind::from_id(&id).map_err(|e| e.to_string())?;
+    superscience_store::ExecutionContextKind::from_id(&id).map_err(|e| e.to_string())?;
     Ok(id)
 }
 
@@ -958,7 +961,10 @@ fn apply_host_password(host: &SshHost) -> Result<(), String> {
     Ok(())
 }
 
-async fn upsert_context_for_host(store: &wisp_store::Store, host: &SshHost) -> Result<(), String> {
+async fn upsert_context_for_host(
+    store: &superscience_store::Store,
+    host: &SshHost,
+) -> Result<(), String> {
     SshConnection::from_host(host)?;
     let id = ssh_context_id(&host.alias)?;
     let now = chrono::Utc::now().timestamp();
@@ -968,11 +974,10 @@ async fn upsert_context_for_host(store: &wisp_store::Store, host: &SshHost) -> R
         .map_err(|e| e.to_string())?
     {
         Some(ctx) => ctx,
-        None => {
-            wisp_store::ExecutionContext::new(&id, host.alias.trim()).map_err(|e| e.to_string())?
-        }
+        None => superscience_store::ExecutionContext::new(&id, host.alias.trim())
+            .map_err(|e| e.to_string())?,
     };
-    ctx.kind = wisp_store::ExecutionContextKind::Ssh;
+    ctx.kind = superscience_store::ExecutionContextKind::Ssh;
     ctx.label = host.alias.trim().into();
     ctx.config_json = crate::runtime_launcher::preserve_interpreter_config(
         &ctx.config_json,
@@ -987,7 +992,7 @@ async fn upsert_context_for_host(store: &wisp_store::Store, host: &SshHost) -> R
 }
 
 async fn save_and_sync_contexts(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     hosts: &[SshHost],
 ) -> Result<(), String> {
     for host in hosts {
@@ -1000,7 +1005,10 @@ async fn save_and_sync_contexts(
     Ok(())
 }
 
-async fn remove_context_for_alias(store: &wisp_store::Store, alias: &str) -> Result<(), String> {
+async fn remove_context_for_alias(
+    store: &superscience_store::Store,
+    alias: &str,
+) -> Result<(), String> {
     let id = ssh_context_id(alias)?;
     store
         .delete_execution_context(&id)
@@ -1016,7 +1024,7 @@ pub const DEFAULT_EXECUTION_CONTEXT_KEY: &str = "default_execution_context_id";
 /// Read the persisted default analysis context. Returns `None` when no default
 /// is set or when the setting points at a deleted (or local) context; a stale
 /// setting is cleared as a side effect.
-pub async fn stored_default_execution_context(store: &wisp_store::Store) -> Option<String> {
+pub async fn stored_default_execution_context(store: &superscience_store::Store) -> Option<String> {
     let id = match store.get_setting(DEFAULT_EXECUTION_CONTEXT_KEY).await {
         Ok(Some(id)) => id.trim().to_string(),
         Ok(None) => return None,
@@ -1029,7 +1037,7 @@ pub async fn stored_default_execution_context(store: &wisp_store::Store) -> Opti
         return None;
     }
     match store.get_execution_context(&id).await {
-        Ok(Some(ctx)) if ctx.kind != wisp_store::ExecutionContextKind::Local => Some(id),
+        Ok(Some(ctx)) if ctx.kind != superscience_store::ExecutionContextKind::Local => Some(id),
         Ok(_) => {
             if let Err(e) = store.set_setting(DEFAULT_EXECUTION_CONTEXT_KEY, "").await {
                 tracing::warn!("clear stale default execution context failed: {e}");
@@ -1043,7 +1051,10 @@ pub async fn stored_default_execution_context(store: &wisp_store::Store) -> Opti
     }
 }
 
-pub async fn stored_compute_section(store: &wisp_store::Store, frame_id: &str) -> Option<String> {
+pub async fn stored_compute_section(
+    store: &superscience_store::Store,
+    frame_id: &str,
+) -> Option<String> {
     let hosts = load(store).await;
     for host in &hosts {
         if let Err(e) = upsert_context_for_host(store, host).await {
@@ -1093,7 +1104,7 @@ pub async fn set_default_execution_context(
     {
         Some(id) => {
             match state.store.get_execution_context(&id).await {
-                Ok(Some(ctx)) if ctx.kind != wisp_store::ExecutionContextKind::Local => {}
+                Ok(Some(ctx)) if ctx.kind != superscience_store::ExecutionContextKind::Local => {}
                 Ok(Some(_)) => {
                     return Err("Local compute is always available; no default needed".into())
                 }
@@ -1226,7 +1237,7 @@ pub async fn test_ssh_connection(host: SshHost) -> Result<(), String> {
     if !envs.is_empty() {
         cmd.envs(envs.iter().cloned());
     }
-    wisp_tools::process::hide_console_async(&mut cmd);
+    superscience_tools::process::hide_console_async(&mut cmd);
     let result = tokio::time::timeout(std::time::Duration::from_secs(30), cmd.output()).await;
     cleanup_password_auth_env(&envs);
     let output = result
@@ -1361,7 +1372,7 @@ mod tests {
 
     #[test]
     fn managed_ssh_requires_successful_probe() {
-        let mut ctx = wisp_store::ExecutionContext::new("ssh:lab", "lab").unwrap();
+        let mut ctx = superscience_store::ExecutionContext::new("ssh:lab", "lab").unwrap();
         ctx.config_json = serde_json::json!({ "alias": "lab" }).to_string();
         let unknown = require_managed_ssh_ready(&ctx).unwrap_err();
         assert!(unknown.contains(SSH_NOT_CONFIRMED_MARKER), "{unknown}");
@@ -1453,7 +1464,7 @@ Host -unsafe bad/name !negated
     async fn imported_aliases_create_ssh_execution_contexts() {
         let tmp =
             std::env::temp_dir().join(format!("wisp_ssh_contexts_{}.sqlite", uuid::Uuid::new_v4()));
-        let store = wisp_store::Store::open(&tmp).await.unwrap();
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
 
         let hosts = merge_config_aliases(Vec::new(), vec!["gpu-box".into(), "biowulf".into()]);
         save_and_sync_contexts(&store, &hosts).await.unwrap();
@@ -1462,7 +1473,7 @@ Host -unsafe bad/name !negated
         assert_eq!(
             contexts
                 .iter()
-                .filter(|context| context.kind == wisp_store::ExecutionContextKind::Ssh)
+                .filter(|context| context.kind == superscience_store::ExecutionContextKind::Ssh)
                 .map(|context| context.id.as_str())
                 .collect::<Vec<_>>(),
             ["ssh:biowulf", "ssh:gpu-box"]
@@ -1474,7 +1485,7 @@ Host -unsafe bad/name !negated
                 .unwrap()
                 .unwrap()
                 .kind,
-            wisp_store::ExecutionContextKind::Ssh
+            superscience_store::ExecutionContextKind::Ssh
         );
 
         let _ = std::fs::remove_file(&tmp);
@@ -1486,7 +1497,7 @@ Host -unsafe bad/name !negated
             "wisp_ssh_contexts_preserve_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
-        let store = wisp_store::Store::open(&tmp).await.unwrap();
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
 
         let hosts = merge_config_aliases(
             vec![host("gpu-box", Some("slurm cluster"))],
@@ -1536,7 +1547,7 @@ Host -unsafe bad/name !negated
 
     #[test]
     fn render_contexts_lists_context_ids_and_remote_path_warning() {
-        let mut ctx = wisp_store::ExecutionContext::new("ssh:gpu-box", "gpu-box").unwrap();
+        let mut ctx = superscience_store::ExecutionContext::new("ssh:gpu-box", "gpu-box").unwrap();
         ctx.config_json = serde_json::json!({
             "alias": "gpu-box",
             "user": "alice",
@@ -1591,7 +1602,7 @@ Host -unsafe bad/name !negated
 
     #[test]
     fn render_contexts_flags_failed_probe_connectivity() {
-        let mut ctx = wisp_store::ExecutionContext::new("ssh:down", "down").unwrap();
+        let mut ctx = superscience_store::ExecutionContext::new("ssh:down", "down").unwrap();
         ctx.config_json = serde_json::json!({ "alias": "down" }).to_string();
         ctx.last_probe_status = Some("error".into());
         ctx.last_probe_error = Some("Connection timed out".into());
@@ -1603,8 +1614,8 @@ Host -unsafe bad/name !negated
 
     #[test]
     fn render_contexts_excludes_local_and_includes_selected_capabilities() {
-        let local = wisp_store::ExecutionContext::new("local", "Local").unwrap();
-        let mut selected = wisp_store::ExecutionContext::new("ssh:on", "on").unwrap();
+        let local = superscience_store::ExecutionContext::new("local", "Local").unwrap();
+        let mut selected = superscience_store::ExecutionContext::new("ssh:on", "on").unwrap();
         selected.config_json = serde_json::json!({ "alias": "on" }).to_string();
         selected.capabilities_json = serde_json::json!({
             "probe_skill": "probe-compute-environment",
@@ -1631,7 +1642,7 @@ Host -unsafe bad/name !negated
 
     #[test]
     fn ssh_connection_builds_ssh_and_scp_arguments() {
-        let mut ctx = wisp_store::ExecutionContext::new("ssh:gpu-box", "GPU").unwrap();
+        let mut ctx = superscience_store::ExecutionContext::new("ssh:gpu-box", "GPU").unwrap();
         ctx.config_json = serde_json::json!({
             "alias": "gpu-box",
             "user": "alice",
@@ -1695,7 +1706,7 @@ Host -unsafe bad/name !negated
 
     #[test]
     fn ssh_connection_defaults_alias_from_context_id() {
-        let ctx = wisp_store::ExecutionContext::new("ssh:gpu-box", "GPU").unwrap();
+        let ctx = superscience_store::ExecutionContext::new("ssh:gpu-box", "GPU").unwrap();
         let connection = SshConnection::from_execution_context(&ctx).unwrap();
         assert_eq!(connection.target().unwrap(), "gpu-box");
         assert_eq!(connection.ssh_args().unwrap().last().unwrap(), "gpu-box");
@@ -1858,7 +1869,7 @@ Host -unsafe bad/name !negated
     #[test]
     fn render_contexts_lists_wsl_contexts_with_path_warning() {
         let mut ctx =
-            wisp_store::ExecutionContext::new("wsl:Ubuntu-22.04", "Ubuntu-22.04").unwrap();
+            superscience_store::ExecutionContext::new("wsl:Ubuntu-22.04", "Ubuntu-22.04").unwrap();
         ctx.config_json = serde_json::json!({ "distro": "Ubuntu-22.04" }).to_string();
 
         let s = render_contexts_section(&[ctx], None).unwrap();
@@ -1875,7 +1886,7 @@ Host -unsafe bad/name !negated
 
     #[test]
     fn render_contexts_summarizes_capabilities() {
-        let mut ctx = wisp_store::ExecutionContext::new("ssh:gpu-box", "gpu-box").unwrap();
+        let mut ctx = superscience_store::ExecutionContext::new("ssh:gpu-box", "gpu-box").unwrap();
         ctx.config_json = serde_json::json!({ "alias": "gpu-box" }).to_string();
         ctx.capabilities_json = serde_json::json!({
             "os": "Linux",
@@ -1900,7 +1911,7 @@ Host -unsafe bad/name !negated
 
     #[test]
     fn render_contexts_announces_default_analysis_environment() {
-        let mut ctx = wisp_store::ExecutionContext::new("ssh:gpu", "GPU box").unwrap();
+        let mut ctx = superscience_store::ExecutionContext::new("ssh:gpu", "GPU box").unwrap();
         ctx.config_json = serde_json::json!({ "alias": "gpu" }).to_string();
         let s = render_contexts_section(&[], Some(&ctx)).unwrap();
         assert!(
@@ -1922,9 +1933,11 @@ Host -unsafe bad/name !negated
     async fn stored_default_execution_context_drops_stale_setting() {
         let path =
             std::env::temp_dir().join(format!("wisp_default_ctx_{}.sqlite", uuid::Uuid::new_v4()));
-        let store = wisp_store::Store::open(&path).await.unwrap();
+        let store = superscience_store::Store::open(&path).await.unwrap();
         store
-            .upsert_execution_context(&wisp_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap())
+            .upsert_execution_context(
+                &superscience_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap(),
+            )
             .await
             .unwrap();
 

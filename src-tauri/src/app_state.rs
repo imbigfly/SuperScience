@@ -32,7 +32,7 @@ pub(crate) struct SessionRuntime {
     pub(crate) last_seq: StdMutex<i64>,
     /// Guide (#410): mid-turn messages the running loop drains into user
     /// messages at its next iteration; ids let queued senders detect that.
-    pub(crate) pending_guidance: wisp_core::GuidanceQueue,
+    pub(crate) pending_guidance: superscience_core::GuidanceQueue,
     pub(crate) guidance_seq: std::sync::atomic::AtomicU64,
     /// Where the last cancelled turn started, so an InterruptReplace send can
     /// roll the model context back to before the abandoned task.
@@ -73,7 +73,7 @@ impl SessionRuntime {
             cancel: Arc::new(AtomicBool::new(false)),
             deleted: AtomicBool::new(false),
             last_seq: StdMutex::new(0),
-            pending_guidance: wisp_core::GuidanceQueue::default(),
+            pending_guidance: superscience_core::GuidanceQueue::default(),
             guidance_seq: std::sync::atomic::AtomicU64::new(0),
             interrupted_turn_start: StdMutex::new(None),
             mcp_app_contexts: StdMutex::new(HashMap::new()),
@@ -269,7 +269,7 @@ pub(crate) struct AppState {
     pub(crate) store: Store,
     pub(crate) library: LibraryStore,
     pub(crate) run_manager: run_context::RunManager,
-    pub(crate) runtime_manager: wisp_runtime::RuntimeManager,
+    pub(crate) runtime_manager: superscience_runtime::RuntimeManager,
     pub(crate) browser_bridge: Arc<browser_bridge::BrowserBridge>,
     pub(crate) device_bridge: Arc<device_bridge::DeviceBridge>,
     pub(crate) device_hub: Arc<device_hub::DeviceHub>,
@@ -327,8 +327,6 @@ pub(crate) struct AppState {
     /// Session ids with an in-flight manual or automatic review. Reviews in
     /// unrelated conversations remain independent.
     pub(crate) reviewing: Arc<StdMutex<HashSet<String>>>,
-    /// Per-window ephemeral scratch chat (restored on close).
-    pub(crate) scratch: std::sync::RwLock<HashMap<String, scratch_commands::ScratchWindow>>,
 }
 
 impl AppState {

@@ -1085,7 +1085,8 @@ mod tests {
         let snapshot = workspace.join(".superscience/artifacts/sha256/ab/abcdef.png");
         std::fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
         std::fs::write(&snapshot, b"snapshot").unwrap();
-        let candidate_blob = workspace.join(".superscience/method-search/run-1/blobs/ca/candidate.py");
+        let candidate_blob =
+            workspace.join(".superscience/method-search/run-1/blobs/ca/candidate.py");
         std::fs::create_dir_all(candidate_blob.parent().unwrap()).unwrap();
         std::fs::write(&candidate_blob, b"candidate").unwrap();
         std::fs::write(&database, b"sqlite-placeholder").unwrap();
@@ -1117,8 +1118,10 @@ mod tests {
             b"snapshot"
         );
         assert_eq!(
-            std::fs::read(extracted.join(".superscience/method-search/run-1/blobs/ca/candidate.py"))
-                .unwrap(),
+            std::fs::read(
+                extracted.join(".superscience/method-search/run-1/blobs/ca/candidate.py")
+            )
+            .unwrap(),
             b"candidate"
         );
         assert_eq!(

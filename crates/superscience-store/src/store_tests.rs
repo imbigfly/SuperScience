@@ -357,7 +357,7 @@ async fn replace_and_load_system_message() {
         .await
         .unwrap();
     assert_eq!(map.len(), 1, "only f1 has a system message: {map:?}");
-    let content: wisp_llm::Content = serde_json::from_str(&map["f1"]).unwrap();
+    let content: superscience_llm::Content = serde_json::from_str(&map["f1"]).unwrap();
     assert_eq!(content.as_text(), "old prompt");
 
     assert!(store
@@ -2226,7 +2226,7 @@ async fn existing_database_without_branched_from_column_is_repaired() {
         .execute(&store.pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
         .bind(SESSION_BRANCH_LINEAGE_MIGRATION)
         .execute(&store.pool)
         .await
@@ -2298,7 +2298,7 @@ async fn existing_database_without_pinned_column_is_repaired() {
         .execute(&store.pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
         .bind(SESSION_PINNED_MIGRATION)
         .execute(&store.pool)
         .await
@@ -3091,13 +3091,13 @@ async fn upgrade_from_recorded_initial_schema_can_list_sessions() {
             .await
             .unwrap();
         sqlx::query(
-            "CREATE TABLE wisp_schema_migrations (\
+            "CREATE TABLE superscience_schema_migrations (\
              version TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)",
         )
         .execute(&pool)
         .await
         .unwrap();
-        sqlx::query("INSERT INTO wisp_schema_migrations(version,applied_at) VALUES(?,1)")
+        sqlx::query("INSERT INTO superscience_schema_migrations(version,applied_at) VALUES(?,1)")
             .bind(INITIAL_SCHEMA_MIGRATION)
             .execute(&pool)
             .await
@@ -3598,7 +3598,7 @@ async fn context_storage_prefs_validate_and_round_trip() {
         project_id: "p".into(),
         context_id: "ssh:gpu".into(),
         remote_data_root: "~/wisp/proj/data".into(),
-        remote_workdir_root: ".wisp-science/runs".into(),
+        remote_workdir_root: ".superscience/runs".into(),
         local_results_dir: "remote/gpu".into(),
         created_at: 0,
         updated_at: 0,
@@ -4071,12 +4071,12 @@ async fn run_artifact_lineage_migration_repairs_partial_application() {
     ] {
         sqlx::query(statement).execute(&store.pool).await.unwrap();
     }
-    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
         .bind(RUN_ARTIFACT_LINEAGE_MIGRATION)
         .execute(&store.pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
         .bind(EXPLORATION_BRANCHES_MIGRATION)
         .execute(&store.pool)
         .await
@@ -4132,7 +4132,7 @@ async fn publication_domain_migration_repairs_partial_application() {
         .execute(&store.pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
         .bind(PUBLICATION_DOMAIN_MIGRATION)
         .execute(&store.pool)
         .await
@@ -4185,7 +4185,7 @@ async fn publication_freeze_migration_repairs_partial_application() {
     ] {
         sqlx::query(statement).execute(&store.pool).await.unwrap();
     }
-    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
         .bind(PUBLICATION_FREEZE_MIGRATION)
         .execute(&store.pool)
         .await
@@ -4243,7 +4243,7 @@ async fn publication_verification_migration_repairs_partial_application() {
         .execute(&store.pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
         .bind(PUBLICATION_VERIFICATION_MIGRATION)
         .execute(&store.pool)
         .await
@@ -4292,7 +4292,7 @@ async fn turn_file_undo_migration_repairs_partial_application() {
         .execute(&store.pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
         .bind(TURN_FILE_UNDO_MIGRATION)
         .execute(&store.pool)
         .await
@@ -4333,7 +4333,7 @@ async fn agent_workflow_contract_migration_repairs_partial_application() {
         .execute(&store.pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
         .bind(AGENT_WORKFLOW_CONTRACTS_MIGRATION)
         .execute(&store.pool)
         .await
@@ -4371,7 +4371,7 @@ async fn agent_workflow_plan_migration_repairs_partial_application() {
         .execute(&store.pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
         .bind(AGENT_WORKFLOW_PLANS_MIGRATION)
         .execute(&store.pool)
         .await
@@ -4408,7 +4408,7 @@ async fn agent_workflow_attempt_migration_is_retry_safe() {
         .execute(&store.pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
         .bind(AGENT_WORKFLOW_ATTEMPTS_MIGRATION)
         .execute(&store.pool)
         .await
@@ -4443,7 +4443,7 @@ async fn agent_workflow_lineage_migration_is_retry_safe() {
         .execute(&store.pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
         .bind(AGENT_WORKFLOW_LINEAGE_MIGRATION)
         .execute(&store.pool)
         .await
@@ -4697,7 +4697,7 @@ async fn agent_workflow_delivery_migration_is_retry_safe() {
         .execute(&store.pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
         .bind(AGENT_WORKFLOW_DELIVERIES_MIGRATION)
         .execute(&store.pool)
         .await
@@ -4855,7 +4855,7 @@ async fn migrate_adds_ssh_run_control_columns_to_existing_runs() {
             .await
             .unwrap();
         sqlx::query(
-            "CREATE TABLE wisp_schema_migrations (\
+            "CREATE TABLE superscience_schema_migrations (\
              version TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)",
         )
         .execute(&pool)
@@ -4866,12 +4866,14 @@ async fn migrate_adds_ssh_run_control_columns_to_existing_runs() {
             (2, CONTROL_PLANE_MIGRATION),
             (3, ARTIFACT_LINEAGE_MIGRATION),
         ] {
-            sqlx::query("INSERT INTO wisp_schema_migrations(version,applied_at) VALUES(?,?)")
-                .bind(version)
-                .bind(applied_at)
-                .execute(&pool)
-                .await
-                .unwrap();
+            sqlx::query(
+                "INSERT INTO superscience_schema_migrations(version,applied_at) VALUES(?,?)",
+            )
+            .bind(version)
+            .bind(applied_at)
+            .execute(&pool)
+            .await
+            .unwrap();
         }
         sqlx::query(
             "CREATE TABLE execution_contexts (\
@@ -5930,10 +5932,10 @@ async fn fine_grained_publication_evidence_keeps_immutable_source_snapshots() {
         .await
         .unwrap();
     let mut assistant = Message::assistant("");
-    assistant.tool_calls.push(wisp_llm::ToolCall {
+    assistant.tool_calls.push(superscience_llm::ToolCall {
         id: "call-1".into(),
         kind: "function".into(),
-        function: wisp_llm::FunctionCall {
+        function: superscience_llm::FunctionCall {
             name: "read".into(),
             arguments: r#"{"path":"result.txt"}"#.into(),
         },
@@ -7588,7 +7590,7 @@ async fn exploration_promotion_recovery_migration_removes_legacy_cascade() {
     .execute(&store.pool)
     .await
     .unwrap();
-    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
         .bind(EXPLORATION_PROMOTION_RECOVERY_MIGRATION)
         .execute(&store.pool)
         .await
@@ -8240,12 +8242,12 @@ async fn exploration_migration_repairs_partial_legacy_state() {
     .execute(&store.pool)
     .await
     .unwrap();
-    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
         .bind(EXPLORATION_BRANCHES_MIGRATION)
         .execute(&store.pool)
         .await
         .unwrap();
-    sqlx::query("DELETE FROM wisp_schema_migrations WHERE version=?")
+    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
         .bind(PROJECT_STATE_REVISIONS_MIGRATION)
         .execute(&store.pool)
         .await

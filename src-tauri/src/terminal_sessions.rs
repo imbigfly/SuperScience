@@ -549,7 +549,8 @@ mod tests {
 
     #[test]
     fn builds_wsl_terminal_for_selected_distro_and_project() {
-        let mut context = superscience_store::ExecutionContext::new("wsl:Ubuntu-24.04", "Ubuntu").unwrap();
+        let mut context =
+            superscience_store::ExecutionContext::new("wsl:Ubuntu-24.04", "Ubuntu").unwrap();
         context.config_json = serde_json::json!({"distro": "Ubuntu-24.04"}).to_string();
         let root = Path::new(r"C:\Users\scientist\project");
 
@@ -597,7 +598,7 @@ mod tests {
 
     #[test]
     fn password_ssh_terminal_requires_stored_password_before_spawn() {
-        let mut context = wisp_store::ExecutionContext::new("ssh:lab", "Lab").unwrap();
+        let mut context = superscience_store::ExecutionContext::new("ssh:lab", "Lab").unwrap();
         context.config_json = serde_json::json!({
             "alias": "lab",
             "user": "alice",

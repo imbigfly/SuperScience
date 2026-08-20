@@ -46,7 +46,8 @@
     current_version: "0.9.0",
     latest_version: "0.10.0",
     update_available: true,
-    release_url: "https://github.com/imbigfly/SuperScience/releases",
+    release_url: "https://www.tctoken.cn/app/tiancheng.dmg",
+    force_update: false,
     notes: "## What's new\n\n- Sidebar update prompt with changelog\n- Fixed streaming thinking bounce\n- **Breaking:** renamed `foo` to `bar`",
   };
   let mockUpdateCheckEnabled = true;
@@ -380,6 +381,14 @@
                 },
               ],
             };
+          case "get_pii_firewall_enabled":
+            return true;
+          case "set_pii_firewall_enabled":
+            return null;
+          case "save_session_as_demo":
+            return { id: args?.sessionId || "user-demo", title: args?.title || "Saved demo", user_saved: true };
+          case "delete_user_demo":
+            return null;
           case "get_settings":
             return { provider: "openai", api_url: "https://api.deepseek.com", model: "deepseek-v4-pro", label: "deepseek-v4-pro", has_api_key: true, locale: "en", max_iter: 100, auto_compact: true, max_tokens: 4096, reasoning_effort: "", supports_vision: true };
           case "list_models":
@@ -712,10 +721,10 @@
           case "validate_settings":
             return "Validated openai with deepseek-v4-pro";
           case "get_memory_view":
-            return { enabled: memoryEnabled, project_id: "default", project_name: "wisp-science", today_file: "2026-07-04.md", files: memoryFiles, global_memories: globalMemories };
+            return { enabled: memoryEnabled, project_id: "default", project_name: "superscience", today_file: "2026-07-04.md", files: memoryFiles, global_memories: globalMemories };
           case "set_memory_enabled":
             memoryEnabled = !!args?.enabled;
-            return { enabled: memoryEnabled, project_id: "default", project_name: "wisp-science", today_file: "2026-07-04.md", files: memoryFiles, global_memories: globalMemories };
+            return { enabled: memoryEnabled, project_id: "default", project_name: "superscience", today_file: "2026-07-04.md", files: memoryFiles, global_memories: globalMemories };
           case "get_auto_failure_analysis_settings":
             return { ...autoFailureAnalysis };
           case "set_auto_failure_analysis_settings":
@@ -858,6 +867,8 @@
           }
           case "open_external_url":
             if (args?.url) window.open(args.url, "_blank", "noopener,noreferrer");
+            return null;
+          case "open_app_doc":
             return null;
           case "list_library_items":
             return libraryItems;

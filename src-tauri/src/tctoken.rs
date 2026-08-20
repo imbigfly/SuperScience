@@ -12,8 +12,19 @@ use std::time::Duration;
 use superscience_store::secrets::Secret;
 use tauri::State;
 
-const BASE_URL: &str = "https://www.tctoken.cn";
+const DEFAULT_BASE_URL: &str = "https://www.tctoken.cn";
+
+/// Shared TCTOKEN Open API origin. Override with `TCTOKEN_API_BASE` for staging.
+pub(crate) fn tctoken_api_base() -> String {
+    std::env::var("TCTOKEN_API_BASE")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_BASE_URL.to_string())
+}
+
 const ACCESS_TOKEN_SECRET: &str = "tctoken_access_token";
+const SESSION_EXPIRED: &str = "Session expired. Please log in again.";
 const PROFILE_SETTING: &str = "tctoken_profile";
 const REMEMBER_USERNAME_SETTING: &str = "tctoken_remember_username";
 const REMEMBER_PASSWORD_SECRET: &str = "tctoken_remember_password";
@@ -35,7 +46,7 @@ fn http_client() -> &'static Client {
 }
 
 fn api_url(path: &str) -> String {
-    format!("{BASE_URL}{path}")
+    format!("{}{path}", tctoken_api_base())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -148,7 +159,10 @@ async fn load_profile(store: &superscience_store::Store) -> Option<StoredProfile
     serde_json::from_str(&raw).ok()
 }
 
-async fn save_profile(store: &superscience_store::Store, profile: &StoredProfile) -> Result<(), String> {
+async fn save_profile(
+    store: &superscience_store::Store,
+    profile: &StoredProfile,
+) -> Result<(), String> {
     let json = serde_json::to_string(profile).map_err(|e| e.to_string())?;
     store
         .set_setting(PROFILE_SETTING, &json)
@@ -287,8 +301,48 @@ async fn parse_envelope<T: for<'de> Deserialize<'de>>(
         .ok_or_else(|| "Response missing data.".to_string())
 }
 
-async fn parse_envelope_value(response: reqwest::Response) -> Result<Value, String> {
-    parse_envelope::<Value>(response).await
+pub(crate) fn is_invalid_session_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("unauthorized")
+        || lower.contains("invalid access token")
+        || lower.contains("session expired")
+        || (lower.contains("access token")
+            && (lower.contains("invalid")
+                || lower.contains("expired")
+                || lower.contains("revoked")))
+}
+
+async fn clear_local_session(store: Option<&superscience_store::Store>) {
+    let _ = secret_del(ACCESS_TOKEN_SECRET);
+    if let Some(store) = store {
+        let _ = clear_profile(store).await;
+    }
+}
+
+async fn parse_authed_envelope<T: for<'de> Deserialize<'de>>(
+    store: Option<&superscience_store::Store>,
+    response: reqwest::Response,
+) -> Result<T, String> {
+    let status = response.status();
+    if matches!(status.as_u16(), 401 | 403) {
+        clear_local_session(store).await;
+        return Err(SESSION_EXPIRED.into());
+    }
+    match parse_envelope::<T>(response).await {
+        Ok(data) => Ok(data),
+        Err(message) if is_invalid_session_error(&message) => {
+            clear_local_session(store).await;
+            Err(SESSION_EXPIRED.into())
+        }
+        Err(message) => Err(message),
+    }
+}
+
+async fn parse_authed_envelope_value(
+    store: Option<&superscience_store::Store>,
+    response: reqwest::Response,
+) -> Result<Value, String> {
+    parse_authed_envelope::<Value>(store, response).await
 }
 
 async fn authed_get(path: &str) -> Result<reqwest::Response, String> {
@@ -301,7 +355,10 @@ async fn authed_get(path: &str) -> Result<reqwest::Response, String> {
         .map_err(|e| format!("request failed: {e}"))
 }
 
-async fn authed_get_query(path: &str, query: &[(&str, String)]) -> Result<reqwest::Response, String> {
+async fn authed_get_query(
+    path: &str,
+    query: &[(&str, String)],
+) -> Result<reqwest::Response, String> {
     let token = access_token()?;
     http_client()
         .get(api_url(path))
@@ -406,7 +463,9 @@ pub(super) async fn tctoken_login_2fa_cmd(
 }
 
 #[tauri::command(rename = "tctoken_logout")]
-pub(super) async fn tctoken_logout_cmd(state: State<'_, AppState>) -> Result<TctokenSession, String> {
+pub(super) async fn tctoken_logout_cmd(
+    state: State<'_, AppState>,
+) -> Result<TctokenSession, String> {
     let _ = secret_del(ACCESS_TOKEN_SECRET);
     clear_profile(&state.store).await?;
     Ok(session_from_profile(None, false))
@@ -440,12 +499,7 @@ pub(super) async fn tctoken_account_cmd(
     state: State<'_, AppState>,
 ) -> Result<TctokenAccount, String> {
     let response = authed_get("/api/open/v1/account").await?;
-    if response.status().as_u16() == 401 {
-        let _ = secret_del(ACCESS_TOKEN_SECRET);
-        let _ = clear_profile(&state.store).await;
-        return Err("Session expired. Please log in again.".into());
-    }
-    let data: AccountData = parse_envelope(response).await?;
+    let data: AccountData = parse_authed_envelope(Some(&state.store), response).await?;
     let profile = StoredProfile {
         user_id: data.user_id,
         username: data.username.clone(),
@@ -503,7 +557,7 @@ pub(super) async fn tctoken_logs_cmd(
         query.push(("group", v));
     }
     let response = authed_get_query("/api/open/v1/logs", &query).await?;
-    parse_envelope_value(response).await
+    parse_authed_envelope_value(None, response).await
 }
 
 #[tauri::command(rename = "tctoken_logs_stat")]
@@ -535,13 +589,13 @@ pub(super) async fn tctoken_logs_stat_cmd(
         query.push(("type", t.to_string()));
     }
     let response = authed_get_query("/api/open/v1/logs/stat", &query).await?;
-    parse_envelope_value(response).await
+    parse_authed_envelope_value(None, response).await
 }
 
 #[tauri::command(rename = "tctoken_topup_info")]
 pub(super) async fn tctoken_topup_info_cmd() -> Result<Value, String> {
     let response = authed_get("/api/open/v1/topup/info").await?;
-    parse_envelope_value(response).await
+    parse_authed_envelope_value(None, response).await
 }
 
 #[tauri::command(rename = "tctoken_topup_amount")]
@@ -557,7 +611,7 @@ pub(super) async fn tctoken_topup_amount_cmd(
         body["payment_method"] = Value::String(method);
     }
     let response = authed_post_json("/api/open/v1/topup/amount", &body).await?;
-    parse_envelope_value(response).await
+    parse_authed_envelope_value(None, response).await
 }
 
 #[tauri::command(rename = "tctoken_topup_pay")]
@@ -594,7 +648,7 @@ pub(super) async fn tctoken_topup_pay_cmd(
         body["channel"] = Value::String(ch.to_string());
     }
     let response = authed_post_json("/api/open/v1/topup/pay", &body).await?;
-    let mut data = parse_envelope_value(response).await?;
+    let mut data = parse_authed_envelope_value(None, response).await?;
     normalize_pay_response(&mut data);
     Ok(data)
 }
@@ -644,7 +698,7 @@ pub(super) async fn tctoken_topup_redeem_cmd(key: String) -> Result<Value, Strin
     }
     let body = serde_json::json!({ "key": key });
     let response = authed_post_json("/api/open/v1/topup/redeem", &body).await?;
-    parse_envelope_value(response).await
+    parse_authed_envelope_value(None, response).await
 }
 
 #[tauri::command(rename = "tctoken_topup_orders")]
@@ -660,7 +714,7 @@ pub(super) async fn tctoken_topup_orders_cmd(
         query.push(("keyword", v));
     }
     let response = authed_get_query("/api/open/v1/topup/orders", &query).await?;
-    parse_envelope_value(response).await
+    parse_authed_envelope_value(None, response).await
 }
 
 #[tauri::command(rename = "tctoken_tokens")]
@@ -673,7 +727,7 @@ pub(super) async fn tctoken_tokens_cmd(
         ("page_size", page_size.unwrap_or(20).min(100).to_string()),
     ];
     let response = authed_get_query("/api/open/v1/tokens", &query).await?;
-    parse_envelope_value(response).await
+    parse_authed_envelope_value(None, response).await
 }
 
 #[tauri::command(rename = "tctoken_token_key")]
@@ -685,7 +739,7 @@ pub(super) async fn tctoken_token_key_cmd(id: i64) -> Result<Value, String> {
         .send()
         .await
         .map_err(|e| format!("request failed: {e}"))?;
-    parse_envelope_value(response).await
+    parse_authed_envelope_value(None, response).await
 }
 
 #[tauri::command(rename = "tctoken_get_default_token_id")]
@@ -757,7 +811,7 @@ pub(super) async fn tctoken_set_drawing_key_cmd(
 
 #[tauri::command(rename = "tctoken_provider_url")]
 pub(super) fn tctoken_provider_url_cmd() -> String {
-    BASE_URL.to_string()
+    tctoken_api_base()
 }
 
 #[cfg(test)]
@@ -804,10 +858,31 @@ mod tests {
 
     #[test]
     fn api_url_joins_base() {
-        assert_eq!(
-            api_url("/api/open/v1/account"),
-            "https://www.tctoken.cn/api/open/v1/account"
-        );
+        let expected = format!("{}/api/open/v1/account", tctoken_api_base());
+        assert_eq!(api_url("/api/open/v1/account"), expected);
+    }
+
+    #[test]
+    fn default_api_base_is_tctoken_cn_when_env_unset() {
+        if std::env::var("TCTOKEN_API_BASE").is_ok() {
+            return;
+        }
+        assert_eq!(tctoken_api_base(), DEFAULT_BASE_URL);
+    }
+
+    #[test]
+    fn detects_invalid_access_token_as_expired_session() {
+        assert!(is_invalid_session_error(
+            "Unauthorized, invalid access token"
+        ));
+        assert!(is_invalid_session_error(
+            "SESSION EXPIRED. Please log in again."
+        ));
+        assert!(is_invalid_session_error("access token expired"));
+        assert!(!is_invalid_session_error("Amount must be positive."));
+        assert!(!is_invalid_session_error(
+            "Username and password are required."
+        ));
     }
 
     #[test]

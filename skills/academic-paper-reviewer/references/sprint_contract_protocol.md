@@ -1,8 +1,8 @@
 # Sprint Contract Protocol (v3.6.2)
 
 > Authoritative orchestration reference for the ARS v3.6.2 sprint-contract hard gate.
-> Schema: `shared/sprint_contract.schema.json` (Schema 13.2).
-> Templates: `shared/contracts/reviewer/*.json`.
+> Schema: `../academic-shared/sprint_contract.schema.json` (Schema 13.2).
+> Templates: `../academic-shared/contracts/reviewer/*.json`.
 > Design spec: `docs/design/2026-04-23-ars-v3.6.2-sprint-contract-design.md`.
 > Canonical inline prompt source: `references/reviewer_sprint_prompt_source.md`.
 > Its rendered fragments remain in the five reviewer agents and synthesizer because
@@ -19,9 +19,9 @@ This protocol exists to destroy the "read the paper, then rationalise the scorin
 
 ## 2. Two-phase reviewer call
 
-For each reviewer in `range(panel_size)`:
+For each role-separated review seat in `range(panel_size)`, using a fresh invocation context and withholding peer outputs until the seat commits. These are execution requirements whose actual status must be recorded in `review-panel-provenance/1.0`; they do not establish independent error processes:
 
-1. **Prepare contract.** Load template from `shared/contracts/<domain>/<mode>.json`. Populate `generated_at` (ISO-8601 UTC). Optionally populate `agent_amendments` (field-specific notes from `field_analyst_agent`). Run `check_sprint_contract.py` on the in-memory object; abort on error.
+1. **Prepare contract.** Load template from `../academic-shared/contracts/<domain>/<mode>.json`. Populate `generated_at` (ISO-8601 UTC). Optionally populate `agent_amendments` (field-specific notes from `field_analyst_agent`). Run `check_sprint_contract.py` on the in-memory object; abort on error.
 2. **Phase 1 call (paper-content-blind).**
    - System prompt: the `### Phase 1 — Paper-content-blind pre-commitment` sub-section of the reviewer agent's `## v3.6.2 Sprint Contract Protocol` block.
    - User content: contract JSON + paper metadata ONLY (`title`, `field`, `word_count`).
@@ -34,6 +34,13 @@ For each reviewer in `range(panel_size)`:
 5. **Phase 2 output lint.** Run `scripts/check_phase_conformance.py --contract <C> --role <dispatch-role> --phase1 <P1> --phase2 <P2> --manuscript <paper> --metadata <metadata.json>` before synthesis. Exit 3 emits `[PROTOCOL-VIOLATION: phase_conformance=<check>]` and makes the seat unusable; exit 2 is an infra abort. See §5.
 6. **Panel cardinality invariant.** After all reviewers complete, verify `len(usable_phase2_outputs) == panel_size`. If any reviewer was dropped, emit `[PANEL-SHRUNK]` and abort the round (see §6).
 7. Feed usable Phase 2 outputs into synthesizer (see §7).
+
+The Schema 6 adapter preserves the sprint vocabulary exactly: each contract
+dimension becomes one `criterion_judgements` row with
+`judgement_scale: sprint_contract` and the unchanged
+`block|warn|pass|not_assessed` value. It never maps sprint labels to the
+narrative rubric. Package calibration remains `NOT_CALIBRATED`; a seat card
+does not need a second calibration field inside the pinned sprint grammar.
 
 ## 3. Contract injection
 
@@ -194,7 +201,7 @@ attestation's truth.
 |-------------------------------|------------|-------------------|
 | `reviewer_full`               | 5          | Journal-Fit Reviewer (`eic`) + methodology + domain + perspective + DA |
 | `reviewer_methodology_focus`  | 2          | Journal-Fit Reviewer (`eic`) + methodology (only) |
-| `reviewer_re_review`          | —          | NOT a Schema 13 mode (#576 Spec B — removed from the enum): governed by the dedicated contract family `shared/contracts/re_review/` + `scripts/check_re_review_synthesis.py`; see `re_review_mode_protocol.md` § Three-Gate Orchestration |
+| `reviewer_re_review`          | —          | NOT a Schema 13 mode (#576 Spec B — removed from the enum): governed by the dedicated contract family `../academic-shared/contracts/re_review/` + `scripts/check_re_review_synthesis.py`; see `re_review_mode_protocol.md` § Three-Gate Orchestration |
 | `reviewer_calibration`        | —          | not shipped in v3.6.2 |
 | `reviewer_guided`             | —          | not shipped in v3.6.2 |
 

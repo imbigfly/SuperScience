@@ -1388,7 +1388,8 @@ fn build_agent(
     let skill_paths = vec![root.join(".superscience").join("skills")];
     let skills = Arc::new(SkillIndex::load(&skill_paths));
     let memory = Arc::new(MemoryManager::new(root));
-    let mut registry = superscience_core::build_registry(skills.clone(), memory, case.memory_enabled);
+    let mut registry =
+        superscience_core::build_registry(skills.clone(), memory, case.memory_enabled);
     registry.add(Box::new(superscience_tools::ask_user::AskUserTool));
     for (name, result) in &case.fixture_mcp {
         registry.add(Box::new(FixtureMcpTool {
@@ -1410,7 +1411,9 @@ fn build_agent(
             manager.clone(),
             &project_id,
         )));
-        registry.add(Box::new(superscience_runtime::RTool::new(manager, project_id)));
+        registry.add(Box::new(superscience_runtime::RTool::new(
+            manager, project_id,
+        )));
     }
     if !case.allowed_tools.is_empty() {
         registry = registry.filtered(&case.allowed_tools);
@@ -1679,7 +1682,10 @@ fn verify_case(
         }
     }
     if let Some(provider) = provider {
-        fn request_has_fragment(request: &superscience_llm::ScriptedRequest, fragment: &str) -> bool {
+        fn request_has_fragment(
+            request: &superscience_llm::ScriptedRequest,
+            fragment: &str,
+        ) -> bool {
             request.messages.iter().any(|message| {
                 contains_folded(&message.content.as_text(), fragment)
                     || message
@@ -2070,11 +2076,10 @@ fn snapshot_workspace(root: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
             let entry = entry?;
             let path = entry.path();
             let relative = path.strip_prefix(root).expect("entry is under eval root");
-            if relative
-                .components()
-                .next()
-                .is_some_and(|part| part.as_os_str() == ".wisp")
-            {
+            if relative.components().next().is_some_and(|part| {
+                let name = part.as_os_str();
+                name == ".wisp" || name == ".superscience"
+            }) {
                 continue;
             }
             let file_type = entry.file_type()?;

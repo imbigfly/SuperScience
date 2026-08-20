@@ -578,7 +578,8 @@ fn dispatch_pins_ask_ai(path: &str, text: &str) {
     };
     let init = web_sys::CustomEventInit::new();
     init.set_detail(&detail);
-    let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict("superscience:pins-ask-ai", &init)
+    let Ok(event) =
+        web_sys::CustomEvent::new_with_event_init_dict("superscience:pins-ask-ai", &init)
     else {
         return;
     };

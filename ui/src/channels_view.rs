@@ -1,9 +1,9 @@
-//! Settings → Channel Access pane: a bot card grid (Feishu, WeChat iLink,
-//! StickS3) with per-bot subpages. The `open` signal is hoisted so the shared
-//! settings breadcrumb can render it; everything else is self-contained and
-//! fetched on mount.
+//! Settings → Channel Access pane: a settings list of Feishu, WeChat iLink,
+//! and StickS3 rows with per-bot subpages. The `open` signal is hoisted so the
+//! shared settings breadcrumb can render it; everything else is self-contained
+//! and fetched on mount.
 
-use crate::app_support::{compose_icon, copy_text, js_error_text};
+use crate::app_support::{copy_text, js_error_text};
 use crate::bindings::invoke_checked;
 use crate::dto::{ChannelsStatus, FeishuBindPoll, FeishuBindStart, WeixinBindStart};
 use crate::i18n::{localize_backend, t, Locale};
@@ -861,24 +861,23 @@ pub(super) fn ChannelsPane(
                     </span>
                 </p>
                 {msg_view}
-                <div class="channel-card-grid">
-                    <article class="channel-card" data-testid="feishu-channel-row"
+                <div class="settings-list">
+                    <div class="settings-list-row settings-list-row-link" data-testid="feishu-channel-row"
                         on:click=move |_| open.set(Some("feishu".into()))>
-                        <header class="channel-card-head">
-                            <span class="channel-card-icon feishu" aria-hidden="true">{compose_icon("chat")}</span>
-                            <div class="channel-card-meta">
-                                <span class="channel-card-title">
-                                    {move || t(locale.get(), "channels.feishu.title")}
-                                    {feishu_badge}
-                                </span>
-                                <span class="channel-card-sub">{move || {
-                                    if status.get().map(|s| s.feishu_bound).unwrap_or(false) {
-                                        feishu_region()
-                                    } else {
-                                        t(locale.get(), "channels.feishu.subtitle").to_string()
-                                    }
-                                }}</span>
-                            </div>
+                        <div class="settings-list-main">
+                            <span class="settings-list-title">
+                                {move || t(locale.get(), "channels.feishu.title")}
+                                {feishu_badge}
+                            </span>
+                            <span class="settings-list-sub">{move || {
+                                if status.get().map(|s| s.feishu_bound).unwrap_or(false) {
+                                    feishu_region()
+                                } else {
+                                    t(locale.get(), "channels.feishu.subtitle").to_string()
+                                }
+                            }}</span>
+                        </div>
+                        <div class="settings-list-actions">
                             <label class="toggle" on:click=move |ev| ev.stop_propagation()>
                                 <input type="checkbox" data-testid="feishu-enabled"
                                     aria-label=move || t(locale.get(), "channels.feishu.toggle")
@@ -887,30 +886,26 @@ pub(super) fn ChannelsPane(
                                     on:change=move |ev| save_feishu.call(event_target_checked(&ev)) />
                                 <span class="toggle-track" aria-hidden="true"></span>
                             </label>
-                        </header>
-                        <footer class="channel-card-foot">
-                            <span>{move || t(locale.get(), "channels.open")}</span>
                             <span class="settings-list-chevron" aria-hidden="true">"›"</span>
-                        </footer>
-                    </article>
-                    <article class="channel-card" data-testid="weixin-channel-row"
+                        </div>
+                    </div>
+                    <div class="settings-list-row settings-list-row-link" data-testid="weixin-channel-row"
                         on:click=move |_| open.set(Some("weixin".into()))>
-                        <header class="channel-card-head">
-                            <span class="channel-card-icon weixin" aria-hidden="true">{compose_icon("user")}</span>
-                            <div class="channel-card-meta">
-                                <span class="channel-card-title">
-                                    {move || t(locale.get(), "channels.weixin.title")}
-                                    {weixin_badge}
-                                </span>
-                                <span class="channel-card-sub">{move || {
-                                    let s = status.get().unwrap_or_default();
-                                    if s.weixin_bound && !s.weixin_detail.is_empty() {
-                                        s.weixin_detail
-                                    } else {
-                                        t(locale.get(), "channels.weixin.subtitle").to_string()
-                                    }
-                                }}</span>
-                            </div>
+                        <div class="settings-list-main">
+                            <span class="settings-list-title">
+                                {move || t(locale.get(), "channels.weixin.title")}
+                                {weixin_badge}
+                            </span>
+                            <span class="settings-list-sub">{move || {
+                                let s = status.get().unwrap_or_default();
+                                if s.weixin_bound && !s.weixin_detail.is_empty() {
+                                    s.weixin_detail
+                                } else {
+                                    t(locale.get(), "channels.weixin.subtitle").to_string()
+                                }
+                            }}</span>
+                        </div>
+                        <div class="settings-list-actions">
                             <label class="toggle" on:click=move |ev| ev.stop_propagation()>
                                 <input type="checkbox" data-testid="weixin-enabled"
                                     aria-label=move || t(locale.get(), "channels.weixin.toggle")
@@ -919,32 +914,28 @@ pub(super) fn ChannelsPane(
                                     on:change=move |ev| set_weixin_enabled.call(event_target_checked(&ev)) />
                                 <span class="toggle-track" aria-hidden="true"></span>
                             </label>
-                        </header>
-                        <footer class="channel-card-foot">
-                            <span>{move || t(locale.get(), "channels.open")}</span>
                             <span class="settings-list-chevron" aria-hidden="true">"›"</span>
-                        </footer>
-                    </article>
-                    <article class="channel-card" data-testid="sticks3-channel-row"
+                        </div>
+                    </div>
+                    <div class="settings-list-row settings-list-row-link" data-testid="sticks3-channel-row"
                         on:click=move |_| open.set(Some("sticks3".into()))>
-                        <header class="channel-card-head">
-                            <span class="channel-card-icon device" aria-hidden="true">{compose_icon("computer")}</span>
-                            <div class="channel-card-meta">
-                                <span class="channel-card-title">
-                                    {move || t(locale.get(), "channels.device.title")}
-                                    {device_badge}
-                                </span>
-                                <span class="channel-card-sub">{move || {
-                                    let device = status.get().unwrap_or_default().device;
-                                    device.url.unwrap_or_else(|| {
-                                        if device.bind_ipv4.is_empty() {
-                                            t(locale.get(), "channels.device.subtitle").to_string()
-                                        } else {
-                                            format!("{}:{}", device.bind_ipv4, device.port)
-                                        }
-                                    })
-                                }}</span>
-                            </div>
+                        <div class="settings-list-main">
+                            <span class="settings-list-title">
+                                {move || t(locale.get(), "channels.device.title")}
+                                {device_badge}
+                            </span>
+                            <span class="settings-list-sub">{move || {
+                                let device = status.get().unwrap_or_default().device;
+                                device.url.unwrap_or_else(|| {
+                                    if device.bind_ipv4.is_empty() {
+                                        t(locale.get(), "channels.device.subtitle").to_string()
+                                    } else {
+                                        format!("{}:{}", device.bind_ipv4, device.port)
+                                    }
+                                })
+                            }}</span>
+                        </div>
+                        <div class="settings-list-actions">
                             <label class="toggle" on:click=move |ev| ev.stop_propagation()>
                                 <input type="checkbox" data-testid="sticks3-enabled"
                                     aria-label=move || t(locale.get(), "channels.device.toggle")
@@ -953,12 +944,9 @@ pub(super) fn ChannelsPane(
                                     on:change=move |ev| save_device.call(event_target_checked(&ev)) />
                                 <span class="toggle-track" aria-hidden="true"></span>
                             </label>
-                        </header>
-                        <footer class="channel-card-foot">
-                            <span>{move || t(locale.get(), "channels.open")}</span>
                             <span class="settings-list-chevron" aria-hidden="true">"›"</span>
-                        </footer>
-                    </article>
+                        </div>
+                    </div>
                 </div>
             </div>
         }.into_view(),

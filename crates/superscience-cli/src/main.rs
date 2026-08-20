@@ -619,7 +619,12 @@ impl<W: Write + Send> Output for JsonlOutput<W> {
 }
 
 fn env(name: &str, default: &str) -> String {
-    std::env::var(name).unwrap_or_else(|_| default.to_string())
+    let product = name.replacen("WISP_", "SUPERSCIENCE_", 1);
+    std::env::var(&product)
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| std::env::var(name).ok().filter(|value| !value.is_empty()))
+        .unwrap_or_else(|| default.to_string())
 }
 
 fn setup_message(jsonl: bool, message: std::fmt::Arguments<'_>) {
@@ -690,7 +695,9 @@ fn provider_config() -> Result<ProviderConfig> {
         },
     );
     if api_key.is_empty() {
-        anyhow::bail!("WISP_API_KEY is not set (required). Set it to your provider API key.");
+        anyhow::bail!(
+            "SUPERSCIENCE_API_KEY is not set (required). Set it to your provider API key."
+        );
     }
     Ok(match kind.as_str() {
         "anthropic" => ProviderConfig::anthropic(base_url, api_key, model),
@@ -700,21 +707,15 @@ fn provider_config() -> Result<ProviderConfig> {
 }
 
 fn skill_paths(root: &std::path::Path) -> Vec<PathBuf> {
-    let mut paths = vec![];
-    // Bundled catalog shipped inside the Wisp source tree (wisp/skills).
-    if let Some(b) = superscience_skills::bundled_dir() {
-        paths.push(b);
-    }
-    paths.push(root.join(".superscience").join("skills"));
-    if let Some(home) = dirs::home_dir() {
-        paths.push(home.join(".superscience").join("skills"));
-    }
-    if let Ok(extra) = std::env::var("WISP_SKILLS_PATH") {
-        for p in extra.split([':', ';']).filter(|s| !s.is_empty()) {
-            paths.push(PathBuf::from(p));
-        }
-    }
-    paths
+    superscience_skills::skill_source_paths(
+        root,
+        dirs::home_dir().as_deref(),
+        superscience_skills::extra_skill_dirs_from_env(),
+        superscience_skills::bundled_dir(),
+    )
+    .into_iter()
+    .map(|(path, _)| path)
+    .collect()
 }
 
 async fn run_prompt(agent: &mut Agent, prompt: &str, output: &dyn Output) -> Result<()> {
@@ -816,17 +817,26 @@ async fn main() -> Result<()> {
     let py_env = superscience_runtime::PythonEnv::ensure(&app_data).ok();
 
     // Python REPL: needs a kernel_worker path. Default to the bundled worker.
-    let worker = std::env::var("WISP_KERNEL_WORKER")
-        .ok()
-        .or_else(|| superscience_runtime::bundled_worker_path().map(|p| p.to_string_lossy().to_string()))
-        .unwrap_or_default();
+    let worker = {
+        let override_path = env("WISP_KERNEL_WORKER", "");
+        if override_path.is_empty() {
+            superscience_runtime::bundled_worker_path().map(|p| p.to_string_lossy().to_string())
+        } else {
+            Some(override_path)
+        }
+    }
+    .unwrap_or_default();
     let worker_path = superscience_runtime::resolve_bundled_script(&worker);
-    let r_worker = std::env::var("WISP_R_KERNEL_WORKER")
-        .ok()
-        .or_else(|| {
-            superscience_runtime::bundled_r_worker_path().map(|path| path.to_string_lossy().into_owned())
-        })
-        .unwrap_or_default();
+    let r_worker = {
+        let override_path = env("WISP_R_KERNEL_WORKER", "");
+        if override_path.is_empty() {
+            superscience_runtime::bundled_r_worker_path()
+                .map(|path| path.to_string_lossy().into_owned())
+        } else {
+            Some(override_path)
+        }
+    }
+    .unwrap_or_default();
     let r_worker_path = superscience_runtime::resolve_bundled_script(&r_worker);
     let runtime_manager = superscience_runtime::RuntimeManager::local(
         app_data.clone(),
@@ -850,7 +860,9 @@ async fn main() -> Result<()> {
     } else {
         setup_message(
             jsonl,
-            format_args!("(kernel worker not found at {worker}; set WISP_KERNEL_WORKER=<path>)"),
+            format_args!(
+                "(kernel worker not found at {worker}; set SUPERSCIENCE_KERNEL_WORKER=<path>)"
+            ),
         );
     }
 
@@ -863,20 +875,23 @@ async fn main() -> Result<()> {
     } else {
         setup_message(
             jsonl,
-            format_args!("(R worker not found at {r_worker}; set WISP_R_KERNEL_WORKER=<path>)"),
+            format_args!(
+                "(R worker not found at {r_worker}; set SUPERSCIENCE_R_KERNEL_WORKER=<path>)"
+            ),
         );
     }
 
-    // MCP server: WISP_MCP_COMMAND overrides; otherwise WISP_MCP_PKG launches
-    // the bundled bio-tools server (<pkg> e.g. mcp_pubmed) via the venv python.
-    if let Ok(cmdline) = std::env::var("WISP_MCP_COMMAND") {
-        let parts: Vec<String> = cmdline
+    // MCP server: SUPERSCIENCE_MCP_COMMAND overrides; otherwise SUPERSCIENCE_MCP_PKG
+    // launches the bundled bio-tools server (<pkg> e.g. mcp_pubmed) via the venv python.
+    let mcp_command = env("WISP_MCP_COMMAND", "");
+    if !mcp_command.is_empty() {
+        let parts: Vec<String> = mcp_command
             .split_whitespace()
             .map(|s| {
                 if s.ends_with(".py") {
                     superscience_runtime::resolve_bundled_script(s)
                         .to_string_lossy()
-                        .to_string()
+                        .into_owned()
                 } else {
                     s.to_string()
                 }
@@ -886,9 +901,16 @@ async fn main() -> Result<()> {
             let args: Vec<String> = parts[1..].to_vec();
             wire_mcp(&mut agent, &parts[0], &args, jsonl).await;
         }
-    } else if let Some(env) = &py_env {
-        let pkg = std::env::var("WISP_MCP_PKG").unwrap_or_else(|_| "mcp_bio".into());
-        match superscience_mcp::McpClient::launch_bio_tools(&env.python(), &pkg, &[]).await {
+    } else if let Some(py_env) = &py_env {
+        let pkg = {
+            let value = env("WISP_MCP_PKG", "");
+            if value.is_empty() {
+                "mcp_bio".into()
+            } else {
+                value
+            }
+        };
+        match superscience_mcp::McpClient::launch_bio_tools(&py_env.python(), &pkg, &[]).await {
             Ok(client) => {
                 register_mcp_tools(
                     &mut agent,
@@ -942,7 +964,7 @@ async fn main() -> Result<()> {
     );
     if skills.is_empty() {
         println!(
-            "{}(no skills loaded; set WISP_SKILLS_PATH to a SKILL.md catalog){}",
+            "{}(no skills loaded; set SUPERSCIENCE_SKILLS_PATH to a SKILL.md catalog){}",
             out.dim(),
             out.reset()
         );
@@ -1109,7 +1131,16 @@ mod tests {
         output.assistant_text("hello\nworld");
         output.tool_call("read", "README.md");
         output.tool_result("read", true, "contents", 12);
-        output.usage(2, 10, 20, 3, 4, 30, 100, superscience_core::ContextUsage::default());
+        output.usage(
+            2,
+            10,
+            20,
+            3,
+            4,
+            30,
+            100,
+            superscience_core::ContextUsage::default(),
+        );
         assert!(!output.confirm("delete file?"));
         output.done();
 

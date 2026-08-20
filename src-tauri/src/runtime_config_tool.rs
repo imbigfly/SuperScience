@@ -1,10 +1,10 @@
 //! Agent tool for saving an interpreter on an existing ExecutionContext.
 
 use serde::Deserialize;
-use wisp_llm::ToolSchema;
-use wisp_runtime::{RuntimeKey, RuntimeLanguage, RuntimeManager};
-use wisp_store::Store;
-use wisp_tools::{Tool, ToolEnv, ToolResult};
+use superscience_llm::ToolSchema;
+use superscience_runtime::{RuntimeKey, RuntimeLanguage, RuntimeManager};
+use superscience_store::Store;
+use superscience_tools::{Tool, ToolEnv, ToolResult};
 
 pub struct SetRuntimeInterpreterTool {
     store: Store,
@@ -95,7 +95,7 @@ impl Tool for SetRuntimeInterpreterTool {
     }
 
     async fn run(&self, args: &serde_json::Value, env: &dyn ToolEnv) -> ToolResult {
-        if self.scope_key != wisp_runtime::MAINLINE_RUNTIME_SCOPE {
+        if self.scope_key != superscience_runtime::MAINLINE_RUNTIME_SCOPE {
             return ToolResult::fail(
                 "exploration_project_mutation_blocked: runtime interpreter settings cannot be changed inside an exploration",
             );
@@ -177,7 +177,7 @@ mod tests {
             true
         }
 
-        async fn emit(&self, _event: wisp_tools::ToolEvent) {}
+        async fn emit(&self, _event: superscience_tools::ToolEvent) {}
     }
 
     fn manager() -> RuntimeManager {
@@ -196,7 +196,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let store = Store::open(&db).await.unwrap();
-        let mut context = wisp_store::ExecutionContext::new("ssh:CPU2", "CPU2").unwrap();
+        let mut context = superscience_store::ExecutionContext::new("ssh:CPU2", "CPU2").unwrap();
         context.config_json = serde_json::json!({
             "alias": "CPU2",
             "python_executable": "/opt/python/bin/python"
@@ -207,7 +207,7 @@ mod tests {
             store.clone(),
             manager(),
             "project-1",
-            wisp_runtime::MAINLINE_RUNTIME_SCOPE,
+            superscience_runtime::MAINLINE_RUNTIME_SCOPE,
             "frame-1",
         );
 
@@ -243,14 +243,14 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let store = Store::open(&db).await.unwrap();
-        let context = wisp_store::ExecutionContext::new("local", "Local").unwrap();
+        let context = superscience_store::ExecutionContext::new("local", "Local").unwrap();
         let original = context.config_json.clone();
         store.upsert_execution_context(&context).await.unwrap();
         let tool = SetRuntimeInterpreterTool::new_in_session(
             store.clone(),
             manager(),
             "project-1",
-            wisp_runtime::MAINLINE_RUNTIME_SCOPE,
+            superscience_runtime::MAINLINE_RUNTIME_SCOPE,
             "frame-1",
         );
 
@@ -283,7 +283,7 @@ mod tests {
             store,
             manager(),
             "project-1",
-            wisp_runtime::MAINLINE_RUNTIME_SCOPE,
+            superscience_runtime::MAINLINE_RUNTIME_SCOPE,
             "frame-1",
         );
         assert_eq!(tool.name(), "set_runtime_interpreter");

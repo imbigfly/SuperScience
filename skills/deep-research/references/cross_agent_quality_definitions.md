@@ -11,4 +11,4 @@ Unified definitions to prevent inconsistency across agents.
 | **Minimum Source Count** | full = 15+, quick = 5-8, lit-review = 25+, systematic-review = all eligible (no limit), fact-check = 3+ per claim | bibliography_agent |
 | **Verification Threshold** | 100% DOI check + 50% WebSearch spot-check | source_verification_agent, ethics_review_agent |
 
-> **Cross-Skill Reference**: See `shared/handoff_schemas.md` for inter-stage data exchange formats.
+> **Cross-Skill Reference**: See `../academic-shared/handoff_schemas.md` for inter-stage data exchange formats.

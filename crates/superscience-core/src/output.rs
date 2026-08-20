@@ -226,8 +226,12 @@ impl<'a> superscience_tools::ToolEnv for ToolEnvAdapter<'a> {
     }
     async fn emit(&self, event: superscience_tools::ToolEvent) {
         match event {
-            superscience_tools::ToolEvent::Call { name, preview } => self.out.tool_call(&name, &preview),
-            superscience_tools::ToolEvent::Diff { path, old, new } => self.out.diff(&path, &old, &new),
+            superscience_tools::ToolEvent::Call { name, preview } => {
+                self.out.tool_call(&name, &preview)
+            }
+            superscience_tools::ToolEvent::Diff { path, old, new } => {
+                self.out.diff(&path, &old, &new)
+            }
             superscience_tools::ToolEvent::FileChanged { path } => self.out.file_changed(&path),
             superscience_tools::ToolEvent::Stdout { chunk } => self.out.stdout_chunk(&chunk),
             superscience_tools::ToolEvent::Presentation { kind, payload } => {
@@ -299,7 +303,8 @@ mod tests {
     }
 
     struct AsyncConfirmOutput {
-        receiver: Mutex<Option<tokio::sync::oneshot::Receiver<superscience_tools::ConfirmDecision>>>,
+        receiver:
+            Mutex<Option<tokio::sync::oneshot::Receiver<superscience_tools::ConfirmDecision>>>,
         sync_called: AtomicBool,
     }
 
@@ -339,8 +344,13 @@ mod tests {
                 .is_err(),
             "a pending UI decision must keep the tool call suspended"
         );
-        sender.send(superscience_tools::ConfirmDecision::Approved).unwrap();
-        assert_eq!(decision.await, superscience_tools::ConfirmDecision::Approved);
+        sender
+            .send(superscience_tools::ConfirmDecision::Approved)
+            .unwrap();
+        assert_eq!(
+            decision.await,
+            superscience_tools::ConfirmDecision::Approved
+        );
         assert!(
             !output.sync_called.load(Ordering::SeqCst),
             "the adapter must not fall back to the runtime-blocking sync hook"
@@ -353,12 +363,12 @@ mod tests {
         let queue = std::sync::Mutex::new(Vec::<(u64, String)>::new());
         let env = ToolEnvAdapter::new(std::path::PathBuf::from("."), &out).with_guidance(&queue);
         assert!(
-            !wisp_tools::ToolEnv::guidance_pending(&env),
+            !superscience_tools::ToolEnv::guidance_pending(&env),
             "empty queue is not pending"
         );
         queue.lock().unwrap().push((1, "how far?".into()));
         assert!(
-            wisp_tools::ToolEnv::guidance_pending(&env),
+            superscience_tools::ToolEnv::guidance_pending(&env),
             "queued guidance must be visible to long waits"
         );
         assert_eq!(
@@ -366,7 +376,7 @@ mod tests {
             1,
             "peeking must not drain the queue; the agent loop injects at the iteration boundary"
         );
-        assert!(!wisp_tools::ToolEnv::guidance_pending(
+        assert!(!superscience_tools::ToolEnv::guidance_pending(
             &ToolEnvAdapter::new(std::path::PathBuf::from("."), &out)
         ));
     }

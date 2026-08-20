@@ -172,7 +172,7 @@ Default: IMRaD (for empirical research) or Literature Review (for synthesis topi
 > "Do you want to record the venue's declared limits (word limit, abstract limit, keyword range, required sections, reference ceiling, blind-review model)? I will only record values you state — I never look up or infer limits from the journal name. Without a profile, the venue-limits checks report NOT-CHECKED instead of guessing."
 
 - **Declared values only (R-L3-2-D mirror):** every field comes from the scholar's answer; a field the scholar does not state stays null (that check reports `NOT-CHECKED(field not declared)`). NEVER fill a field from memory of the journal, its website, or its name.
-- Store the answers as a YAML file validating against `shared/contracts/submission/venue_profile.schema.json` with `declared_by: scholar` (the only provenance value that exists), and record its path in the PCR `Venue Profile` row. The profile is re-feedable across runs like any declared input.
+- Store the answers as a YAML file validating against `../academic-shared/contracts/submission/venue_profile.schema.json` with `declared_by: scholar` (the only provenance value that exists), and record its path in the PCR `Venue Profile` row. The profile is re-feedable across runs like any declared input.
 - A declined or skipped follow-up = no profile, no PCR row value beyond `absent` — current behavior is unchanged.
 - **Plan mode is exempt** (the simplified plan-mode intake does not run this follow-up, mirroring Step 12/13).
 
@@ -199,7 +199,7 @@ Auto-suggest based on discipline; user can override.
 > "Do you want to record a layout profile (body font + size, caption font / placement / alignment, line spacing, page margins, table-border style) that the formatter will follow? I record only the values you state and never infer a font or spacing from a venue, institution, or filename. Without a profile, the formatter keeps its current defaults."
 
 - **Declared values only (downgraded — consistency, not integrity):** every field comes from the scholar's answer; an unstated field is simply not declared and the formatter keeps its current default for that aspect. NEVER fill a layout field from the venue name, the institution, the language/locale, or the filename.
-- Store the answers as a YAML file validating against `shared/contracts/submission/format_profile.schema.json`, and record its path in the PCR `Format Profile` row. The profile is re-feedable across runs like any declared input. A synthetic example lives at `shared/contracts/submission/format_profile.example.yaml`.
+- Store the answers as a YAML file validating against `../academic-shared/contracts/submission/format_profile.schema.json`, and record its path in the PCR `Format Profile` row. The profile is re-feedable across runs like any declared input. A synthetic example lives at `../academic-shared/contracts/submission/format_profile.example.yaml`.
 - **Byte-equivalence (load-bearing — Invariant 7):** a declined or skipped follow-up writes **nothing** — no profile and **no PCR `Format Profile` row at all** (per-row absence already means not-declared; writing an explicit `absent` would perturb a run that recorded no profile). A run with no profile is byte-identical to a pre-#439 run.
 - **Venue compliance wins:** the recorded layout is a rendering preference. Where a declared layout field would push the manuscript past a declared `venue_profile` limit (e.g. margins/spacing inflating page count), the formatter applies the venue-compliant value and notes the override (design §3a) — it never silently ships a noncompliant package to honor a layout preference.
 - **Plan mode is exempt** (the simplified plan-mode intake does not run this follow-up, mirroring Step 3 / Step 12 / Step 13).
@@ -240,8 +240,8 @@ Ask the user:
 > "Do you have past papers or writing samples you'd like me to learn your style from? Providing 3+ samples helps me match your natural voice. This is optional."
 
 **If user provides samples:**
-1. Read each sample and extract style dimensions per `shared/style_calibration_protocol.md`
-2. Produce a Style Profile artifact (see `shared/handoff_schemas.md` Schema 10)
+1. Read each sample and extract style dimensions per `../academic-shared/style_calibration_protocol.md`
+2. Produce a Style Profile artifact (see `../academic-shared/handoff_schemas.md` Schema 10)
 3. Attach to Paper Configuration Record as `style_profile` field
 4. Inform user: "I've analyzed your writing style. Key traits: [summary]. I'll use this as a soft guide — discipline conventions take priority."
 

@@ -36,9 +36,9 @@ For each stage transition, the following handoff procedure applies:
 |------|--------|
 | **Who hands off** | Research Lead |
 | **Who receives** | Lead Author |
-| **Materials** | RQ Brief, Bibliography, Synthesis Report (conforming to Schemas 1-3 in `shared/handoff_schemas.md`) |
+| **Materials** | RQ Brief, Bibliography, Synthesis Report (conforming to Schemas 1-3 in `../academic-shared/handoff_schemas.md`) |
 | **Approval needed** | Research Lead confirms synthesis is complete and RQ is finalized |
-| **Handoff checklist** | All Material Passports (Schema 9) attached; Bibliography minimum source count met; Synthesis has 3+ themes |
+| **Handoff checklist** | All Material Passports (Schema 9) attached; bibliography coverage is assessed against the planned claims and field-specific evidence needs; synthesis structure fits the material rather than a fixed theme count |
 
 ### Stage 2 -> Stage 2.5 (Write -> Integrity)
 
@@ -118,7 +118,7 @@ main
 
 - Never overwrite; always create a new version
 - All versions are preserved for audit trail
-- Version labels must match the Material Passport `version_label` field (Schema 9 in `shared/handoff_schemas.md`)
+- Version labels must match the Material Passport `version_label` field (Schema 9 in `../academic-shared/handoff_schemas.md`)
 - Each team member's changes should be attributable (use git author info)
 
 ---
@@ -193,7 +193,7 @@ All disagreements must be documented in the revision tracking:
 2. [specific area to focus on]
 
 **Deadline**: [date]
-**Return Format**: [Use Schema 6 format from shared/handoff_schemas.md]
+**Return Format**: [Use Schema 6 format from ../academic-shared/handoff_schemas.md]
 ```
 
 ### 3. Revision Assignment
@@ -236,7 +236,7 @@ Person B (Methods Specialist + Review Coordinator):
   - Handles specific methodology revision items
 
 Handoff: via shared folder or git repo
-Materials: conform to schemas in shared/handoff_schemas.md
+Materials: conform to schemas in ../academic-shared/handoff_schemas.md
 ```
 
 ### Large Team (4+ people)
@@ -255,7 +255,7 @@ Add Integration Lead role:
 
 - Claude Code runs as a single-user session; this protocol documents the HUMAN coordination layer
 - Each team member runs their own pipeline stages independently in separate Claude sessions
-- Handoff materials (conforming to schemas in `shared/handoff_schemas.md`) ensure consistency across sessions
+- Handoff materials (conforming to schemas in `../academic-shared/handoff_schemas.md`) ensure consistency across sessions
 - Real-time co-editing is not supported; use git or shared documents for synchronization
 - Pipeline state tracking is per-session; the Integration Lead must manually synchronize state across sessions
 - The pipeline does not enforce team role permissions; discipline is maintained by convention

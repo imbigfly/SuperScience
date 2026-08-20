@@ -98,7 +98,7 @@ pub(crate) async fn send_message_inner(
     let _project_activity = state.begin_project_activity(&ap.id)?;
     let frame_scope = explicit_scope
         .clone()
-        .unwrap_or_else(|| wisp_store::StateScope::mainline(ap.id.clone()));
+        .unwrap_or_else(|| superscience_store::StateScope::mainline(ap.id.clone()));
     let exploration_isolation =
         exploration_isolation::boundary_for_scope(&state.store, &frame_scope).await?;
     let project_write_locked = exploration_commands::conversation_project_write_locked(
@@ -128,7 +128,7 @@ pub(crate) async fn send_message_inner(
         }
         if matches!(
             explicit_scope.as_ref(),
-            Some(wisp_store::StateScope::Exploration { .. })
+            Some(superscience_store::StateScope::Exploration { .. })
         ) {
             return Err(
                 "exploration_acp_unsupported: ACP conversations cannot run inside an exploration in the MVP."
@@ -493,7 +493,7 @@ pub(crate) async fn send_message_inner(
             }
             None => skills,
         };
-        let mut agent = Agent::new(
+        let mut agent = Agent::with_pii_terms(
             cfg.clone(),
             skills.clone(),
             ap.memory.clone(),
@@ -502,6 +502,8 @@ pub(crate) async fn send_message_inner(
             max_iter,
             load_memory_enabled(&state.store).await,
             vision_cfg.clone(),
+            load_pii_firewall_enabled(&state.store).await,
+            crate::load_pii_custom_terms(&state.store).await,
         );
         agent.set_auto_compact(load_auto_compact_enabled(&state.store).await);
         if !project_write_locked
@@ -622,12 +624,12 @@ pub(crate) async fn send_message_inner(
         )));
         // Always registered, not just in plan mode: a fork during execution
         // deserves a question as much as one during planning.
-        agent.add_tool(Box::new(wisp_tools::ask_user::AskUserTool));
+        agent.add_tool(Box::new(superscience_tools::ask_user::AskUserTool));
         if plan_mode_enabled {
             // Only while planning: outside plan mode there is nothing to approve,
             // and an always-present tool just invites plans nobody asked for.
             // Toggling the flag evicts idle runtimes, so this re-runs.
-            agent.add_tool(Box::new(wisp_tools::plan::ProposePlanTool));
+            agent.add_tool(Box::new(superscience_tools::plan::ProposePlanTool));
         }
         if delegation_enabled {
             agent.add_tool(Box::new(
@@ -651,7 +653,7 @@ pub(crate) async fn send_message_inner(
             Ok(msgs) => {
                 agent.ctx.messages = msgs;
                 if let Some(message) = agent.ctx.messages.first_mut() {
-                    if let wisp_llm::Content::Text(prompt) = &mut message.content {
+                    if let superscience_llm::Content::Text(prompt) = &mut message.content {
                         ssh_hosts::strip_legacy_compute_section(prompt);
                     }
                 }
@@ -661,7 +663,7 @@ pub(crate) async fn send_message_inner(
         rt.set_last_seq(agent.ctx.messages.len() as i64);
         agent.seed_system_prompt(&skills, None);
         if let Some(message) = agent.ctx.messages.first_mut() {
-            if let wisp_llm::Content::Text(prompt) = &mut message.content {
+            if let superscience_llm::Content::Text(prompt) = &mut message.content {
                 delegation_runtime::sync_delegation_prompt(prompt, delegation_enabled);
                 plan_mode::sync_plan_prompt(prompt, plan_mode_enabled);
             }
@@ -670,7 +672,7 @@ pub(crate) async fn send_message_inner(
             if agent.ctx.messages.len() == 1 && !spec.instructions.trim().is_empty() {
                 let section = specialist_prompt_section(spec);
                 if let Some(m) = agent.ctx.messages.first_mut() {
-                    if let wisp_llm::Content::Text(t) = &mut m.content {
+                    if let superscience_llm::Content::Text(t) = &mut m.content {
                         append_specialist_section_once(t, &section);
                     }
                 }
@@ -890,7 +892,7 @@ pub(crate) async fn send_message_inner(
         let mut seq = start_seq;
         let handle = tokio::spawn(async move {
             while let Some(mut msg) = rx.recv().await {
-                if msg.role == wisp_llm::Role::Assistant && msg.model_name.is_none() {
+                if msg.role == superscience_llm::Role::Assistant && msg.model_name.is_none() {
                     msg.model_name = Some(stamp.clone());
                 }
                 seq += 1;
@@ -936,9 +938,9 @@ pub(crate) async fn send_message_inner(
                     .into_iter()
                     .rev()
                     .find(|(_, message)| {
-                        message.role == wisp_llm::Role::User
+                        message.role == superscience_llm::Role::User
                             && message.tool_name.as_deref()
-                                != Some(wisp_store::AGENT_WORKFLOW_COMPLETION_TOOL)
+                                != Some(superscience_store::AGENT_WORKFLOW_COMPLETION_TOOL)
                     })
                     .map(|(seq, _)| seq)
             })
@@ -946,7 +948,8 @@ pub(crate) async fn send_message_inner(
         Some(start_seq + 1)
     };
     let (prov_handle, prov_tx) = {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<wisp_core::ProvenanceRecord>();
+        let (tx, mut rx) =
+            tokio::sync::mpsc::unbounded_channel::<superscience_core::ProvenanceRecord>();
         let store = state.store.clone();
         let app_data = state.app_data.clone();
         let fid = frame_id.clone();
@@ -975,7 +978,7 @@ pub(crate) async fn send_message_inner(
                     env_hash.clone()
                 };
                 let cell_index = store.next_cell_index(&fid).await.unwrap_or(0);
-                let e = wisp_store::ExecLog {
+                let e = superscience_store::ExecLog {
                     id: Uuid::new_v4().to_string(),
                     frame_id: fid.clone(),
                     cell_index,
@@ -1093,7 +1096,7 @@ pub(crate) async fn send_message_inner(
                 .mark_agent_workflow_deliveries_presented(&completion_delivery_ids)
                 .await;
         }
-        if matches!(result, Ok(wisp_core::AgentLoopOutcome::Completed)) {
+        if matches!(result, Ok(superscience_core::AgentLoopOutcome::Completed)) {
             let is_reviewer = specialist
                 .as_ref()
                 .is_some_and(|specialist| specialist.id == "reviewer");
@@ -1180,10 +1183,10 @@ pub(crate) async fn send_message_inner(
             Ok(frame_id)
         }
         Err(e) => {
-            let message = wisp_llm::annotate_transport_error(
+            let message = superscience_llm::annotate_transport_error(
                 &format!("{e}"),
                 llm_proxy().as_deref(),
-                &wisp_llm::ambient_proxy_env(),
+                &superscience_llm::ambient_proxy_env(),
             );
             persist_and_emit_terminal_event(
                 state,
@@ -1432,8 +1435,8 @@ pub(crate) async fn queued_turn_action(
 }
 
 pub(crate) fn message_uses_resource_bindings(message: &Message) -> bool {
-    message.role == wisp_llm::Role::Assistant
-        || (message.role == wisp_llm::Role::Tool
+    message.role == superscience_llm::Role::Assistant
+        || (message.role == superscience_llm::Role::Tool
             && message.tool_name.as_deref() == Some("attempt_completion"))
 }
 

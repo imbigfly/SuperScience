@@ -13,6 +13,7 @@ pub mod anthropic;
 pub mod message;
 pub mod openai;
 pub mod privacy;
+pub mod privacy_custom;
 pub mod provider;
 pub mod responses;
 pub mod routed;
@@ -22,6 +23,8 @@ pub use message::{
     Completion, Content, FunctionCall, ImageUrl, Message, Part, Role, ToolCall, ToolSchema, Usage,
 };
 pub use privacy::maybe_wrap as maybe_wrap_pii_firewall;
+pub use privacy::maybe_wrap_with_terms as maybe_wrap_pii_firewall_with_terms;
+pub use privacy_custom::{parse_custom_terms, CustomCategory, CustomTerm};
 pub use provider::{
     ambient_proxy_env, annotate_transport_error, build, is_fail_fast_transport,
     is_model_transport_failure, is_retriable, leftover_proxy_note, NullSink, Provider,

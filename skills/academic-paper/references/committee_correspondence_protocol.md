@@ -6,7 +6,7 @@ institutional review office. It never simulates a committee, predicts satisfacti
 or makes a human-subjects determination.
 
 Canonical schema:
-`shared/contracts/human_subjects/committee_correspondence.schema.json`.
+`../academic-shared/contracts/human_subjects/committee_correspondence.schema.json`.
 Artifact version: `committee-correspondence/1.0`.
 Deterministic checker: `scripts/check_committee_correspondence.py`.
 Design authority:

@@ -292,6 +292,9 @@ impl PersistentExplorationWorkspace {
                 ".git".into(),
                 ".superscience/explorations".into(),
                 ".superscience/history".into(),
+                ".superscience/artifacts".into(),
+                ".superscience/undo".into(),
+                ".superscience/tool-output".into(),
                 REFERENCES_MANIFEST.into(),
             ],
             excluded_directory_names: vec![

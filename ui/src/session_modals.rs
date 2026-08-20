@@ -205,6 +205,175 @@ pub(crate) fn RenameSessionOverlay(
 }
 
 #[derive(Clone, Copy)]
+pub(crate) struct SaveAsDemoOverlayState {
+    pub(crate) locale: RwSignal<Locale>,
+    pub(crate) save_demo_target: RwSignal<Option<(String, String)>>,
+    pub(crate) save_demo_input: RwSignal<String>,
+    pub(crate) save_demo_busy: RwSignal<bool>,
+    pub(crate) save_demo_error: RwSignal<Option<String>>,
+}
+
+#[component]
+pub(crate) fn SaveAsDemoOverlay(
+    state: SaveAsDemoOverlayState,
+    on_save: Callback<(String, String)>,
+) -> impl IntoView {
+    let SaveAsDemoOverlayState {
+        locale,
+        save_demo_target,
+        save_demo_input,
+        save_demo_busy,
+        save_demo_error,
+    } = state;
+    view! {
+        {move || save_demo_target.get().map(|(id, _)| {
+            let id_key = id.clone();
+            let id_btn = id.clone();
+            view! {
+            <div class="overlay" data-testid="save-demo-overlay">
+                <div class="modal">
+                    <h2>{move || t(locale.get(), "demo.save_title")}</h2>
+                    <div class="hint">{move || t(locale.get(), "demo.save_hint")}</div>
+                    <label>
+                        <input
+                            id="save-demo-input"
+                            data-testid="save-demo-input"
+                            type="text"
+                            autofocus=true
+                            disabled=move || save_demo_busy.get()
+                            prop:value=move || save_demo_input.get()
+                            on:input=move |ev| save_demo_input.set(dom_value(&ev))
+                            on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                if ev.key() == "Enter" {
+                                    ev.prevent_default();
+                                    let title = save_demo_input.get().trim().to_string();
+                                    if title.is_empty() || save_demo_busy.get() { return; }
+                                    on_save.call((id_key.clone(), title));
+                                }
+                            }
+                        />
+                    </label>
+                    {move || save_demo_error.get().map(|error| view! {
+                        <div class="hint session-transfer-error">{error}</div>
+                    })}
+                    <div class="row">
+                        <button type="button"
+                            disabled=move || save_demo_busy.get()
+                            on:click=move |_| {
+                                save_demo_target.set(None);
+                                save_demo_error.set(None);
+                            }>{move || t(locale.get(), "settings.cancel")}</button>
+                        <button type="button" class="primary"
+                            disabled=move || save_demo_busy.get() || save_demo_input.get().trim().is_empty()
+                            on:click=move |_| {
+                                let title = save_demo_input.get().trim().to_string();
+                                if title.is_empty() { return; }
+                                on_save.call((id_btn.clone(), title));
+                            }>{move || t(locale.get(), "demo.save_action")}</button>
+                    </div>
+                </div>
+            </div>
+        }.into_view()
+        })}
+    }
+}
+
+pub(crate) fn suggested_seed_suffix(title: &str) -> String {
+    let mut out = String::new();
+    for c in title.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.ends_with('_') {
+            out.push('_');
+        }
+        if out.len() >= 28 {
+            break;
+        }
+    }
+    let slug = out.trim_matches('_');
+    if slug.is_empty() {
+        "01_example".into()
+    } else {
+        format!("01_{slug}")
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ExportDemoOverlayState {
+    pub(crate) locale: RwSignal<Locale>,
+    pub(crate) export_demo_target: RwSignal<Option<(String, String)>>,
+    pub(crate) export_demo_input: RwSignal<String>,
+    pub(crate) export_demo_busy: RwSignal<bool>,
+    pub(crate) export_demo_error: RwSignal<Option<String>>,
+}
+
+#[component]
+pub(crate) fn ExportDemoOverlay(
+    state: ExportDemoOverlayState,
+    on_export: Callback<(String, String)>,
+) -> impl IntoView {
+    let ExportDemoOverlayState {
+        locale,
+        export_demo_target,
+        export_demo_input,
+        export_demo_busy,
+        export_demo_error,
+    } = state;
+    view! {
+        {move || export_demo_target.get().map(|(id, _)| {
+            let id_key = id.clone();
+            let id_btn = id.clone();
+            view! {
+            <div class="overlay" data-testid="export-demo-overlay">
+                <div class="modal">
+                    <h2>{move || t(locale.get(), "demo.export_title")}</h2>
+                    <div class="hint">{move || t(locale.get(), "demo.export_hint")}</div>
+                    <label>
+                        {move || t(locale.get(), "demo.export_id_label")}
+                        <input
+                            id="export-demo-input"
+                            data-testid="export-demo-input"
+                            type="text"
+                            autofocus=true
+                            disabled=move || export_demo_busy.get()
+                            prop:value=move || export_demo_input.get()
+                            on:input=move |ev| export_demo_input.set(dom_value(&ev))
+                            on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                if ev.key() == "Enter" {
+                                    ev.prevent_default();
+                                    let suffix = export_demo_input.get().trim().to_string();
+                                    if suffix.is_empty() || export_demo_busy.get() { return; }
+                                    on_export.call((id_key.clone(), suffix));
+                                }
+                            }
+                        />
+                    </label>
+                    {move || export_demo_error.get().map(|error| view! {
+                        <div class="hint session-transfer-error">{error}</div>
+                    })}
+                    <div class="row">
+                        <button type="button"
+                            disabled=move || export_demo_busy.get()
+                            on:click=move |_| {
+                                export_demo_target.set(None);
+                                export_demo_error.set(None);
+                            }>{move || t(locale.get(), "settings.cancel")}</button>
+                        <button type="button" class="primary"
+                            disabled=move || export_demo_busy.get() || export_demo_input.get().trim().is_empty()
+                            on:click=move |_| {
+                                let suffix = export_demo_input.get().trim().to_string();
+                                if suffix.is_empty() { return; }
+                                on_export.call((id_btn.clone(), suffix));
+                            }>{move || t(locale.get(), "demo.export_action")}</button>
+                    </div>
+                </div>
+            </div>
+        }.into_view()
+        })}
+    }
+}
+
+#[derive(Clone, Copy)]
 pub(crate) struct FolderModalOverlayState {
     pub(crate) locale: RwSignal<Locale>,
     pub(crate) folder_modal: RwSignal<Option<FolderModal>>,

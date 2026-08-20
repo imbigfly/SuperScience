@@ -60,11 +60,11 @@ def infer_access_from_url(url: str) -> dict[str, Any]:
                 "entry_type": "resource_portal",
                 "auth_type": "cas",
                 "sso_domain": host,
-                "institution_hint": str.split(host, ".", 1)[0] if "." in host else None,
+                "institution_hint": host.split(".", 1)[0] if "." in host else None,
                 "notes": "资源聚合门户；先从该入口进入，必要时由门户跳转到统一身份认证。",
             }
         )
-    elif "/authserver/login" in path or str.startswith(host, "cas."):
+    elif "/authserver/login" in path or host.startswith("cas."):
         hint = None
         if service_host:
             service_parts = urlparse(service).path.strip("/").split("/")

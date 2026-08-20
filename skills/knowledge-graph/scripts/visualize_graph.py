@@ -100,144 +100,60 @@ def _optional_communities(triples: list[dict[str, Any]]) -> dict[str, int]:
     return {name: index[find(name)] for name in parent}
 
 
-def render_html(payload: dict[str, Any]) -> str:
-    data = json.dumps(payload, ensure_ascii=False)
-    stats = payload["stats"]
-    title = "Knowledge graph"
-    return f"""<!DOCTYPE html>
-<html lang="en">
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{html.escape(title)}</title>
+  <title>__TITLE__</title>
   <style>
-    :root {{ color-scheme: light dark; }}
-    body {{ margin: 0; font: 14px/1.4 system-ui, sans-serif; background: #f6f5f2; color: #1f1e1c; }}
-    header {{ padding: 12px 16px; border-bottom: 1px solid #ddd8ce; display: flex; gap: 16px; flex-wrap: wrap; align-items: baseline; }}
-    header strong {{ font-size: 16px; }}
-    header span {{ color: #6b6560; }}
-    #graph {{ width: 100%; height: calc(100vh - 52px); display: block; }}
-    .tip {{ position: fixed; pointer-events: none; background: #1f1e1c; color: #fff; padding: 4px 8px; border-radius: 6px; font-size: 12px; display: none; z-index: 2; }}
+__CSS__
   </style>
 </head>
 <body>
   <header>
-    <strong>{html.escape(title)}</strong>
-    <span>{stats["nodes"]} nodes · {stats["edges"]} edges · {stats["original_edges"]} original · {stats["inferred_edges"]} inferred</span>
+    <strong>__TITLE__</strong>
+    <span class="meta">__STATS__</span>
+    <input id="node-search" type="search" placeholder="搜索节点" autocomplete="off" />
+    <span class="hint">滚轮缩放 · 单击高亮邻域 · 拖节点可固定 · 拖空白平移 · Esc 清除</span>
+    <div class="zoom">
+      <button type="button" id="zoom-out" title="缩小">−</button>
+      <button type="button" id="zoom-in" title="放大">+</button>
+      <button type="button" id="zoom-fit" title="适应窗口">适应</button>
+      <button type="button" id="zoom-reset" title="复位">复位</button>
+    </div>
   </header>
-  <canvas id="graph"></canvas>
+  <div id="graph-stage">
+    <canvas id="graph"></canvas>
+  </div>
   <div class="tip" id="tip"></div>
+  <script>window.GRAPH_DATA = __DATA__;</script>
   <script>
-  const DATA = {data};
-  const canvas = document.getElementById("graph");
-  const tip = document.getElementById("tip");
-  const ctx = canvas.getContext("2d");
-  const palette = ["#3b6d9a","#c47b3a","#5a8f5a","#9a4f6b","#6b5b95","#7a6a4a"];
-  let nodes = DATA.nodes.map((n, i) => ({{
-    ...n,
-    x: Math.cos(i) * 180,
-    y: Math.sin(i) * 180,
-    vx: 0, vy: 0
-  }}));
-  const byId = Object.fromEntries(nodes.map(n => [n.id, n]));
-  const edges = DATA.edges.filter(e => byId[e.source] && byId[e.target]);
-  let width = 0, height = 0, dpr = 1, hover = null;
-
-  function resize() {{
-    dpr = window.devicePixelRatio || 1;
-    width = canvas.clientWidth;
-    height = canvas.clientHeight;
-    canvas.width = Math.floor(width * dpr);
-    canvas.height = Math.floor(height * dpr);
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  }}
-  function radius(node) {{
-    return 6 + Math.min(14, Math.sqrt(node.degree || 1) * 3);
-  }}
-  function step() {{
-    for (const e of edges) {{
-      const a = byId[e.source], b = byId[e.target];
-      const dx = b.x - a.x, dy = b.y - a.y;
-      const dist = Math.max(40, Math.hypot(dx, dy));
-      const force = (dist - 110) * 0.008;
-      const fx = dx / dist * force, fy = dy / dist * force;
-      a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
-    }}
-    for (let i = 0; i < nodes.length; i++) {{
-      for (let j = i + 1; j < nodes.length; j++) {{
-        const a = nodes[i], b = nodes[j];
-        let dx = b.x - a.x, dy = b.y - a.y;
-        let dist = Math.hypot(dx, dy) || 0.1;
-        const force = 420 / (dist * dist);
-        const fx = dx / dist * force, fy = dy / dist * force;
-        a.vx -= fx; a.vy -= fy; b.vx += fx; b.vy += fy;
-      }}
-    }}
-    for (const n of nodes) {{
-      n.vx += (-n.x) * 0.002;
-      n.vy += (-n.y) * 0.002;
-      n.vx *= 0.86; n.vy *= 0.86;
-      n.x += n.vx; n.y += n.vy;
-    }}
-  }}
-  function draw() {{
-    ctx.clearRect(0, 0, width, height);
-    ctx.save();
-    ctx.translate(width / 2, height / 2);
-    for (const e of edges) {{
-      const a = byId[e.source], b = byId[e.target];
-      ctx.beginPath();
-      ctx.setLineDash(e.inferred ? [6, 4] : []);
-      ctx.strokeStyle = e.inferred ? "#9a8f82" : "#6b6560";
-      ctx.lineWidth = 1.2;
-      ctx.moveTo(a.x, a.y);
-      ctx.lineTo(b.x, b.y);
-      ctx.stroke();
-    }}
-    ctx.setLineDash([]);
-    for (const n of nodes) {{
-      ctx.beginPath();
-      ctx.fillStyle = palette[n.community % palette.length];
-      ctx.arc(n.x, n.y, radius(n), 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = "#1f1e1c";
-      ctx.font = "12px system-ui, sans-serif";
-      ctx.fillText(n.label, n.x + radius(n) + 4, n.y + 4);
-    }}
-    ctx.restore();
-  }}
-  function hit(mx, my) {{
-    const x = mx - width / 2, y = my - height / 2;
-    for (let i = nodes.length - 1; i >= 0; i--) {{
-      const n = nodes[i];
-      if (Math.hypot(n.x - x, n.y - y) <= radius(n) + 2) return n;
-    }}
-    return null;
-  }}
-  canvas.addEventListener("mousemove", (ev) => {{
-    const rect = canvas.getBoundingClientRect();
-    hover = hit(ev.clientX - rect.left, ev.clientY - rect.top);
-    if (hover) {{
-      tip.style.display = "block";
-      tip.style.left = ev.clientX + 12 + "px";
-      tip.style.top = ev.clientY + 12 + "px";
-      tip.textContent = hover.label + " · degree " + hover.degree;
-    }} else {{
-      tip.style.display = "none";
-    }}
-  }});
-  function tick() {{
-    for (let i = 0; i < 2; i++) step();
-    draw();
-    requestAnimationFrame(tick);
-  }}
-  window.addEventListener("resize", resize);
-  resize();
-  tick();
+__JS__
   </script>
 </body>
 </html>
 """
+
+
+def _viewer_asset(name: str) -> str:
+    return (_SCRIPT_DIR / name).read_text(encoding="utf-8")
+
+
+def render_html(payload: dict[str, Any]) -> str:
+    stats = payload["stats"]
+    title = "文本知识图谱"
+    return (
+        _HTML_TEMPLATE.replace("__TITLE__", html.escape(title))
+        .replace(
+            "__STATS__",
+            f'{stats["nodes"]} 节点 · {stats["edges"]} 边 · {stats["original_edges"]} 原文 · {stats["inferred_edges"]} 推断',
+        )
+        .replace("__CSS__", _viewer_asset("graph_viewer.css"))
+        .replace("__JS__", _viewer_asset("graph_viewer.js"))
+        .replace("__DATA__", json.dumps(payload, ensure_ascii=False))
+    )
 
 
 def write_graph(input_path: Path, output_path: Path) -> dict[str, Any]:
@@ -278,7 +194,21 @@ def self_test(tmp: Path) -> None:
     assert payload["stats"]["inferred_edges"] == 1
     assert "Steam engine" in html_text
     assert "Urbanization" in html_text
-    assert "const DATA =" in html_text
+    assert "window.GRAPH_DATA =" in html_text
+    assert 'id="zoom-in"' in html_text
+    assert 'id="zoom-out"' in html_text
+    assert 'id="zoom-fit"' in html_text
+    assert 'id="zoom-reset"' in html_text
+    assert 'id="node-search"' in html_text
+    assert "fitNodes" in html_text
+    assert "applySearch" in html_text
+    assert "inNeighborhood" in html_text
+    assert "hitEdge" in html_text
+    assert "DRAG_THRESHOLD" in html_text
+    assert "graph-stage" in html_text
+    assert "70vh" not in html_text
+    assert "html, body { height: 100%; }" in html_text
+    assert "flex: 1 1 auto" in html_text
 
 
 def main(argv: list[str] | None = None) -> int:

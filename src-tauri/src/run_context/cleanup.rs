@@ -328,7 +328,7 @@ mod tests {
 
     #[test]
     fn workdir_validation_rejects_escapes_and_foreign_runs() {
-        assert!(validate_cleanup_workdir(".wisp-science/runs/run-1", "run-1").is_ok());
+        assert!(validate_cleanup_workdir(".superscience/runs/run-1", "run-1").is_ok());
         assert!(validate_cleanup_workdir("scratch/wisp-runs/run-1", "run-1").is_ok());
         for (workdir, run_id) in [
             ("", "run-1"),
@@ -349,8 +349,8 @@ mod tests {
 
     #[test]
     fn posix_payload_kills_the_confirmed_group_then_removes_only_the_workdir() {
-        let payload = posix_cleanup_payload(".wisp-science/runs/run-1", "tok");
-        assert!(payload.contains("workdir=\"$HOME/.wisp-science/runs/run-1\""));
+        let payload = posix_cleanup_payload(".superscience/runs/run-1", "tok");
+        assert!(payload.contains("workdir=\"$HOME/.superscience/runs/run-1\""));
         assert!(payload.contains("wisp token mismatch"));
         assert!(payload.contains("kill -KILL \"-$pgid\""));
         assert!(payload.contains("rm -rf \"$workdir\""));
@@ -359,21 +359,21 @@ mod tests {
 
     #[test]
     fn windows_payload_uses_native_removal_under_home() {
-        let payload = windows_cleanup_payload(".wisp-science/runs/run-1", "tok");
-        assert!(payload.contains("Join-Path $HOME '.wisp-science\\runs\\run-1'"));
+        let payload = windows_cleanup_payload(".superscience/runs/run-1", "tok");
+        assert!(payload.contains("Join-Path $HOME '.superscience\\runs\\run-1'"));
         assert!(payload.contains("Remove-Item -LiteralPath $workdir -Recurse -Force"));
         assert!(payload.contains("wisp token mismatch"));
     }
 
     #[test]
     fn log_payloads_read_capped_tails_and_never_delete() {
-        let posix = posix_logs_payload(".wisp-science/runs/run-1");
-        assert!(posix.contains("workdir=\"$HOME/.wisp-science/runs/run-1\""));
+        let posix = posix_logs_payload(".superscience/runs/run-1");
+        assert!(posix.contains("workdir=\"$HOME/.superscience/runs/run-1\""));
         assert!(posix.contains(&format!("tail -c {LOG_PULL_CAP_BYTES}")));
         assert!(posix.contains("base64"));
         assert!(!posix.contains("rm "));
-        let windows = windows_logs_payload(".wisp-science/runs/run-1");
-        assert!(windows.contains("Join-Path $HOME '.wisp-science\\runs\\run-1'"));
+        let windows = windows_logs_payload(".superscience/runs/run-1");
+        assert!(windows.contains("Join-Path $HOME '.superscience\\runs\\run-1'"));
         assert!(windows.contains("ToBase64String"));
         assert!(!windows.contains("Remove-Item"));
     }

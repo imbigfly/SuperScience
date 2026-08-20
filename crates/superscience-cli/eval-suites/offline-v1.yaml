@@ -140,7 +140,7 @@ cases:
     tags: [skills]
     prompt: Find the demo-analysis Skill, load it, and report its marker.
     files:
-      .wisp/skills/demo-analysis/SKILL.md: |
+      .superscience/skills/demo-analysis/SKILL.md: |
         ---
         name: demo-analysis
         description: Offline demo analysis workflow.

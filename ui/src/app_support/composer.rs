@@ -1,4 +1,5 @@
 use super::*;
+use crate::bindings::upload_pasted_images;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ComposerSendAction {
@@ -382,7 +383,7 @@ pub(crate) fn upload_from_paste(
 ) {
     begin_uploads(attachments, uploading, count);
     spawn_local(async move {
-        let v = upload_pasted_files(event).await;
+        let v = upload_pasted_images(event).await;
         finish_uploads(attachments, uploading, parse_upload_results(v));
     });
 }

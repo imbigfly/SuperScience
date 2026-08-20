@@ -7,7 +7,10 @@ pub struct ResearchGraphTool {
 }
 
 impl ResearchGraphTool {
-    pub fn new_in_scope(store: superscience_store::Store, scope: superscience_store::StateScope) -> Self {
+    pub fn new_in_scope(
+        store: superscience_store::Store,
+        scope: superscience_store::StateScope,
+    ) -> Self {
         Self { store, scope }
     }
 }

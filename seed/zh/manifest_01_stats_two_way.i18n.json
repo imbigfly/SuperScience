@@ -1,0 +1,10 @@
+{
+  "request": "【统计建模与检验】对组织×年龄表达矩阵做双向方差分析。",
+  "response": "分析完成 ✅ 全部结果在 [deg-two-way](deg-two-way/README.md) 模块（脚本 + 表格 + 图，pixi 环境可复现）。\n\n**设计**：200 基因 × 3 组织（Liver/Muscle/Brain）× 3 年龄（3M/12M/24M）× 3 重复，完全平衡。方法：log2(x+1) → 逐基因双向方差分析（含交互）→ 各项独立 BH-FDR。\n\n**核心结果（FDR<0.05）**\n\n| 效应 | 显著基因 | 说明 |\n|---|---|---|\n| 组织 | **200/200** | 效应极强（partial η² 中位数 0.98，F 最小 145） |\n| 年龄 | **200/200** | η² 中位数 0.90；**上调 44、下调 156** |\n| 组织×年龄交互 | **11/200** | 如 Gene_3、Gene_1、Gene_9、Gene_7、Gene_11 |\n\n**关键解读**\n1. **组织是最大分层因素**：PCA 前两轴占 98% 方差（76.6% + 21.7%），三组织样本完全分离，形状标记（年龄）在同一组织内聚拢——表达谱主要由组织身份决定。\n2. **年龄效应普遍存在且以\"随龄下调\"为主**（156/200），且每个组织内方向一致（Liver 154 down、Muscle 155 down、Brain 158 down）。火山图呈单侧分布，中位 Δlog₂(24M−3M) ≈ −0.1。\n3. **仅 11 个基因存在真正的\"组织×年龄\"交互**（即年龄趋势在不同组织间方向不一致）——热图/交互图见 Gene_3 等：在 Brain 随龄下调、Muscle 随龄上调。这类基因是\"组织特异性衰老\"候选，最有生物学价值。\n\n**图（已按 figure-style 渲染校验，300 dpi）**\n- [fig1_eda.png](deg-two-way/output/figures/fig1_eda.png) — 测序深度、均值–方差（斜率≈2，支持 log 变换）、样本 PCA\n- [fig2_heatmap_top30_age.png](deg-two-way/output/figures/fig2_heatmap_top30_age.png) — 年龄效应前 30 基因 z 分数热图\n- [fig3_volcano_age.png](deg-two-way/output/figures/fig3_volcano_age.png) — 年龄火山图\n- [fig4_interaction_top4.png](deg-two-way/output/figures/fig4_interaction_top4.png) — 交互前 4 基因组织×年龄曲线（均值±SE）\n\n**表**：[anova_all_genes.csv](deg-two-way/output/tables/anova_all_genes.csv)（全基因 F/p/padj/η²/组均值）、[top20_age.csv](deg-two-way/output/tables/top20_age.csv)、[top20_interaction.csv](deg-two-way/output/tables/top20_interaction.csv)、[age_trends_per_tissue.csv](deg-two-way/output/tables/age_trends_per_tissue.csv)。\n\n**两点提醒**：① 效应过强（200/200 显著），数据疑似模拟/高信噪比，解读以效应量与方向为主；② 基因无注释名，如可提供基因 ID 对照表，我可以补做富集分析。需要我调整检验（如按组织分别做年龄趋势、DESeq2 风格负二项模型、或换校正方法）请直接说。",
+  "thinking": null,
+  "items": {
+    "0": {
+      "text": "【统计建模与检验】\n\n能力引导规则（本对话全程有效）：\n1. 整段 intake 最多五个澄清问题；每次优先只问一个短问题；禁止长问卷。\n2. 只问阻塞项：目标/完成标准、请上传附件或给出路径、硬约束。优先上传/路径，不要追问你能从文件读出的元数据（行列、体积、schema）。\n3. 一旦能开始该能力的核心工作，或五个问题已用尽：停止访谈，立即用工具交付第一份具体结果，再根据反馈迭代。\n4. 不要用计划确认仪式拖延；一句意图说明即可动手。\n5. 回复简洁；跟随我的语言。\n\n请帮我做统计分析。先问清研究问题/假设，并请我附加数据集或给出路径——不要追问 schema 元数据。然后在 Python/R 中跑 EDA/检验，交付具体结果（表格、图、解读）。"
+    }
+  }
+}

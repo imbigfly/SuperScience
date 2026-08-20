@@ -1,10 +1,10 @@
-# Wisp Science 基础配置教程
+# 天成科研助手基础配置教程
 
-本教程面向第一次使用 Wisp Science 的用户，覆盖模型、服务器、浏览器、Skill、MCP、ACP、凭据、插件、飞书/微信、项目迁移、记忆和命令行。界面截图来自 macOS 版；Windows 版菜单位置基本一致，快捷键中的 `Cmd` 请换成 `Ctrl`。
+本教程面向第一次使用天成科研助手的用户，覆盖模型、服务器、浏览器、Skill、MCP、ACP、凭据、插件、飞书/微信、项目迁移、记忆、命令行和效率工具。界面截图来自 macOS 版；Windows 版菜单位置基本一致，快捷键中的 `Cmd` 请换成 `Ctrl`。
 
-> 建议顺序：先配置模型，再按需要配置服务器、浏览器、Skill/MCP、ACP 和远程接入。API Key、App Secret、OAuth Token 等敏感信息应只填写在 Wisp 的凭据字段中，不要写进提示词、项目文件或截图。
+> 建议顺序：先配置模型，再按需要配置服务器、浏览器、Skill/MCP、ACP 和远程接入。API Key、App Secret、OAuth Token 等敏感信息应只填写在天成科研助手的凭据字段中，不要写进提示词、项目文件或截图。
 >
-> 字号、主题、语言、自动压缩，以及当前项目占用的磁盘空间，可以直接在对话里让 Wisp 用 `configure` 工具读写，不必打开设置页。例如：“把字再大一点”、“改成深色”、“看下这个项目占了多少空间”。API Key、模型、工作区目录和代理仍只在设置里改。自定义专家可以用对话创建或按 id 更新（`save_specialist`），删除仍在 **设置 → 专家**。
+> 字号、主题、语言、自动压缩，以及当前项目占用的磁盘空间，可以直接在对话里让天成科研助手用 `configure` 工具读写，不必打开设置页。例如：“把字再大一点”、“改成深色”、“看下这个项目占了多少空间”。API Key、模型、工作区目录和代理仍只在设置里改。自定义专家可以用对话创建或按 id 更新（`save_specialist`），删除仍在 **设置 → 专家**。
 
 ## 目录
 
@@ -20,11 +20,13 @@
 10. [配置飞书和微信](#10-配置飞书和微信)
 11. [导出和导入项目](#11-导出和导入项目)
 12. [确认和自动建议记忆](#12-确认和自动建议记忆)
-13. [使用命令行](#13-使用命令行)
+13. [录屏时隐藏项目](#13-录屏时隐藏项目)
+14. [使用命令行](#14-使用命令行)
+15. [效率工具与出站脱敏词表](#15-效率工具与出站脱敏词表)
 
 ## 1. 配置模型
 
-打开任意项目，进入 **设置 → 模型**。这里的 **Models** 是 Wisp 内置 Agent 使用的 HTTP API 模型；外部 Codex、Claude Code 等进程应配置到旁边的 **ACP Agents**，不要把 ACP 启动命令填进 HTTP 模型表单。
+打开任意项目，进入 **设置 → 模型**。这里的 **Models** 是天成科研助手内置 Agent 使用的 HTTP API 模型；外部 Codex、Claude Code 等进程应配置到旁边的 **ACP Agents**，不要把 ACP 启动命令填进 HTTP 模型表单。
 
 ![模型配置列表](assets/basic-configuration/01-models-overview.png)
 
@@ -37,8 +39,8 @@
 点击 **添加模型**，依次填写：
 
 1. **提供商**：选择 OpenAI 兼容、OpenAI Responses API 或 Anthropic。
-2. **API 地址**：填写服务商提供的基础地址。通常不要手动追加 `/v1`、`/chat/completions`、`/responses` 或 `/v1/messages`，Wisp 会按提供商补全路径。
-3. **显示名称（别名）**：只影响 Wisp 中的显示，例如 `Lab DeepSeek`。
+2. **API 地址**：填写服务商提供的基础地址。通常不要手动追加 `/v1`、`/chat/completions`、`/responses` 或 `/v1/messages`，天成科研助手会按提供商补全路径。
+3. **显示名称（别名）**：只影响天成科研助手中的显示，例如 `Lab DeepSeek`。
 4. **模型 ID**：必须与 API 实际接受的模型名一致。
 5. **最大输出 tokens / 上下文窗口 tokens**：优先采用服务商公开上限；内置模型目录（models.dev，按精确模型 ID 匹配）认识的模型会自动带出文档上限。输出超限保存时会报错，上下文超限保存时会被收回上限。
 6. **推理强度**：只有模型和网关支持时才设置；不确定时保留默认。
@@ -51,7 +53,7 @@
 
 如果在一轮任务运行时切换模型或修改 profile，当前 API 请求会继续使用启动该轮时的配置；新配置从下一轮开始生效。这个轮次边界避免在一个正在流式输出的请求中热切换提供商。
 
-达到“每轮最大 Agent 迭代次数”后，Wisp 会额外发起一次不提供任何工具的收尾请求，要求模型汇总已完成、未验证和剩余工作；该请求不计入配置的迭代次数。若收尾成功，本轮以 `max_iterations` 原因正常结束；若收尾本身失败，则保留工具结果并显示可恢复错误。调试请求导出会分别记录当前配置 `configured_max_iter`、本轮实际采用的 `effective_max_iter`、`termination_reason`、`tool_schema_count` 和历史 `tool_call_count`；旧版终止事件或非 Agent 回合无法证明实际采用的上限时，`effective_max_iter` 为 `null`。
+达到“每轮最大 Agent 迭代次数”后，天成科研助手会额外发起一次不提供任何工具的收尾请求，要求模型汇总已完成、未验证和剩余工作；该请求不计入配置的迭代次数。若收尾成功，本轮以 `max_iterations` 原因正常结束；若收尾本身失败，则保留工具结果并显示可恢复错误。调试请求导出会分别记录当前配置 `configured_max_iter`、本轮实际采用的 `effective_max_iter`、`termination_reason`、`tool_schema_count` 和历史 `tool_call_count`；旧版终止事件或非 Agent 回合无法证明实际采用的上限时，`effective_max_iter` 为 `null`。
 
 常见问题：
 
@@ -74,12 +76,12 @@
 1. **名称（别名）**：会话和工具中看到的名称，例如 `gpu-lab`。
 2. **主机地址（HostName）**、**用户**和**端口**。
 3. **认证方式**：优先使用“密钥 / agent”。
-4. **密钥文件**：只填写本机私钥路径，例如 `~/.ssh/id_ed25519`。Wisp 不会把私钥内容复制进 SQLite。
+4. **密钥文件**：只填写本机私钥路径，例如 `~/.ssh/id_ed25519`。天成科研助手不会把私钥内容复制进 SQLite。
 5. **给 Agent 的说明**：可记录调度器、分区、module、conda 等使用约定。
 
 ![添加 SSH 主机](assets/basic-configuration/12-add-ssh-host.png)
 
-先点击 **测试连接**，通过后再添加。回到环境列表后执行 **探测环境**，让 Wisp 记录操作系统、CPU 架构、GPU、Python、R 和 SLURM 等能力；如远端解释器不在默认 PATH，再使用 **配置运行时解释器**。
+先点击 **测试连接**，通过后再添加。回到环境列表后执行 **探测环境**，让天成科研助手记录操作系统、CPU 架构、GPU、Python、R 和 SLURM 等能力；如远端解释器不在默认 PATH，再使用 **配置运行时解释器**。
 
 如果已经维护 `~/.ssh/config`，可以使用 **一键导入 ~/.ssh/config 全部主机**。导入后仍建议逐台探测，确认别名、端口、用户和 IdentityFile 能正常工作。
 
@@ -95,25 +97,25 @@
 
 ## 3. 配置浏览器控制
 
-Wisp 的真实浏览器控制使用当前 Chrome/Chromium 用户资料，不启动临时 Playwright/Selenium 浏览器，因此会保留现有登录状态、Cookie、扩展和浏览器指纹。
+天成科研助手的真实浏览器控制使用当前 Chrome/Chromium 用户资料，不启动临时 Playwright/Selenium 浏览器，因此会保留现有登录状态、Cookie、扩展和浏览器指纹。
 
 ### 安装浏览器桥接扩展
 
-1. 在 Wisp 会话中输入“配置浏览器控制”。Agent 会调用只读的 `browser_setup`，返回当前连接状态和这台机器上的准确扩展目录。
+1. 在天成科研助手会话中输入“配置浏览器控制”。Agent 会调用只读的 `browser_setup`，返回当前连接状态和这台机器上的准确扩展目录。
 2. 在要控制的 Chrome 用户资料中打开 `chrome://extensions`。
 3. 打开右上角 **开发者模式**。
 4. 点击 **加载未打包的扩展程序**，选择 `browser_setup` 返回的 `browser-extension/` 文件夹本身，不要选择里面的单个文件或 ZIP。
-5. 打开扩展弹窗，确认显示 **Connected to Wisp**。更新 Wisp 后，在 `chrome://extensions` 点一次该扩展的 **重新加载**，否则 service worker 可能还是旧文件。
+5. 打开扩展弹窗，确认显示 **Connected to SuperScience**。更新天成科研助手后，在 `chrome://extensions` 点一次该扩展的 **重新加载**，否则 service worker 可能还是旧文件。
 
-扩展未连接时，Wisp 会在对话中给出醒目提示：本次回答不包含联网检索结果。涉及“最新/实时”或具体网页的请求时，Agent 应暂停并引导你打开浏览器、连上扩展，而不是直接用模型已有知识作答。连接后可点 **连接后重试**。
+扩展未连接时，天成科研助手会在对话中给出醒目提示：本次回答不包含联网检索结果。涉及“最新/实时”或具体网页的请求时，Agent 应暂停并引导你打开浏览器、连上扩展，而不是直接用模型已有知识作答。连接后可点 **连接后重试**。
 
 ![Chrome 加载未打包扩展](assets/basic-configuration/18-browser-extension.png)
 
-扩展会在 Wisp 运行时连接 `ws://127.0.0.1:18765`。Wisp 与其他兼容工具可能使用同一个默认端口，因此同一时间只运行一个浏览器桥接服务。
+扩展会在天成科研助手运行时连接 `ws://127.0.0.1:18765`。天成科研助手与其他兼容工具可能使用同一个默认端口，因此同一时间只运行一个浏览器桥接服务。
 
 ### 验证
 
-保持一个普通 `http://` 或 `https://` 页面打开，然后在 Wisp 中请求：
+保持一个普通 `http://` 或 `https://` 页面打开，然后在天成科研助手中请求：
 
 ```text
 列出我当前 Chrome 中的网页标签，只读取标题和 URL，不要点击页面。
@@ -133,7 +135,7 @@ Wisp 的真实浏览器控制使用当前 Chrome/Chromium 用户资料，不启�
 ### 限制与安全
 
 - `chrome://settings`、`chrome://extensions` 等内部页面不能由桥接脚本控制。
-- CAPTCHA 或“确认你是真人”页面必须由用户手动完成，Wisp 不会尝试绕过。
+- CAPTCHA 或“确认你是真人”页面必须由用户手动完成，天成科研助手不会尝试绕过。
 - 原生“打开/保存”对话框和 Chrome 下载气泡不属于网页 DOM，不能由网页桥接控制。
 - 对无人值守下载，可手动关闭浏览器的“下载前询问每个文件的保存位置”；多文件自动下载只应对可信站点单独授权。
 
@@ -162,7 +164,7 @@ Wisp 的真实浏览器控制使用当前 Chrome/Chromium 用户资料，不启�
 
 ![在输入框中手动选择 Skill](assets/basic-configuration/17-manual-skill.png)
 
-选中的 Skill 会附加到下一条消息。它只约束这一轮，不会永久改写项目配置。普通 Wisp 会话和 ACP 会话都支持 `/` 引用；`/compact`、`/fork`、`/rewind` 只在普通会话中出现，因为 ACP 会话的上下文与历史由外部 Agent 管理。
+选中的 Skill 会附加到下一条消息。它只约束这一轮，不会永久改写项目配置。普通天成科研助手会话和 ACP 会话都支持 `/` 引用；`/compact`、`/fork`、`/rewind` 只在普通会话中出现，因为 ACP 会话的上下文与历史由外部 Agent 管理。
 
 示例：
 
@@ -182,7 +184,7 @@ Wisp 的真实浏览器控制使用当前 Chrome/Chromium 用户资料，不启�
 
 ## 5. 导入 Claude Code / Codex 会话
 
-Wisp 可以把独立 Codex CLI 或 Claude Code 的 JSONL 会话导入当前项目，不需要复制粘贴。
+天成科研助手可以把独立 Codex CLI 或 Claude Code 的 JSONL 会话导入当前项目，不需要复制粘贴。
 
 ### 导入 Codex CLI
 
@@ -201,9 +203,9 @@ Wisp 可以把独立 Codex CLI 或 Claude Code 的 JSONL 会话导入当前项�
 1. 在 **来源** 中选择本地、已注册的 WSL 或已配置的 SSH 主机。
 2. 点击一条会话查看有界预览，确认工作目录、消息数和时间。
 3. 点击单条 **导入**，或使用 **全部导入**。
-4. 导入完成后，Wisp 会创建或复用 `codex` / `claude` 会话分组。
+4. 导入完成后，天成科研助手会创建或复用 `codex` / `claude` 会话分组。
 
-导入是幂等的：源会话后续新增内容时，列表会显示“更新”；再次导入会快进已有会话，但不会覆盖已经在 Wisp 内继续过的会话。Codex 的 AGENTS.md 包装、环境包装、推理和工具协议行会被过滤；Claude Code 的元数据行会被过滤，文本、工具调用和工具结果会保留。
+导入是幂等的：源会话后续新增内容时，列表会显示“更新”；再次导入会快进已有会话，但不会覆盖已经在天成科研助手内继续过的会话。Codex 的 AGENTS.md 包装、环境包装、推理和工具协议行会被过滤；Claude Code 的元数据行会被过滤，文本、工具调用和工具结果会保留。
 
 > 导入的是会话内容，不会导入 Codex/Claude 的登录凭据、模型配置、MCP 配置或进程状态。
 
@@ -221,10 +223,15 @@ Wisp 可以把独立 Codex CLI 或 Claude Code 的 JSONL 会话导入当前项�
 “添加技能”安装或更新的是全局 Skill。只属于当前项目的 Skill 可放入：
 
 ```text
-<project>/.wisp/skills/<skill-name>/SKILL.md
+<project>/.superscience/skills/<skill-name>/SKILL.md
 ```
 
-然后点击 **重新加载技能**。同名 Skill 按 bundled、project、global、额外路径、plugin 的既定优先级解析；插件提供的 Skill 应在插件页管理，不要重复导入。
+（然后点击 **重新加载技能**。同名 Skill 按
+project → global → 额外路径 → bundled → plugin 的优先级解析；插件提供的 Skill
+应在插件页管理，不要重复导入。
+
+**设置 → 技能** 顶部的 **技能自动更新**（默认开）会在启动时检查可溯源的预装
+技能，并把更新安装到 `~/.superscience/skills`，不改动签名包内的 bundled 目录。
 
 更多发现范围和覆盖规则见[Skills](skills.md)。
 
@@ -265,7 +272,7 @@ npx -y @agentclientprotocol/codex-acp --version
 npx -y @agentclientprotocol/claude-agent-acp --version
 ```
 
-### 在 Wisp 中添加
+### 在天成科研助手中添加
 
 进入 **设置 → 模型 → ACP Agents**，点击 **添加 ACP Agent**。
 
@@ -299,9 +306,9 @@ Arguments:
 @agentclientprotocol/claude-agent-acp
 ```
 
-保存后点击 **测试连接**。成功表示 Wisp 已启动进程并完成 ACP `initialize`；若 adapter 返回登录方式，按提示完成认证。之后在空会话的模型选择器中选择该 ACP Agent。已有消息的普通会话切换到 ACP 时，Wisp 会保留草稿并创建新的空 ACP 会话。
+保存后点击 **测试连接**。成功表示天成科研助手已启动进程并完成 ACP `initialize`；若 adapter 返回登录方式，按提示完成认证。之后在空会话的模型选择器中选择该 ACP Agent。已有消息的普通会话切换到 ACP 时，天成科研助手会保留草稿并创建新的空 ACP 会话。
 
-> ACP 进程拥有当前 Wisp 用户的本机权限。只配置可信 adapter；命令或参数改变后，原会话的进程指纹不再匹配，应新建会话。
+> ACP 进程拥有当前天成科研助手用户的本机权限。只配置可信 adapter；命令或参数改变后，原会话的进程指纹不再匹配，应新建会话。
 
 完整示例和排错见[ACP Agents](acp-agents.md)。
 
@@ -327,7 +334,7 @@ OpenAlex、InfiniSynapse、SCIMaster、NCBI 等条目带有用途说明和官方
 
 ## 9. 配置插件（MCP App）
 
-Wisp 插件可以把 Skill、本地 stdio MCP 服务和 MCP App 打包为一个安装单元。插件全局安装、按项目启用。
+天成科研助手插件可以把 Skill、本地 stdio MCP 服务和 MCP App 打包为一个安装单元。插件全局安装、按项目启用。
 
 进入 **设置 → 插件**，点击 **安装插件**：
 
@@ -340,7 +347,7 @@ Wisp 插件可以把 Skill、本地 stdio MCP 服务和 MCP App 打包为一个�
 
 启用插件后，点击 **在新会话中使用**。插件的 MCP 进程会在新 Agent 会话构建时启动；插件 Skill 会显示在技能页，但启停和删除仍由插件卡片管理。
 
-当工具返回 MCP App 时，Wisp 会在中间区域打开应用标签页，并保留与聊天的分屏。MCP App 可以把最多 64 KiB 的文本/结构化选择状态加入下一轮模型上下文；关闭 App 会清除该状态。
+当工具返回 MCP App 时，天成科研助手会在中间区域打开应用标签页，并保留与聊天的分屏。MCP App 可以把最多 64 KiB 的文本/结构化选择状态加入下一轮模型上下文；关闭 App 会清除该状态。
 
 文档与聊天分屏时，可以拖动中间分隔线调整两侧宽度；聊天栏变窄后，模型选择和发送控件会自动缩小。
 
@@ -369,7 +376,7 @@ Wisp 插件可以把 Skill、本地 stdio MCP 服务和 MCP App 打包为一个�
 
 ![飞书机器人配置](assets/basic-configuration/07-feishu-setup.png)
 
-App Secret 只保存在操作系统凭据库中。私聊消息直接处理；群聊中需要 @ 机器人。若 CardKit 权限不足，Wisp 会退化为普通文本回复。
+App Secret 只保存在操作系统凭据库中。私聊消息直接处理；群聊中需要 @ 机器人。若 CardKit 权限不足，天成科研助手会退化为普通文本回复。
 
 ### 微信 iLink
 
@@ -403,11 +410,11 @@ App Secret 只保存在操作系统凭据库中。私聊消息直接处理；群
 
 ![项目卡片上的导出按钮](assets/basic-configuration/16-project-export.png)
 
-Wisp 会生成 `wisp-project-<name>.zip`，并在完成清单校验后才发布最终文件。进度窗口仍在运行时，不要复制临时或尚为空的 ZIP。
+天成科研助手会生成 `superscience-project-<name>.zip`，并在完成清单校验后才发布最终文件。进度窗口仍在运行时，不要复制临时或尚为空的 ZIP。
 
 ### 导入
 
-在项目页点击顶部 **导入项目**，选择导出的 ZIP，再选择一个新的本地父目录。Wisp 会创建项目目录并校验清单；进度会显示在右下角，导入期间仍可继续使用其他项目，完成后可从项目页打开新项目。
+在项目页点击顶部 **导入项目**，选择导出的 ZIP，再选择一个新的本地父目录。天成科研助手会创建项目目录并校验清单；进度会显示在右下角，导入期间仍可继续使用其他项目，完成后可从项目页打开新项目。
 
 ![项目页的导入入口](assets/basic-configuration/15-project-import.png)
 
@@ -422,18 +429,18 @@ Wisp 会生成 `wisp-project-<name>.zip`，并在完成清单校验后才发布�
 
 ## 12. 确认和自动建议记忆
 
-Wisp 不会直接把一轮对话写成长时记忆。任务完成后，点击回答下方的 **记忆**，Wisp 会基于该轮用户消息、回答和工具结果生成草稿。保存前可以编辑内容，并选择作用域：
+天成科研助手不会直接把一轮对话写成长时记忆。任务完成后，点击回答下方的 **记忆**，天成科研助手会基于该轮用户消息、回答和工具结果生成草稿。保存前可以编辑内容，并选择作用域：
 
-- **当前项目**：写入项目的 `.wisp/memory`，适合项目约定、已验证的排错结论和可复用步骤。
+- **当前项目**：写入项目的 `.superscience/memory`，适合项目约定、已验证的排错结论和可复用步骤。
 - **全局**：保存在本机应用数据库中，并在所有项目的后续任务中作为用户习惯或偏好使用；当前指令始终优先于全局记忆。
 
-只有点击确认后草稿才会持久化。用户在消息中明确说“记住”“我的偏好”或 `remember` 时，任务完成后也会自动打开同一个确认窗口，仍不会自动保存。保存为全局记忆时可以选择新增，或显式选择一条旧记忆进行替换；Wisp 不会自行猜测两条记忆是否冲突。可以在 **设置 → 记忆** 查看或编辑项目记忆，并新增、查看、编辑或删除全局习惯（点击“新增全局习惯”直接录入，无需先发起聊天）；关闭记忆后不会生成新草稿，也不会向 Agent 注入已有记忆。
+只有点击确认后草稿才会持久化。用户在消息中明确说“记住”“我的偏好”或 `remember` 时，任务完成后也会自动打开同一个确认窗口，仍不会自动保存。保存为全局记忆时可以选择新增，或显式选择一条旧记忆进行替换；天成科研助手不会自行猜测两条记忆是否冲突。可以在 **设置 → 记忆** 查看或编辑项目记忆，并新增、查看、编辑或删除全局习惯（点击“新增全局习惯”直接录入，无需先发起聊天）；关闭记忆后不会生成新草稿，也不会向 Agent 注入已有记忆。
 
-全局记忆以应用数据库为唯一事实来源。每轮开始时 Wisp 读取一次当前快照，将它作为普通用户上下文放在本轮真实请求之前；它不是 system policy，也不会写入聊天历史。同一轮后续的工具调用和自动纠正继续使用这份冻结快照。新增、编辑或删除从下一轮生效，不会改变正在生成的任务，也不会改写已有历史；如果旧偏好已出现在当前聊天里，删除后仍受影响时可新建会话。项目设置中的 `.wisp/WISP.md` 是另一类 Agent Context，在新会话加载，不会每轮静默刷新。
+全局记忆以应用数据库为唯一事实来源。每轮开始时天成科研助手读取一次当前快照，将它作为普通用户上下文放在本轮真实请求之前；它不是 system policy，也不会写入聊天历史。同一轮后续的工具调用和自动纠正继续使用这份冻结快照。新增、编辑或删除从下一轮生效，不会改变正在生成的任务，也不会改写已有历史；如果旧偏好已出现在当前聊天里，删除后仍受影响时可新建会话。项目设置中的 `.superscience/SUPERSCIENCE.md` 是另一类 Agent Context，在新会话加载，不会每轮静默刷新。
 
-项目记忆按需检索，不会在每轮全部注入。对于含糊或复合问题，Agent 会先生成最多四条互补检索词：保留路径、错误码、包名等精确标识符，并按需要补充概念同义词、解决步骤或时间条件。Wisp 在本地对这些查询分别执行词法检索（中文支持连续文本匹配），再合并排名并返回命中原因；没有足够证据时最多细化检索一次，不应把未命中的记忆当作事实。
+项目记忆按需检索，不会在每轮全部注入。对于含糊或复合问题，Agent 会先生成最多四条互补检索词：保留路径、错误码、包名等精确标识符，并按需要补充概念同义词、解决步骤或时间条件。天成科研助手在本地对这些查询分别执行词法检索（中文支持连续文本匹配），再合并排名并返回命中原因；没有足够证据时最多细化检索一次，不应把未命中的记忆当作事实。
 
-工具失败分析是一个默认关闭的选项。在输入框的 Agent 菜单中启用 **自动分析工具失败** 后，可以设置失败率阈值和最少失败次数。一轮任务正常完成且同时达到两个阈值时，Wisp 会分析该轮失败工具的原因，并弹出可编辑的项目记忆草稿。取消窗口不会写入任何内容；该功能只统计有明确成功/失败结果的工具调用。
+工具失败分析是一个默认关闭的选项。在输入框的 Agent 菜单中启用 **自动分析工具失败** 后，可以设置失败率阈值和最少失败次数。一轮任务正常完成且同时达到两个阈值时，天成科研助手会分析该轮失败工具的原因，并弹出可编辑的项目记忆草稿。取消窗口不会写入任何内容；该功能只统计有明确成功/失败结果的工具调用。
 
 ## 13. 录屏时隐藏项目
 
@@ -441,36 +448,36 @@ Wisp 不会直接把一轮对话写成长时记忆。任务完成后，点击回
 
 ## 14. 使用命令行
 
-Wisp CLI 以当前目录作为项目根目录。源码仓库中使用 `cargo run -p superscience-cli`；构建或安装后可直接调用 `wisp-science`。
+SuperScience CLI 以当前目录作为项目根目录。源码仓库中使用 `cargo run -p superscience-cli`；构建或安装后可直接调用 `superscience`。
 
 ### 配置模型环境变量
 
 macOS / Linux：
 
 ```bash
-export WISP_PROVIDER="openai"            # openai / openai_responses / anthropic
-export WISP_API_URL="https://api.deepseek.com"
-export WISP_MODEL="deepseek-v4-flash"
-export WISP_API_KEY="<your-provider-key>"
+export SUPERSCIENCE_PROVIDER="openai"            # openai / openai_responses / anthropic
+export SUPERSCIENCE_API_URL="https://api.deepseek.com"
+export SUPERSCIENCE_MODEL="deepseek-v4-flash"
+export SUPERSCIENCE_API_KEY="<your-provider-key>"
 ```
 
 Windows PowerShell：
 
 ```powershell
-$env:WISP_PROVIDER = "openai"
-$env:WISP_API_URL  = "https://api.deepseek.com"
-$env:WISP_MODEL    = "deepseek-v4-flash"
-$env:WISP_API_KEY  = "<your-provider-key>"
+$env:SUPERSCIENCE_PROVIDER = "openai"
+$env:SUPERSCIENCE_API_URL  = "https://api.deepseek.com"
+$env:SUPERSCIENCE_MODEL    = "deepseek-v4-flash"
+$env:SUPERSCIENCE_API_KEY  = "<your-provider-key>"
 ```
 
-不要把真实 Key 写进脚本或提交到 Git。桌面端的系统密钥环配置不会自动成为 CLI 环境变量。
+不要把真实 Key 写进脚本或提交到 Git。桌面端的系统密钥环配置不会自动成为 CLI 环境变量。同名的上游变量 `WISP_*` 仍可作为静默回退。
 
 ### 交互模式
 
 ```bash
 cargo run -p superscience-cli
 # 或已安装后：
-wisp-science
+superscience
 ```
 
 交互命令：
@@ -499,31 +506,38 @@ cargo run -p superscience-cli -- eval --compare baseline.json --save current.jso
 ### CLI 中加载 Skill 和 MCP
 
 ```bash
-export WISP_SKILLS_PATH="/path/to/extra-skills"
-export WISP_MCP_COMMAND="npx -y your-mcp-server"
+export SUPERSCIENCE_SKILLS_PATH="/path/to/extra-skills"
+export SUPERSCIENCE_MCP_COMMAND="npx -y your-mcp-server"
 # 或启动一个内置 bio-tools 包：
-export WISP_MCP_PKG="mcp_pubmed"
+export SUPERSCIENCE_MCP_PKG="mcp_pubmed"
 ```
 
-`WISP_SKILLS_PATH` 在 Windows 可使用 `;` 分隔，在 macOS/Linux 可使用 `:` 分隔。`WISP_MCP_COMMAND` 是 CLI 启动任意 stdio MCP 的完整命令行；桌面端请改用 **设置 → 连接**。
+`SUPERSCIENCE_SKILLS_PATH` 在 Windows 可使用 `;` 分隔，在 macOS/Linux 可使用 `:` 分隔。`SUPERSCIENCE_MCP_COMMAND` 是 CLI 启动任意 stdio MCP 的完整命令行；桌面端请改用 **设置 → 连接**。
 
 帮助输出：
 
 ```text
 Usage:
-  wisp-science
-  wisp-science run [--output console|jsonl] <prompt>
-  wisp-science eval [--save report.json] [--compare baseline.json]
-  wisp-science dev
+  superscience
+  superscience run [--output console|jsonl] <prompt>
+  superscience eval [--save report.json] [--compare baseline.json]
+  superscience dev
 
-With no command, wisp-science starts the interactive terminal.
+With no command, superscience starts the interactive terminal.
 ```
+
+## 15. 效率工具与出站脱敏词表
+
+首页 / 设置「能力」里的 **效率工具** 与其它 Tab 共用同一套卡片。
+
+- **出站隐私脱敏**：默认开启。发往云端模型前会假名化邮箱、手机号、身份证，以及你粘贴的自定义关键词；回复在本机还原。词表只需一行一个原文，系统自动生成带起止标记的占位（如 `〔词1〕`），并避开正文里已有的同形串。图片像素不会走这层文本防火墙。
+- **论文预审 / 手写数据提取 / 选题引导**：点卡片进入引导对话，分别加载独立 skill。写作 Tab 里的「国际期刊审稿」「Nature审稿」仍是原来的科学审稿，没有改逻辑。
 
 ## 完成后的检查清单
 
 - 模型通过“验证”，并能在新会话完成一条普通问答。
 - SSH 主机通过“测试连接”和“探测环境”，需要时已配置 Python/R 解释器。
-- Chrome 扩展弹窗显示 “Connected to Wisp”。
+- Chrome 扩展弹窗显示 “Connected to SuperScience”。
 - Skill 在 `/` 选择器中可见；MCP 在“设置 → 连接”中已启用且测试通过。
 - ACP adapter 完成“测试连接”，并能在空会话中被选择。
 - 凭据字段只显示“已配置”，项目文件中没有明文 Key。

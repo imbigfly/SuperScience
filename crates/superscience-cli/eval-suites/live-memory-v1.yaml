@@ -97,7 +97,7 @@ cases:
 
   # --- 2. Retrieval: real model must call search_memory -------------------
   #
-  # Facts exist only in .wisp/memory. Conversation does not contain the
+  # Facts exist only in .superscience/memory. Conversation does not contain the
   # values, so a correct answer requires the production search_memory tool.
 
   - id: memory-retrieval-ignores-distractors
@@ -112,7 +112,7 @@ cases:
     auto_compact: false
     allowed_tools: [search_memory, attempt_completion]
     files:
-      .wisp/memory/2025-06-01.md: |
+      .superscience/memory/2025-06-01.md: |
         [TURN-MEMORY · session live-mem · turn 2]
         MEMORY_FACT_TS999: the QC threshold for study TS-999-QX is min_genes=347.
 
@@ -133,7 +133,7 @@ cases:
     auto_compact: false
     allowed_tools: [search_memory, attempt_completion]
     files:
-      .wisp/memory/2025-05-20.md: |
+      .superscience/memory/2025-05-20.md: |
         [TURN-MEMORY · session live-cjk · turn 5]
         MEMORY_FACT_CJK：单细胞分析内存不足时使用 backed 模式分批读取。标记 TOKEN=WISP-CJK-BACKED-17。
     expect:
@@ -147,7 +147,7 @@ cases:
     auto_compact: false
     allowed_tools: [search_memory, attempt_completion]
     files:
-      .wisp/memory/2025-04-10.md: |
+      .superscience/memory/2025-04-10.md: |
         [TURN-MEMORY · session live-durable · turn 7]
         MEMORY_FACT_DURABLE_55: the atlas normalization uses CPM with log1p. TOKEN=CPM-log1p-WISP-55.
     actions:
@@ -166,7 +166,7 @@ cases:
   # --- 3. Stage loading: rules + host injection reach the real model ------
 
   - id: stage-rules-and-injection-reach-the-model
-    description: AGENTS.md, .wisp/WISP.md, and per-turn global-memory injection shape the live answer.
+    description: AGENTS.md, .superscience/SUPERSCIENCE.md, and per-turn global-memory injection shape the live answer.
     tags: [memory, stage, injection, live]
     prompt: >-
       Confirm which project rules and host preferences are loaded. Call
@@ -177,7 +177,7 @@ cases:
     files:
       AGENTS.md: |
         Every final answer must include the exact token RULE_TOKEN=WISP-71.
-      .wisp/WISP.md: |
+      .superscience/SUPERSCIENCE.md: |
         Every final answer must include the exact token USER_TOKEN=WISP-72.
     runtime_injections:
       - |

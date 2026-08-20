@@ -70,7 +70,7 @@ function connect() {
     }
   };
   socket.onerror = () => {
-    lastError = "Cannot connect to Wisp on 127.0.0.1:18765";
+    lastError = "Cannot connect to SuperScience on 127.0.0.1:18765";
   };
   socket.onclose = () => {
     clearInterval(keepAliveTimer);

@@ -5,8 +5,8 @@
 //! to their model bindings persist like any other row.
 
 use serde::{Deserialize, Serialize};
+use superscience_store::Store;
 use tauri::State;
-use wisp_store::Store;
 
 pub const SPECIALISTS_KEY: &str = "specialists";
 pub const SCIENTIFIC_ILLUSTRATOR_RUBRIC: &str = "\
@@ -335,7 +335,10 @@ pub async fn set_session_specialist(
         .load_messages(&frame_id)
         .await
         .map_err(|e| format!("{e}"))?;
-    if msgs.iter().any(|m| m.role != wisp_llm::Role::System) {
+    if msgs
+        .iter()
+        .any(|m| m.role != superscience_llm::Role::System)
+    {
         return Err("Specialist is locked once the session has messages.".into());
     }
     if !id.is_empty() && get(&state.store, &id).await.is_none() {
@@ -377,9 +380,9 @@ mod tests {
         assert!(rubric.contains("do not silently substitute"));
     }
 
-    async fn test_store() -> (wisp_store::Store, std::path::PathBuf) {
+    async fn test_store() -> (superscience_store::Store, std::path::PathBuf) {
         let tmp = std::env::temp_dir().join(format!("wisp_spec_{}.sqlite", uuid::Uuid::new_v4()));
-        (wisp_store::Store::open(&tmp).await.unwrap(), tmp)
+        (superscience_store::Store::open(&tmp).await.unwrap(), tmp)
     }
 
     #[tokio::test]

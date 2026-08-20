@@ -969,7 +969,10 @@ fn run_remote_command(
     }
 }
 
-fn remote_command_failed(context: &superscience_store::ExecutionContext, output: &RemoteOutput) -> String {
+fn remote_command_failed(
+    context: &superscience_store::ExecutionContext,
+    output: &RemoteOutput,
+) -> String {
     let detail = if output.stderr.is_empty() {
         "no error details returned".to_string()
     } else {
@@ -1049,7 +1052,9 @@ fn read_remote_file_with_runner(
             return Err(format!("remote file exceeds {cap} byte limit"));
         }
         let full = read_remote_file_bytes_with_runner(context, path, Some(cap), runner)?;
-        if let Some(Ok(markdown)) = superscience_tools::read::document_markdown(Path::new(path), &full) {
+        if let Some(Ok(markdown)) =
+            superscience_tools::read::document_markdown(Path::new(path), &full)
+        {
             return Ok(FileContent {
                 path: path.to_string(),
                 mime: mime.into(),
@@ -1429,8 +1434,10 @@ mod tests {
 
     #[test]
     fn rich_document_preview_uses_anydoc_markdown() {
-        let base =
-            std::env::temp_dir().join(format!("superscience-anydoc-preview-{}", uuid::Uuid::new_v4()));
+        let base = std::env::temp_dir().join(format!(
+            "superscience-anydoc-preview-{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir_all(&base).unwrap();
         std::fs::write(
             base.join("protocol.rtf"),

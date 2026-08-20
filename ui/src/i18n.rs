@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Locale {
-    #[default]
     En,
+    #[default]
     Zh,
 }
 
@@ -45,7 +45,25 @@ pub const EMPTY_TITLE_COUNT: usize = 7;
 pub const EMPTY_SUBTITLE_COUNT: usize = 7;
 
 pub fn t(locale: Locale, key: &str) -> String {
-    lookup(locale, key).unwrap_or(key).into()
+    brand_visible_copy(locale, lookup(locale, key).unwrap_or(key))
+}
+
+/// Rewrite upstream product names at the display layer so `lookup` tables can
+/// stay mergeable with `xuzhougeng/wisp-science`.
+fn brand_visible_copy(locale: Locale, text: &str) -> String {
+    if !text.contains("Wisp") {
+        return text.to_string();
+    }
+    match locale {
+        Locale::En => text
+            .replace("Wisp Science", "SuperScience")
+            .replace("Wisp's", "SuperScience's")
+            .replace("Wisp", "SuperScience"),
+        Locale::Zh => text
+            .replace("Wisp Science", "天成科研助手")
+            .replace("Wisp's", "天成科研助手的")
+            .replace("Wisp", "天成科研助手"),
+    }
 }
 
 pub fn empty_title(locale: Locale, index: usize) -> String {
@@ -66,6 +84,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
     match (locale, key) {
         (Locale::En, "sidebar.new_session") => Some("New session"),
         (Locale::En, "sidebar.files") => Some("Files"),
+        (Locale::En, "sidebar.specialists") => Some("Specialists"),
         (Locale::En, "sidebar.graph") => Some("Research graph"),
         (Locale::En, "sidebar.publication") => Some("Publication"),
         (Locale::En, "sidebar.library") => Some("Library"),
@@ -87,6 +106,82 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "sidebar.group_date") => Some("Date"),
         (Locale::En, "sidebar.sort_newest") => Some("Newest"),
         (Locale::En, "sidebar.sort_name") => Some("Name"),
+        (Locale::En, "user_center.title") => Some("My Center"),
+        (Locale::En, "user_center.close") => Some("Close"),
+        (Locale::En, "user_center.guest") => Some("Not signed in"),
+        (Locale::En, "user_center.login_hint") => Some("Sign in with your TCTOKEN username and password."),
+        (Locale::En, "user_center.login_hint_before") => Some("Sign in with your "),
+        (Locale::En, "user_center.login_hint_link") => Some("TCTOKEN"),
+        (Locale::En, "user_center.login_hint_after") => Some(" username and password."),
+        (Locale::En, "user_center.username") => Some("Username"),
+        (Locale::En, "user_center.password") => Some("Password"),
+        (Locale::En, "user_center.remember_password") => Some("Remember password"),
+        (Locale::En, "user_center.show_password") => Some("Show password"),
+        (Locale::En, "user_center.hide_password") => Some("Hide password"),
+        (Locale::En, "user_center.totp") => Some("2FA code"),
+        (Locale::En, "user_center.login") => Some("Sign in"),
+        (Locale::En, "user_center.verify_2fa") => Some("Verify"),
+        (Locale::En, "user_center.need_2fa") => Some("Enter your two-factor authentication code."),
+        (Locale::En, "user_center.login_ok") => Some("Signed in"),
+        (Locale::En, "user_center.logout") => Some("Sign out"),
+        (Locale::En, "user_center.logout_ok") => Some("Signed out"),
+        (Locale::En, "user_center.session_expired") => Some("Session expired. Please sign in again."),
+        (Locale::En, "user_center.tab.account") => Some("Account"),
+        (Locale::En, "user_center.tab.tasks") => Some("Tasks"),
+        (Locale::En, "user_center.tab.topup") => Some("Top-ups"),
+        (Locale::En, "user_center.tab.keys") => Some("API keys"),
+        (Locale::En, "user_center.current_user") => Some("Current user"),
+        (Locale::En, "user_center.remaining") => Some("Remaining balance"),
+        (Locale::En, "user_center.used") => Some("Used balance"),
+        (Locale::En, "user_center.refresh") => Some("Refresh"),
+        (Locale::En, "user_center.online_topup") => Some("Online top-up"),
+        (Locale::En, "user_center.topup_hint") => Some("Choose an amount and payment method, then continue to the checkout page."),
+        (Locale::En, "user_center.custom_amount") => Some("Custom amount"),
+        (Locale::En, "user_center.payment_method") => Some("Payment method"),
+        (Locale::En, "user_center.go_pay") => Some("Pay now"),
+        (Locale::En, "user_center.pay_opened") => Some("Opened checkout in browser"),
+        (Locale::En, "user_center.invalid_amount") => Some("Enter a valid amount"),
+        (Locale::En, "user_center.redeem") => Some("Redeem code"),
+        (Locale::En, "user_center.redeem_ph") => Some("Enter redeem code"),
+        (Locale::En, "user_center.redeem_btn") => Some("Redeem"),
+        (Locale::En, "user_center.redeem_ok") => Some("Redeemed successfully"),
+        (Locale::En, "user_center.request_meta") => Some("Requests {n} · Provider {url}"),
+        (Locale::En, "user_center.start_time") => Some("Start"),
+        (Locale::En, "user_center.end_time") => Some("End"),
+        (Locale::En, "user_center.model_name") => Some("Model"),
+        (Locale::En, "user_center.group") => Some("Group"),
+        (Locale::En, "user_center.log_type") => Some("Type"),
+        (Locale::En, "user_center.type_all") => Some("All types"),
+        (Locale::En, "user_center.type_topup") => Some("Top-up"),
+        (Locale::En, "user_center.type_consume") => Some("Usage"),
+        (Locale::En, "user_center.type_error") => Some("Error"),
+        (Locale::En, "user_center.reset") => Some("Reset"),
+        (Locale::En, "user_center.search") => Some("Search"),
+        (Locale::En, "user_center.usage") => Some("Usage"),
+        (Locale::En, "user_center.total_n") => Some("Total {n}"),
+        (Locale::En, "user_center.col.time") => Some("Time"),
+        (Locale::En, "user_center.col.channel") => Some("Channel"),
+        (Locale::En, "user_center.col.user") => Some("User"),
+        (Locale::En, "user_center.col.token") => Some("Token"),
+        (Locale::En, "user_center.col.model") => Some("Model"),
+        (Locale::En, "user_center.col.duration") => Some("Duration"),
+        (Locale::En, "user_center.col.tokens") => Some("Tokens"),
+        (Locale::En, "user_center.col.cost") => Some("Cost"),
+        (Locale::En, "user_center.orders_hint") => Some("Online payment orders. For redeem-code entries, check recharge types under Tasks."),
+        (Locale::En, "user_center.orders_empty") => Some("No top-up orders yet"),
+        (Locale::En, "user_center.qty") => Some("Qty"),
+        (Locale::En, "user_center.keys_hint") => Some("Copy a key, or set one as the default. The first key is used by default."),
+        (Locale::En, "user_center.key_active") => Some("Active"),
+        (Locale::En, "user_center.key_disabled") => Some("Disabled"),
+        (Locale::En, "user_center.never_expires") => Some("Never expires"),
+        (Locale::En, "user_center.key_meta") => Some("Remaining {quota}, {exp}"),
+        (Locale::En, "user_center.copy_key") => Some("Copy key"),
+        (Locale::En, "user_center.key_copied") => Some("Key copied"),
+        (Locale::En, "user_center.set_drawing_key") => Some("Set as default"),
+        (Locale::En, "user_center.drawing_key_current") => Some("Default"),
+        (Locale::En, "user_center.drawing_key_set") => Some("Set as default key"),
+        (Locale::En, "user_center.pay_no_url") => Some("Payment order created, but no checkout URL was returned."),
+        (Locale::En, "user_center.pay_unavailable") => Some("Online payment is unavailable for this account right now."),
         (Locale::En, "sidebar.today") => Some("Today"),
         (Locale::En, "sidebar.earlier") => Some("Earlier"),
         (Locale::En, "sidebar.pinned") => Some("Pinned"),
@@ -1211,7 +1306,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "approval.plan_approve") => Some("Approve & start"),
         (Locale::En, "approval.plan_reject") => Some("Reject"),
         (Locale::En, "approval.plan_other") => Some("Other"),
-        (Locale::En, "approval.plan_feedback_placeholder") => Some("Tell wisp what to change in this plan."),
+        (Locale::En, "approval.plan_feedback_placeholder") => Some("Tell SuperScience what to change in this plan."),
         (Locale::En, "approval.plan_feedback_submit") => Some("Send feedback"),
         (Locale::En, "approval.plan_feedback_cancel") => Some("Cancel"),
         (Locale::En, "approval.plan_hint") => Some("Approve to start, reject to have the agent revise the plan, or choose Other to send specific feedback."),
@@ -1272,7 +1367,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "browser.offline.body") => Some("The browser extension is not connected. This reply is based only on the model's existing knowledge."),
         (Locale::En, "browser.offline.retry") => Some("Retry after connecting"),
         (Locale::En, "browser.offline.dismiss") => Some("Dismiss"),
-        (Locale::En, "settings.nav.connections") => Some("Connections"),
+        (Locale::En, "settings.nav.connections") => Some("MCP Links"),
         (Locale::En, "settings.nav.channels") => Some("Remote Access"),
         (Locale::En, "channels.desc") => Some("Connect Feishu, WeChat, or a StickS3 device to Wisp Science. Each access method stays opt-in and has its own security boundary."),
         (Locale::En, "channels.routing.desc") => Some("For IM bots, the first message creates a session in the desktop's active project. That chat then stays attached to the same project and session until you switch it with a slash command."),
@@ -1459,6 +1554,17 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "specialists.skills.remove") => Some("Remove {skill}"),
         (Locale::En, "specialists.inherit") => Some("Inherit project settings"),
         (Locale::En, "specialists.remove") => Some("Remove"),
+        (Locale::En, "specialists.chat_with") => Some("Chat with this specialist"),
+        (Locale::En, "specialists.status.ready") => Some("Online"),
+        (Locale::En, "specialists.role.builtin") => Some("Built-in specialist"),
+        (Locale::En, "specialists.role.custom") => Some("Custom specialist"),
+        (Locale::En, "specialists.handle.builtin") => Some("@system"),
+        (Locale::En, "specialists.handle.custom") => Some("@custom"),
+        (Locale::En, "specialists.metric.materials") => Some("Sources"),
+        (Locale::En, "specialists.metric.skills") => Some("Skills"),
+        (Locale::En, "specialists.metric.sop") => Some("SOP"),
+        (Locale::En, "specialists.metric.inherit") => Some("—"),
+        (Locale::En, "specialists.edit_hint") => Some("Click card to edit"),
         (Locale::En, "specialists.builtin_locked") => Some("Built-in instructions are read-only."),
         (Locale::En, "cred.desc") => Some("API keys for external services used by skills and tools — including your own custom entries — are stored in the OS keyring."),
         (Locale::En, "cred.help.aria") => Some("About this credential"),
@@ -1548,6 +1654,20 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "skills.remove") => Some("Delete skill"),
         (Locale::En, "skills.remove_confirm") => Some("Delete {skill}? Its installed files will be removed. This cannot be undone."),
         (Locale::En, "skills.removed") => Some("Skill deleted."),
+        (Locale::En, "skills.auto_update") => Some("Skill auto-update"),
+        (Locale::En, "skills.auto_update_hint") => Some("Check allowlisted bundled skills on launch and install overlays."),
+        (Locale::En, "skills.auto_update_never") => Some("Not checked yet."),
+        (Locale::En, "skills.auto_update_last") => Some("Last check: {when}"),
+        (Locale::En, "skills.auto_update_checking") => Some("Checking skill updates…"),
+        (Locale::En, "skills.auto_update_updated") => Some("Updated: {packs}"),
+        (Locale::En, "skills.auto_update_ok") => Some("Allowlisted skills are up to date."),
+        (Locale::En, "skills.auto_update_failed") => Some("Skill update check failed: {error}"),
+        (Locale::En, "skills.check_now") => Some("Check and update now"),
+        (Locale::En, "skills.more") => Some("More"),
+        (Locale::En, "skills.filter_bundled") => Some("Bundled"),
+        (Locale::En, "skills.filter_added") => Some("Added by me"),
+        (Locale::En, "skills.enabled_frac") => Some("{enabled}/{total}"),
+        (Locale::En, "err.client_updates_config_not_found") => Some("No installer is published for this platform yet."),
         (Locale::En, "memory.off_banner") => Some("Memory is off. The agent won't save new notes or search existing ones, but notes below are kept and stay editable. Turn memory on to resume."),
         (Locale::En, "memory.scope_hint") => Some("Project memory"),
         (Locale::En, "memory.enabled_label") => Some("Memory"),
@@ -1669,24 +1789,24 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "settings.notifications") => Some("Desktop notifications"),
         (Locale::En, "settings.notifications_hint") => Some("Notify when a background task finishes, fails, or waits for approval. Its conversation opens only in the window that started the task."),
         (Locale::En, "settings.update_check") => Some("Check for updates"),
-        (Locale::En, "settings.update_check_hint") => Some("Check GitHub Releases on startup and show a prompt in the sidebar when a newer version is available."),
+        (Locale::En, "settings.update_check_hint") => Some("Check TCTOKEN for a newer SuperScience build on startup and show a prompt in the sidebar when one is available."),
         (Locale::En, "issue_report.sidebar") => Some("Feedback"),
         (Locale::En, "issue_report.context") => Some("System information"),
         (Locale::En, "issue_report.context_attached") => Some("Attached automatically"),
         (Locale::En, "issue_report.chat_prompt") => Some(
             "Help me file a GitHub issue for {repo}.\n\n\
              [Collected automatically — do not ask me for API keys, transcripts, project files, env vars, usernames, or absolute paths]\n\
-             - Wisp version: {version}\n\
+             - SuperScience version: {version}\n\
              - OS / architecture: {os} / {arch}\n\
              - Model profile: {model}\n\
              - Startup timings: {startup}\n\n\
              Guide me in plain language: what happened, steps to reproduce, expected vs actual behavior, and any Run ID or error text I know.\n\
              If startup was slow or the window stayed blank, remind me that on Windows release builds the log is at \
-             %APPDATA%\\science.superscience\\wisp-science\\logs\\wisp.log (previous launch: wisp.previous.log).\n\
+             %APPDATA%\\science.superscience\\superscience\\logs\\superscience.log (previous launch: superscience.previous.log).\n\
              When we have enough detail, propose a short issue title plus a Markdown body with sections \
              (Problem, Steps to reproduce, Expected, Actual, Environment). \
              Then give a prefilled GitHub link using this base URL: {issue_base}?title=...&body=... \
-             Remind me that screenshots must be attached manually on GitHub; Wisp does not upload them.",
+             Remind me that screenshots must be attached manually on GitHub; SuperScience does not upload them.",
         ),
         (Locale::En, "notify.done") => Some("Task completed"),
         (Locale::En, "notify.error") => Some("Task failed"),
@@ -1761,7 +1881,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "conn.url") => Some("URL"),
         (Locale::En, "conn.headers") => Some("Headers (one per line)"),
         (Locale::En, "conn.test") => Some("Test"),
-        (Locale::En, "conn.featured") => Some("Featured — bundled bio-tools"),
+        (Locale::En, "conn.featured") => Some("Featured — bundled bio-tools (PubMed, GEO, UniProt, PDB…)"),
         (Locale::En, "conn.custom") => Some("Custom connections"),
         (Locale::En, "conn.tools_count") => Some("{n} tools"),
         (Locale::En, "conn.tools") => Some("Tools"),
@@ -1789,7 +1909,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "link.confirm_open") => Some("Open link"),
         (Locale::En, "update_modal.available_title") => Some("Update available"),
         (Locale::En, "update_modal.checking_title") => Some("Checking for updates"),
-        (Locale::En, "update_modal.checking_body") => Some("Contacting GitHub Releases…"),
+        (Locale::En, "update_modal.checking_body") => Some("Contacting TCTOKEN update service…"),
         (Locale::En, "update_modal.available_body") => Some("Wisp {version} is available."),
         (Locale::En, "update_modal.download") => Some("Download update"),
         (Locale::En, "update_modal.downloading_title") => Some("Downloading Wisp {version}"),
@@ -1802,10 +1922,10 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "update_modal.up_to_date_title") => Some("You're up to date"),
         (Locale::En, "update_modal.up_to_date_body") => Some("Wisp {version} is already the latest version."),
         (Locale::En, "update_modal.failed_title") => Some("Couldn't update Wisp"),
-        (Locale::En, "update_modal.open_releases") => Some("Open Releases"),
         (Locale::En, "update_modal.later") => Some("Later"),
         (Locale::En, "update_modal.never") => Some("Don't remind me"),
         (Locale::En, "update_modal.ok") => Some("OK"),
+        (Locale::En, "update_modal.close") => Some("Close"),
         (Locale::En, "update_card.title") => Some("Update available"),
         (Locale::En, "status.failed_load_settings") => Some("Failed to load settings"),
         (Locale::En, "status.saving_settings") => Some("Saving settings..."),
@@ -1847,6 +1967,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "status.demo") => Some("demo: {title}"),
         (Locale::En, "err.api_url_required") => Some("API URL is required."),
         (Locale::En, "err.model_required") => Some("Model is required."),
+        (Locale::En, "err.tctoken_locked") => Some("The Tctoken model cannot be removed."),
         (Locale::En, "err.api_key_required") => Some("API key is required."),
         (Locale::En, "err.max_tokens_ceiling") => Some("{model} accepts at most {max} output tokens — lower Max output tokens."),
         (Locale::En, "err.unknown") => Some("Unknown error"),
@@ -2043,7 +2164,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "folder.actions") => Some("Group actions"),
         (Locale::En, "session.delete_confirm") => Some("Delete this session? This cannot be undone."),
         (Locale::En, "ctx.reload_rules") => Some("Reload project rules…"),
-        (Locale::En, "session.reload_rules_hint") => Some("Rebuild this session's system prompt with the current AGENTS.md / WISP.md. Takes effect on the next turn. Because the prompt prefix changes, the model's prompt cache for this session is invalidated once (the next turn costs a bit more). Chat history is unaffected."),
+        (Locale::En, "session.reload_rules_hint") => Some("Rebuild this session's system prompt with the current AGENTS.md / SUPERSCIENCE.md. Takes effect on the next turn. Because the prompt prefix changes, the model's prompt cache for this session is invalidated once (the next turn costs a bit more). Chat history is unaffected."),
         (Locale::En, "session.reload_rules_action") => Some("Reload rules"),
         (Locale::En, "session.delete_many_confirm") => Some("Delete {n} conversations? This cannot be undone."),
         (Locale::En, "session.rename_title") => Some("Rename session"),
@@ -2145,7 +2266,353 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "files.working") => Some("Working…"),
         (Locale::En, "files.delete_file_confirm") => Some("Delete “{path}”? This action cannot be undone."),
         (Locale::En, "files.delete_directory_confirm") => Some("Delete “{path}” and all of its contents? This action cannot be undone."),
+        (Locale::En, "ctx.save_as_demo") => Some("Save as example"),
+        (Locale::En, "ctx.delete_user_demo") => Some("Remove from Example project"),
+        (Locale::En, "demo.save_title") => Some("Save as example"),
+        (Locale::En, "demo.save_hint") => Some("This conversation will appear at the top of Example project as a read-only demo. Local paths and emails are stripped."),
+        (Locale::En, "demo.save_action") => Some("Save"),
+        (Locale::En, "demo.save_success") => Some("Saved “{title}” to Example project."),
+        (Locale::En, "demo.delete_confirm") => Some("Remove this example from Example project?"),
         (Locale::En, "caps.title") => Some("Capabilities"),
+        (Locale::En, "caps.tab.overview") => Some("Runtime"),
+        (Locale::En, "caps.home.title") => Some("What you can do"),
+        (Locale::En, "caps.home.subtitle") => Some("Pick a capability to open its workspace or start a guided chat."),
+        (Locale::En, "caps.need_project") => Some("Create or open a project first, then try this capability again."),
+        (Locale::En, "caps.group.topic") => Some("Topic & proposal"),
+        (Locale::En, "caps.group.design") => Some("Design & planning"),
+        (Locale::En, "caps.group.implement") => Some("Implementation & analysis"),
+        (Locale::En, "caps.group.writing") => Some("Writing & publication"),
+        (Locale::En, "caps.group.paper_writing") => Some("Writing & publication"),
+        (Locale::En, "caps.group.ai_drawing") => Some("AI drawing"),
+        (Locale::En, "caps.group.data_cleaning") => Some("Data cleaning"),
+        (Locale::En, "caps.group.stats") => Some("Implementation & analysis"),
+        (Locale::En, "caps.group.structure") => Some("Implementation & analysis"),
+        (Locale::En, "caps.group.assets") => Some("Topic & proposal"),
+        (Locale::En, "caps.group.collab") => Some("Collaboration"),
+        (Locale::En, "caps.group.efficiency") => Some("Efficiency tools"),
+        (Locale::En, "caps.tile.ai_agent.title") => Some("AI research agent"),
+        (Locale::En, "caps.tile.env_setup.title") => Some("Set up local environment"),
+        (Locale::En, "caps.tile.env_setup.blurb") => Some("Check and install Python, uv, Node, and sci for this machine."),
+        (Locale::En, "caps.tile.demo.title") => Some("Open demo"),
+        (Locale::En, "caps.tile.demo.blurb") => Some("Browse a read-only example research trajectory without an API key."),
+        (Locale::En, "caps.tile.literature.title") => Some("Literature & evidence"),
+        (Locale::En, "caps.tile.literature.blurb") => Some("Search real papers, support or challenge claims, and map idea overlap."),
+        (Locale::En, "caps.tile.pdf_ppt.title") => Some("PDF deep-read & journal club"),
+        (Locale::En, "caps.tile.pdf_ppt.blurb") => Some("Navigate PDFs page by page and build argument-driven slides."),
+        (Locale::En, "caps.tile.academic_research.title") => Some("Deep academic research"),
+        (Locale::En, "caps.tile.academic_research.blurb") => Some("Run the bundled deep-research / academic-pipeline skills for rigorous lit reviews."),
+        (Locale::En, "caps.tile.nature_skills.title") => Some("Nature-style writing & figures"),
+        (Locale::En, "caps.tile.nature_skills.blurb") => Some("Polish prose, draft sections, review like a referee, and build publication figures."),
+        (Locale::En, "caps.tile.officecli.title") => Some("Word / Excel / PowerPoint"),
+        (Locale::En, "caps.tile.officecli.blurb") => Some("Create and edit Office documents with the bundled OfficeCLI skills."),
+        (Locale::En, "caps.tile.academic_paper.title") => Some("Academic paper pipeline"),
+        (Locale::En, "caps.tile.academic_paper.blurb") => Some("Plan, draft, revise, and format papers with the academic-paper skill team."),
+        (Locale::En, "caps.tile.ai_drawing.title") => Some("AI illustration"),
+        (Locale::En, "caps.tile.ai_drawing.blurb") => Some("Generate research illustrations and concept figures with the configured image model."),
+        (Locale::En, "caps.tile.ai_mechanism_figure.title") => Some("AI mechanism figure"),
+        (Locale::En, "caps.tile.editable_figure.title") => Some("Editable figure"),
+        (Locale::En, "caps.tile.bioinfo_figure_layout.title") => Some("Bioinformatics figure layout"),
+        (Locale::En, "caps.tile.r_bioinfo_figure.title") => Some("R bioinformatics figures"),
+        (Locale::En, "caps.tile.r_bioinfo_figure.blurb") => Some(
+            "Volcano, heatmap, PCA/UMAP, violin, survival, enrichment—plot with the R specialist in ≤5 questions.",
+        ),
+        (Locale::En, "caps.tile.data_cleaning.title") => Some("Clean & reshape data"),
+        (Locale::En, "caps.tile.data_cleaning.blurb") => Some("Send a table or file path; I'll inspect it, clean it, and return an analysis-ready dataset."),
+        (Locale::En, "caps.tile.pii_firewall.title") => Some("PII outbound firewall"),
+        (Locale::En, "caps.tile.pii_firewall.blurb") => Some("Hide emails, phones, IDs, and your custom keywords before they reach the cloud model; restore them in replies."),
+        (Locale::En, "caps.tile.pii_firewall.toggle") => Some("Enable PII outbound firewall"),
+        (Locale::En, "caps.tile.pii_firewall.modal_title") => Some("What is the PII outbound firewall?"),
+        (Locale::En, "caps.tile.pii_firewall.modal_lead") => Some("It is a privacy guard for chat with cloud AI. Before your message leaves this computer, it hides personal details; when the reply comes back, it puts the real details back so you can keep reading normally."),
+        (Locale::En, "caps.tile.pii_firewall.modal_what_title") => Some("What it protects"),
+        (Locale::En, "caps.tile.pii_firewall.modal_what_1") => Some("Stops emails, phone numbers, ID numbers, and the keywords you add from being sent to the cloud model in plain text."),
+        (Locale::En, "caps.tile.pii_firewall.modal_what_2") => Some("Keeps conversation context usable by replacing them with stable placeholders like EMAIL_1 instead of deleting them."),
+        (Locale::En, "caps.tile.pii_firewall.modal_what_3") => Some("Restores the real values in the answer you see, so the chat still feels natural."),
+        (Locale::En, "caps.tile.pii_firewall.modal_how_title") => Some("How it works"),
+        (Locale::En, "caps.tile.pii_firewall.modal_how_1") => Some("You type or paste content that may contain personal information."),
+        (Locale::En, "caps.tile.pii_firewall.modal_how_2") => Some("Before the request goes out, SuperScience swaps those details for placeholders."),
+        (Locale::En, "caps.tile.pii_firewall.modal_how_3") => Some("After the model replies, placeholders are swapped back to the original values on your machine."),
+        (Locale::En, "caps.tile.pii_firewall.modal_example_title") => Some("Simple example"),
+        (Locale::En, "caps.tile.pii_firewall.modal_example_you") => Some("You send"),
+        (Locale::En, "caps.tile.pii_firewall.modal_example_model") => Some("Model sees"),
+        (Locale::En, "caps.tile.pii_firewall.modal_example_before") => Some("Contact jane@lab.org or 13812345678"),
+        (Locale::En, "caps.tile.pii_firewall.modal_example_after") => Some("Contact EMAIL_1 or PHONE_1"),
+        (Locale::En, "caps.tile.pii_firewall.modal_note") => Some("On by default. Turn it off only if you intentionally need the model to see the raw personal fields. Research IDs like GSE accessions are left alone."),
+        (Locale::En, "caps.tile.pii_firewall.terms_title") => Some("Sensitive keywords"),
+        (Locale::En, "caps.tile.pii_firewall.terms_help") => Some("One keyword per line. Paste only the original words. SuperScience assigns delimited placeholders such as 〔词1〕 so they cannot collide with the paper."),
+        (Locale::En, "caps.tile.pii_firewall.terms_placeholder") => Some("Zhang San\nPeking Union Hospital"),
+        (Locale::En, "caps.tile.pii_firewall.terms_preview_title") => Some("System placeholders"),
+        (Locale::En, "caps.tile.pii_firewall.terms_preview_help") => Some("Live preview. Tokens look like 〔词1〕. The same original always maps to the same token; replies are restored on this computer."),
+        (Locale::En, "caps.tile.pii_firewall.terms_preview_empty") => Some("Placeholders appear here as you type"),
+        (Locale::En, "caps.tile.pii_firewall.terms_save") => Some("Save dictionary"),
+        (Locale::En, "caps.tile.pii_firewall.terms_saved") => Some("Dictionary saved. New chats will use it."),
+        (Locale::En, "caps.tile.pii_firewall.close") => Some("Got it"),
+        (Locale::En, "caps.skill.journal_prescreen.title") => Some("Journal prescreen"),
+        (Locale::En, "caps.skill.journal_prescreen.blurb") => Some("Check a manuscript against that journal's author guidelines and mark problems with fixes."),
+        (Locale::En, "caps.skill.journal_prescreen.prompt") => Some(
+            "I want journal-prescreen to check author guidelines. First ask for the manuscript (attachment/path) and the target journal or pasted guidelines. At most five questions total; then mark location, severity, and a fix. Do not invent journal rules. This is not academic-paper-reviewer and not nature-reviewer.",
+        ),
+        (Locale::En, "caps.skill.handwriting_extract.title") => Some("Handwritten data extract"),
+        (Locale::En, "caps.skill.handwriting_extract.blurb") => Some("Read handwritten lab or CRF photos into a CSV and flag uncertain cells."),
+        (Locale::En, "caps.skill.handwriting_extract.prompt") => Some(
+            "I want handwriting-extract. Ask me to upload handwritten table photos or give an image folder. At most five questions; do not ask for headers you can read from the images. Extract structured rows, write a CSV, calibrate, and flag uncertain cells. Remind me that image pixels do not go through the outbound text firewall.",
+        ),
+        (Locale::En, "caps.skill.topic_coach.title") => Some("Topic coach"),
+        (Locale::En, "caps.skill.topic_coach.blurb") => Some("Inventory your data and materials, then score a few journal-fit topic candidates."),
+        (Locale::En, "caps.skill.topic_coach.prompt") => Some(
+            "I want topic-coach. Help me inventory data and materials, tighten one research question, and score 3–5 journal-fit topic candidates on relevance, data, materials, and likelihood. Likelihood must be only Recommended / Possible but costly / Not advised — never a fake acceptance percentage. At most five questions; prefer attachments/paths; then write topic/inventory.md, question.md, and candidates.md.",
+        ),
+        (Locale::En, "caps.tile.stats_analysis.title") => Some("Statistical modeling"),
+        (Locale::En, "caps.tile.stats_analysis.blurb") => Some("Hypothesis tests, regression, power, and EDA with Python/R and stats skills."),
+        (Locale::En, "caps.tile.director.title") => Some("Research director"),
+        (Locale::En, "home.director_cta") => Some("Director, let's begin"),
+        (Locale::En, "home.director_cta_hint") => Some(
+            "Short coaching chat: at most five questions, then match skills and start delivering results.",
+        ),
+        (Locale::En, "caps.prompt.director_kickoff") => Some(
+            "You are my research director coach inside SuperScience / 天成科研助手. Help me turn a vague intention into ONE concrete goal this Agent can execute, then deliver the first useful result of that capability.\n\nHard rules:\n1. Intake: at most FIVE questions total. Prefer ONE short question per turn. Never a long questionnaire.\n2. Only ask what is still missing among: (a) concrete deliverable / done definition, (b) materials I should attach or a project path, (c) hard constraints (deadline, compute, privacy, venue, language).\n3. Never ask for metadata you can read from files (row/column counts, schema, file size, column names). Ask me to upload/attach the file or give a workspace path, then inspect it yourself.\n4. After answers—or as soon as five questions are used—map to bundled skills, call search_skills / use_skill, and immediately start the core work. Do not wait for a second “please confirm the long plan” round; a one-line “I'll do X next” is enough.\n5. Success = I receive a concrete artifact/progress for the matched capability (cleaned table, draft section, search hits, figure, etc.), not an endless interview.\n6. Reply in my language. Keep questions short.\n\nStart with question 1 only.",
+        ),
+        (Locale::En, "caps.prompt.socratic_frame") => Some(
+            "Capability coaching (applies to this whole chat).\nSkill `{skill}` is attached — call use_skill for `{skill}` first and follow it, but these rules override any habit of endless interviewing:\n1. At most FIVE clarifying questions total for intake. Prefer one short question per turn.\n2. Ask only for blockers: goal/done definition, materials to attach or a path, and hard constraints. Prefer “please upload/attach the file or paste the path” over asking row/column counts, schema, size, or other facts you can inspect yourself.\n3. As soon as you can start the skill's core job—or after five questions—STOP interviewing and DELIVER: run tools, produce a first concrete result or draft, then iterate from my feedback.\n4. Do not require a multi-step plan approval before acting. A one-line intent (“I'll clean the table next”) is enough.\n5. Keep replies concise; match my language.",
+        ),
+        (Locale::En, "caps.prompt.guided_frame") => Some(
+            "Capability coaching (applies to this whole chat):\n1. At most FIVE clarifying questions total. Prefer one short question per turn. Never a long questionnaire.\n2. Ask only for blockers: goal/done definition, materials to attach or a path, and hard constraints. Prefer upload/path over metadata you can read from the file yourself (rows, columns, size, schema).\n3. As soon as you can do the capability's core job—or after five questions—STOP interviewing and DELIVER a first concrete result with tools (REPL, skills, search, etc.), then iterate from my feedback.\n4. Do not stall on plan-approval theater. A one-line intent is enough before acting.\n5. Keep replies concise; match my language.",
+        ),
+        (Locale::En, "caps.skill.academic_paper.title") => Some("Academic paper writing"),
+        (Locale::En, "caps.skill.academic_paper.blurb") => Some("Plan, draft, revise, and format papers (full / plan / outline / revision modes)."),
+        (Locale::En, "caps.skill.academic_paper.prompt") => Some(
+            "I want to write or revise an academic paper with academic-paper. Help me choose mode (full/plan/outline/revision/…), topic, paper type, and target venue through questions. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+        ),
+        (Locale::En, "caps.skill.academic_pipeline.title") => Some("Research-to-paper pipeline"),
+        (Locale::En, "caps.skill.academic_pipeline.blurb") => Some("Orchestrate research → write → review → revise end-to-end."),
+        (Locale::En, "caps.skill.academic_pipeline.prompt") => Some(
+            "I want the full academic-pipeline (research to finalized paper). Clarify my starting point, deliverables, and how much review/revision I need. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+        ),
+        (Locale::En, "caps.skill.academic_paper_reviewer.title") => Some("International journal review"),
+        (Locale::En, "caps.skill.academic_paper_reviewer.blurb") => Some("Simulate journal-fit + peer + devil’s-advocate reviewers."),
+        (Locale::En, "caps.skill.academic_paper_reviewer.prompt") => Some(
+            "I want a structured multi-perspective review with academic-paper-reviewer. Ask what manuscript I have, target venue, and which review depth I need. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+        ),
+        (Locale::En, "caps.skill.deep_research.title") => Some("Deep academic research"),
+        (Locale::En, "caps.skill.deep_research.blurb") => Some("Rigorous multi-agent lit research, briefs, and fact-checks."),
+        (Locale::En, "caps.skill.deep_research.prompt") => Some(
+            "I want deep-research on a topic. Clarify my question, scope, mode (full/quick/lit-review/fact-check/…), and citation expectations. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+        ),
+        (Locale::En, "caps.skill.nature_writing.title") => Some("Nature-style drafting"),
+        (Locale::En, "caps.skill.nature_writing.blurb") => Some("Draft or restructure Nature-leaning manuscript sections."),
+        (Locale::En, "caps.skill.nature_writing.prompt") => Some(
+            "I want Nature-style manuscript drafting with nature-writing. Ask which section, what claims/results I already have, and language preference. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+        ),
+        (Locale::En, "caps.skill.nature_polishing.title") => Some("Nature-style polishing"),
+        (Locale::En, "caps.skill.nature_polishing.blurb") => Some("Polish or translate prose toward Nature/CNS tone."),
+        (Locale::En, "caps.skill.nature_polishing.prompt") => Some(
+            "I want nature-polishing. Ask for the text to polish, target journal tone, and whether to restructure or only polish wording. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+        ),
+        (Locale::En, "caps.skill.humanizer_zh.title") => Some("Remove AI traces"),
+        (Locale::En, "caps.skill.humanizer_zh.blurb") => Some("Rewrite prose against 24 AI-writing patterns so it reads human."),
+        (Locale::En, "caps.skill.humanizer_zh.prompt") => Some(
+            "I want humanizer-zh to remove AI writing traces. Ask for the text or file path to rewrite. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+        ),
+        (Locale::En, "caps.skill.nature_proposal_writer.title") => Some("Proposal / research plan"),
+        (Locale::En, "caps.skill.nature_proposal_writer.blurb") => Some("Compose or audit research proposals and opening reports."),
+        (Locale::En, "caps.skill.nature_proposal_writer.prompt") => Some(
+            "I want a research proposal with nature-proposal-writer. Clarify proposal type, funder/venue, and what evidence I already have. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+        ),
+        (Locale::En, "caps.skill.nature_citation.title") => Some("Nature citation insertion"),
+        (Locale::En, "caps.skill.nature_citation.blurb") => Some("Add strict Nature/CNS citations to manuscript passages."),
+        (Locale::En, "caps.skill.nature_citation.prompt") => Some(
+            "I want nature-citation to add citations. Ask for the manuscript text, field, and any citation constraints. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+        ),
+        (Locale::En, "caps.skill.nature_response.title") => Some("Revision response letters"),
+        (Locale::En, "caps.skill.nature_response.blurb") => Some("Point-by-point reviewer response / rebuttal packages."),
+        (Locale::En, "caps.skill.nature_response.prompt") => Some(
+            "I want nature-response for revision correspondence. Ask for reviewer comments, manuscript version, and letter style. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+        ),
+        (Locale::En, "caps.skill.nature_reviewer.title") => Some("Nature review"),
+        (Locale::En, "caps.skill.nature_reviewer.blurb") => Some("Simulate a Nature-style referee report before submission."),
+        (Locale::En, "caps.skill.nature_reviewer.prompt") => Some(
+            "I want a pre-submission review with nature-reviewer. Ask for the manuscript, target journal, and review focus. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+        ),
+        (Locale::En, "caps.skill.nature_data.title") => Some("Data Availability / FAIR"),
+        (Locale::En, "caps.skill.nature_data.blurb") => Some("Draft or audit Data Availability and repository plans."),
+        (Locale::En, "caps.skill.nature_data.prompt") => Some(
+            "I want nature-data help for Data Availability / FAIR metadata. Ask what datasets I have and the target journal policy. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+        ),
+        (Locale::En, "caps.skill.nature_ref_verifier.title") => Some("Reference verification"),
+        (Locale::En, "caps.skill.nature_ref_verifier.blurb") => Some("Cross-check bibliography fields and flag conflicts."),
+        (Locale::En, "caps.skill.nature_ref_verifier.prompt") => Some(
+            "I want nature-ref-verifier on my references. Ask whether I have a full list or single items, and the preferred output format. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+        ),
+        (Locale::En, "caps.skill.nature_paper_to_patent.title") => Some("Paper → patent draft"),
+        (Locale::En, "caps.skill.nature_paper_to_patent.blurb") => Some("Turn papers/notes into Chinese invention patent drafts."),
+        (Locale::En, "caps.skill.nature_paper_to_patent.prompt") => Some(
+            "I want nature-paper-to-patent. Ask what source materials I have, inventive focus, and attorney-ready deliverables needed. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+        ),
+        (Locale::En, "caps.skill.nature_figure.title") => Some("Nature-grade figures"),
+        (Locale::En, "caps.skill.nature_figure.blurb") => Some("Create/audit submission-grade figures in Python or R."),
+        (Locale::En, "caps.skill.nature_figure.prompt") => Some(
+            "I want nature-figure for publication figures. Ask for data/panels, journal style, Python vs R, and export needs. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+        ),
+        (Locale::En, "caps.skill.nature_paper2ppt.title") => Some("Paper → journal-club PPT"),
+        (Locale::En, "caps.skill.nature_paper2ppt.blurb") => Some("Build a Nature-style Chinese PPTX from a paper."),
+        (Locale::En, "caps.skill.nature_paper2ppt.prompt") => Some(
+            "I want nature-paper2ppt. Ask for the paper source, audience (journal club/group meeting), slide length, and language needs. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+        ),
+        (Locale::En, "caps.skill.ppt_master.title") => Some("PPT Master"),
+        (Locale::En, "caps.skill.ppt_master.blurb") => Some(
+            "Turn a topic or document into a native editable .pptx (shapes, masters, charts, animation).",
+        ),
+        (Locale::En, "caps.skill.ppt_master.prompt") => Some(
+            "I want ppt-master to build a native editable PowerPoint. Ask for the topic or source files/path, slide count, template/style, and whether I need charts or animation. At most five questions total; prefer asking for attachments/paths; then deliver a .pptx—do not interview endlessly.",
+        ),
+        (Locale::En, "caps.install.ppt_master.title") => Some("Install PPT Master?"),
+        (Locale::En, "caps.install.ppt_master.body") => Some(
+            "PPT Master builds native, editable PowerPoint decks from a topic or document — shapes, slide masters, charts, and animation, not a flattened picture deck. This is different from “Paper → journal-club PPT”, which turns a paper into a Nature-style meeting deck.\n\nThe skill is not bundled (it is large). Confirm to download the official skill-only package from GitHub (hugohe3/ppt-master, MIT, about 56 MB). A network connection is required. Python 3.10+ is used afterwards to install its dependencies.",
+        ),
+        (Locale::En, "caps.install.confirm") => Some("Download and install"),
+        (Locale::En, "caps.install.cancel") => Some("Not now"),
+        (Locale::En, "caps.install.retry") => Some("Retry"),
+        (Locale::En, "caps.install.downloading") => Some("Downloading the official skill package…"),
+        (Locale::En, "caps.install.installing") => Some("Installing the skill…"),
+        (Locale::En, "caps.install.pip") => Some("Installing Python dependencies…"),
+        (Locale::En, "caps.install.failed") => Some("Install failed: {msg}"),
+        (Locale::En, "caps.install.progress") => Some("{received} / {total}"),
+        (Locale::En, "caps.install.pip_warning") => Some(
+            "The skill is installed, but Python dependencies may be incomplete: {msg}. You can still try it; install the skill's requirements.txt if scripts fail.",
+        ),
+        (Locale::En, "caps.skill.nature_statistics.title") => Some("Stats reporting audit"),
+        (Locale::En, "caps.skill.nature_statistics.blurb") => Some("Audit p-values, CIs, and statistical reporting for journals."),
+        (Locale::En, "caps.skill.nature_statistics.prompt") => Some(
+            "I want nature-statistics to audit or draft stats reporting. Ask for the methods/results text or analysis outputs and target journal. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+        ),
+        (Locale::En, "caps.skill.knowledge_graph.title") => Some("Text knowledge graph"),
+        (Locale::En, "caps.skill.knowledge_graph.blurb") => Some(
+            "Extract entity relations from a paper or notes; search, highlight neighbors, zoom, and drag nodes.",
+        ),
+        (Locale::En, "caps.skill.knowledge_graph.prompt") => Some(
+            "I want knowledge-graph. Ask for the source text or file to turn into a knowledge graph. At most five questions total; prefer asking for attachments/paths; then chunk, extract triples, and deliver the HTML graph—do not interview endlessly.",
+        ),
+        (Locale::En, "caps.skill.academic_search_pro.title") => Some("Cross-library lit search"),
+        (Locale::En, "caps.skill.academic_search_pro.blurb") => Some("7 free APIs + lawful web search → dedupe → literature matrix / BibTeX."),
+        (Locale::En, "caps.skill.academic_search_pro.prompt") => Some(
+            "I want academic-search-pro. Ask for my topic/keywords and any year or source constraints. At most five questions total; prefer asking for attachments/paths; then run cross-library search, dedupe, and deliver a literature matrix / BibTeX—do not interview endlessly.",
+        ),
+        (Locale::En, "caps.skill.nature_academic_search.title") => Some("Multi-source lit search"),
+        (Locale::En, "caps.skill.nature_academic_search.blurb") => Some("Search, citation audits, and influential-citer profiling."),
+        (Locale::En, "caps.skill.nature_academic_search.prompt") => Some(
+            "I want nature-academic-search. Clarify my topic/keywords, sources to prioritize, and whether I need citation audits or tables. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+        ),
+        (Locale::En, "caps.skill.nature_literature_pipeline.title") => Some("Literature pipeline"),
+        (Locale::En, "caps.skill.nature_literature_pipeline.blurb") => Some("Search → score → deep-read → deliver → archive."),
+        (Locale::En, "caps.skill.nature_literature_pipeline.prompt") => Some(
+            "I want nature-literature-pipeline. Ask for research field, inclusion criteria, and delivery format. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+        ),
+        (Locale::En, "caps.skill.nature_downloader.title") => Some("Lawful full-text fetch"),
+        (Locale::En, "caps.skill.nature_downloader.blurb") => Some("OA / institutional / publisher API full-text retrieval."),
+        (Locale::En, "caps.skill.nature_downloader.prompt") => Some(
+            "I want nature-downloader for full text. Ask for DOI/title list, access path (OA/CNKI/institutional), and where to save files. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+        ),
+        (Locale::En, "caps.skill.nature_paper_card.title") => Some("Deep-reading paper card"),
+        (Locale::En, "caps.skill.nature_paper_card.blurb") => Some("Source-grounded Paper Card for one paper/PDF/DOI."),
+        (Locale::En, "caps.skill.nature_paper_card.prompt") => Some(
+            "I want a nature-paper-card. Ask for the paper source and which sections (claims, methods, figures, limitations) to emphasize. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+        ),
+        (Locale::En, "caps.skill.nature_reader.title") => Some("Bilingual paper reader"),
+        (Locale::En, "caps.skill.nature_reader.blurb") => Some("Chinese–English side-by-side reader with figure awareness."),
+        (Locale::En, "caps.skill.nature_reader.prompt") => Some(
+            "I want nature-reader. Ask for the PDF/DOI and reading goals (full paper vs selected sections). At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+        ),
+        (Locale::En, "caps.skill.nature_experiment_log.title") => Some("Experiment log"),
+        (Locale::En, "caps.skill.nature_experiment_log.blurb") => Some("Turn photos/voice/notes into structured Markdown logs."),
+        (Locale::En, "caps.skill.nature_experiment_log.prompt") => Some(
+            "I want nature-experiment-log. Ask what materials I have (images/voice/text) and the lab/notebook conventions to follow. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+        ),
+        (Locale::En, "caps.tile.bio_db.title") => Some("Biology databases"),
+        (Locale::En, "caps.tile.bio_db.blurb") => Some(
+            "Tell me a gene, dataset, or paper—I'll search PubMed, GEO, UniProt, PDB, and other bio-tools.",
+        ),
+        (Locale::En, "caps.tile.python_r.title") => Some("Python / R analysis"),
+        (Locale::En, "caps.tile.python_r.blurb") => Some(
+            "Analyze tables in a persistent Python or R kernel and deliver editable SVG vector plots—load once, then wrangle, model, and iterate.",
+        ),
+        (Locale::En, "caps.tile.remote_compute.title") => Some("Remote compute & long runs"),
+        (Locale::En, "caps.tile.remote_compute.blurb") => Some("Register SSH/WSL contexts, launch Runs, and open terminals."),
+        (Locale::En, "caps.tile.structure.title") => Some("Structure & molecular design"),
+        (Locale::En, "caps.tile.structure.blurb") => Some("Fold, dock, and design sequences with AF, Boltz, DiffDock, MPNN, and more."),
+        (Locale::En, "caps.tile.single_cell.title") => Some("Single-cell & analysis workflows"),
+        (Locale::En, "caps.tile.single_cell.blurb") => Some("Run scvi/scGPT-style analysis and modular reproducible pipelines."),
+        (Locale::En, "caps.tile.research_graph.title") => Some("Research graph"),
+        (Locale::En, "caps.tile.research_graph.blurb") => Some(
+            "Turn data, papers, artifacts, and decisions into a relationship map you can revisit.",
+        ),
+        (Locale::En, "caps.tile.publication.title") => Some("Publication workspace"),
+        (Locale::En, "caps.tile.publication.blurb") => Some(
+            "Pick exact evidence for one manuscript revision, freeze it, and build an evidence capsule.",
+        ),
+        (Locale::En, "caps.tile.files_library.title") => Some("Files & library"),
+        (Locale::En, "caps.tile.files_library.blurb") => Some("Browse project files and reopen saved cells or figures from the library."),
+        (Locale::En, "caps.tile.channels.title") => Some("Feishu / WeChat access"),
+        (Locale::En, "caps.tile.channels.blurb") => Some("Drive the same desktop session from IM channels."),
+        (Locale::En, "caps.tile.browser.title") => Some("Real browser automation"),
+        (Locale::En, "caps.tile.browser.blurb") => Some("Control your local Chrome via the companion extension."),
+        (Locale::En, "caps.tile.playwright.title") => Some("Playwright headless browser"),
+        (Locale::En, "caps.tile.playwright.blurb") => Some("Script Chromium/Firefox/WebKit for e2e tests, screenshots, and scrapers."),
+        (Locale::En, "caps.tile.plugins.title") => Some("Plugins"),
+        (Locale::En, "caps.tile.plugins.blurb") => Some("Install packaged Skill + MCP extensions into the workbench."),
+        (Locale::En, "caps.help.aria") => Some("What this can do"),
+        (Locale::En, "caps.help.close") => Some("Got it"),
+        (Locale::En, "caps.coming_soon.body") => Some("Coming soon"),
+        (Locale::En, "caps.coming_soon.close") => Some("Got it"),
+        (Locale::En, "caps.prompt.literature") => Some(
+            "Help me with literature and evidence. Prefer loading literature-review or bear-* skills as needed. Ask what claim, paper, or idea I want to investigate, then search real sources and summarize with citations.",
+        ),
+        (Locale::En, "caps.prompt.pdf_ppt") => Some(
+            "I want to deeply read a PDF and/or build a journal-club style presentation. Guide me to attach the PDF, load pdf-explore or journal-club-ppt, and walk through the argument structure.",
+        ),
+        (Locale::En, "caps.prompt.academic_research") => Some(
+            "Help me run rigorous academic research. Load deep-research or academic-pipeline as needed, clarify my question and scope, then produce a cited synthesis (and note when a systematic review / meta-analysis mode fits).",
+        ),
+        (Locale::En, "caps.prompt.nature_skills") => Some(
+            "I want Nature-style manuscript help (polishing, drafting, reviewer simulation, statistics, or publication figures). Search and load the matching nature-* skill, then ask what section or figure I am working on.",
+        ),
+        (Locale::En, "caps.prompt.officecli") => Some(
+            "Help me create or edit Word/Excel/PowerPoint with OfficeCLI. First check whether `officecli` is installed; if missing, follow the officecli skill install steps. Then ask what document I need and which officecli-* skill fits.",
+        ),
+        (Locale::En, "caps.prompt.academic_paper") => Some(
+            "Help me write or revise an academic paper with the academic-paper skill. Ask for topic, paper type, target venue, and whether I want full/plan/outline/revision mode, then load academic-paper and start.",
+        ),
+        (Locale::En, "caps.prompt.ai_drawing") => Some(
+            "Help me create an AI research illustration or concept figure. Confirm the image-generation model is configured, ask what to draw (subject, style, labels, size), then generate and iterate from my feedback.",
+        ),
+        (Locale::En, "caps.prompt.r_bioinfo_figure") => Some(
+            "I need R bioinformatics figures (volcano, heatmap, PCA/UMAP, box/violin, survival, enrichment, etc.). Prefer the persistent `r` tool with ggplot2/Bioconductor. Within five questions, ask me to upload data or give a project path—do not fish for schema metadata you can read from the file. Then plot, QC with view_image, and deliver project-relative paths under figures/.",
+        ),
+        (Locale::En, "caps.prompt.scientific_figures") => Some(
+            "Help me build publication-ready scientific figures. Prefer figure-composer, nature-figure, or figure-style skills as needed. Ask for data/panels, target journal style, and output format, then start composing.",
+        ),
+        (Locale::En, "caps.prompt.data_cleaning") => Some(
+            "Follow the data-cleaning specialist: ask me for a data file or project path first, then inspect the table and deliver the first cleaned, analysis-ready dataset.",
+        ),
+        (Locale::En, "caps.prompt.stats_analysis") => Some(
+            "Help me run statistical analysis. Get my research question/hypothesis and ask me to attach the dataset or give a path—do not fish for schema metadata. Then run EDA/tests in Python/R and deliver concrete results (tables, plots, interpretation).",
+        ),
+        (Locale::En, "caps.prompt.python_r") => Some(
+            "I want the persistent `python` / `r` tools for data analysis (not a journal stats-reporting audit, and not a one-shot hypothesis test). Keep the same kernel: load, clean, summarize, model, and plot without restarting; leave data frames in session. Default Python: pandas / numpy / scipy / statsmodels / matplotlib / seaborn. Default R: tidyverse / data.table. Plots must be editable SVG: Python savefig(..., format=\"svg\") or a .svg path; R ggsave(..., device=\"svg\") or svg(). Put the main figure under figures/ as .svg—do not deliver only PNG/JPG. A PNG may be used only for view_image QC; the reply must include the project-relative SVG path. At most five questions: analysis goal and data file/path (prefer attachments), then once whether I prefer Python or R (or infer from the file/ecosystem). Do not fish for schema you can read from the file. Then code, run, interpret, and deliver a reproducible script, tables, SVG figures, and a short conclusion.",
+        ),
+        (Locale::En, "caps.prompt.bio_db") => Some(
+            "Help me query bundled biology-database MCP tools (PubMed, GEO, UniProt, PDB, and other domains under Settings → Connections → Featured — bundled bio-tools). First ask only what to look up (gene, protein, GSE/PMID/accession, or a research question). Do not ask language preference. Then discover tools with search_mcp_tools and call them via use_mcp_tool — never invent tool names. Settings row titles (there is no connection named bio-tools or academic-search): PubMed → search_articles / get_article_metadata; GEO (Omics Archives) → geo_search_series / geo_get_series; UniProt (Genes Ontologies) → get_uniprot_entries; PDB (Structures Interactions) → pdb_search_structures / pdb_get_structures. Do not tell me to enable bio-tools or academic-search. Do not call search_papers or pubmed_fetch_articles (those belong to the academic-search skill, not this capability). If a needed row is off, name that exact Settings title. If search_mcp_tools finds nothing, say so briefly and use NCBI E-utilities REST without claiming those two MCPs must be mounted. Deliver entries, accessions, abstracts, or download paths. At most five questions.",
+        ),
+        (Locale::En, "caps.prompt.structure") => Some(
+            "I need structure prediction or molecular design (folding, docking, or sequence design). Explain which bundled skills fit, what compute I need, and start by clarifying my target molecule.",
+        ),
+        (Locale::En, "caps.prompt.single_cell") => Some(
+            "Help me with single-cell or multi-step omics analysis. Prefer scvi-tools, scgpt, or analysis-workflow skills when relevant, and start by asking for my data layout and goal.",
+        ),
+        (Locale::En, "caps.prompt.browser") => Some(
+            "Help me automate my real Chrome browser with the browser-use skill. Confirm the extension is ready, then ask which site and task I want.",
+        ),
+        (Locale::En, "caps.prompt.playwright") => Some(
+            "Help me automate a headless browser with the playwright skill (not my logged-in Chrome). Confirm Node + Playwright are installed or install them, then ask what page/action I need (screenshot, scrape, e2e, PDF).",
+        ),
         (Locale::En, "caps.runtime") => Some("Runtime v{version}"),
         (Locale::En, "caps.workspace") => Some("Workspace: {path}"),
         (Locale::En, "caps.runtime_status") => Some("Python: {py} · uv: {uv} · Node: {node} · sci: {sci} · pixi: {pixi} · startup effective Skills: {skills} · bundled MCP packages: {mcp}"),
@@ -2157,7 +2624,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "caps.close") => Some("Close"),
         (Locale::En, "caps.setup_env") => Some("Set up environment"),
         (Locale::En, "caps.env_setup_prompt") => Some(
-            "Capabilities shows missing runtime tools. Call use_skill for local-env-setup first, then follow it for my OS: (1) uv + Python for wisp bootstrap, (2) Node >= 20 + `npm install -g scimaster-cli` + `sci init` for bear-* literature skills, (3) pixi for local bioinformatics multi-env analysis. Verify Capabilities and tell me when to restart 天成科研助手.",
+            "Capabilities shows missing runtime tools. Call use_skill for local-env-setup first, then follow it for my OS: (1) uv + Python for superscience bootstrap, (2) Node >= 20 + `npm install -g scimaster-cli` + `sci init` for bear-* literature skills, (3) pixi for local bioinformatics multi-env analysis. Verify Capabilities and tell me when to restart 天成科研助手.",
         ),
         (Locale::En, "caps.ready") => Some("ready"),
         (Locale::En, "caps.missing") => Some("missing"),
@@ -2397,7 +2864,7 @@ Do not leave generated files in the project root.",
         (Locale::En, "proj_settings.description_hint") => Some("Shown in the project switcher for your reference — not included in the agent's prompt."),
         (Locale::En, "proj_settings.agent_context") => Some("Agent Context"),
         (Locale::En, "proj_settings.agent_context_hint") => Some("Included in every agent's system prompt for this project. Use it for background, conventions, or instructions all agents should follow. Takes effect on the next new session."),
-        (Locale::En, "proj_settings.agent_context_confirm") => Some("Saving writes this project's Agent Context (.wisp/WISP.md). New conversations use it automatically. Existing conversations keep their current prompt until you right-click the session and reload project rules — that invalidates the model's prompt cache once for that session."),
+        (Locale::En, "proj_settings.agent_context_confirm") => Some("Saving writes this project's Agent Context (.superscience/SUPERSCIENCE.md). New conversations use it automatically. Existing conversations keep their current prompt until you right-click the session and reload project rules — that invalidates the model's prompt cache once for that session."),
         (Locale::En, "proj_settings.agent_context_confirm_action") => Some("Save agent context"),
 
         (Locale::En, "sess_status.running") => Some("Running"),
@@ -2412,6 +2879,7 @@ Do not leave generated files in the project root.",
 
         (Locale::Zh, "sidebar.new_session") => Some("新建会话"),
         (Locale::Zh, "sidebar.files") => Some("文件"),
+        (Locale::Zh, "sidebar.specialists") => Some("专家"),
         (Locale::Zh, "sidebar.graph") => Some("研究图谱"),
         (Locale::Zh, "sidebar.publication") => Some("论文证据"),
         (Locale::Zh, "sidebar.library") => Some("收藏库"),
@@ -2433,6 +2901,82 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "sidebar.group_date") => Some("日期"),
         (Locale::Zh, "sidebar.sort_newest") => Some("最新"),
         (Locale::Zh, "sidebar.sort_name") => Some("名称"),
+        (Locale::Zh, "user_center.title") => Some("我的中心"),
+        (Locale::Zh, "user_center.close") => Some("关闭"),
+        (Locale::Zh, "user_center.guest") => Some("未登录"),
+        (Locale::Zh, "user_center.login_hint") => Some("使用 TCTOKEN 分配的用户名与密码登录。"),
+        (Locale::Zh, "user_center.login_hint_before") => Some("使用 "),
+        (Locale::Zh, "user_center.login_hint_link") => Some("TCTOKEN"),
+        (Locale::Zh, "user_center.login_hint_after") => Some(" 分配的用户名与密码登录。"),
+        (Locale::Zh, "user_center.username") => Some("用户名"),
+        (Locale::Zh, "user_center.password") => Some("密码"),
+        (Locale::Zh, "user_center.remember_password") => Some("记住密码"),
+        (Locale::Zh, "user_center.show_password") => Some("显示密码"),
+        (Locale::Zh, "user_center.hide_password") => Some("隐藏密码"),
+        (Locale::Zh, "user_center.totp") => Some("两步验证码"),
+        (Locale::Zh, "user_center.login") => Some("登录"),
+        (Locale::Zh, "user_center.verify_2fa") => Some("验证并登录"),
+        (Locale::Zh, "user_center.need_2fa") => Some("请输入两步验证码。"),
+        (Locale::Zh, "user_center.login_ok") => Some("登录成功"),
+        (Locale::Zh, "user_center.logout") => Some("退出登录"),
+        (Locale::Zh, "user_center.logout_ok") => Some("已退出登录"),
+        (Locale::Zh, "user_center.session_expired") => Some("登录已过期，请重新登录。"),
+        (Locale::Zh, "user_center.tab.account") => Some("账户"),
+        (Locale::Zh, "user_center.tab.tasks") => Some("任务"),
+        (Locale::Zh, "user_center.tab.topup") => Some("充值记录"),
+        (Locale::Zh, "user_center.tab.keys") => Some("API密钥"),
+        (Locale::Zh, "user_center.current_user") => Some("当前用户"),
+        (Locale::Zh, "user_center.remaining") => Some("剩余额度"),
+        (Locale::Zh, "user_center.used") => Some("已用额度"),
+        (Locale::Zh, "user_center.refresh") => Some("刷新"),
+        (Locale::Zh, "user_center.online_topup") => Some("在线充值"),
+        (Locale::Zh, "user_center.topup_hint") => Some("选择金额与支付方式后前往收银台完成支付。"),
+        (Locale::Zh, "user_center.custom_amount") => Some("自定义金额"),
+        (Locale::Zh, "user_center.payment_method") => Some("支付方式"),
+        (Locale::Zh, "user_center.go_pay") => Some("去支付"),
+        (Locale::Zh, "user_center.pay_opened") => Some("已在浏览器打开收银台"),
+        (Locale::Zh, "user_center.invalid_amount") => Some("请输入有效金额"),
+        (Locale::Zh, "user_center.redeem") => Some("兑换码充值"),
+        (Locale::Zh, "user_center.redeem_ph") => Some("输入兑换码"),
+        (Locale::Zh, "user_center.redeem_btn") => Some("兑换"),
+        (Locale::Zh, "user_center.redeem_ok") => Some("兑换成功"),
+        (Locale::Zh, "user_center.request_meta") => Some("请求次数 {n} · 服务商 {url}"),
+        (Locale::Zh, "user_center.start_time") => Some("开始时间"),
+        (Locale::Zh, "user_center.end_time") => Some("结束时间"),
+        (Locale::Zh, "user_center.model_name") => Some("模型名称"),
+        (Locale::Zh, "user_center.group") => Some("分组"),
+        (Locale::Zh, "user_center.log_type") => Some("类型"),
+        (Locale::Zh, "user_center.type_all") => Some("所有类型"),
+        (Locale::Zh, "user_center.type_topup") => Some("充值"),
+        (Locale::Zh, "user_center.type_consume") => Some("消费"),
+        (Locale::Zh, "user_center.type_error") => Some("错误"),
+        (Locale::Zh, "user_center.reset") => Some("重置"),
+        (Locale::Zh, "user_center.search") => Some("搜索"),
+        (Locale::Zh, "user_center.usage") => Some("用量"),
+        (Locale::Zh, "user_center.total_n") => Some("总计 {n}"),
+        (Locale::Zh, "user_center.col.time") => Some("时间"),
+        (Locale::Zh, "user_center.col.channel") => Some("渠道"),
+        (Locale::Zh, "user_center.col.user") => Some("用户"),
+        (Locale::Zh, "user_center.col.token") => Some("令牌"),
+        (Locale::Zh, "user_center.col.model") => Some("模型"),
+        (Locale::Zh, "user_center.col.duration") => Some("耗时"),
+        (Locale::Zh, "user_center.col.tokens") => Some("Tokens"),
+        (Locale::Zh, "user_center.col.cost") => Some("费用"),
+        (Locale::Zh, "user_center.orders_hint") => Some("在线支付订单；兑换码删除请看「任务」里的充值类型"),
+        (Locale::Zh, "user_center.orders_empty") => Some("暂无充值订单"),
+        (Locale::Zh, "user_center.qty") => Some("数量"),
+        (Locale::Zh, "user_center.keys_hint") => Some("可复制密钥，或选择一个设为默认使用。默认使用列表中的第一个密钥。"),
+        (Locale::Zh, "user_center.key_active") => Some("可用"),
+        (Locale::Zh, "user_center.key_disabled") => Some("停用"),
+        (Locale::Zh, "user_center.never_expires") => Some("永不过期"),
+        (Locale::Zh, "user_center.key_meta") => Some("剩余额度 {quota}，{exp}"),
+        (Locale::Zh, "user_center.copy_key") => Some("复制密钥"),
+        (Locale::Zh, "user_center.key_copied") => Some("密钥已复制"),
+        (Locale::Zh, "user_center.set_drawing_key") => Some("设为默认"),
+        (Locale::Zh, "user_center.drawing_key_current") => Some("当前默认"),
+        (Locale::Zh, "user_center.drawing_key_set") => Some("已设为默认密钥"),
+        (Locale::Zh, "user_center.pay_no_url") => Some("已创建支付订单，但未返回收银台链接。"),
+        (Locale::Zh, "user_center.pay_unavailable") => Some("当前账号暂不可用在线支付，请稍后重试或联系管理员。"),
         (Locale::Zh, "sidebar.today") => Some("今天"),
         (Locale::Zh, "sidebar.earlier") => Some("更早"),
         (Locale::Zh, "sidebar.pinned") => Some("置顶"),
@@ -3616,7 +4160,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "browser.offline.body") => Some("浏览器扩展未连接。该回答仅基于模型已有知识，不是实时检索结果。"),
         (Locale::Zh, "browser.offline.retry") => Some("连接后重试"),
         (Locale::Zh, "browser.offline.dismiss") => Some("关闭"),
-        (Locale::Zh, "settings.nav.connections") => Some("连接"),
+        (Locale::Zh, "settings.nav.connections") => Some("MCP链接"),
         (Locale::Zh, "settings.nav.channels") => Some("远程接入"),
         (Locale::Zh, "channels.desc") => Some("将飞书、微信或 StickS3 设备接入 Wisp Science。每种远程接入都默认关闭，并具有独立的安全边界。"),
         (Locale::Zh, "channels.routing.desc") => Some("对于 IM 机器人，首条消息会在桌面端当前项目创建会话。之后该 IM 对话会固定连接到同一个项目和会话，直到使用 slash command 主动切换。"),
@@ -3803,6 +4347,17 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "specialists.skills.remove") => Some("移除 {skill}"),
         (Locale::Zh, "specialists.inherit") => Some("继承项目设置"),
         (Locale::Zh, "specialists.remove") => Some("删除"),
+        (Locale::Zh, "specialists.chat_with") => Some("与此专家对话"),
+        (Locale::Zh, "specialists.status.ready") => Some("在线"),
+        (Locale::Zh, "specialists.role.builtin") => Some("内置专家"),
+        (Locale::Zh, "specialists.role.custom") => Some("自定义专家"),
+        (Locale::Zh, "specialists.handle.builtin") => Some("@system"),
+        (Locale::Zh, "specialists.handle.custom") => Some("@custom"),
+        (Locale::Zh, "specialists.metric.materials") => Some("资料"),
+        (Locale::Zh, "specialists.metric.skills") => Some("技能"),
+        (Locale::Zh, "specialists.metric.sop") => Some("SOP"),
+        (Locale::Zh, "specialists.metric.inherit") => Some("—"),
+        (Locale::Zh, "specialists.edit_hint") => Some("点击卡片编辑"),
         (Locale::Zh, "specialists.builtin_locked") => Some("内置指令不可编辑。"),
         (Locale::Zh, "cred.desc") => Some("技能与工具所用外部服务的 API 密钥（包括自定义凭据）均保存在系统钥匙串中。"),
         (Locale::Zh, "cred.help.aria") => Some("了解该凭据"),
@@ -3892,6 +4447,20 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "skills.remove") => Some("删除技能"),
         (Locale::Zh, "skills.remove_confirm") => Some("确定删除“{skill}”吗？已安装文件将被移除，且无法撤销。"),
         (Locale::Zh, "skills.removed") => Some("技能已删除。"),
+        (Locale::Zh, "skills.auto_update") => Some("技能自动更新"),
+        (Locale::Zh, "skills.auto_update_hint") => Some("启动时检查可溯源的预装技能，并安装到用户目录。"),
+        (Locale::Zh, "skills.auto_update_never") => Some("尚未检查。"),
+        (Locale::Zh, "skills.auto_update_last") => Some("上次检查：{when}"),
+        (Locale::Zh, "skills.auto_update_checking") => Some("正在检查技能更新…"),
+        (Locale::Zh, "skills.auto_update_updated") => Some("已更新：{packs}"),
+        (Locale::Zh, "skills.auto_update_ok") => Some("预装技能已是最新。"),
+        (Locale::Zh, "skills.auto_update_failed") => Some("技能更新检查失败：{error}"),
+        (Locale::Zh, "skills.check_now") => Some("立即检查并更新"),
+        (Locale::Zh, "skills.more") => Some("更多"),
+        (Locale::Zh, "skills.filter_bundled") => Some("预装"),
+        (Locale::Zh, "skills.filter_added") => Some("我添加的"),
+        (Locale::Zh, "skills.enabled_frac") => Some("{enabled}/{total}"),
+        (Locale::Zh, "err.client_updates_config_not_found") => Some("该平台还没有发布安装包。"),
         (Locale::Zh, "memory.off_banner") => Some("记忆已关闭。Agent 不会保存或检索新笔记，但下方已有笔记仍会保留且可编辑。开启记忆以恢复。"),
         (Locale::Zh, "memory.scope_hint") => Some("项目记忆"),
         (Locale::Zh, "memory.enabled_label") => Some("启用记忆"),
@@ -4011,23 +4580,23 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "settings.notifications") => Some("桌面通知"),
         (Locale::Zh, "settings.notifications_hint") => Some("窗口不在前台时，任务完成、失败或等待确认会发送系统通知；对应会话只会在启动任务的窗口打开。"),
         (Locale::Zh, "settings.update_check") => Some("检查更新"),
-        (Locale::Zh, "settings.update_check_hint") => Some("启动时检查 GitHub Releases，有新版本时在侧边栏显示提示。"),
+        (Locale::Zh, "settings.update_check_hint") => Some("启动时从天成 TCTOKEN 检查更新，有新版本时在侧边栏显示提示。"),
         (Locale::Zh, "issue_report.sidebar") => Some("反馈"),
         (Locale::Zh, "issue_report.context") => Some("系统信息"),
         (Locale::Zh, "issue_report.context_attached") => Some("已自动附加"),
         (Locale::Zh, "issue_report.chat_prompt") => Some(
             "请帮我向 {repo} 提交一个 GitHub issue。\n\n\
              【已自动采集，请勿向我索要 API key、transcript、项目文件、环境变量、用户名或绝对路径】\n\
-             - Wisp 版本：{version}\n\
+             - SuperScience 版本：{version}\n\
              - OS / 架构：{os} / {arch}\n\
              - 模型配置：{model}\n\
              - 启动耗时：{startup}\n\n\
              请用中文逐条引导我说明：发生了什么、复现步骤、预期与实际行为，以及我知道的 Run ID 或错误信息。\n\
              若启动很慢或长时间白屏，提醒我在 Windows 正式版可把日志发给维护者：\
-             %APPDATA%\\science.superscience\\wisp-science\\logs\\wisp.log（上次启动：wisp.previous.log）。\n\
+             %APPDATA%\\science.superscience\\superscience\\logs\\superscience.log（上次启动：superscience.previous.log）。\n\
              信息足够后，给出简短 issue 标题和 Markdown 正文（含问题描述、复现步骤、预期、实际、环境等小节），\
              并提供预填链接：{issue_base}?title=...&body=...\n\
-             提醒截图需在 GitHub 页面手动附加，Wisp 不会上传截图。",
+             提醒截图需在 GitHub 页面手动附加，SuperScience 不会上传截图。",
         ),
         (Locale::Zh, "notify.done") => Some("任务已完成"),
         (Locale::Zh, "notify.error") => Some("任务失败"),
@@ -4102,7 +4671,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "conn.url") => Some("URL"),
         (Locale::Zh, "conn.headers") => Some("请求头（每行一个）"),
         (Locale::Zh, "conn.test") => Some("测试"),
-        (Locale::Zh, "conn.featured") => Some("精选 —— 内置 bio-tools"),
+        (Locale::Zh, "conn.featured") => Some("精选 —— 内置 bio-tools（PubMed / GEO / UniProt / PDB…）"),
         (Locale::Zh, "conn.custom") => Some("自定义连接"),
         (Locale::Zh, "conn.tools_count") => Some("{n} 个工具"),
         (Locale::Zh, "conn.tools") => Some("工具"),
@@ -4130,7 +4699,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "link.confirm_open") => Some("打开链接"),
         (Locale::Zh, "update_modal.available_title") => Some("有可用更新"),
         (Locale::Zh, "update_modal.checking_title") => Some("正在检查更新"),
-        (Locale::Zh, "update_modal.checking_body") => Some("正在连接 GitHub Releases…"),
+        (Locale::Zh, "update_modal.checking_body") => Some("正在连接天成 TCTOKEN 更新服务…"),
         (Locale::Zh, "update_modal.available_body") => Some("Wisp {version} 已可用。"),
         (Locale::Zh, "update_modal.download") => Some("下载更新"),
         (Locale::Zh, "update_modal.downloading_title") => Some("正在下载 Wisp {version}"),
@@ -4143,10 +4712,10 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "update_modal.up_to_date_title") => Some("已是最新版本"),
         (Locale::Zh, "update_modal.up_to_date_body") => Some("Wisp {version} 已经是最新版本。"),
         (Locale::Zh, "update_modal.failed_title") => Some("无法更新 Wisp"),
-        (Locale::Zh, "update_modal.open_releases") => Some("打开 Releases"),
         (Locale::Zh, "update_modal.later") => Some("稍后"),
         (Locale::Zh, "update_modal.never") => Some("不再提醒"),
         (Locale::Zh, "update_modal.ok") => Some("知道了"),
+        (Locale::Zh, "update_modal.close") => Some("关闭"),
         (Locale::Zh, "update_card.title") => Some("发现新版本"),
         (Locale::Zh, "status.failed_load_settings") => Some("加载设置失败"),
         (Locale::Zh, "status.saving_settings") => Some("正在保存设置…"),
@@ -4196,6 +4765,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "err.skill_no_description") => Some("SKILL.md 缺少 description。"),
         (Locale::Zh, "err.skill_exists") => Some("已存在名为 '{name}' 的技能。"),
         (Locale::Zh, "err.model_required") => Some("模型不能为空。"),
+        (Locale::Zh, "err.tctoken_locked") => Some("Tctoken 模型不可删除。"),
         (Locale::Zh, "err.api_key_required") => Some("API 密钥不能为空。"),
         (Locale::Zh, "err.max_tokens_ceiling") => Some("{model} 的最大输出 tokens 上限为 {max}，请调低「最大输出 tokens」。"),
         (Locale::Zh, "err.unknown") => Some("未知错误"),
@@ -4384,7 +4954,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "folder.actions") => Some("分组操作"),
         (Locale::Zh, "session.delete_confirm") => Some("删除此会话？此操作无法撤销。"),
         (Locale::Zh, "ctx.reload_rules") => Some("重载项目规则…"),
-        (Locale::Zh, "session.reload_rules_hint") => Some("将用当前的 AGENTS.md / WISP.md 重建本会话的系统提示词，下一轮起生效。由于提示词前缀变化，该会话的模型提示词缓存将失效一次（下一轮成本略增）。聊天历史不受影响。"),
+        (Locale::Zh, "session.reload_rules_hint") => Some("将用当前的 AGENTS.md / SUPERSCIENCE.md 重建本会话的系统提示词，下一轮起生效。由于提示词前缀变化，该会话的模型提示词缓存将失效一次（下一轮成本略增）。聊天历史不受影响。"),
         (Locale::Zh, "session.reload_rules_action") => Some("重载规则"),
         (Locale::Zh, "session.delete_many_confirm") => Some("删除这 {n} 个会话？此操作无法撤销。"),
         (Locale::Zh, "session.rename_title") => Some("重命名会话"),
@@ -4486,7 +5056,354 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "files.working") => Some("处理中…"),
         (Locale::Zh, "files.delete_file_confirm") => Some("删除“{path}”？此操作无法撤销。"),
         (Locale::Zh, "files.delete_directory_confirm") => Some("删除“{path}”及其中的全部内容？此操作无法撤销。"),
+        (Locale::Zh, "ctx.save_as_demo") => Some("保存为示例"),
+        (Locale::Zh, "ctx.delete_user_demo") => Some("从示例项目移除"),
+        (Locale::Zh, "demo.save_title") => Some("保存为示例"),
+        (Locale::Zh, "demo.save_hint") => Some("这段对话会出现在示例项目顶部，只读可回看。本机路径和邮箱会被去掉。"),
+        (Locale::Zh, "demo.save_action") => Some("保存"),
+        (Locale::Zh, "demo.save_success") => Some("已将“{title}”保存到示例项目。"),
+        (Locale::Zh, "demo.delete_confirm") => Some("从示例项目移除这条示例？"),
         (Locale::Zh, "caps.title") => Some("能力"),
+        (Locale::Zh, "caps.tab.overview") => Some("运行环境"),
+        (Locale::Zh, "caps.home.title") => Some("我能做什么"),
+        (Locale::Zh, "caps.home.subtitle") => Some("点选能力即可打开对应面板，或开始一段引导对话。"),
+        (Locale::Zh, "caps.need_project") => Some("请先创建或打开一个项目，再使用该能力。"),
+        (Locale::Zh, "caps.group.topic") => Some("选题与立项"),
+        (Locale::Zh, "caps.group.design") => Some("研究设计与规划"),
+        (Locale::Zh, "caps.group.implement") => Some("研究实施与数据分析"),
+        (Locale::Zh, "caps.group.writing") => Some("论文写作与发表"),
+        (Locale::Zh, "caps.group.paper_writing") => Some("论文写作与发表"),
+        (Locale::Zh, "caps.group.ai_drawing") => Some("AI画图"),
+        (Locale::Zh, "caps.group.data_cleaning") => Some("数据清洗"),
+        (Locale::Zh, "caps.group.stats") => Some("研究实施与数据分析"),
+        (Locale::Zh, "caps.group.structure") => Some("研究实施与数据分析"),
+        (Locale::Zh, "caps.group.assets") => Some("选题与立项"),
+        (Locale::Zh, "caps.group.collab") => Some("协作扩展"),
+        (Locale::Zh, "caps.group.efficiency") => Some("效率工具"),
+        (Locale::Zh, "caps.tile.ai_agent.title") => Some("AI 科研助手"),
+        (Locale::Zh, "caps.tile.env_setup.title") => Some("配置本机环境"),
+        (Locale::Zh, "caps.tile.env_setup.blurb") => Some("检查并引导安装 Python、uv、Node、sci。"),
+        (Locale::Zh, "caps.tile.demo.title") => Some("打开演示"),
+        (Locale::Zh, "caps.tile.demo.blurb") => Some("浏览只读示例研究轨迹，无需 API Key。"),
+        (Locale::Zh, "caps.tile.literature.title") => Some("文献综述与证据"),
+        (Locale::Zh, "caps.tile.literature.blurb") => Some("检索真实文献，支持/反对观点，并做选题撞车评估。"),
+        (Locale::Zh, "caps.tile.pdf_ppt.title") => Some("读 PDF / 组会 PPT"),
+        (Locale::Zh, "caps.tile.pdf_ppt.blurb") => Some("按页深读 PDF，并生成论证驱动的组会幻灯片。"),
+        (Locale::Zh, "caps.tile.academic_research.title") => Some("深度学术调研"),
+        (Locale::Zh, "caps.tile.academic_research.blurb") => Some("使用预装的 deep-research / academic-pipeline 做严谨文献研究。"),
+        (Locale::Zh, "caps.tile.nature_skills.title") => Some("Nature 风格写作与作图"),
+        (Locale::Zh, "caps.tile.nature_skills.blurb") => Some("润色、起草、模拟审稿与投稿级科研图（nature-* 技能）。"),
+        (Locale::Zh, "caps.tile.officecli.title") => Some("Word / Excel / PPT"),
+        (Locale::Zh, "caps.tile.officecli.blurb") => Some("用预装 OfficeCLI 技能创建与编辑 Office 文档。"),
+        (Locale::Zh, "caps.tile.academic_paper.title") => Some("学术论文写作流水线"),
+        (Locale::Zh, "caps.tile.academic_paper.blurb") => Some("用 academic-paper 技能规划、起草、修订与排版论文。"),
+        (Locale::Zh, "caps.tile.ai_drawing.title") => Some("AI 插图生成"),
+        (Locale::Zh, "caps.tile.ai_drawing.blurb") => Some("用已配置的生图模型生成科研示意与概念图。"),
+        (Locale::Zh, "caps.tile.ai_mechanism_figure.title") => Some("AI机制图"),
+        (Locale::Zh, "caps.tile.editable_figure.title") => Some("图片可编辑"),
+        (Locale::Zh, "caps.tile.editable_figure.blurb") => Some("把机制图转换成可编辑的格式"),
+        (Locale::Zh, "caps.tile.bioinfo_figure_layout.title") => Some("生信图布局"),
+        (Locale::Zh, "caps.tile.r_bioinfo_figure.title") => Some("R语言生信图"),
+        (Locale::Zh, "caps.tile.r_bioinfo_figure.blurb") => Some(
+            "火山图、热图、PCA/UMAP、箱线/小提琴、生存曲线、富集图等——由生信图专家用 R 在 5 问内取数出图。",
+        ),
+        (Locale::Zh, "caps.tile.data_cleaning.title") => Some("数据清洗与整形"),
+        (Locale::Zh, "caps.tile.data_cleaning.blurb") => Some("把表格或文件路径发给我，我来读表、清洗并产出可分析数据。"),
+        (Locale::Zh, "caps.tile.pii_firewall.title") => Some("出站隐私脱敏"),
+        (Locale::Zh, "caps.tile.pii_firewall.blurb") => Some("在发往云端模型前藏起邮箱、手机号、身份证和自定义关键词；回复时再还原，不打断上下文。"),
+        (Locale::Zh, "caps.tile.pii_firewall.toggle") => Some("启用出站隐私脱敏"),
+        (Locale::Zh, "caps.tile.pii_firewall.modal_title") => Some("出站隐私脱敏是做什么的？"),
+        (Locale::Zh, "caps.tile.pii_firewall.modal_lead") => Some("这是一层「发给云端 AI 之前」的隐私护栏。聊天内容离开本机前，会先藏起个人信息；模型回复回来后，再在你这台电脑上还原成原文，所以你看到的对话仍然正常可读。"),
+        (Locale::Zh, "caps.tile.pii_firewall.modal_what_title") => Some("它能帮你什么"),
+        (Locale::Zh, "caps.tile.pii_firewall.modal_what_1") => Some("避免邮箱、手机号、身份证号以及你添加的关键词以明文形式发给云端模型。"),
+        (Locale::Zh, "caps.tile.pii_firewall.modal_what_2") => Some("不是简单删掉，而是换成稳定代号（如 EMAIL_1），模型仍能跟着上下文继续聊。"),
+        (Locale::Zh, "caps.tile.pii_firewall.modal_what_3") => Some("你看到的回复会自动还原成真实信息，使用体验不受影响。"),
+        (Locale::Zh, "caps.tile.pii_firewall.modal_how_title") => Some("怎么工作"),
+        (Locale::Zh, "caps.tile.pii_firewall.modal_how_1") => Some("你输入或粘贴可能含个人信息的内容。"),
+        (Locale::Zh, "caps.tile.pii_firewall.modal_how_2") => Some("发出请求前，本机先把这些信息替换成代号。"),
+        (Locale::Zh, "caps.tile.pii_firewall.modal_how_3") => Some("模型回复后，再在本机把代号换回原文给你看。"),
+        (Locale::Zh, "caps.tile.pii_firewall.modal_example_title") => Some("一看就懂的例子"),
+        (Locale::Zh, "caps.tile.pii_firewall.modal_example_you") => Some("你发送"),
+        (Locale::Zh, "caps.tile.pii_firewall.modal_example_model") => Some("模型实际看到"),
+        (Locale::Zh, "caps.tile.pii_firewall.modal_example_before") => Some("联系 jane@lab.org 或 13812345678"),
+        (Locale::Zh, "caps.tile.pii_firewall.modal_example_after") => Some("联系 EMAIL_1 或 PHONE_1"),
+        (Locale::Zh, "caps.tile.pii_firewall.modal_note") => Some("默认开启。只有当你确实需要模型看到原始个人信息时，才建议关闭。科研编号（如 GSE 数据集号）不会被误伤。"),
+        (Locale::Zh, "caps.tile.pii_firewall.terms_title") => Some("敏感关键词"),
+        (Locale::Zh, "caps.tile.pii_firewall.terms_help") => Some("一行一个词，只需粘贴原文。系统生成〔词1〕这种带起止标记的占位，避免和正文里的「词1」撞车。"),
+        (Locale::Zh, "caps.tile.pii_firewall.terms_placeholder") => Some("张三\n北京协和医院"),
+        (Locale::Zh, "caps.tile.pii_firewall.terms_preview_title") => Some("系统占位词"),
+        (Locale::Zh, "caps.tile.pii_firewall.terms_preview_help") => Some("实时对照，形如〔词1〕。同一原文全程同一占位；回复在本机还原。"),
+        (Locale::Zh, "caps.tile.pii_firewall.terms_preview_empty") => Some("输入关键词后，这里会显示对应占位"),
+        (Locale::Zh, "caps.tile.pii_firewall.terms_save") => Some("保存词表"),
+        (Locale::Zh, "caps.tile.pii_firewall.terms_saved") => Some("词表已保存，之后的新对话会使用。"),
+        (Locale::Zh, "caps.tile.pii_firewall.close") => Some("知道了"),
+        (Locale::Zh, "caps.skill.journal_prescreen.title") => Some("论文预审"),
+        (Locale::Zh, "caps.skill.journal_prescreen.blurb") => Some("对照目标杂志投稿须知检查稿件，标出问题并给出改法。"),
+        (Locale::Zh, "caps.skill.journal_prescreen.prompt") => Some(
+            "我要用 journal-prescreen 做投稿须知预审。请先要稿件（附件/路径）和目标杂志或粘贴的投稿须知。总共最多五个问题；然后对照须知标出位置、严重度和改法，禁止编造期刊规则。这不是 academic-paper-reviewer，也不是 nature-reviewer。",
+        ),
+        (Locale::Zh, "caps.skill.handwriting_extract.title") => Some("手写数据提取"),
+        (Locale::Zh, "caps.skill.handwriting_extract.blurb") => Some("识别手写实验本或 CRF 照片，汇总成 CSV 并标出存疑格子。"),
+        (Locale::Zh, "caps.skill.handwriting_extract.prompt") => Some(
+            "我要用 handwriting-extract。请我上传手写表照片或给出图片目录。总共最多五个问题；不要追问你能从图片读出的表头。识别成结构化行，写出 CSV，做校准，并标记存疑格子。提醒我：图片像素不会走出站文本防火墙。",
+        ),
+        (Locale::Zh, "caps.skill.topic_coach.title") => Some("选题引导"),
+        (Locale::Zh, "caps.skill.topic_coach.blurb") => Some("盘点已有数据和资料，对准目标期刊给出选题候选并评分。"),
+        (Locale::Zh, "caps.skill.topic_coach.prompt") => Some(
+            "我要用 topic-coach。请帮我盘点数据和资料、收束一个科学问题、针对目标期刊给出 3–5 个选题候选，并从相关性、数据、资料、通过率打分。通过率只用「推荐 / 可做但费力 / 不建议」，不要编造录用百分比。总共最多五个问题；优先要附件/路径；然后写出 topic/inventory.md、question.md、candidates.md。",
+        ),
+        (Locale::Zh, "caps.tile.stats_analysis.title") => Some("统计建模与检验"),
+        (Locale::Zh, "caps.tile.stats_analysis.blurb") => Some("假设检验、回归、功效与 EDA（Python/R 与统计技能）。"),
+        (Locale::Zh, "caps.tile.director.title") => Some("科研主任"),
+        (Locale::Zh, "home.director_cta") => Some("主任，开始吧"),
+        (Locale::Zh, "home.director_cta_hint") => Some(
+            "简短引导：最多五个问题，然后匹配能力并开始给出结果。",
+        ),
+        (Locale::Zh, "caps.prompt.director_kickoff") => Some(
+            "你是天成科研助手里的「主任」教练。请帮我把模糊意图收敛成这个 Agent 可以执行的一个具体目标，并尽快交付该能力的第一份有用结果。\n\n硬性规则：\n1. 开场 intake 总共最多五个问题；每次优先只问一个短问题；禁止长问卷。\n2. 只问仍缺失的阻塞项：（a）具体交付物/怎样算完成，（b）请我上传附件或给出项目内路径，（c）硬约束（截止时间、算力、隐私、期刊、语言）。\n3. 禁止追问可从文件直接读出的元数据（行列数、字段、体积、列名等）。应要求上传/附路径，然后你自己检查。\n4. 答完或五个问题用尽后，立刻映射技能、search_skills / use_skill，并开始核心工作。不要再等一轮「请确认长计划」；一句「接下来我做 X」即可。\n5. 成功标准是给出该能力的具体产物/进展（清洗表、草稿、检索结果、图等），而不是无休止访谈。\n6. 用我的语言；问题要短。\n\n现在只问第 1 个问题。",
+        ),
+        (Locale::Zh, "caps.prompt.socratic_frame") => Some(
+            "能力引导规则（本对话全程有效）。\n本轮已附加技能 `{skill}`——请先 use_skill 加载 `{skill}` 并遵循其指引，但以下规则优先于任何「一直问下去」的习惯：\n1. 整段 intake 最多五个澄清问题；每次优先只问一个短问题。\n2. 只问阻塞项：目标/完成标准、请上传附件或给出路径、硬约束。优先「请上传/附路径」，不要问行列数、schema、体积等你自己能读出的信息。\n3. 一旦能开始该技能的核心工作，或五个问题已用尽：停止访谈，立即交付——调用工具，产出第一份具体结果/草稿，再根据我的反馈迭代。\n4. 不要用「请先确认多步计划」拖延。一句意图说明即可动手。\n5. 回复简洁；跟随我的语言。",
+        ),
+        (Locale::Zh, "caps.prompt.guided_frame") => Some(
+            "能力引导规则（本对话全程有效）：\n1. 整段 intake 最多五个澄清问题；每次优先只问一个短问题；禁止长问卷。\n2. 只问阻塞项：目标/完成标准、请上传附件或给出路径、硬约束。优先上传/路径，不要追问你能从文件读出的元数据（行列、体积、schema）。\n3. 一旦能开始该能力的核心工作，或五个问题已用尽：停止访谈，立即用工具交付第一份具体结果，再根据反馈迭代。\n4. 不要用计划确认仪式拖延；一句意图说明即可动手。\n5. 回复简洁；跟随我的语言。",
+        ),
+        (Locale::Zh, "caps.skill.academic_paper.title") => Some("学术论文写作"),
+        (Locale::Zh, "caps.skill.academic_paper.blurb") => Some("规划、起草、修订与排版（full/plan/outline/revision 等模式）。"),
+        (Locale::Zh, "caps.skill.academic_paper.prompt") => Some(
+            "我想用 academic-paper 写或改论文。请通过提问帮我选定模式、题目、论文类型与目标期刊。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+        ),
+        (Locale::Zh, "caps.skill.academic_pipeline.title") => Some("研究到成稿流水线"),
+        (Locale::Zh, "caps.skill.academic_pipeline.blurb") => Some("编排调研→写作→审阅→修改的端到端流程。"),
+        (Locale::Zh, "caps.skill.academic_pipeline.prompt") => Some(
+            "我想跑完整 academic-pipeline。请先问清起点材料、交付物，以及需要几轮审阅/修订。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+        ),
+        (Locale::Zh, "caps.skill.academic_paper_reviewer.title") => Some("国际期刊审稿"),
+        (Locale::Zh, "caps.skill.academic_paper_reviewer.blurb") => Some("模拟期刊适配 + 同行 + 魔鬼代言人审稿。"),
+        (Locale::Zh, "caps.skill.academic_paper_reviewer.prompt") => Some(
+            "我想用 academic-paper-reviewer 做结构化多视角审稿。请问清手稿、目标期刊与审稿深度。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+        ),
+        (Locale::Zh, "caps.skill.deep_research.title") => Some("深度学术调研"),
+        (Locale::Zh, "caps.skill.deep_research.blurb") => Some("多 Agent 严谨文献调研、简报与事实核查。"),
+        (Locale::Zh, "caps.skill.deep_research.prompt") => Some(
+            "我想用 deep-research。请问清研究问题、范围、模式（full/quick/lit-review/fact-check…）与引用要求。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+        ),
+        (Locale::Zh, "caps.skill.nature_writing.title") => Some("Nature 风格起草"),
+        (Locale::Zh, "caps.skill.nature_writing.blurb") => Some("按 Nature 风格起草或重组手稿章节。"),
+        (Locale::Zh, "caps.skill.nature_writing.prompt") => Some(
+            "我想用 nature-writing。请问清要写哪一节、已有主张/结果，以及中英偏好。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+        ),
+        (Locale::Zh, "caps.skill.nature_polishing.title") => Some("Nature 风格润色"),
+        (Locale::Zh, "caps.skill.nature_polishing.blurb") => Some("润色或翻译，贴近 Nature/CNS 文风。"),
+        (Locale::Zh, "caps.skill.nature_polishing.prompt") => Some(
+            "我想用 nature-polishing。请问清待润色文本、目标期刊语气，以及要重组结构还是只改措辞。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+        ),
+        (Locale::Zh, "caps.skill.humanizer_zh.title") => Some("去除AI痕迹"),
+        (Locale::Zh, "caps.skill.humanizer_zh.blurb") => Some("按 24 类 AI 写作模式改写，让论文段落更像人写的。"),
+        (Locale::Zh, "caps.skill.humanizer_zh.prompt") => Some(
+            "我想用 humanizer-zh 去除 AI 痕迹。请问清待改写文本或文件路径。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+        ),
+        (Locale::Zh, "caps.skill.nature_proposal_writer.title") => Some("基金/开题写作"),
+        (Locale::Zh, "caps.skill.nature_proposal_writer.blurb") => Some("撰写或审核研究计划与开题报告。"),
+        (Locale::Zh, "caps.skill.nature_proposal_writer.prompt") => Some(
+            "我想用 nature-proposal-writer。请问清文稿类型、资助方/场合，以及已有证据材料。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+        ),
+        (Locale::Zh, "caps.skill.nature_citation.title") => Some("Nature 引用补全"),
+        (Locale::Zh, "caps.skill.nature_citation.blurb") => Some("为段落补充严格的 Nature/CNS 引用。"),
+        (Locale::Zh, "caps.skill.nature_citation.prompt") => Some(
+            "我想用 nature-citation 补引用。请问清手稿文本、学科领域与引用约束。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+        ),
+        (Locale::Zh, "caps.skill.nature_response.title") => Some("修回信/答复信"),
+        (Locale::Zh, "caps.skill.nature_response.blurb") => Some("逐条审稿意见答复与 rebuttal 材料包。"),
+        (Locale::Zh, "caps.skill.nature_response.prompt") => Some(
+            "我想用 nature-response 写修回材料。请问清审稿意见、手稿版本与信件风格。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+        ),
+        (Locale::Zh, "caps.skill.nature_reviewer.title") => Some("Nature审稿"),
+        (Locale::Zh, "caps.skill.nature_reviewer.blurb") => Some("以审稿人视角生成 Nature 风格评议。"),
+        (Locale::Zh, "caps.skill.nature_reviewer.prompt") => Some(
+            "我想用 nature-reviewer 做投稿前审稿。请问清手稿、目标期刊与关注重点。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+        ),
+        (Locale::Zh, "caps.skill.nature_data.title") => Some("数据可用性 / FAIR"),
+        (Locale::Zh, "caps.skill.nature_data.blurb") => Some("起草或审核 Data Availability 与仓储方案。"),
+        (Locale::Zh, "caps.skill.nature_data.prompt") => Some(
+            "我想用 nature-data。请问清有哪些数据集，以及目标期刊的数据政策。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+        ),
+        (Locale::Zh, "caps.skill.nature_ref_verifier.title") => Some("参考文献核验"),
+        (Locale::Zh, "caps.skill.nature_ref_verifier.blurb") => Some("交叉核验文献字段并标记冲突。"),
+        (Locale::Zh, "caps.skill.nature_ref_verifier.prompt") => Some(
+            "我想用 nature-ref-verifier。请问清是整份文献列表还是单条，以及期望的报告格式。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+        ),
+        (Locale::Zh, "caps.skill.nature_paper_to_patent.title") => Some("论文转专利初稿"),
+        (Locale::Zh, "caps.skill.nature_paper_to_patent.blurb") => Some("把论文/笔记转为中国发明专利草案。"),
+        (Locale::Zh, "caps.skill.nature_paper_to_patent.prompt") => Some(
+            "我想用 nature-paper-to-patent。请问清源材料、发明点，以及需要哪些代理就绪交付物。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+        ),
+        (Locale::Zh, "caps.skill.nature_figure.title") => Some("投稿级科研作图"),
+        (Locale::Zh, "caps.skill.nature_figure.blurb") => Some("用 Python/R 创建或审核高影响因子图。"),
+        (Locale::Zh, "caps.skill.nature_figure.prompt") => Some(
+            "我想用 nature-figure 做投稿图。请问清数据/图板、期刊风格、Python 还是 R，以及导出要求。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+        ),
+        (Locale::Zh, "caps.skill.nature_paper2ppt.title") => Some("论文转组会 PPT"),
+        (Locale::Zh, "caps.skill.nature_paper2ppt.blurb") => Some("从论文生成 Nature 风格中文 PPTX。"),
+        (Locale::Zh, "caps.skill.nature_paper2ppt.prompt") => Some(
+            "我想用 nature-paper2ppt。请问清论文来源、受众（组会/journal club）、页数与语言需求。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+        ),
+        (Locale::Zh, "caps.skill.ppt_master.title") => Some("PPT Master"),
+        (Locale::Zh, "caps.skill.ppt_master.blurb") => Some(
+            "把选题或文档做成可编辑的原生 .pptx（形状、母版、图表、动画）。",
+        ),
+        (Locale::Zh, "caps.skill.ppt_master.prompt") => Some(
+            "我想用 ppt-master 做一份可编辑的原生 PowerPoint。请问清主题或材料路径、页数、模板/风格，以及是否需要图表或动画。 总共最多五个问题；优先要附件/路径；然后交付 .pptx——禁止无休止追问。",
+        ),
+        (Locale::Zh, "caps.install.ppt_master.title") => Some("安装 PPT Master？"),
+        (Locale::Zh, "caps.install.ppt_master.body") => Some(
+            "PPT Master 能把选题或文档做成可编辑的原生 PowerPoint：形状、母版、图表、动画，而不是压扁成图片的幻灯片。它和「论文转组会 PPT」不同，后者是把论文做成 Nature 风格组会稿。\n\n该技能体积较大，没有预装。确认后将从 GitHub 下载官方 skill-only 包（hugohe3/ppt-master，MIT，约 56 MB），需要联网。安装后会尽量用本机 Python 3.10+ 安装依赖。",
+        ),
+        (Locale::Zh, "caps.install.confirm") => Some("下载并安装"),
+        (Locale::Zh, "caps.install.cancel") => Some("暂不安装"),
+        (Locale::Zh, "caps.install.retry") => Some("重试"),
+        (Locale::Zh, "caps.install.downloading") => Some("正在下载官方技能包…"),
+        (Locale::Zh, "caps.install.installing") => Some("正在安装技能…"),
+        (Locale::Zh, "caps.install.pip") => Some("正在安装 Python 依赖…"),
+        (Locale::Zh, "caps.install.failed") => Some("安装失败：{msg}"),
+        (Locale::Zh, "caps.install.progress") => Some("{received} / {total}"),
+        (Locale::Zh, "caps.install.pip_warning") => Some(
+            "技能已装好，但 Python 依赖可能不完整：{msg}。仍可先试用；若脚本失败，请安装该技能的 requirements.txt。",
+        ),
+        (Locale::Zh, "caps.skill.nature_statistics.title") => Some("统计报告审核"),
+        (Locale::Zh, "caps.skill.nature_statistics.blurb") => Some("审核 p 值、置信区间与期刊统计表述。"),
+        (Locale::Zh, "caps.skill.nature_statistics.prompt") => Some(
+            "我想用 nature-statistics 审核或起草统计表述。请问清方法/结果文本或分析输出，以及目标期刊。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+        ),
+        (Locale::Zh, "caps.skill.knowledge_graph.title") => Some("文本知识图谱"),
+        (Locale::Zh, "caps.skill.knowledge_graph.blurb") => Some(
+            "从论文或笔记抽出实体关系；图谱可搜索、高亮邻域、缩放并拖动节点。",
+        ),
+        (Locale::Zh, "caps.skill.knowledge_graph.prompt") => Some(
+            "我想用 knowledge-graph。请问清要做成知识图谱的原文或文件。 总共最多五个问题；优先要附件/路径；然后分块抽取三元组并交付 HTML 图谱——禁止无休止追问。",
+        ),
+        (Locale::Zh, "caps.skill.academic_search_pro.title") => Some("跨库文献检索"),
+        (Locale::Zh, "caps.skill.academic_search_pro.blurb") => Some("7 大免费库 + 合规网页检索 → 去重 → 文献矩阵 / BibTeX。"),
+        (Locale::Zh, "caps.skill.academic_search_pro.prompt") => Some(
+            "我想用 academic-search-pro。请问清主题/关键词，以及年份或来源限制。 总共最多五个问题；优先要附件/路径；然后跨库检索、去重，并交付文献矩阵 / BibTeX——禁止无休止追问。",
+        ),
+        (Locale::Zh, "caps.skill.nature_academic_search.title") => Some("多源文献检索"),
+        (Locale::Zh, "caps.skill.nature_academic_search.blurb") => Some("检索、引用审计与高影响引用者画像。"),
+        (Locale::Zh, "caps.skill.nature_academic_search.prompt") => Some(
+            "我想用 nature-academic-search。请问清主题/关键词、优先来源，以及是否需要引用审计或表格。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+        ),
+        (Locale::Zh, "caps.skill.nature_literature_pipeline.title") => Some("文献流水线"),
+        (Locale::Zh, "caps.skill.nature_literature_pipeline.blurb") => Some("检索→评分→精读→交付→归档。"),
+        (Locale::Zh, "caps.skill.nature_literature_pipeline.prompt") => Some(
+            "我想用 nature-literature-pipeline。请问清研究领域、纳入标准与交付格式。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+        ),
+        (Locale::Zh, "caps.skill.nature_downloader.title") => Some("合法全文获取"),
+        (Locale::Zh, "caps.skill.nature_downloader.blurb") => Some("OA / 机构权限 / 出版商 API 全文检索。"),
+        (Locale::Zh, "caps.skill.nature_downloader.prompt") => Some(
+            "我想用 nature-downloader 取全文。请问清 DOI/题名列表、访问路径（OA/知网/机构）与保存位置。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+        ),
+        (Locale::Zh, "caps.skill.nature_paper_card.title") => Some("深读论文卡片"),
+        (Locale::Zh, "caps.skill.nature_paper_card.blurb") => Some("单篇论文/PDF/DOI 的溯源式 Paper Card。"),
+        (Locale::Zh, "caps.skill.nature_paper_card.prompt") => Some(
+            "我想做 nature-paper-card。请问清论文来源，以及要强调主张/方法/图表/局限中的哪些部分。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+        ),
+        (Locale::Zh, "caps.skill.nature_reader.title") => Some("中英对照阅读器"),
+        (Locale::Zh, "caps.skill.nature_reader.blurb") => Some("图表感知的中英对照全文阅读稿。"),
+        (Locale::Zh, "caps.skill.nature_reader.prompt") => Some(
+            "我想用 nature-reader。请问清 PDF/DOI，以及要全文还是选定章节。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+        ),
+        (Locale::Zh, "caps.skill.nature_experiment_log.title") => Some("实验日志"),
+        (Locale::Zh, "caps.skill.nature_experiment_log.blurb") => Some("把图片/语音/文字整理为结构化 Markdown 日志。"),
+        (Locale::Zh, "caps.skill.nature_experiment_log.prompt") => Some(
+            "我想用 nature-experiment-log。请问清材料类型（图/语音/文字）与实验室记录规范。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+        ),
+        (Locale::Zh, "caps.tile.bio_db.title") => Some("生物数据库"),
+        (Locale::Zh, "caps.tile.bio_db.blurb") => Some(
+            "告诉我要查的基因、数据集或文献，我来检索 PubMed / GEO / UniProt / PDB。",
+        ),
+        (Locale::Zh, "caps.tile.python_r.title") => Some("Python / R 分析"),
+        (Locale::Zh, "caps.tile.python_r.blurb") => Some(
+            "用持久 Python / R 内核读表、清洗、建模，并画出可编辑的 SVG 矢量图；变量留在会话里，可连续追问。",
+        ),
+        (Locale::Zh, "caps.tile.remote_compute.title") => Some("远程算力与长任务"),
+        (Locale::Zh, "caps.tile.remote_compute.blurb") => Some("注册 SSH/WSL 环境，发起 Runs，并打开终端。"),
+        (Locale::Zh, "caps.tile.structure.title") => Some("结构预测与分子设计"),
+        (Locale::Zh, "caps.tile.structure.blurb") => Some("折叠、对接与序列设计（AF / Boltz / DiffDock / MPNN 等）。"),
+        (Locale::Zh, "caps.tile.single_cell.title") => Some("单细胞与分析流程"),
+        (Locale::Zh, "caps.tile.single_cell.blurb") => Some("面向 scvi/scGPT 与可复现多阶段分析模块。"),
+        (Locale::Zh, "caps.tile.research_graph.title") => Some("研究图谱"),
+        (Locale::Zh, "caps.tile.research_graph.blurb") => Some(
+            "把数据、文献、产物与决策记成关系网，方便以后回看「为什么这么做」。",
+        ),
+        (Locale::Zh, "caps.tile.publication.title") => Some("论文证据工作区"),
+        (Locale::Zh, "caps.tile.publication.blurb") => Some(
+            "为某一稿某一版挑出精确证据、冻结，并可打成可核查的证据胶囊。",
+        ),
+        (Locale::Zh, "caps.tile.files_library.title") => Some("文件与收藏库"),
+        (Locale::Zh, "caps.tile.files_library.blurb") => Some("浏览项目文件，并打开跨项目收藏的代码与图。"),
+        (Locale::Zh, "caps.tile.channels.title") => Some("飞书 / 微信接入"),
+        (Locale::Zh, "caps.tile.channels.blurb") => Some("用 IM 驱动同一桌面会话。"),
+        (Locale::Zh, "caps.tile.browser.title") => Some("真实浏览器"),
+        (Locale::Zh, "caps.tile.browser.blurb") => Some("通过本机 Chrome 扩展完成网页自动化。"),
+        (Locale::Zh, "caps.tile.playwright.title") => Some("Playwright 无头浏览器"),
+        (Locale::Zh, "caps.tile.playwright.blurb") => Some("用脚本驱动 Chromium/Firefox/WebKit，适合 e2e、截图与抓取。"),
+        (Locale::Zh, "caps.tile.plugins.title") => Some("插件扩展"),
+        (Locale::Zh, "caps.tile.plugins.blurb") => Some("安装打包的 Skill + MCP 功能插件。"),
+        (Locale::Zh, "caps.help.aria") => Some("这个能力能做什么"),
+        (Locale::Zh, "caps.help.close") => Some("知道了"),
+        (Locale::Zh, "caps.coming_soon.body") => Some("正在开发中"),
+        (Locale::Zh, "caps.coming_soon.close") => Some("知道了"),
+        (Locale::Zh, "caps.prompt.literature") => Some(
+            "请帮我做文献与证据相关工作。按需加载 literature-review 或 bear-* 技能。先问清我要查的观点、论文或选题，再检索真实来源并带引用总结。",
+        ),
+        (Locale::Zh, "caps.prompt.pdf_ppt") => Some(
+            "我想深读 PDF，和/或做组会风格演示。请引导我附加 PDF，按需加载 pdf-explore 或 journal-club-ppt，并梳理论证结构。",
+        ),
+        (Locale::Zh, "caps.prompt.academic_research") => Some(
+            "请帮我做严谨学术调研。按需加载 deep-research 或 academic-pipeline，先澄清问题与范围，再产出带引用的综述（必要时说明是否适合系统综述/荟萃分析）。",
+        ),
+        (Locale::Zh, "caps.prompt.nature_skills") => Some(
+            "我想要 Nature 风格的手稿帮助（润色、起草、模拟审稿、统计或投稿级作图）。请搜索并加载对应的 nature-* 技能，然后问我在做哪一节或哪张图。",
+        ),
+        (Locale::Zh, "caps.prompt.officecli") => Some(
+            "请用 OfficeCLI 帮我创建或编辑 Word/Excel/PowerPoint。先检查 `officecli` 是否已安装；若没有，按 officecli 技能的安装步骤处理。然后问我需要什么文档、该用哪个 officecli-* 技能。",
+        ),
+        (Locale::Zh, "caps.prompt.academic_paper") => Some(
+            "请用 academic-paper 技能帮我写或改学术论文。先问清题目、论文类型、目标期刊，以及 full/plan/outline/revision 等模式，再加载 academic-paper 开始。",
+        ),
+        (Locale::Zh, "caps.prompt.ai_drawing") => Some(
+            "请帮我用 AI 生成科研插图或概念图。先确认生图模型已配置，再问清要画的内容（主题、风格、标注、尺寸），然后生成并根据我的反馈迭代。",
+        ),
+        (Locale::Zh, "caps.prompt.r_bioinfo_figure") => Some(
+            "我需要用 R 画常见生信图（火山图、热图、PCA/UMAP、箱线/小提琴、生存曲线、富集条形/气泡图等）。默认且优先用持久 `r` tool + ggplot2/相关 Bioconductor 包。请在最多五个问题内请我上传数据或给出项目路径——不要追问可从文件读出的行列/schema。材料齐后立刻读数、出图，用 view_image 质检，并交付 figures/ 下的项目相对路径。",
+        ),
+        (Locale::Zh, "caps.prompt.scientific_figures") => Some(
+            "请帮我做投稿级科研作图。按需加载 figure-composer、nature-figure 或 figure-style。先问清数据/图板、目标期刊风格与输出格式，再开始组合。",
+        ),
+        (Locale::Zh, "caps.prompt.data_cleaning") => Some(
+            "请按数据清洗专家的规则，帮我清洗并整形研究数据。先向我要文件或项目内路径，读表后直接做第一轮清洗。",
+        ),
+        (Locale::Zh, "caps.prompt.stats_analysis") => Some(
+            "请帮我做统计分析。先问清研究问题/假设，并请我附加数据集或给出路径——不要追问 schema 元数据。然后在 Python/R 中跑 EDA/检验，交付具体结果（表格、图、解读）。",
+        ),
+        (Locale::Zh, "caps.prompt.python_r") => Some(
+            "我要用本应用的持久 `python` / `r` 工具做数据分析（不是期刊统计写法审核，也不是只跑一次检验）。能力重点：在同一内核里连续读表、清洗、汇总、建模、出图；数据框和变量要留在会话中，不要每问都重开进程。Python 默认 pandas / numpy / scipy / statsmodels / matplotlib / seaborn；R 默认 tidyverse / data.table。作图必须交付可编辑矢量图：Python 用 savefig(..., format=\"svg\") 或 .svg 路径；R 用 ggsave(..., device=\"svg\") 或 svg()。主文件放在 figures/ 下的 .svg，禁止只交 PNG/JPG。可用一张 PNG 仅供 view_image 质检，但结论里要给出 SVG 的项目相对路径。最多五个问题：先问分析目标和数据文件/路径（优先附件），再问一次更熟 Python 还是 R（或从文件/包生态判断）。不要追问能从文件读出的行列。然后立刻写代码、跑通、解读，交付：可复现脚本、表格、SVG 图和简短结论。",
+        ),
+        (Locale::Zh, "caps.prompt.bio_db") => Some(
+            "请帮我查内置生物数据库 MCP（PubMed、GEO、UniProt、PDB 等，开关在 设置 → 连接 →「精选 —— 内置 bio-tools」）。现在只问一件事：要查什么（基因/蛋白/GSE/PMID/accession，或研究问题）。不要问语言偏好。然后用 search_mcp_tools 发现工具、再用 use_mcp_tool 调用——禁止编造工具名。设置里的行名（没有叫 bio-tools 或 academic-search 的连接）：PubMed → search_articles / get_article_metadata；GEO (Omics Archives) → geo_search_series / geo_get_series；UniProt (Genes Ontologies) → get_uniprot_entries；PDB (Structures Interactions) → pdb_search_structures / pdb_get_structures。不要让我去开启名为 bio-tools 或 academic-search 的连接。不要调用 search_papers、pubmed_fetch_articles（那是文献检索技能的工具，不是本能力）。某个行没开时，点名设置里的准确标题。若 search_mcp_tools 找不到工具，简短说明后可用 NCBI E-utilities REST，不要宣称那两个 MCP 必须挂载。交付条目、accession、摘要或下载路径。最多五个问题。",
+        ),
+        (Locale::Zh, "caps.prompt.structure") => Some(
+            "我需要结构预测或分子设计（折叠、对接或序列设计）。请说明适用的内置技能与算力要求，并先澄清目标分子。",
+        ),
+        (Locale::Zh, "caps.prompt.single_cell") => Some(
+            "请帮我做单细胞或多阶段组学分析。相关时优先 scvi-tools、scgpt 或 analysis-workflow，并先问清数据布局与目标。",
+        ),
+        (Locale::Zh, "caps.prompt.browser") => Some(
+            "请用 browser-use 技能帮我自动化本机 Chrome。先确认扩展就绪，再问我想操作的网站与任务。",
+        ),
+        (Locale::Zh, "caps.prompt.playwright") => Some(
+            "请用 playwright 技能做无头浏览器自动化（不是我已登录的 Chrome）。先确认 Node + Playwright 已安装或协助安装，再问我需要截图、抓取、e2e 还是导出 PDF。",
+        ),
         (Locale::Zh, "caps.runtime") => Some("运行时 v{version}"),
         (Locale::Zh, "caps.workspace") => Some("工作区：{path}"),
         (Locale::Zh, "caps.runtime_status") => Some("Python：{py} · uv：{uv} · Node：{node} · sci：{sci} · pixi：{pixi} · 启动时有效 Skill：{skills} · 内置 MCP：{mcp}"),
@@ -4498,7 +5415,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "caps.close") => Some("关闭"),
         (Locale::Zh, "caps.setup_env") => Some("配置环境"),
         (Locale::Zh, "caps.env_setup_prompt") => Some(
-            "能力面板显示缺少运行时工具。请先 use_skill 加载 local-env-setup，按该 skill 为我的系统配置：(1) uv + Python（wisp 引导），(2) Node >= 20 + `npm install -g scimaster-cli` + `sci init`（bear-* 文献技能），(3) pixi（本地生信多环境分析）。验证能力面板并告知何时重启天成科研助手。",
+            "能力面板显示缺少运行时工具。请先 use_skill 加载 local-env-setup，按该 skill 为我的系统配置：(1) uv + Python（superscience 引导），(2) Node >= 20 + `npm install -g scimaster-cli` + `sci init`（bear-* 文献技能），(3) pixi（本地生信多环境分析）。验证能力面板并告知何时重启天成科研助手。",
         ),
         (Locale::Zh, "caps.ready") => Some("就绪"),
         (Locale::Zh, "caps.missing") => Some("缺失"),
@@ -4738,7 +5655,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "proj_settings.description_hint") => Some("显示在项目切换器中供你参考 —— 不会包含在 Agent 的提示词里。"),
         (Locale::Zh, "proj_settings.agent_context") => Some("Agent 上下文"),
         (Locale::Zh, "proj_settings.agent_context_hint") => Some("会包含在本项目每个 Agent 的系统提示词中。可用于填写背景信息、约定或所有 Agent 都应遵循的指令。下次新建会话时生效。"),
-        (Locale::Zh, "proj_settings.agent_context_confirm") => Some("保存会写入本项目的 Agent 上下文（.wisp/WISP.md）。新会话会自动使用。已有会话仍沿用旧提示词，直到你在会话上右键并重载项目规则——重载会让该会话的模型提示词缓存失效一次。"),
+        (Locale::Zh, "proj_settings.agent_context_confirm") => Some("保存会写入本项目的 Agent 上下文（.superscience/SUPERSCIENCE.md）。新会话会自动使用。已有会话仍沿用旧提示词，直到你在会话上右键并重载项目规则——重载会让该会话的模型提示词缓存失效一次。"),
         (Locale::Zh, "proj_settings.agent_context_confirm_action") => Some("保存 Agent 上下文"),
 
         (Locale::Zh, "sess_status.running") => Some("运行中"),
@@ -4789,6 +5706,7 @@ pub fn localize_backend(locale: Locale, msg: &str) -> String {
     match msg {
         "API URL is required." => t(locale, "err.api_url_required"),
         "Model is required." => t(locale, "err.model_required"),
+        "The Tctoken model cannot be removed." => t(locale, "err.tctoken_locked"),
         "API key is required." => t(locale, "err.api_key_required"),
         "No API key set. Open Settings and paste your provider API key." => {
             t(locale, "err.no_api_key")
@@ -4802,6 +5720,10 @@ pub fn localize_backend(locale: Locale, msg: &str) -> String {
             t(locale, "err.cred_env_invalid")
         }
         "Credential value is required." => t(locale, "err.cred_value_required"),
+        "client updates config not found" => t(locale, "err.client_updates_config_not_found"),
+        m if m.eq_ignore_ascii_case("client updates config not found") => {
+            t(locale, "err.client_updates_config_not_found")
+        }
         m if m.starts_with("exploration_round_active:") => {
             if locale == Locale::Zh {
                 "另一个主线会话已有当前探索轮；请先结束该轮探索。".to_string()
@@ -5261,10 +6183,7 @@ mod api_error_hint_tests {
     #[test]
     fn leftover_proxy_connect_points_at_model_api_proxy() {
         let msg = "http: error sending request: tcp connect error: Connection refused (os error 111) (via leftover HTTPS_PROXY=http://127.0.0.1:7890)";
-        assert_eq!(
-            hint_key(msg),
-            Some(t(Locale::En, "err.hint.network"))
-        );
+        assert_eq!(hint_key(msg), Some(t(Locale::En, "err.hint.network")));
         let zh = localize_backend(Locale::Zh, msg);
         assert!(zh.contains("模型 API 代理"), "{zh}");
         assert!(zh.contains("none"), "{zh}");
@@ -5357,11 +6276,58 @@ mod queue_label_tests {
     }
 
     #[test]
+    fn sidebar_specialists_label_exists_in_both_locales() {
+        assert_eq!(t(Locale::En, "sidebar.specialists"), "Specialists");
+        assert_eq!(t(Locale::Zh, "sidebar.specialists"), "专家");
+    }
+
+    #[test]
     fn context_usage_dock_and_resize_labels_exist_in_both_locales() {
         assert_eq!(t(Locale::En, "context_usage.dock"), "Dock panel");
         assert_eq!(t(Locale::Zh, "context_usage.dock"), "停靠面板");
         assert_eq!(t(Locale::En, "context_usage.resize"), "Resize panel");
         assert_eq!(t(Locale::Zh, "context_usage.resize"), "调整面板大小");
+    }
+
+    #[test]
+    fn display_layer_rebrands_upstream_wisp_copy() {
+        let en = t(Locale::En, "channels.desc");
+        assert!(en.contains("SuperScience"), "{en}");
+        assert!(!en.contains("Wisp"), "{en}");
+        let zh = t(Locale::Zh, "channels.desc");
+        assert!(zh.contains("天成科研助手"), "{zh}");
+        assert!(!zh.contains("Wisp"), "{zh}");
+        assert_eq!(
+            brand_visible_copy(Locale::En, "Wisp's probe"),
+            "SuperScience's probe"
+        );
+        assert_eq!(
+            brand_visible_copy(Locale::Zh, "Wisp's probe"),
+            "天成科研助手的 probe"
+        );
+        assert_eq!(
+            t(Locale::En, "onboard.welcome.title"),
+            "Welcome to 天成科研助手"
+        );
+    }
+
+    #[test]
+    fn login_copy_follows_locale() {
+        assert_eq!(t(Locale::Zh, "user_center.login"), "登录");
+        assert_eq!(t(Locale::En, "user_center.login"), "Sign in");
+        assert_eq!(t(Locale::Zh, "user_center.title"), "我的中心");
+        assert_ne!(t(Locale::Zh, "user_center.login"), "user_center.login");
+    }
+
+    #[test]
+    fn update_check_copy_does_not_mention_github() {
+        let zh = t(Locale::Zh, "settings.update_check_hint");
+        let en = t(Locale::En, "settings.update_check_hint");
+        assert!(!zh.contains("GitHub"), "{zh}");
+        assert!(!en.contains("GitHub"), "{en}");
+        assert!(zh.contains("TCTOKEN"), "{zh}");
+        assert_eq!(t(Locale::Zh, "settings.nav.connections"), "MCP链接");
+        assert_eq!(Locale::default(), Locale::Zh);
     }
 }
 

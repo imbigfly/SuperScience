@@ -317,7 +317,7 @@ pub(super) fn share_image_file_name(default_name: &str) -> String {
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty() && *name != "." && *name != ".." && !name.contains('\0'))
         .map(|name| name.to_string())
-        .unwrap_or_else(|| "wisp-share.png".to_string())
+        .unwrap_or_else(|| "superscience-share.png".to_string())
 }
 
 // Generous ceiling for one long conversation image (base64 of ~48 MB PNG).
@@ -574,6 +574,45 @@ pub(super) fn open_external_url(app: tauri::AppHandle, url: String) -> Result<()
         .map_err(|e| e.to_string())
 }
 
+fn allowed_app_doc(page: &str) -> Option<&'static str> {
+    match page.trim() {
+        "project-sync.md" => Some("project-sync.md"),
+        "project-sync.zh-CN.md" => Some("project-sync.zh-CN.md"),
+        _ => None,
+    }
+}
+
+pub(crate) fn resolve_app_doc_path(
+    resource_dir: Option<&Path>,
+    page: &str,
+) -> Result<PathBuf, String> {
+    let name = allowed_app_doc(page).ok_or_else(|| format!("unknown app doc: {page}"))?;
+    let mut candidates = Vec::new();
+    if let Some(dir) = resource_dir {
+        candidates.push(dir.join("docs").join(name));
+    }
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("docs")
+            .join(name),
+    );
+    candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .ok_or_else(|| format!("app doc not found: {name}"))
+}
+
+#[tauri::command]
+pub(super) fn open_app_doc(app: tauri::AppHandle, page: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let resource_dir = app.path().resource_dir().ok();
+    let path = resolve_app_doc_path(resource_dir.as_deref(), &page)?;
+    app.opener()
+        .open_path(path.to_string_lossy().as_ref(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub(super) fn reveal_in_file_manager(
     app: AppHandle,
@@ -602,18 +641,54 @@ pub(super) async fn dismiss_onboarding(state: State<'_, AppState>) -> Result<(),
 }
 
 #[cfg(test)]
+mod app_doc_tests {
+    use super::resolve_app_doc_path;
+    use std::path::PathBuf;
+
+    #[test]
+    fn resolves_bundled_sync_guides_from_the_repo_docs() {
+        let en = resolve_app_doc_path(None, "project-sync.md").unwrap();
+        let zh = resolve_app_doc_path(None, " project-sync.zh-CN.md ").unwrap();
+        assert!(en.ends_with(std::path::Path::new("docs/project-sync.md")));
+        assert!(zh.ends_with(std::path::Path::new("docs/project-sync.zh-CN.md")));
+        assert!(en.is_file());
+        assert!(zh.is_file());
+    }
+
+    #[test]
+    fn prefers_resource_dir_when_the_doc_is_bundled() {
+        let root =
+            std::env::temp_dir().join(format!("superscience-app-doc-{}", uuid::Uuid::new_v4()));
+        let docs = root.join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        let bundled = docs.join("project-sync.md");
+        std::fs::write(&bundled, "# bundled").unwrap();
+        let resolved = resolve_app_doc_path(Some(&root), "project-sync.md").unwrap();
+        assert_eq!(resolved, bundled);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rejects_unknown_or_traversing_doc_names() {
+        assert!(resolve_app_doc_path(None, "../Cargo.toml").is_err());
+        assert!(resolve_app_doc_path(None, "project-transfer.md").is_err());
+        assert!(resolve_app_doc_path(Some(&PathBuf::from("/tmp")), "secret.md").is_err());
+    }
+}
+
+#[cfg(test)]
 mod share_image_tests {
     use super::share_image_file_name;
 
     #[test]
     fn keeps_only_a_safe_file_name_component() {
         assert_eq!(
-            share_image_file_name("wisp-share-2026-08-14.png"),
-            "wisp-share-2026-08-14.png"
+            share_image_file_name("superscience-share-2026-08-14.png"),
+            "superscience-share-2026-08-14.png"
         );
         assert_eq!(share_image_file_name("../../etc/passwd"), "passwd");
         assert_eq!(share_image_file_name("/tmp/evil/name.png"), "name.png");
-        assert_eq!(share_image_file_name(""), "wisp-share.png");
-        assert_eq!(share_image_file_name(".."), "wisp-share.png");
+        assert_eq!(share_image_file_name(""), "superscience-share.png");
+        assert_eq!(share_image_file_name(".."), "superscience-share.png");
     }
 }

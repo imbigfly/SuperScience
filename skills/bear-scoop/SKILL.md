@@ -6,7 +6,7 @@ description: >
  **以下情况请主动触发本技能**：用户说"这个选题有没有人做过"、"我会不会被抢发"、"这个方向还有空间吗"、"我的 idea 新不新"、"要不要查一下有没有撞车"、"这个想法是不是已经有人发了"——即使用户没有说"bear-scoop"，只要意图是**在提交或动笔前确认 idea 的独特性**，就使用本技能。加 `-r` flag 只看近两年和预印本，适合担心被抢发的场景。
 
  不适用于：为已有观点找支持文献（用 bear-support）、找反对文献（用 bear-counter）、概念地图（用 bear-map）、溯源演化史（用 bear-trace）。
-wisp:
+superscience:
   schema_version: 1
   domains: [scientific-literature]
   research_stages: [retrieval, hypothesis]

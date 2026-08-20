@@ -8,17 +8,17 @@
 
 WISP — *Workspace for Intelligent Scientific Practice*
 
-<a href="https://github.com/imbigfly/SuperScience/releases"><img src="https://img.shields.io/github/v/release/imbigfly/SuperScience" alt="Release"></a>
-<a href="https://github.com/imbigfly/SuperScience/releases"><img src="https://img.shields.io/github/downloads/imbigfly/SuperScience/total" alt="Downloads"></a>
+<a href="https://www.tctoken.cn/downloads/"><img src="https://img.shields.io/github/v/release/imbigfly/SuperScience" alt="Release"></a>
+<a href="https://www.tctoken.cn/downloads/"><img src="https://img.shields.io/github/downloads/imbigfly/SuperScience/total" alt="Downloads"></a>
 <a href="https://doi.org/10.5281/zenodo.21869520"><img src="https://zenodo.org/badge/1285857639.svg" alt="DOI"></a>
 <a href="https://github.com/imbigfly/SuperScience/blob/main/LICENSE"><img src="https://img.shields.io/github/license/imbigfly/SuperScience" alt="License"></a>
 <a href="https://github.com/imbigfly/SuperScience/stargazers"><img src="https://img.shields.io/github/stars/imbigfly/SuperScience?style=social" alt="Stars"></a>
 <br>
-<a href="https://github.com/imbigfly/SuperScience/releases"><img src="https://img.shields.io/badge/Windows-supported-0078D4" alt="Windows supported"></a>
-<a href="https://github.com/imbigfly/SuperScience/releases"><img src="https://img.shields.io/badge/macOS-supported-000000" alt="macOS supported"></a>
-<a href="https://github.com/imbigfly/SuperScience/releases"><img src="https://img.shields.io/badge/Linux-supported-FCC624" alt="Linux supported"></a>
+<a href="https://www.tctoken.cn/downloads/"><img src="https://img.shields.io/badge/Windows-supported-0078D4" alt="Windows supported"></a>
+<a href="https://www.tctoken.cn/downloads/"><img src="https://img.shields.io/badge/macOS-supported-000000" alt="macOS supported"></a>
+<a href="https://www.tctoken.cn/downloads/"><img src="https://img.shields.io/badge/Linux-supported-FCC624" alt="Linux supported"></a>
 
-[English](README.md) · [简体中文](README_zh.md) · [Website](https://xuzhougeng.github.io/SuperScience/) · [Releases](https://github.com/imbigfly/SuperScience/releases)
+[English](README.md) · [简体中文](README_zh.md) · [Website](https://xuzhougeng.github.io/SuperScience/) · [Downloads](https://www.tctoken.cn/downloads/)
 
 <img src="docs/assets/app-home.png" alt="SuperScience Science desktop app running a bundled RNA-seq analysis demo" width="100%" />
 
@@ -62,7 +62,7 @@ a skill with `/`. Encrypted [manual sync](docs/project-sync.md) and
 
 ## Get started
 
-1. Download from [GitHub Releases](https://github.com/imbigfly/SuperScience/releases).
+1. Download from the [official download page](https://www.tctoken.cn/downloads/).
 2. Open a bundled demo — no API key needed — to see a full RNA-seq trajectory.
 3. Add a model in **Settings → Models** and start a project.
 

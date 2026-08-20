@@ -8,15 +8,15 @@ questions for the responsible institution. It is a navigation aid, not an
 authority, authorization tool, or review-pathway classifier.
 
 The controlling local contract is
-`shared/references/human_subjects_authority_protocol.md`; the only curated
+`../academic-shared/references/human_subjects_authority_protocol.md`; the only curated
 authority rows available to this aid are in
-`shared/human_subjects_authority_registry.json`. Every profile in that registry
+`../academic-shared/human_subjects_authority_registry.json`. Every profile in that registry
 is a `bounded_subset`, not a complete statement of any jurisdiction's law or an
 institution's policy.
 
 When a caller explicitly requests candidate rule-trace display, the derived
 handoff is governed by
-`shared/references/review_pathway_rule_trace_protocol.md`. This file never
+`../academic-shared/references/review_pathway_rule_trace_protocol.md`. This file never
 supplies candidate names or unanchored predicates to that handoff.
 
 > **Authority boundary (#665/#666/#680):** Mixed-jurisdiction pathway mappings are not part of this reference. ARS output must use `institutional determination required`; applicability, requirements, timing, and authorization remain with the responsible institution and an exactly selected authority profile. Missing or unknown facts remain unresolved and never become a review determination.
@@ -271,7 +271,7 @@ Review pathway: institutional determination required
 
 ## 5. Data-Handling Technical Planning
 
-Use `shared/references/irb_terminology_glossary.md` for explicitly
+Use `../academic-shared/references/irb_terminology_glossary.md` for explicitly
 convention-bound drafting terms. A technical transformation does not, by itself,
 establish an authority-defined legal status.
 

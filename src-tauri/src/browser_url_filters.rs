@@ -7,9 +7,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::OnceLock;
+use superscience_store::Store;
 use tauri::State;
 use url::Url;
-use superscience_store::Store;
 
 pub const SETTING_KEY: &str = "browser_url_filters";
 const MAX_RULES: usize = 200;

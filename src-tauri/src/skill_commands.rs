@@ -3,10 +3,11 @@ use super::{
     load_skill_tags, normalize_tags, project_skill_catalog, save_enabled_skill_names,
     save_skill_tags, skill_infos, AppState, SkillInfo,
 };
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State, WebviewWindow};
 
 async fn list_skill_infos_for_project(state: &AppState, label: &str) -> Vec<SkillInfo> {
     let ap = state.active(label);
@@ -178,7 +179,7 @@ pub(super) async fn pick_skill_source(app: AppHandle) -> Result<Option<String>, 
     Ok(picked.map(|fp| fp.to_string()))
 }
 
-fn user_skills_dir() -> Result<PathBuf, String> {
+pub(super) fn user_skills_dir() -> Result<PathBuf, String> {
     dirs::home_dir()
         .map(|h| h.join(".superscience").join("skills"))
         .ok_or_else(|| "no home directory".to_string())
@@ -237,7 +238,7 @@ impl Drop for SkillImportTempDir {
     }
 }
 
-fn install_skill_source(src: &Path, skills_dir: &Path) -> Result<String, String> {
+pub(super) fn install_skill_source(src: &Path, skills_dir: &Path) -> Result<String, String> {
     let (_temp_dir, skill_dir, skill_md) = if src.is_dir() {
         let md = src.join("SKILL.md");
         if !md.is_file() {
@@ -255,8 +256,10 @@ fn install_skill_source(src: &Path, skills_dir: &Path) -> Result<String, String>
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
     {
-        let temp_root =
-            std::env::temp_dir().join(format!("superscience-skill-import-{}", uuid::Uuid::new_v4()));
+        let temp_root = std::env::temp_dir().join(format!(
+            "superscience-skill-import-{}",
+            uuid::Uuid::new_v4()
+        ));
         std::fs::create_dir(&temp_root)
             .map_err(|error| format!("create skill ZIP staging directory: {error}"))?;
         let temp_dir = SkillImportTempDir(temp_root.clone());
@@ -338,7 +341,326 @@ pub(super) async fn remove_skill(
     Ok(())
 }
 
-fn reload_host_skill_index(state: &AppState, label: &str) {
+const CATALOG_SKILL_MAX_BYTES: u64 = 256 * 1024 * 1024;
+const CATALOG_SKILL_PROGRESS_EVENT: &str = "catalog-skill-install-progress";
+
+#[derive(Clone, Copy)]
+pub(super) struct CatalogSkillSpec {
+    pub(super) id: &'static str,
+    pub(super) owner: &'static str,
+    pub(super) repo: &'static str,
+    asset_prefix: &'static str,
+}
+
+const PPT_MASTER_SPEC: CatalogSkillSpec = CatalogSkillSpec {
+    id: "ppt-master",
+    owner: "hugohe3",
+    repo: "ppt-master",
+    asset_prefix: "ppt-master-skill-",
+};
+
+#[derive(Debug, Deserialize)]
+struct GithubReleaseAsset {
+    name: String,
+    browser_download_url: String,
+    #[serde(default)]
+    size: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubRelease {
+    #[serde(default)]
+    assets: Vec<GithubReleaseAsset>,
+}
+
+#[derive(Clone, Serialize)]
+struct CatalogSkillProgress {
+    skill: String,
+    received: u64,
+    total: Option<u64>,
+    phase: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct CatalogSkillInstallResult {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pip_warning: Option<String>,
+}
+
+pub(super) fn catalog_skill_spec(id: &str) -> Result<&'static CatalogSkillSpec, String> {
+    match id.trim() {
+        "ppt-master" => Ok(&PPT_MASTER_SPEC),
+        other => Err(format!("unknown catalog skill '{other}'")),
+    }
+}
+
+fn select_catalog_skill_asset<'a>(
+    spec: &CatalogSkillSpec,
+    assets: &'a [GithubReleaseAsset],
+) -> Result<&'a GithubReleaseAsset, String> {
+    let matches: Vec<_> = assets
+        .iter()
+        .filter(|asset| {
+            asset.name.starts_with(spec.asset_prefix)
+                && asset.name.to_ascii_lowercase().ends_with(".zip")
+        })
+        .collect();
+    match matches.as_slice() {
+        [asset] => Ok(*asset),
+        [] => Err(format!(
+            "GitHub release for {}/{} has no {}*.zip skill package",
+            spec.owner, spec.repo, spec.asset_prefix
+        )),
+        many => many
+            .iter()
+            .max_by_key(|asset| asset.name.as_str())
+            .copied()
+            .ok_or_else(|| "no catalog skill asset".into()),
+    }
+}
+
+fn validate_catalog_download_url(spec: &CatalogSkillSpec, url: &str) -> Result<url::Url, String> {
+    let parsed = url::Url::parse(url).map_err(|error| format!("invalid download URL: {error}"))?;
+    if parsed.scheme() != "https" {
+        return Err("catalog skill download must use HTTPS".into());
+    }
+    let host = parsed.host_str().unwrap_or_default();
+    if host != "github.com" {
+        return Err(format!(
+            "catalog skill download host '{host}' is not allowed"
+        ));
+    }
+    let expected = format!("/{}/{}/releases/download/", spec.owner, spec.repo);
+    if !parsed.path().starts_with(&expected) {
+        return Err(format!(
+            "catalog skill download path must start with {expected}"
+        ));
+    }
+    Ok(parsed)
+}
+
+fn emit_catalog_progress(
+    app: &AppHandle,
+    skill: &str,
+    received: u64,
+    total: Option<u64>,
+    phase: &str,
+) {
+    let _ = app.emit(
+        CATALOG_SKILL_PROGRESS_EVENT,
+        CatalogSkillProgress {
+            skill: skill.to_string(),
+            received,
+            total,
+            phase: phase.to_string(),
+        },
+    );
+}
+
+pub(super) fn catalog_http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .user_agent("SuperScience-catalog-skill/1.3")
+        .connect_timeout(std::time::Duration::from_secs(20))
+        .timeout(std::time::Duration::from_secs(15 * 60))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.url().scheme() == "https" && attempt.previous().len() < 6 {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        }))
+        .build()
+        .map_err(|error| format!("build catalog skill downloader: {error}"))
+}
+
+pub(super) async fn resolve_catalog_skill_zip(
+    spec: &CatalogSkillSpec,
+    client: &reqwest::Client,
+) -> Result<(url::Url, Option<u64>), String> {
+    let api = format!(
+        "https://api.github.com/repos/{}/{}/releases/latest",
+        spec.owner, spec.repo
+    );
+    let release: GithubRelease = client
+        .get(&api)
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|error| format!("lookup catalog skill release: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("lookup catalog skill release: {error}"))?
+        .json()
+        .await
+        .map_err(|error| format!("parse catalog skill release: {error}"))?;
+    let asset = select_catalog_skill_asset(spec, &release.assets)?;
+    let url = validate_catalog_download_url(spec, &asset.browser_download_url)?;
+    let total = (asset.size > 0).then_some(asset.size);
+    Ok((url, total))
+}
+
+pub(super) async fn download_catalog_skill_zip(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    skill: &str,
+    url: url::Url,
+    announced_total: Option<u64>,
+    dest: &Path,
+) -> Result<u64, String> {
+    if announced_total.is_some_and(|length| length > CATALOG_SKILL_MAX_BYTES) {
+        return Err("catalog skill download exceeds the archive size limit".into());
+    }
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| format!("download catalog skill: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("download catalog skill: {error}"))?;
+    let total = response
+        .content_length()
+        .or(announced_total)
+        .filter(|length| *length > 0);
+    if total.is_some_and(|length| length > CATALOG_SKILL_MAX_BYTES) {
+        return Err("catalog skill download exceeds the archive size limit".into());
+    }
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+    let mut file = tokio::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(dest)
+        .await
+        .map_err(|error| format!("create catalog skill download: {error}"))?;
+    let mut received = 0u64;
+    let mut stream = response.bytes_stream();
+    emit_catalog_progress(app, skill, 0, total, "download");
+    let download_result = async {
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|error| format!("read catalog skill download: {error}"))?;
+            received = received.saturating_add(chunk.len() as u64);
+            if received > CATALOG_SKILL_MAX_BYTES {
+                return Err("catalog skill download exceeds the archive size limit".to_string());
+            }
+            file.write_all(&chunk)
+                .await
+                .map_err(|error| format!("write catalog skill download: {error}"))?;
+            emit_catalog_progress(app, skill, received, total, "download");
+        }
+        file.flush()
+            .await
+            .map_err(|error| format!("flush catalog skill download: {error}"))?;
+        Ok::<_, String>(())
+    }
+    .await;
+    if let Err(error) = download_result {
+        drop(file);
+        let _ = tokio::fs::remove_file(dest).await;
+        return Err(error);
+    }
+    Ok(received)
+}
+
+fn catalog_python(app_data: &Path) -> Option<PathBuf> {
+    let managed = superscience_runtime::PythonEnv::managed(app_data).python();
+    if managed.is_file() {
+        return Some(managed);
+    }
+    which::which("python3")
+        .ok()
+        .or_else(|| which::which("python").ok())
+}
+
+pub(super) fn install_catalog_skill_requirements(
+    app_data: &Path,
+    skill_dir: &Path,
+) -> Result<(), String> {
+    let requirements = skill_dir.join("requirements.txt");
+    if !requirements.is_file() {
+        return Ok(());
+    }
+    let python = catalog_python(app_data).ok_or_else(|| {
+        "no Python interpreter found for skill dependencies (need 3.10+)".to_string()
+    })?;
+    let output = std::process::Command::new(&python)
+        .args(["-m", "pip", "install", "--disable-pip-version-check", "-r"])
+        .arg(&requirements)
+        .output()
+        .map_err(|error| format!("run pip: {error}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let detail = [stderr.trim(), stdout.trim()]
+        .into_iter()
+        .find(|text| !text.is_empty())
+        .unwrap_or("pip install failed");
+    Err(detail.chars().take(400).collect())
+}
+
+#[tauri::command]
+pub(super) async fn install_catalog_skill(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    window: WebviewWindow,
+    id: String,
+) -> Result<CatalogSkillInstallResult, String> {
+    let spec = catalog_skill_spec(&id)?;
+    emit_catalog_progress(&app, spec.id, 0, None, "download");
+    let downloads = state.app_data.join("catalog-skill-downloads");
+    tokio::fs::create_dir_all(&downloads)
+        .await
+        .map_err(|error| format!("create catalog skill download directory: {error}"))?;
+    let zip_path = downloads.join(format!("{}-{}.zip", spec.id, uuid::Uuid::new_v4()));
+    let client = catalog_http_client()?;
+    let (url, announced_total) = resolve_catalog_skill_zip(spec, &client).await?;
+    let download_result =
+        download_catalog_skill_zip(&app, &client, spec.id, url, announced_total, &zip_path).await;
+    if let Err(error) = download_result {
+        let _ = tokio::fs::remove_file(&zip_path).await;
+        return Err(error);
+    }
+    emit_catalog_progress(&app, spec.id, 0, None, "install");
+    let skills_dir = user_skills_dir()?;
+    let zip_for_install = zip_path.clone();
+    let skill_name =
+        tokio::task::spawn_blocking(move || install_skill_source(&zip_for_install, &skills_dir))
+            .await
+            .map_err(|error| format!("{error}"))
+            .and_then(|result| result);
+    let _ = tokio::fs::remove_file(&zip_path).await;
+    let skill_name = skill_name?;
+    if skill_name != spec.id {
+        return Err(format!(
+            "installed skill '{skill_name}' does not match catalog id '{}'",
+            spec.id
+        ));
+    }
+    reload_host_skill_index(&state, window.label());
+    let ap = state.active(window.label());
+    if let Some(mut enabled) = load_enabled_skill_names(&state.store, &ap.id).await {
+        enabled.insert(skill_name.clone());
+        save_enabled_skill_names(&state.store, &ap.id, &enabled).await?;
+    }
+    clear_idle_agents(&state).await;
+    emit_catalog_progress(&app, spec.id, 0, None, "pip");
+    let skill_dir = user_skills_dir()?.join(&skill_name);
+    let app_data = state.app_data.clone();
+    let pip_warning = tokio::task::spawn_blocking(move || {
+        install_catalog_skill_requirements(&app_data, &skill_dir).err()
+    })
+    .await
+    .ok()
+    .flatten();
+    Ok(CatalogSkillInstallResult {
+        name: skill_name,
+        pip_warning,
+    })
+}
+
+pub(super) fn reload_host_skill_index(state: &AppState, label: &str) {
     let mut ap = state.active(label);
     ap.skills = Arc::new(load_skill_index(&ap.root));
     state.set_active(label, ap);
@@ -364,7 +686,7 @@ pub(super) fn copy_dir_recursive(from: &Path, to: &Path) -> std::io::Result<()> 
 /// copy succeeds do we move the old tree aside and atomically put the staged
 /// tree in its place. This prevents a failed update from leaving a partially
 /// copied skill behind.
-fn install_skill_dir(from: &Path, to: &Path) -> Result<bool, String> {
+pub(super) fn install_skill_dir(from: &Path, to: &Path) -> Result<bool, String> {
     let parent = to
         .parent()
         .ok_or_else(|| "skill destination has no parent directory".to_string())?;
@@ -439,8 +761,8 @@ mod tests {
 
     impl TestDir {
         fn new() -> Self {
-            let path =
-                std::env::temp_dir().join(format!("superscience-skill-test-{}", uuid::Uuid::new_v4()));
+            let path = std::env::temp_dir()
+                .join(format!("superscience-skill-test-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&path).expect("create test directory");
             Self(path)
         }
@@ -546,6 +868,101 @@ mod tests {
 
         let error = install_skill_source(&archive_path, &temp.0.join("installed")).unwrap_err();
         assert_eq!(error, "skill ZIP contains more than one skill folder");
+    }
+
+    #[test]
+    fn catalog_skill_spec_allows_only_ppt_master() {
+        assert_eq!(catalog_skill_spec("ppt-master").unwrap().id, "ppt-master");
+        assert_eq!(
+            catalog_skill_spec(" ppt-master ").unwrap().repo,
+            "ppt-master"
+        );
+        assert!(catalog_skill_spec("nature-paper2ppt").is_err());
+        assert!(catalog_skill_spec("../ppt-master").is_err());
+        assert!(catalog_skill_spec("").is_err());
+    }
+
+    #[test]
+    fn catalog_skill_asset_picks_skill_only_zip() {
+        let assets = vec![
+            GithubReleaseAsset {
+                name: "Source code (zip)".into(),
+                browser_download_url: "https://github.com/hugohe3/ppt-master/archive/refs/tags/v4.7.0.zip".into(),
+                size: 1,
+            },
+            GithubReleaseAsset {
+                name: "ppt-master-skill-v4.7.0.zip".into(),
+                browser_download_url: "https://github.com/hugohe3/ppt-master/releases/download/v4.7.0/ppt-master-skill-v4.7.0.zip".into(),
+                size: 58_747_948,
+            },
+        ];
+        let asset = select_catalog_skill_asset(&PPT_MASTER_SPEC, &assets).unwrap();
+        assert_eq!(asset.name, "ppt-master-skill-v4.7.0.zip");
+        assert!(
+            validate_catalog_download_url(&PPT_MASTER_SPEC, &asset.browser_download_url).is_ok()
+        );
+    }
+
+    #[test]
+    fn catalog_skill_asset_rejects_repo_zipball_and_foreign_hosts() {
+        let assets = vec![GithubReleaseAsset {
+            name: "ppt-master-v4.7.0.zip".into(),
+            browser_download_url:
+                "https://github.com/hugohe3/ppt-master/archive/refs/tags/v4.7.0.zip".into(),
+            size: 10,
+        }];
+        assert!(select_catalog_skill_asset(&PPT_MASTER_SPEC, &assets).is_err());
+        assert!(validate_catalog_download_url(
+            &PPT_MASTER_SPEC,
+            "https://evil.example/ppt-master-skill-v4.7.0.zip"
+        )
+        .is_err());
+        assert!(validate_catalog_download_url(
+            &PPT_MASTER_SPEC,
+            "https://github.com/other/ppt-master/releases/download/v4.7.0/ppt-master-skill-v4.7.0.zip"
+        )
+        .is_err());
+        assert!(validate_catalog_download_url(
+            &PPT_MASTER_SPEC,
+            "http://github.com/hugohe3/ppt-master/releases/download/v4.7.0/ppt-master-skill-v4.7.0.zip"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn catalog_skill_zip_fixture_installs_named_skill() {
+        let temp = TestDir::new();
+        let archive_path = temp.0.join("ppt-master-skill-v4.7.0.zip");
+        let file = std::fs::File::create(&archive_path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        archive
+            .start_file(
+                "ppt-master/SKILL.md",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+        archive
+            .write_all(b"---\nname: ppt-master\ndescription: Native editable PPT\n---\n# Skill")
+            .unwrap();
+        archive
+            .start_file(
+                "ppt-master/requirements.txt",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+        archive.write_all(b"lxml\n").unwrap();
+        archive.finish().unwrap();
+
+        let installed = temp.0.join("installed");
+        assert_eq!(
+            install_skill_source(&archive_path, &installed),
+            Ok("ppt-master".into())
+        );
+        assert!(installed.join("ppt-master/SKILL.md").is_file());
+        assert_eq!(
+            std::fs::read_to_string(installed.join("ppt-master/requirements.txt")).unwrap(),
+            "lxml\n"
+        );
     }
 
     #[test]

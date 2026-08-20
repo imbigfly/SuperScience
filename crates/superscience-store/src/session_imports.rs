@@ -58,7 +58,10 @@ mod tests {
             .create_project("p", "Project", "/workspace")
             .await
             .unwrap();
-        store.create_frame("f1", "p", "superscience", "m").await.unwrap();
+        store
+            .create_frame("f1", "p", "superscience", "m")
+            .await
+            .unwrap();
         (store, path)
     }
 

@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn parses_real_yaml_block_scalars_lists_and_extra_fields() {
         let (manifest, body) = parse_skill_document(
-            "---\nname: demo\ndescription: >\n  line one\n  line two\ntags: [B, a, a]\nlicense: Apache-2.0\nwisp:\n  schema_version: 1\n  domains: [oncology, single-cell]\n  research_stages: [hypothesis]\n  roles: [critic]\n  evidence_types: [literature]\n  outputs: [evidence-matrix]\n  side_effects: read_only\n---\n# Body\n",
+            "---\nname: demo\ndescription: >\n  line one\n  line two\ntags: [B, a, a]\nlicense: Apache-2.0\nsuperscience:\n  schema_version: 1\n  domains: [oncology, single-cell]\n  research_stages: [hypothesis]\n  roles: [critic]\n  evidence_types: [literature]\n  outputs: [evidence-matrix]\n  side_effects: read_only\n---\n# Body\n",
             "fallback".into(),
         )
         .unwrap();
@@ -234,7 +234,10 @@ mod tests {
         assert_eq!(manifest.description, "line one line two");
         assert_eq!(manifest.tags.0, ["a", "b"]);
         assert!(manifest.extra.contains_key("license"));
-        assert_eq!(manifest.superscience.unwrap().domains, ["oncology", "single-cell"]);
+        assert_eq!(
+            manifest.superscience.unwrap().domains,
+            ["oncology", "single-cell"]
+        );
         assert_eq!(body, "# Body");
     }
 
@@ -246,10 +249,21 @@ mod tests {
         )
         .is_ok());
         let error = parse_skill_document(
-            "---\nname: bad\ndescription: bad\nwisp:\n  schema_version: 1\n  roles: [oracle]\n---\nbody",
+            "---\nname: bad\ndescription: bad\nsuperscience:\n  schema_version: 1\n  roles: [oracle]\n---\nbody",
             "fallback".into(),
         )
         .unwrap_err();
         assert!(error.contains("unknown superscience.roles"));
+    }
+
+    #[test]
+    fn leftover_wisp_key_does_not_fill_superscience_semantics() {
+        let (manifest, _) = parse_skill_document(
+            "---\nname: demo\ndescription: demo\nwisp:\n  schema_version: 1\n  domains: [oncology]\n  roles: [critic]\n  side_effects: network\n---\nbody",
+            "fallback".into(),
+        )
+        .unwrap();
+        assert!(manifest.superscience.is_none());
+        assert!(manifest.extra.contains_key("wisp"));
     }
 }

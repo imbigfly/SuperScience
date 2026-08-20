@@ -11,9 +11,9 @@ use super::{models, AppState};
 use crate::session_export::{to_workspace_rel, zip_component};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, State};
 use superscience_llm::Message;
 use superscience_store::Store;
+use tauri::{AppHandle, State};
 
 #[derive(serde::Deserialize)]
 struct ImportManifestArtifact {
@@ -429,7 +429,10 @@ mod tests {
             }).collect::<Vec<_>>(),
             "missing_artifacts": [],
         });
-        let path = dir.join(format!("superscience-session-{}.zip", zip_component(session_id)));
+        let path = dir.join(format!(
+            "superscience-session-{}.zip",
+            zip_component(session_id)
+        ));
         let out = std::fs::File::create(&path).unwrap();
         let mut zip = zip::ZipWriter::new(out);
         let opts = zip::write::SimpleFileOptions::default();

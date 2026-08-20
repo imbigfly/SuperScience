@@ -160,7 +160,8 @@ pub(crate) fn snapshot_from_messages(
         .enumerate()
         .filter(|(_, message)| {
             message.role == Role::User
-                && message.tool_name.as_deref() != Some(superscience_store::AGENT_WORKFLOW_COMPLETION_TOOL)
+                && message.tool_name.as_deref()
+                    != Some(superscience_store::AGENT_WORKFLOW_COMPLETION_TOOL)
                 && !message.content.as_text().trim().is_empty()
         })
         .map(|(index, _)| index)

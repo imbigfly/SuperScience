@@ -1,0 +1,71 @@
+{
+  "_schema": "2.8",
+  "evolution_tier": "E2",
+  "skill_version": "1.0.0",
+  "created": "2026-06-27",
+  "creator": "QClaw (人类Nan的 Agent)",
+  "diagnosis": {
+    "last_run": null,
+    "last_score_fastlane": null,
+    "last_score_slowlane": null,
+    "last_score_total": null,
+    "streak": {
+      "pass": 0,
+      "fail": 0,
+      "stable": 0
+    }
+  },
+  "pattern_counters": {
+    "hardcoded_dimension_ref": {
+      "count": 0,
+      "last_seen": null,
+      "threshold": 1,
+      "action": "immediate_fix"
+    },
+    "ghost_reference": {
+      "count": 0,
+      "last_seen": null,
+      "threshold": 1,
+      "action": "immediate_fix"
+    },
+    "red_defect": {
+      "count": 0,
+      "last_seen": null,
+      "threshold": 1,
+      "action": "halt_and_fix"
+    },
+    "yellow_warning_streak": {
+      "count": 0,
+      "last_seen": null,
+      "threshold": 5,
+      "action": "deep_review"
+    },
+    "same_pattern_fail": {
+      "count": 0,
+      "last_seen": null,
+      "threshold": 3,
+      "action": "case_bank_update"
+    },
+    "framework_cannot_explain": {
+      "count": 0,
+      "last_seen": null,
+      "threshold": 5,
+      "action": "framework_review"
+    },
+    "score_decline": {
+      "count": 0,
+      "last_seen": null,
+      "threshold": 2,
+      "action": "degradation_alert"
+    }
+  },
+  "evolution_log": [],
+  "pending_signals": [],
+  "learnings": {
+    "shared": [],
+    "personal": []
+  },
+  "user_preferences": {},
+  "distill_policy": "self-only",
+  "version": "1.0.3"
+}

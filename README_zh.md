@@ -9,17 +9,17 @@
 WISP — *Workspace for Intelligent Scientific Practice*
 （面向智能科研实践的工作空间）
 
-<a href="https://github.com/imbigfly/SuperScience/releases"><img src="https://img.shields.io/github/v/release/imbigfly/SuperScience" alt="Release"></a>
-<a href="https://github.com/imbigfly/SuperScience/releases"><img src="https://img.shields.io/github/downloads/imbigfly/SuperScience/total" alt="下载量"></a>
+<a href="https://www.tctoken.cn/downloads/"><img src="https://img.shields.io/github/v/release/imbigfly/SuperScience" alt="Release"></a>
+<a href="https://www.tctoken.cn/downloads/"><img src="https://img.shields.io/github/downloads/imbigfly/SuperScience/total" alt="下载量"></a>
 <a href="https://doi.org/10.5281/zenodo.21869520"><img src="https://zenodo.org/badge/1285857639.svg" alt="DOI"></a>
 <a href="https://github.com/imbigfly/SuperScience/blob/main/LICENSE"><img src="https://img.shields.io/github/license/imbigfly/SuperScience" alt="许可证"></a>
 <a href="https://github.com/imbigfly/SuperScience/stargazers"><img src="https://img.shields.io/github/stars/imbigfly/SuperScience?style=social" alt="Stars"></a>
 <br>
-<a href="https://github.com/imbigfly/SuperScience/releases"><img src="https://img.shields.io/badge/Windows-supported-0078D4" alt="支持 Windows"></a>
-<a href="https://github.com/imbigfly/SuperScience/releases"><img src="https://img.shields.io/badge/macOS-supported-000000" alt="支持 macOS"></a>
-<a href="https://github.com/imbigfly/SuperScience/releases"><img src="https://img.shields.io/badge/Linux-supported-FCC624" alt="支持 Linux"></a>
+<a href="https://www.tctoken.cn/downloads/"><img src="https://img.shields.io/badge/Windows-supported-0078D4" alt="支持 Windows"></a>
+<a href="https://www.tctoken.cn/downloads/"><img src="https://img.shields.io/badge/macOS-supported-000000" alt="支持 macOS"></a>
+<a href="https://www.tctoken.cn/downloads/"><img src="https://img.shields.io/badge/Linux-supported-FCC624" alt="支持 Linux"></a>
 
-[English](README.md) · [简体中文](README_zh.md) · [网站](https://xuzhougeng.github.io/天成科研助手/) · [Releases](https://github.com/imbigfly/SuperScience/releases)
+[English](README.md) · [简体中文](README_zh.md) · [网站](https://xuzhougeng.github.io/天成科研助手/) · [下载](https://www.tctoken.cn/downloads/)
 
 <img src="docs/assets/app-home.png" alt="天成科研助手 Science 桌面应用正在运行内置的 RNA-seq 分析演示" width="100%" />
 
@@ -57,7 +57,7 @@ Agent 读写项目文件、执行 shell，并按需加载 Skills（`SKILL.md`）
 
 ## 开始使用
 
-1. 从 [GitHub Releases](https://github.com/imbigfly/SuperScience/releases) 下载。
+1. 从 [官网下载页](https://www.tctoken.cn/downloads/) 下载。
 2. 打开内置演示（无需 API Key），看完整的 RNA-seq 轨迹。
 3. 在 **设置 → 模型** 中添加模型，然后开一个项目。
 

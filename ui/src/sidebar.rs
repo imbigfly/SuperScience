@@ -58,7 +58,7 @@ pub(super) fn Sidebar(
     open_publication_workspace: Callback<web_sys::MouseEvent>,
     open_library: Callback<web_sys::MouseEvent>,
     load_demo: Callback<DemoInfo>,
-    open_demo_actions: Callback<(web_sys::MouseEvent, String, String)>,
+    open_demo_actions: Callback<(web_sys::MouseEvent, String, String, bool)>,
     load_session: Callback<String>,
     open_exploration: Callback<Exploration>,
     open_exploration_actions: Callback<(web_sys::MouseEvent, String, String)>,
@@ -371,7 +371,7 @@ pub(super) fn Sidebar(
                                         on:contextmenu=move |ev: web_sys::MouseEvent| {
                                             ev.prevent_default();
                                             ev.stop_propagation();
-                                            open_demo.call((ev, d_menu.id.clone(), d_menu.title.clone()));
+                                            open_demo.call((ev, d_menu.id.clone(), d_menu.title.clone(), d_menu.user_saved));
                                         }>
                                         <span class="dot"></span>
                                         <span class="ses-title">{d.title.clone()}</span>
@@ -382,7 +382,7 @@ pub(super) fn Sidebar(
                                         on:click=move |ev: web_sys::MouseEvent| {
                                             ev.prevent_default();
                                             ev.stop_propagation();
-                                            open_demo_btn.call((ev, d_actions.id.clone(), d_actions.title.clone()));
+                                            open_demo_btn.call((ev, d_actions.id.clone(), d_actions.title.clone(), d_actions.user_saved));
                                         }>{compose_icon("more")}</button>
                                 </div>
                             }

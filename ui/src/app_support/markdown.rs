@@ -872,11 +872,7 @@ mod art_ref_marker_tests {
     }
 
     fn file_artifact(path: &str) -> Artifact {
-        let name = path
-            .rsplit(['/', '\\'])
-            .next()
-            .unwrap_or(path)
-            .to_string();
+        let name = path.rsplit(['/', '\\']).next().unwrap_or(path).to_string();
         Artifact {
             id: "a1".into(),
             name,
@@ -888,6 +884,7 @@ mod art_ref_marker_tests {
             location: None,
             source_item: 0,
             superseded: false,
+            source_discarded: false,
         }
     }
 
@@ -896,9 +893,7 @@ mod art_ref_marker_tests {
         let arts = vec![file_artifact(
             "bmc_cancer_draft/01_background_methods_v0.md",
         )];
-        let html = md_to_html(
-            "Draft: `bmc_cancer_draft/01_background_methods_v0.md` is ready.",
-        );
+        let html = md_to_html("Draft: `bmc_cancer_draft/01_background_methods_v0.md` is ready.");
         let out = wrap_code_filenames_as_art_refs(html, &arts);
         assert!(out.contains(r#"class="art-ref""#));
         assert!(out.contains(r#"data-art-idx="0""#));
@@ -911,8 +906,7 @@ mod art_ref_marker_tests {
         let arts = vec![file_artifact(
             "/Users/me/project/bmc_cancer_draft/01_background_methods_v0.md",
         )];
-        let html =
-            r#"<p>see <code>bmc_cancer_draft/01_background_methods_v0.md</code></p>"#;
+        let html = r#"<p>see <code>bmc_cancer_draft/01_background_methods_v0.md</code></p>"#;
         let out = wrap_code_filenames_as_art_refs(html.into(), &arts);
         assert!(out.contains(r#"data-art-idx="0""#));
         assert!(out.contains("bmc_cancer_draft/01_background_methods_v0.md"));

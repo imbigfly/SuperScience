@@ -1,11 +1,11 @@
 use super::{
     RunManager, RunPreflightReport, RunPreflightSpec, RunPreflightStatus, SubmitRunRequest,
 };
-use wisp_llm::ToolSchema;
-use wisp_tools::{Approval, Tool, ToolEnv, ToolResult};
+use superscience_llm::ToolSchema;
+use superscience_tools::{Approval, Tool, ToolEnv, ToolResult};
 
 pub struct RunInContextTool {
-    store: wisp_store::Store,
+    store: superscience_store::Store,
     manager: RunManager,
     project_id: String,
     frame_id: Option<String>,
@@ -13,7 +13,7 @@ pub struct RunInContextTool {
 
 impl RunInContextTool {
     pub fn new(
-        store: wisp_store::Store,
+        store: superscience_store::Store,
         manager: RunManager,
         project_id: String,
         frame_id: Option<String>,
@@ -142,7 +142,7 @@ impl Tool for RunInContextTool {
                         .stop_batch()
                     }
                 },
-                None => wisp_store::StateScope::mainline(self.project_id.clone()),
+                None => superscience_store::StateScope::mainline(self.project_id.clone()),
             };
             match crate::exploration_isolation::boundary_for_scope(&self.store, &scope).await {
                 Ok(Some(boundary)) => {
@@ -166,11 +166,11 @@ impl Tool for RunInContextTool {
             ));
         }
         if !env.danger_auto_approve() {
-            let danger = wisp_tools::safety::check_command_safety(&request.command);
+            let danger = superscience_tools::safety::check_command_safety(&request.command);
             let exploration_external = if request.context_id != "local" {
                 match self.frame_id.as_deref() {
                     Some(frame_id) => match self.store.frame_state_scope(frame_id).await {
-                        Ok(Some(wisp_store::StateScope::Exploration { .. })) => true,
+                        Ok(Some(superscience_store::StateScope::Exploration { .. })) => true,
                         Ok(_) => false,
                         Err(error) => {
                             return ToolResult::fail(format!(
@@ -307,19 +307,22 @@ fn preflight_blocked_result(report: &RunPreflightReport, requires_confirmation: 
 }
 
 pub struct GetRunTool {
-    store: wisp_store::Store,
-    scope: wisp_store::StateScope,
+    store: superscience_store::Store,
+    scope: superscience_store::StateScope,
 }
 
 impl GetRunTool {
-    pub fn new(store: wisp_store::Store, project_id: String) -> Self {
+    pub fn new(store: superscience_store::Store, project_id: String) -> Self {
         Self {
             store,
-            scope: wisp_store::StateScope::mainline(project_id),
+            scope: superscience_store::StateScope::mainline(project_id),
         }
     }
 
-    pub fn new_in_scope(store: wisp_store::Store, scope: wisp_store::StateScope) -> Self {
+    pub fn new_in_scope(
+        store: superscience_store::Store,
+        scope: superscience_store::StateScope,
+    ) -> Self {
         Self { store, scope }
     }
 }
@@ -377,19 +380,22 @@ impl Tool for GetRunTool {
 }
 
 pub struct MonitorRunTool {
-    store: wisp_store::Store,
-    scope: wisp_store::StateScope,
+    store: superscience_store::Store,
+    scope: superscience_store::StateScope,
 }
 
 impl MonitorRunTool {
-    pub fn new(store: wisp_store::Store, project_id: String) -> Self {
+    pub fn new(store: superscience_store::Store, project_id: String) -> Self {
         Self {
             store,
-            scope: wisp_store::StateScope::mainline(project_id),
+            scope: superscience_store::StateScope::mainline(project_id),
         }
     }
 
-    pub fn new_in_scope(store: wisp_store::Store, scope: wisp_store::StateScope) -> Self {
+    pub fn new_in_scope(
+        store: superscience_store::Store,
+        scope: superscience_store::StateScope,
+    ) -> Self {
         Self { store, scope }
     }
 }
@@ -448,10 +454,10 @@ const WAIT_INTERRUPTED_NEXT_ACTION: &str = "The Run is still executing and was n
      cancel_run only if the user asked to stop the Run.";
 
 async fn wait_for_terminal(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     run_id: &str,
     env: &dyn ToolEnv,
-) -> Result<(wisp_store::RunRecord, WaitOutcome), String> {
+) -> Result<(superscience_store::RunRecord, WaitOutcome), String> {
     loop {
         let run = store
             .get_run(run_id)
@@ -476,8 +482,8 @@ async fn wait_for_terminal(
     }
 }
 
-fn run_wait_result(run: wisp_store::RunRecord, outcome: WaitOutcome) -> ToolResult {
-    let succeeded = run.status == wisp_store::RunStatus::Succeeded;
+fn run_wait_result(run: superscience_store::RunRecord, outcome: WaitOutcome) -> ToolResult {
+    let succeeded = run.status == superscience_store::RunStatus::Succeeded;
     let cleanable = outcome == WaitOutcome::Terminal
         && run.status.is_terminal()
         && run.remote_workdir.is_some()
@@ -510,16 +516,16 @@ fn run_wait_result(run: wisp_store::RunRecord, outcome: WaitOutcome) -> ToolResu
 }
 
 pub struct HarvestRunTool {
-    store: wisp_store::Store,
+    store: superscience_store::Store,
     manager: RunManager,
-    scope: wisp_store::StateScope,
+    scope: superscience_store::StateScope,
 }
 
 impl HarvestRunTool {
     pub fn new_in_scope(
-        store: wisp_store::Store,
+        store: superscience_store::Store,
         manager: RunManager,
-        scope: wisp_store::StateScope,
+        scope: superscience_store::StateScope,
     ) -> Self {
         Self {
             store,
@@ -573,16 +579,16 @@ impl Tool for HarvestRunTool {
 }
 
 pub struct CleanupRunWorkspaceTool {
-    store: wisp_store::Store,
+    store: superscience_store::Store,
     manager: RunManager,
-    scope: wisp_store::StateScope,
+    scope: superscience_store::StateScope,
 }
 
 impl CleanupRunWorkspaceTool {
     pub fn new_in_scope(
-        store: wisp_store::Store,
+        store: superscience_store::Store,
         manager: RunManager,
-        scope: wisp_store::StateScope,
+        scope: superscience_store::StateScope,
     ) -> Self {
         Self {
             store,
@@ -638,13 +644,17 @@ impl Tool for CleanupRunWorkspaceTool {
 }
 
 pub struct ListRemoteFilesTool {
-    store: wisp_store::Store,
+    store: superscience_store::Store,
     project_id: String,
     frame_id: Option<String>,
 }
 
 impl ListRemoteFilesTool {
-    pub fn new(store: wisp_store::Store, project_id: String, frame_id: Option<String>) -> Self {
+    pub fn new(
+        store: superscience_store::Store,
+        project_id: String,
+        frame_id: Option<String>,
+    ) -> Self {
         Self {
             store,
             project_id,
@@ -654,16 +664,16 @@ impl ListRemoteFilesTool {
 }
 
 async fn selected_ssh_context_for_tools(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     frame_id: Option<&str>,
     context_id: &str,
-) -> Result<wisp_store::ExecutionContext, String> {
+) -> Result<superscience_store::ExecutionContext, String> {
     let context = store
         .get_execution_context(context_id)
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Execution context not found: {context_id}"))?;
-    if context.kind != wisp_store::ExecutionContextKind::Ssh {
+    if context.kind != superscience_store::ExecutionContextKind::Ssh {
         return Err(format!("Execution context is not SSH: {context_id}"));
     }
     if let Some(frame_id) = frame_id {
@@ -726,7 +736,7 @@ impl Tool for ListRemoteFilesTool {
 }
 
 pub struct RemoveRemoteFilesTool {
-    store: wisp_store::Store,
+    store: superscience_store::Store,
     manager: RunManager,
     project_id: String,
     frame_id: Option<String>,
@@ -734,7 +744,7 @@ pub struct RemoveRemoteFilesTool {
 
 impl RemoveRemoteFilesTool {
     pub fn new(
-        store: wisp_store::Store,
+        store: superscience_store::Store,
         manager: RunManager,
         project_id: String,
         frame_id: Option<String>,
@@ -827,24 +837,24 @@ impl Tool for RemoveRemoteFilesTool {
 }
 
 pub struct CancelRunTool {
-    store: wisp_store::Store,
+    store: superscience_store::Store,
     manager: RunManager,
-    scope: wisp_store::StateScope,
+    scope: superscience_store::StateScope,
 }
 
 impl CancelRunTool {
-    pub fn new(store: wisp_store::Store, manager: RunManager, project_id: String) -> Self {
+    pub fn new(store: superscience_store::Store, manager: RunManager, project_id: String) -> Self {
         Self {
             store,
             manager,
-            scope: wisp_store::StateScope::mainline(project_id),
+            scope: superscience_store::StateScope::mainline(project_id),
         }
     }
 
     pub fn new_in_scope(
-        store: wisp_store::Store,
+        store: superscience_store::Store,
         manager: RunManager,
-        scope: wisp_store::StateScope,
+        scope: superscience_store::StateScope,
     ) -> Self {
         Self {
             store,

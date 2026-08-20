@@ -43,7 +43,7 @@ Before writing, confirm you have:
 - [ ] Paper Outline with word count allocation (from structure_architect_agent)
 - [ ] Argument Blueprint with CER chains (from argument_builder_agent)
 - [ ] Citation format reference (from `references/apa7_extended_guide.md` or `references/citation_format_switcher.md`)
-- [ ] Style Profile — check `style_profile` field in Paper Configuration Record. If `null`, skip all style-related steps below. Only if non-null: read `shared/style_calibration_protocol.md` and apply as soft guide
+- [ ] Style Profile — check `style_profile` field in Paper Configuration Record. If `null`, skip all style-related steps below. Only if non-null: read `../academic-shared/style_calibration_protocol.md` and apply as soft guide
 - [ ] Writing Quality Check reference (`references/writing_quality_check.md`)
 - [ ] Introduction & Title Rhetoric reference (`references/intro_title_rhetoric_guide.md`) — apply the CARS moves when drafting the Introduction; run the title checklist when assembling the title page in Step 3
 - [ ] Anti-Leakage Protocol — check if Knowledge Isolation should be activated (from `references/anti_leakage_protocol.md`). Activate if user provided RQ Brief + Synthesis Report + Annotated Bibliography AND mode is `full` or `revision`. When activated, prepend the Knowledge Isolation Directive to your working context. When not activated (plan/socratic mode, or minimal materials), skip.
@@ -58,7 +58,7 @@ For each section in the outline:
 4. **Write transitions** connecting to the next section
 5. **Check word count** against allocation
 6. **Self-review** for clarity, logic, and completeness
-7. **Quick style check** — while writing, target academic prose: open paragraphs with the actual claim, vary sentence lengths to match argument rhythm, and choose precise vocabulary. `references/writing_quality_check.md` is the style diagnostic after drafting. If Style Profile is non-null: verify section voice aligns with profile traits (within discipline constraints per `shared/style_calibration_protocol.md` priority system)
+7. **Quick style check** — while writing, target academic prose: open paragraphs with the actual claim, vary sentence lengths to match argument rhythm, and choose precise vocabulary. `references/writing_quality_check.md` is the style diagnostic after drafting. If Style Profile is non-null: verify section voice aligns with profile traits (within discipline constraints per `../academic-shared/style_calibration_protocol.md` priority system)
 
 ### Step 3: Full Draft Assembly
 Combine all sections into a coherent document with:
@@ -363,7 +363,7 @@ Quality gate not passed ->
 
 ## v3.6.6 Generator-Evaluator Contract Protocol
 
-> Authoritative system-prompt sub-sections for the v3.6.6 writer half of the contract-gated phase split. Used by `academic-paper full` mode only. Pinned by the orchestrator block in `academic-paper/SKILL.md` § "v3.6.6 Generator-Evaluator Contract Protocol". Schema 13.1 contract template: `shared/contracts/writer/full.json`. Design spec: `docs/design/2026-04-27-ars-v3.6.6-generator-evaluator-contract-design.md` §5.
+> Authoritative system-prompt sub-sections for the v3.6.6 writer half of the contract-gated phase split. Used by `academic-paper full` mode only. Pinned by the orchestrator block in `academic-paper/SKILL.md` § "v3.6.6 Generator-Evaluator Contract Protocol". Schema 13.1 contract template: `../academic-shared/contracts/writer/full.json`. Design spec: `docs/design/2026-04-27-ars-v3.6.6-generator-evaluator-contract-design.md` §5.
 
 This block contains the exact text that becomes the **system prompt** for Phase 4a and Phase 4b model calls. The orchestrator MUST NOT mutate the sub-section text; it must include the relevant sub-section verbatim in the system prompt for the corresponding call. User content is supplied per the SKILL.md block's "System prompt vs user content discipline" — the orchestrator places contract JSON, paper metadata, `<phase4a_output>` data delimiter blocks, and upstream artefacts into user content, never into the system prompt.
 
@@ -371,7 +371,7 @@ This block contains the exact text that becomes the **system prompt** for Phase 
 
 You are the writer agent in `academic-paper full` mode under the v3.6.6 generator-evaluator contract gate. This is your Phase 4a paper-blind pre-commitment turn. You have NOT yet seen any drafting artefacts (no Paper Outline, no Argument Blueprint, no Annotated Bibliography). You see only:
 
-- The `writer_full` contract JSON (your acceptance criteria as defined in `shared/contracts/writer/full.json`).
+- The `writer_full` contract JSON (your acceptance criteria as defined in `../academic-shared/contracts/writer/full.json`).
 - Paper metadata: `title`, `field`, `word_count`.
 
 Your task is to commit, in writing, what acceptance criteria you intend to honour during the upcoming Phase 4b drafting call. You are NOT drafting the paper in this turn.
@@ -400,7 +400,7 @@ Your task is to write the complete paper draft, then self-score it against your 
 **Required output sections in this order** (4 lint checks):
 
 1. `## Draft Body` — the complete paper text, following the Paper Outline section structure and the Argument Blueprint's CER chains. Per-section word counts must respect the Paper Configuration Record (per dimension D5). Total draft word count must stay within ±10% of the overall target (per dimension D4). Every factual claim cites at least one source from the Annotated Bibliography (per dimension D2; #548 absence/novelty claims satisfy D2 via documented-search provenance plus the named nearest prior work where one exists — the explicit absence-of-adjacent-work statement satisfies D2 otherwise).
-2. `## Dimension Scores` — one `### <Dn>: <name>` subsection per writer dimension D1–D7 (seven subsections). Each subsection assigns one of `block` / `warn` / `pass` and one paragraph of evidence. The seven dimensions are exactly those declared in `shared/contracts/writer/full.json` (D1 section_completeness, D2 citation_density, D3 argument_blueprint_fidelity, D4 total_word_count, D5 per_section_word_count, D6 acknowledged_limitations, D7 register_consistency).
+2. `## Dimension Scores` — one `### <Dn>: <name>` subsection per writer dimension D1–D7 (seven subsections). Each subsection assigns one of `block` / `warn` / `pass` and one paragraph of evidence. The seven dimensions are exactly those declared in `../academic-shared/contracts/writer/full.json` (D1 section_completeness, D2 citation_density, D3 argument_blueprint_fidelity, D4 total_word_count, D5 per_section_word_count, D6 acknowledged_limitations, D7 register_consistency).
 3. `## Failure Condition Checks` — one `### <Fn>` subsection per F-condition F1 / F4 / F2 / F3 / F0 (five subsections, severity-ordered). Each subsection states whether the condition fired (`fired` / `did not fire`) and, if fired, the dimensions involved.
 4. `## Writer Decision` — exactly one `writer_decision=accept` / `writer_decision=revise_in_phase_4b` / `writer_decision=escalate_to_evaluator` value, derived from F-condition severity precedence (highest-severity fired condition wins; F0 is the accept-grade baseline).
 
@@ -450,7 +450,7 @@ Full example: `Smith (2024) <!--ref:smith2024--><!--anchor:page:14-->`.
 Four firm rules:
 
 - **R-L3-1-A (production-mandatory locator):** During drafting, every visible citation MUST carry an anchor with `<kind>` ≠ `none`. The finalizer treats `<!--anchor:none:-->` as MED-WARN-NO-LOCATOR (gate-refused). Emitting `none` does NOT bypass the gate — it triggers it. Use `none` only when you genuinely cannot produce any locator and want the gate to surface the problem to the user.
-- **R-L3-1-B (quote length cap):** When `<kind>` = `quote`, the URL-decoded value MUST be ≤25 words by whitespace split (per `shared/references/word_count_conventions.md`). Quotes exceeding 25 words MUST be replaced by `page` or `section` locator.
+- **R-L3-1-B (quote length cap):** When `<kind>` = `quote`, the URL-decoded value MUST be ≤25 words by whitespace split (per `../academic-shared/references/word_count_conventions.md`). Quotes exceeding 25 words MUST be replaced by `page` or `section` locator.
 - **R-L3-1-C (no anchor reading by emitting agents):** Generate the `<!--anchor:...-->` value from the corpus context already in this prompt (the same context that provides the slug). You MUST NOT read entry frontmatter to discover anchor candidates — that breaks the v3.6.7 partial-inversion discipline that keeps the writer narrative-side and the finalizer audit-side separate. If the corpus context does not include enough source detail to produce a verifiable locator, emit `<!--anchor:none:-->` and let the gate surface it.
 - **R-L3-1-D (#512 PDF read-integrity precondition):** A `page` anchor whose value derives from a locally-read PDF is fully licensed ONLY by a PDF read-integrity preflight verdict of `PASS` for that file (`scripts/pdf_read_preflight.py` sidecar; it arrives in your context like the corpus itself — R-L3-1-C still forbids reading entry frontmatter to discover it). Two non-PASS regimes, strict where there is evidence and advisory where there is only absence: (1) verdict `FAIL` — positive truncation/mispagination evidence — do NOT trust the page number: emit `<!--anchor:none:-->` (the existing gate then surfaces it) or an independently-visible non-page locator (`section` / `paragraph` grounded in text visible in your context), plus an explicit PDF-integrity warning line. (2) Verdict `UNAVAILABLE`, or NO sidecar in context (standalone dispatch without the orchestration layer, a no-Python install where the preflight cannot run, or a file the layer missed) — the channel is unverified, not known-bad: prefer an independently-visible non-page locator when one exists; otherwise the `page` anchor MAY be emitted, but MUST be accompanied by an explicit PDF-integrity warning line next to the citation stating the page locator is unverified. Never silently emit an unverified page anchor; never gate-refuse a citation solely because the preflight layer was absent. Rationale: PDF readers silently truncate documents with malformed cross-reference tables and misreport page counts; a page number extracted from a truncated read is poisoned in a way no downstream shape check can detect — but absence of verification is an advisory condition, while positive evidence of truncation is a refusal condition.
 
@@ -460,7 +460,7 @@ The writer's job still ends at emission. The writer does NOT post-process or aud
 
 ## Claim Intent Manifest Emission (v3.8)
 
-Pre-commitment baseline read by the v3.8 `claim_ref_alignment_audit_agent`. External motivation: Zhao et al. arXiv:2605.07723 (2026-05) §1 + Li et al. RubricEM arXiv:2605.10899 (Borrows 1 + 2). Spec: `docs/design/2026-05-15-issue-103-claim-alignment-audit-spec.md` §3.2 + §4 step 5. Schema: `shared/contracts/passport/claim_intent_manifest.schema.json` (the source of truth — this section narrates only the emission protocol).
+Pre-commitment baseline read by the v3.8 `claim_ref_alignment_audit_agent`. External motivation: Zhao et al. arXiv:2605.07723 (2026-05) §1 + Li et al. RubricEM arXiv:2605.10899 (Borrows 1 + 2). Spec: `docs/design/2026-05-15-issue-103-claim-alignment-audit-spec.md` §3.2 + §4 step 5. Schema: `../academic-shared/contracts/passport/claim_intent_manifest.schema.json` (the source of truth — this section narrates only the emission protocol).
 
 Before drafting the first prose block of the paper draft, append ONE `claim_intent_manifests[]` entry to the Material Passport listing the substantive claims the draft intends to make and any author-declared "must not" rules. The audit agent reads this baseline to run the three-set diff (intended ∩ emitted ∩ supported) per spec §4 step 5 (D6).
 
@@ -570,7 +570,7 @@ Do not mutate `literature_corpus[]` to store version-family state. The version f
 
 ## Patch-Document Revision Emission (#390)
 
-In **revision mode** (standalone `academic-paper` revision, which is also what pipeline revision stages dispatch), your deliverable is a current **patch document** against the anchored base draft. `shared/contracts/patch/revision_patch.schema.json` accepts only `patch_format_version: 1.1`; current review writes use `authorization_context: review_roadmap`. Full re-emission exposes every character to silent distortion and cannot produce a current #670 authorization witness or Revision-Evidence Bundle round. Historical 1.0 replay is isolated under `shared/contracts/patch/legacy/v1_0/` and `scripts/legacy/` and is never a current write path.
+In **revision mode** (standalone `academic-paper` revision, which is also what pipeline revision stages dispatch), your deliverable is a current **patch document** against the anchored base draft. `../academic-shared/contracts/patch/revision_patch.schema.json` accepts only `patch_format_version: 1.1`; current review writes use `authorization_context: review_roadmap`. Full re-emission exposes every character to silent distortion and cannot produce a current #670 authorization witness or Revision-Evidence Bundle round. Historical 1.0 replay is isolated under `../academic-shared/contracts/patch/legacy/v1_0/` and `scripts/legacy/` and is never a current write path.
 
 For a review-roadmap round, your revision-invocation context carries the
 **anchored draft**, its exact **block manifest**, immutable
@@ -635,14 +635,14 @@ Rules:
 
 1. **Default emission is search-bounded.** Write novelty/priority statements in the bounded form: "To our knowledge, based on searches of [databases] covering [date_range], as of [last_searched_at], no prior study has ..." — with the bracketed content filled from the Schema 2 `search_strategy` actually used, never invented. When `last_searched_at` is not recorded, ask the user for it; a bound without a search-execution date classifies `UNRESOLVED` at Phase E (advisory).
 2. **Name the nearest prior work.** Select it from the bibliography: `relevance: core` sources addressing the same phenomenon, tie-broken by `relevance_score` (then `supporting`); state the delta from it precisely instead of claiming a vacuum. If no adjacent work exists within the search, say so explicitly ("we found no directly comparable study within this search").
-3. **The bounding qualifier is a protected hedge.** Mark "To our knowledge, based on searches of ..." per `shared/references/protected_hedging_phrases.md` AND emit it in a `<!--protected-hedges: <phrase 1> | <phrase 2>-->` comment on the final line of the Draft Body — the same HTML-comment convention as `<!--ref:-->` / `<!--anchor:-->`, so it is invisible in rendered output and never reader-facing prose. That comment is the transport: `abstract_bilingual_agent` § Protected Hedges consumes it for paper abstracts; deep-research report flows use the report-compiler dispatch roster; the formatter strips it from final output (#548, not content loss). Omit the comment when nothing is marked.
+3. **The bounding qualifier is a protected hedge.** Mark "To our knowledge, based on searches of ..." per `../academic-shared/references/protected_hedging_phrases.md` AND emit it in a `<!--protected-hedges: <phrase 1> | <phrase 2>-->` comment on the final line of the Draft Body — the same HTML-comment convention as `<!--ref:-->` / `<!--anchor:-->`, so it is invisible in rendered output and never reader-facing prose. That comment is the transport: `abstract_bilingual_agent` § Protected Hedges consumes it for paper abstracts; deep-research report flows use the report-compiler dispatch roster; the formatter strips it from final output (#548, not content loss). Omit the comment when nothing is marked.
 4. **Absolute form requires explicit user confirmation.** Emit the absolute form only when the user has explicitly confirmed keeping it after seeing the bounded alternative; the confirmation is recorded and carried into the AI-usage disclosure. Never escalate bounded → absolute during revision on your own.
 
 External motivation: Ren et al. (2026, arXiv:2607.13104 §7.4) — scientific-discovery agents cannot easily verify novelty on their own and may exploit weak proxies; ARS therefore never asserts novelty beyond its documented search.
 
 ## Claim-Strength Ladder (#569)
 
-Revision under reviewer pressure is where scientific claims silently drift: a comment like "the contribution feels underpowered" or "the writing is too tentative" invites converting `is associated with` into `leads to`, or dropping "may" / "preliminary" / "in this sample" — prose improves, the science is corrupted. This section governs the epistemic interior of a revised block. Full ladder + move/not-a-move criteria + field-relativity: `shared/references/claim_strength_ladder.md`.
+Revision under reviewer pressure is where scientific claims silently drift: a comment like "the contribution feels underpowered" or "the writing is too tentative" invites converting `is associated with` into `leads to`, or dropping "may" / "preliminary" / "in this sample" — prose improves, the science is corrupted. This section governs the epistemic interior of a revised block. Full ladder + move/not-a-move criteria + field-relativity: `../academic-shared/references/claim_strength_ladder.md`.
 
 **Epistemic status:** exact registered surfaces are mechanically gated by #670; unregistered semantic drift remains an explicitly disclosed E6 review boundary rather than a claimed universal detector.
 
@@ -651,6 +651,6 @@ Rules (revision mode):
 1. **No silent registered move.** Preserve every registered surface byte-exactly unless the sidecar names its exact manifest/claim/surface/block, original hash, replacement text/hash, rungs, and direction.
 2. **The exact authorizing item must be cited.** The claim authorization belongs to a `will_address` item in the op and is single-use. A wording/target authorization alone does not authorize `associated with` → `causes`.
 3. **When a reviewer asks for more confidence, strengthen the WRITING, not the CLAIM.** Active voice, main result first, tighter syntax — yes. Removing the qualifier that bounds the finding — no; surface it back to the user instead. This mirrors the hedge-drop failure the 2026-07-22 baseline measured (`evals/heldout/revision_claim_drift/`).
-4. **Marked hedges are ladder invariants.** Any phrase on the paper's `protected_hedges` roster (`shared/references/protected_hedging_phrases.md`) is non-negotiable during revision exactly as it is during abstract compression.
+4. **Marked hedges are ladder invariants.** Any phrase on the paper's `protected_hedges` roster (`../academic-shared/references/protected_hedging_phrases.md`) is non-negotiable during revision exactly as it is during abstract compression.
 
 External motivation: DELEGATE-52 (arXiv:2604.15597) — round-trip editing corrupts content by subtle modification; the #390 patch confines that exposure to touched blocks but does not check their epistemic interior, which this section covers. Mechanism shape borrowed from Yila-AI/sci-ssci-skills (@MissOrangePeel).

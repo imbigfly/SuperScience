@@ -107,7 +107,7 @@ checksums or immutable object identifiers are recorded elsewhere.
 - If an adapter or connector cannot perform the requested transfer, stop after
   producing the validated plan and report the missing capability explicitly.
 
-## Wisp Science integration
+## SuperScience integration
 
 - Discover the live connector/tool catalog instead of assuming exact MCP tool
   names; installations can expose different provider adapters.
@@ -115,6 +115,6 @@ checksums or immutable object identifiers are recorded elsewhere.
   mechanisms for large files.
 - Keep outputs under the active project, normally `data/public/<provider>/...`.
 - The optional `kernel.py` sidecar exposes plan creation and validation helpers
-  in Wisp's persistent Python runtime.
+  in SuperScience's persistent Python runtime.
 - Treat this skill as an acquisition/orchestration layer. Downstream QC,
   statistics, annotation, and visualization belong to other skills.

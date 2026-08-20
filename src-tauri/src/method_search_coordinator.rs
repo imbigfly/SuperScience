@@ -84,7 +84,9 @@ impl StoreWorkflowRunActivityDriver {
         }
     }
 
-    fn spec_version_id(request: &superscience_core::WorkflowRunActivityRequest) -> Result<String, String> {
+    fn spec_version_id(
+        request: &superscience_core::WorkflowRunActivityRequest,
+    ) -> Result<String, String> {
         request
             .input
             .get("dependency_results")
@@ -918,7 +920,13 @@ async fn save_candidate_blob(
     }
     let directory = secure_blob_directory(
         project_root,
-        &[".superscience", "method-search", "blobs", "sha256", &checksum[..2]],
+        &[
+            ".superscience",
+            "method-search",
+            "blobs",
+            "sha256",
+            &checksum[..2],
+        ],
     )?;
     let path = directory.join(format!("{checksum}.{kind}"));
     if path.exists() {
@@ -2466,10 +2474,12 @@ mod tests {
         ) -> Result<crate::method_search::EvaluationExecution, String> {
             let source = std::fs::read_to_string(request.workspace.join(&request.target_path))
                 .map_err(|error| error.to_string())?;
-            if source.contains("wisp_method_search_reachability_sentinel") {
+            if source.contains("superscience_method_search_reachability_sentinel")
+                || source.contains("wisp_method_search_reachability_sentinel")
+            {
                 return Ok(crate::method_search::EvaluationExecution {
                     exit_code: Some(1),
-                    stderr: "RuntimeError: wisp_method_search_reachability_sentinel".into(),
+                    stderr: "RuntimeError: superscience_method_search_reachability_sentinel".into(),
                     ..Default::default()
                 });
             }
@@ -2490,7 +2500,7 @@ mod tests {
             Ok(crate::method_search::EvaluationExecution {
                 exit_code: Some(0),
                 stdout: format!(
-                    "wisp_evaluate: {{\"primary\":{primary},\"metrics\":{{\"accuracy\":{primary},\"runtime_seconds\":{runtime}}}}}"
+                    "superscience_evaluate: {{\"primary\":{primary},\"metrics\":{{\"accuracy\":{primary},\"runtime_seconds\":{runtime}}}}}"
                 ),
                 ..Default::default()
             })

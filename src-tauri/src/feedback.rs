@@ -94,9 +94,8 @@ fn default_prefer_ssl() -> bool {
 pub fn load_feedback_config() -> Result<FeedbackConfig, String> {
     let mut config = parse_feedback_config_base(BUNDLED_FEEDBACK_CONFIG)?;
     if let Some((path, raw)) = read_local_override()? {
-        apply_feedback_override(&mut config, &raw).map_err(|error| {
-            format!("invalid {}: {error}", path.display())
-        })?;
+        apply_feedback_override(&mut config, &raw)
+            .map_err(|error| format!("invalid {}: {error}", path.display()))?;
     }
     validate_feedback_config(&config)?;
     Ok(config)
@@ -304,10 +303,7 @@ fn auth_related(error: &str) -> bool {
         || lower.contains("credential")
 }
 
-async fn send_with_fallback(
-    config: &FeedbackConfig,
-    email: Message,
-) -> Result<(), String> {
+async fn send_with_fallback(config: &FeedbackConfig, email: Message) -> Result<(), String> {
     let primary = config.smtp.prefer_ssl;
     let first = smtp_transport(config, primary)?;
     match first.send(email.clone()).await {
@@ -359,12 +355,8 @@ pub async fn send_feedback_email(
         return Err("Please enter feedback before sending.".into());
     }
     let config = load_feedback_config()?;
-    let email = build_feedback_message(
-        &config,
-        trimmed,
-        diagnostics.as_deref(),
-        subject.as_deref(),
-    )?;
+    let email =
+        build_feedback_message(&config, trimmed, diagnostics.as_deref(), subject.as_deref())?;
     send_with_fallback(&config, email).await
 }
 

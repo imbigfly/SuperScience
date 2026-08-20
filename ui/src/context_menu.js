@@ -1,5 +1,5 @@
 export function isDevMode() {
-  return window.__SUPERSCIENCE_DEV__ === true;
+  return window.__WISP_DEV__ === true;
 }
 
 export async function copyImage(src) {

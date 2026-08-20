@@ -7,8 +7,8 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::time::Duration;
-use wisp_llm::ToolSchema;
-use wisp_tools::{Tool, ToolEnv, ToolEvent, ToolResult};
+use superscience_llm::ToolSchema;
+use superscience_tools::{Tool, ToolEnv, ToolEvent, ToolResult};
 
 const MAX_PROMPT_BYTES: usize = 32 * 1024;
 const MAX_VIDEO_BYTES: usize = 500 * 1024 * 1024;
@@ -117,7 +117,7 @@ impl GenerateVideoTool {
 
     fn client(&self) -> Result<reqwest::Client, String> {
         let mut builder = reqwest::Client::builder()
-            .user_agent("wisp-science")
+            .user_agent(superscience_paths::PRODUCT_NAME)
             .timeout(Duration::from_secs(300));
         match self.proxy.as_deref().map(str::trim) {
             None | Some("") => {}
@@ -474,7 +474,7 @@ impl Tool for GenerateVideoTool {
         {
             return ToolResult::fail("generate_video error: path must end in .mp4");
         }
-        if let Err(error) = wisp_tools::safety::validate_relative_pattern(path) {
+        if let Err(error) = superscience_tools::safety::validate_relative_pattern(path) {
             return ToolResult::fail(format!("generate_video {path} error: {error}"));
         }
         if std::path::Path::new(path).parent() != Some(std::path::Path::new("media")) {
@@ -487,7 +487,7 @@ impl Tool for GenerateVideoTool {
                 "generate_video {path} error: cannot create media directory: {error}"
             ));
         }
-        let real = match wisp_tools::safety::validate_file_path(env.project_root(), path) {
+        let real = match superscience_tools::safety::validate_file_path(env.project_root(), path) {
             Ok(path) => path,
             Err(error) => {
                 return ToolResult::fail(format!("generate_video {path} error: {error}"));

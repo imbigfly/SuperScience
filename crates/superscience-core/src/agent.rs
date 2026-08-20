@@ -12,10 +12,10 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use wisp_llm::{
+use superscience_llm::{
     is_retriable, Completion, Content, LlmError, Message, Part, Provider, ToolCall, ToolSchema,
 };
-use wisp_tools::{ImageData, Registry, ToolControl, ToolEnv};
+use superscience_tools::{ImageData, Registry, ToolControl, ToolEnv};
 
 const RETRY_DELAYS: [u64; 5] = [2_000, 10_000, 30_000, 60_000, 120_000];
 const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(25);
@@ -41,27 +41,22 @@ const STUCK_LOOP_MESSAGE: &str = "检测到智能体连续多次发出完全相�
 /// while the main model gets a bounded head/tail excerpt. This also covers
 /// read/grep/browser/MCP tools whose own safety cap can exceed a model window.
 /// Total byte budget (head + tail) for one tool result in the model context.
-/// ~16 KiB ≈ 4K estimated tokens. Override with WISP_TOOL_RESULT_BUDGET
-/// (bytes; 0 disables).
+/// ~16 KiB ≈ 4K estimated tokens. Override with SUPERSCIENCE_TOOL_RESULT_BUDGET
+/// (bytes; 0 disables). WISP_TOOL_RESULT_BUDGET is a silent fallback.
 const DEFAULT_STREAM_RESULT_BUDGET: usize = 16 * 1024;
 
 fn context_archive(root: &Path) -> (PathBuf, String) {
     let id = uuid::Uuid::new_v4().simple().to_string();
     (
-        root.join(".wisp")
-            .join("history")
-            .join(format!("{id}.json")),
-        format!("wisp-history:{id}"),
+        superscience_paths::history_dir(root).join(format!("{id}.json")),
+        superscience_paths::history_archive_uri(&id),
     )
 }
 
 /// Head/tail-truncate a tool's text result to the ingestion budget. The full
-/// text is written under `.wisp/tool-output/` so the model can read/grep it back.
+/// text is written under `.superscience/tool-output/` so the model can read/grep it back.
 fn budget_tool_result(root: &Path, tool_name: &str, content: Content) -> Content {
-    let budget = std::env::var("WISP_TOOL_RESULT_BUDGET")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(DEFAULT_STREAM_RESULT_BUDGET);
+    let budget = superscience_paths::tool_result_budget_bytes(DEFAULT_STREAM_RESULT_BUDGET);
     budget_tool_result_with_limit(root, tool_name, content, budget)
 }
 
@@ -77,7 +72,7 @@ fn budget_tool_result_with_limit(
     if budget == 0 || text.len() <= budget {
         return content;
     }
-    let spill_dir = root.join(".wisp").join("tool-output");
+    let spill_dir = superscience_paths::tool_output_dir(root);
     let safe_name = tool_name.replace(['/', '\\'], "_");
     let spill_path = spill_dir.join(format!(
         "{safe_name}-{}.txt",
@@ -209,7 +204,7 @@ fn native_image_content(user_input: &str, images: &[ImageData]) -> Content {
     }];
     parts.extend(images.iter().map(|image| Part::Image {
         kind: "image_url".into(),
-        image_url: wisp_llm::ImageUrl {
+        image_url: superscience_llm::ImageUrl {
             url: image.data_url.clone(),
         },
     }));
@@ -786,7 +781,7 @@ async fn describe_image(
         .filter(|s| !s.is_empty())
         .unwrap_or("Describe the image carefully. Extract visible text, labels, plots, UI state, notable scientific content, and uncertainties.");
     let user = Message {
-        role: wisp_llm::Role::User,
+        role: superscience_llm::Role::User,
         content: image_content(
             &format!("Tool: {tool_name}\n{}\n\nTask: {question}", img.label),
             &img.data_url,
@@ -921,9 +916,9 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
-    use wisp_llm::{FunctionCall, Role, ToolCall};
-    use wisp_tools::ask_user::ASK_USER;
-    use wisp_tools::{Approval, Registry, Tool, ToolEnv, ToolResult};
+    use superscience_llm::{FunctionCall, Role, ToolCall};
+    use superscience_tools::ask_user::ASK_USER;
+    use superscience_tools::{Approval, Registry, Tool, ToolEnv, ToolResult};
 
     #[test]
     fn retry_window_covers_sustained_provider_overload() {
@@ -990,7 +985,7 @@ mod tests {
         assert!(
             ContextManager::estimated_tokens(&Message::tool("call-read", "read", text)) < 5_000
         );
-        let spill = std::fs::read_dir(root.join(".wisp/tool-output"))
+        let spill = std::fs::read_dir(superscience_paths::tool_output_dir(&root))
             .unwrap()
             .next()
             .unwrap()
@@ -1017,7 +1012,7 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-        ) -> wisp_llm::Result<Completion> {
+        ) -> superscience_llm::Result<Completion> {
             Ok(self.completion.clone())
         }
 
@@ -1025,8 +1020,8 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-            _sink: &mut dyn wisp_llm::StreamSink,
-        ) -> wisp_llm::Result<Completion> {
+            _sink: &mut dyn superscience_llm::StreamSink,
+        ) -> superscience_llm::Result<Completion> {
             Ok(self.completion.clone())
         }
     }
@@ -1074,7 +1069,7 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-        ) -> wisp_llm::Result<Completion> {
+        ) -> superscience_llm::Result<Completion> {
             Err(LlmError::Config("complete is not used".into()))
         }
 
@@ -1082,8 +1077,8 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-            _sink: &mut dyn wisp_llm::StreamSink,
-        ) -> wisp_llm::Result<Completion> {
+            _sink: &mut dyn superscience_llm::StreamSink,
+        ) -> superscience_llm::Result<Completion> {
             self.started.notify_one();
             std::future::pending().await
         }
@@ -1103,7 +1098,7 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-        ) -> wisp_llm::Result<Completion> {
+        ) -> superscience_llm::Result<Completion> {
             Err(LlmError::Config("complete is not used".into()))
         }
 
@@ -1111,8 +1106,8 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-            _sink: &mut dyn wisp_llm::StreamSink,
-        ) -> wisp_llm::Result<Completion> {
+            _sink: &mut dyn superscience_llm::StreamSink,
+        ) -> superscience_llm::Result<Completion> {
             self.stream_calls.fetch_add(1, Ordering::SeqCst);
             self.started.notify_one();
             Err(LlmError::Api {
@@ -1136,7 +1131,7 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-        ) -> wisp_llm::Result<Completion> {
+        ) -> superscience_llm::Result<Completion> {
             self.complete_calls.fetch_add(1, Ordering::SeqCst);
             Ok(Completion {
                 content: "Objective\nRecovered after overflow.".into(),
@@ -1149,8 +1144,8 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-            _sink: &mut dyn wisp_llm::StreamSink,
-        ) -> wisp_llm::Result<Completion> {
+            _sink: &mut dyn superscience_llm::StreamSink,
+        ) -> superscience_llm::Result<Completion> {
             let call = self.stream_calls.fetch_add(1, Ordering::SeqCst);
             if call == 0 {
                 return Err(LlmError::Api {
@@ -1161,7 +1156,7 @@ mod tests {
             Ok(Completion {
                 content: "continued after overflow recovery".into(),
                 finish_reason: Some("stop".into()),
-                usage: wisp_llm::Usage {
+                usage: superscience_llm::Usage {
                     input_tokens: 1_000,
                     ..Default::default()
                 },
@@ -1184,7 +1179,7 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-        ) -> wisp_llm::Result<Completion> {
+        ) -> superscience_llm::Result<Completion> {
             Ok(Completion {
                 content: "Objective\nContinue the current conversation after compaction.".into(),
                 finish_reason: Some("stop".into()),
@@ -1196,8 +1191,8 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-            _sink: &mut dyn wisp_llm::StreamSink,
-        ) -> wisp_llm::Result<Completion> {
+            _sink: &mut dyn superscience_llm::StreamSink,
+        ) -> superscience_llm::Result<Completion> {
             self.stream_calls.fetch_add(1, Ordering::SeqCst);
             Ok(Completion {
                 content: "continued after compacting".into(),
@@ -1221,7 +1216,7 @@ mod tests {
             &self,
             messages: &[Message],
             _tools: &[ToolSchema],
-        ) -> wisp_llm::Result<Completion> {
+        ) -> superscience_llm::Result<Completion> {
             self.complete_requests
                 .lock()
                 .unwrap()
@@ -1233,8 +1228,8 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-            _sink: &mut dyn wisp_llm::StreamSink,
-        ) -> wisp_llm::Result<Completion> {
+            _sink: &mut dyn superscience_llm::StreamSink,
+        ) -> superscience_llm::Result<Completion> {
             self.stream_calls.fetch_add(1, Ordering::SeqCst);
             Err(LlmError::Config(
                 "main stream failed after degraded compaction".into(),
@@ -1265,7 +1260,7 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-        ) -> wisp_llm::Result<Completion> {
+        ) -> superscience_llm::Result<Completion> {
             self.complete_calls.fetch_add(1, Ordering::SeqCst);
             Err(LlmError::Config("forced summary failure".into()))
         }
@@ -1274,8 +1269,8 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-            _sink: &mut dyn wisp_llm::StreamSink,
-        ) -> wisp_llm::Result<Completion> {
+            _sink: &mut dyn superscience_llm::StreamSink,
+        ) -> superscience_llm::Result<Completion> {
             self.stream_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self
                 .completions
@@ -1295,7 +1290,7 @@ mod tests {
             }
         }
 
-        fn next(&self) -> wisp_llm::Result<Completion> {
+        fn next(&self) -> superscience_llm::Result<Completion> {
             self.completions
                 .lock()
                 .unwrap()
@@ -1375,7 +1370,7 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-        ) -> wisp_llm::Result<Completion> {
+        ) -> superscience_llm::Result<Completion> {
             self.next()
         }
 
@@ -1383,8 +1378,8 @@ mod tests {
             &self,
             _messages: &[Message],
             tools: &[ToolSchema],
-            _sink: &mut dyn wisp_llm::StreamSink,
-        ) -> wisp_llm::Result<Completion> {
+            _sink: &mut dyn superscience_llm::StreamSink,
+        ) -> superscience_llm::Result<Completion> {
             self.stream_calls.fetch_add(1, Ordering::SeqCst);
             self.schema_counts.lock().unwrap().push(tools.len());
             self.next()
@@ -1481,7 +1476,7 @@ mod tests {
         assert_eq!(output.0.load(Ordering::SeqCst), 1);
         assert_eq!(ctx.compaction_revision(), 1);
         assert_eq!(provider.stream_calls.load(Ordering::SeqCst), 1);
-        let archives = std::fs::read_dir(root.join(".wisp/history"))
+        let archives = std::fs::read_dir(superscience_paths::history_dir(&root))
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
@@ -1490,7 +1485,7 @@ mod tests {
         assert!(ctx
             .messages
             .iter()
-            .any(|message| message.content.as_text().contains("wisp-history:")));
+            .any(|message| message.content.as_text().contains("superscience-history:")));
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -1682,7 +1677,7 @@ mod tests {
             },
         ]);
         let mut tools = Registry::builtins();
-        tools.add(Box::new(wisp_tools::ask_user::AskUserTool));
+        tools.add(Box::new(superscience_tools::ask_user::AskUserTool));
         tools.add(Box::new(CountingTool {
             name: "later",
             runs: later_runs.clone(),
@@ -1727,7 +1722,7 @@ mod tests {
                 tool_calls: vec![
                     call(
                         "plan-1",
-                        wisp_tools::plan::PROPOSE_PLAN,
+                        superscience_tools::plan::PROPOSE_PLAN,
                         serde_json::json!({
                             "entries": [{ "content": "Implement the fix" }]
                         }),
@@ -1744,7 +1739,7 @@ mod tests {
             },
         ]);
         let mut tools = Registry::builtins();
-        tools.add(Box::new(wisp_tools::plan::ProposePlanTool));
+        tools.add(Box::new(superscience_tools::plan::ProposePlanTool));
         tools.add(Box::new(CountingTool {
             name: "later",
             runs: later_runs.clone(),
@@ -1994,7 +1989,7 @@ mod tests {
             &self,
             messages: &[Message],
             _tools: &[ToolSchema],
-        ) -> wisp_llm::Result<Completion> {
+        ) -> superscience_llm::Result<Completion> {
             self.complete_messages
                 .lock()
                 .unwrap()
@@ -2006,8 +2001,8 @@ mod tests {
             &self,
             messages: &[Message],
             _tools: &[ToolSchema],
-            _sink: &mut dyn wisp_llm::StreamSink,
-        ) -> wisp_llm::Result<Completion> {
+            _sink: &mut dyn superscience_llm::StreamSink,
+        ) -> superscience_llm::Result<Completion> {
             self.stream_messages.lock().unwrap().push(messages.to_vec());
             Ok(self.completion())
         }
@@ -2452,7 +2447,7 @@ mod tests {
         assert_eq!(ctx.last_request_tool_schema_count(), Some(0));
         assert!(ctx.runtime_injections.is_empty());
         let final_message = ctx.messages.last().unwrap();
-        assert_eq!(final_message.role, wisp_llm::Role::Assistant);
+        assert_eq!(final_message.role, superscience_llm::Role::Assistant);
         assert!(final_message.tool_calls.is_empty());
         assert!(final_message
             .content
@@ -2530,8 +2525,10 @@ mod tests {
         let mut tools = Registry::builtins();
         tools.add(Box::new(OkTool));
         let mut ctx = ContextManager::new(100_000);
-        let root =
-            std::env::temp_dir().join(format!("superscience-core-stuck-loop-test-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "superscience-core-stuck-loop-test-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&root).unwrap();
 
         let err = agent_loop(
@@ -2655,15 +2652,15 @@ mod tests {
             &self,
             messages: &[Message],
             _tools: &[ToolSchema],
-        ) -> wisp_llm::Result<Completion> {
+        ) -> superscience_llm::Result<Completion> {
             Ok(self.next(messages))
         }
         async fn stream(
             &self,
             messages: &[Message],
             _tools: &[ToolSchema],
-            _sink: &mut dyn wisp_llm::StreamSink,
-        ) -> wisp_llm::Result<Completion> {
+            _sink: &mut dyn superscience_llm::StreamSink,
+        ) -> superscience_llm::Result<Completion> {
             self.stream_calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.next(messages))
         }
@@ -2771,15 +2768,15 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-        ) -> wisp_llm::Result<Completion> {
+        ) -> superscience_llm::Result<Completion> {
             Ok(self.pick())
         }
         async fn stream(
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-            _sink: &mut dyn wisp_llm::StreamSink,
-        ) -> wisp_llm::Result<Completion> {
+            _sink: &mut dyn superscience_llm::StreamSink,
+        ) -> superscience_llm::Result<Completion> {
             Ok(self.pick())
         }
     }
@@ -2798,8 +2795,10 @@ mod tests {
         let mut tools = Registry::builtins();
         tools.add(Box::new(OkTool));
         let mut ctx = ContextManager::new(100_000);
-        let root =
-            std::env::temp_dir().join(format!("superscience-core-alt-loop-test-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "superscience-core-alt-loop-test-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&root).unwrap();
 
         let err = agent_loop(
@@ -2846,7 +2845,7 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-        ) -> wisp_llm::Result<Completion> {
+        ) -> superscience_llm::Result<Completion> {
             Err(LlmError::Config("complete is not used".into()))
         }
 
@@ -2854,8 +2853,8 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-            sink: &mut dyn wisp_llm::StreamSink,
-        ) -> wisp_llm::Result<Completion> {
+            sink: &mut dyn superscience_llm::StreamSink,
+        ) -> superscience_llm::Result<Completion> {
             self.stream_calls.fetch_add(1, Ordering::SeqCst);
             let completion = self
                 .completions
@@ -2954,7 +2953,7 @@ mod tests {
             "every text delta must reach the sink in order, multi-byte intact"
         );
         let last = ctx.messages.last().unwrap();
-        assert_eq!(last.role, wisp_llm::Role::Assistant);
+        assert_eq!(last.role, superscience_llm::Role::Assistant);
         assert_eq!(last.content.as_text(), "计数完成 — the tool ran.");
     }
 
@@ -2980,7 +2979,7 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-        ) -> wisp_llm::Result<Completion> {
+        ) -> superscience_llm::Result<Completion> {
             Err(LlmError::Config("complete is not used".into()))
         }
 
@@ -2988,8 +2987,8 @@ mod tests {
             &self,
             _messages: &[Message],
             _tools: &[ToolSchema],
-            _sink: &mut dyn wisp_llm::StreamSink,
-        ) -> wisp_llm::Result<Completion> {
+            _sink: &mut dyn superscience_llm::StreamSink,
+        ) -> superscience_llm::Result<Completion> {
             let attempt = self.stream_calls.fetch_add(1, Ordering::SeqCst);
             if attempt < self.fail_times {
                 return Err(LlmError::Api {
@@ -3041,7 +3040,7 @@ mod tests {
             "two retriable 503s, then the successful attempt"
         );
         let last = ctx.messages.last().unwrap();
-        assert_eq!(last.role, wisp_llm::Role::Assistant);
+        assert_eq!(last.role, superscience_llm::Role::Assistant);
         assert_eq!(
             last.content.as_text(),
             "recovered after overload",

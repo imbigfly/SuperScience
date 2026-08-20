@@ -1,11 +1,11 @@
 # Model configuration
 
 In General settings, **Suggest follow-up questions** is enabled by default.
-After a completed reply, Wisp uses that conversation's current model to offer
+After a completed reply, SuperScience uses that conversation's current model to offer
 three optional next questions. That secondary call reads only the four most
 recent user turns, so completing a long, tool-heavy conversation does not load
 and duplicate its full history. The suggestion panel can be hidden per reply,
-or the setting can be turned off to skip the extra model call entirely. Wisp
+or the setting can be turned off to skip the extra model call entirely. SuperScience
 does not request suggestions for failed, cancelled, paused, or tool-only turns;
 the current turn must contain a visible final answer.
 
@@ -21,7 +21,7 @@ WebView unloads older reactive rows and keeps the latest 20; **Load earlier
 messages** restores the durable history from SQLite. This presentation limit
 does not change model context, exports, artifacts, or the saved transcript.
 
-wisp-science calls remote LLM APIs through model profiles. Desktop users
+SuperScience calls remote LLM APIs through model profiles. Desktop users
 configure these in **Settings -> Models**. **Add API access** is bring-your-own-key:
 enter the shared **Base URL** and API key first, then add every chat and image
 model that key can call. Each model row independently selects its **Protocol**,
@@ -50,18 +50,18 @@ Choosing a level saves it as the profile's default — it applies to every
 conversation using that model and is not scoped to the current conversation.
 Choosing "default" clears the value so the provider decides.
 
-Model profiles describe model access and capabilities for the **built-in Wisp
+Model profiles describe model access and capabilities for the **built-in SuperScience
 agent**. External coding agents (Codex / Claude via ACP) are configured under
 **Settings → Models → ACP Agents** — see [ACP Agents](acp-agents.md). Do not put
 an ACP launch command in an HTTP model profile.
 
 For image workflows, mark an API profile as **Supports image input** and
 optionally **Use for image analysis**. Image attachments are sent directly to a
-visual input model. When the input model is non-visual, Wisp first calls the
+visual input model. When the input model is non-visual, SuperScience first calls the
 assigned vision model and passes its text observations to the input model.
 `view_image` and image reads use the assigned vision model in the same way.
 Raster image input supports PNG, JPEG, GIF, and WebP. Files up to 5 MiB are
-sent unchanged. For larger files, Wisp pauses before the model request and asks
+sent unchanged. For larger files, SuperScience pauses before the model request and asks
 whether to create a temporary JPEG input copy with a longest edge of 2048
 pixels. The project file is never modified, and the confirmation warns that
 fine details may be lost. Source images above 50 MiB remain rejected.
@@ -71,7 +71,7 @@ explains that previously sent images will be omitted from future requests to
 that model. This substitution happens only while preparing the API request; it
 does not delete or rewrite the saved conversation. A new image attached after
 the switch is analyzed through the assigned vision model. Without an assigned
-vision model, Wisp rejects that new image before starting the main model turn.
+vision model, SuperScience rejects that new image before starting the main model turn.
 
 Image generation is a separate model role. Create an OpenAI-compatible profile
 with model ID `gpt-image-2` or `grok-imagine-image-2.0`, then enable **Use for
@@ -109,7 +109,7 @@ capability.
 
 The **Validate** action checks image-model access through the provider's model
 metadata endpoint. If a compatible gateway does not implement the single-model
-route and returns `404` or `405`, Wisp checks its model-list endpoint instead.
+route and returns `404` or `405`, SuperScience checks its model-list endpoint instead.
 It does not send the image-only model to Responses/Chat Completions and does not
 generate a billable validation image.
 
@@ -143,11 +143,11 @@ metadata endpoint as image models — no billable video is generated.
 | Anthropic | Claude-compatible models through `/v1/messages` | Protocol, Model ID, optional endpoint suffix |
 
 Enter the API root as the shared Base URL. Do not append `/v1`,
-`/chat/completions`, `/responses`, or `/v1/messages`; Wisp adds the matching
+`/chat/completions`, `/responses`, or `/v1/messages`; SuperScience adds the matching
 request path for the selected protocol. If a service exposes one protocol or a
 specific image model below a distinct path, put that path in the model's
-optional **Endpoint suffix**. Wisp joins the suffix to the Base URL first, then
-adds the selected protocol's request path. For OpenAI-compatible services, Wisp
+optional **Endpoint suffix**. SuperScience joins the suffix to the Base URL first, then
+adds the selected protocol's request path. For OpenAI-compatible services, SuperScience
 tries both `/chat/completions` and `/v1/chat/completions` when the base URL has
 no explicit version or endpoint path. It only falls back when the first route
 is missing or returns an obvious non-API response, so authentication and
@@ -158,7 +158,7 @@ For example, one DeepSeek API key can be represented by the shared Base URL
 Responses leave the endpoint suffix blank. A model using DeepSeek's Anthropic
 entry selects the Anthropic protocol and sets its endpoint suffix to
 `/anthropic`, producing the effective Base URL
-`https://api.deepseek.com/anthropic` before Wisp adds `/v1/messages`.
+`https://api.deepseek.com/anthropic` before SuperScience adds `/v1/messages`.
 
 OpenAI-compatible reasoning streams are normalized into one reasoning channel.
 Empty `content` placeholders sent alongside Alibaba/DashScope
@@ -166,20 +166,20 @@ Empty `content` placeholders sent alongside Alibaba/DashScope
 one disclosure in the conversation.
 
 If a provider ends a turn after returning only reasoning tokens—without visible
-text or a tool call—Wisp reports a resumable error instead of showing the turn
+text or a tool call—SuperScience reports a resumable error instead of showing the turn
 as silently processed. Completed tool results remain in the conversation; use
 **Resume** to request the missing final reply without replaying those tools. If
 this repeats in a long conversation, send `/compact` before resuming to fold old
 turns while preserving an archive of the full history.
 
-Wisp also treats an SSE `error` payload and a Responses API status other than
+SuperScience also treats an SSE `error` payload and a Responses API status other than
 `completed` as a failed, resumable turn, even when a compatible relay keeps the
 HTTP status at 200 or appends a `[DONE]` marker. Partial output is not committed
 as a final answer, completed tool results remain available, and follow-up
 questions are not generated for that interrupted turn.
 
 **Settings → General → Automatically compact long conversations** is enabled by
-default. Following mangopi-cli's model-boundary approach, Wisp checks the
+default. Following mangopi-cli's model-boundary approach, SuperScience checks the
 estimated context before every native-agent model call, including later calls
 after large tool results and ephemeral host/reviewer injections. At 80% it
 archives the complete pre-compact history and targets the trigger minus an
@@ -191,12 +191,12 @@ messages or visible assistant answers — protection is counted in agent rounds
 (user messages and tool-call batches), so a single instruction followed by
 hundreds of tool calls still leaves old rounds prunable; oversized recent tool
 payloads become bounded excerpts that point to the archive. If semantic turns
-must be removed, Wisp summarizes a sanitized projection of the original
+must be removed, SuperScience summarizes a sanitized projection of the original
 history before deleting them, then retains one incrementally updated summary
 checkpoint plus at most two recent turns in an 8K-token tail. Raw images and
 large tool results are not replayed to the summary model. The internal summary
 instruction is never added to the conversation, and a failed compaction rolls
-back the rewrite and stops before Wisp can send the known-oversized main
+back the rewrite and stops before SuperScience can send the known-oversized main
 request; after such a failure, automatic retries are suppressed until the
 estimate grows by another tenth of the window, so a doomed compaction is not
 repaid at every model boundary. Tool
@@ -224,7 +224,7 @@ request. Conversation remains a size-only category so the usage card does not
 duplicate the chat transcript.
 Older native usage rows that only stored a total attribute that window to
 Conversation until the next reply refreshes the full breakdown. ACP sessions
-expose only the total reported by the remote agent, so Wisp labels that value
+expose only the total reported by the remote agent, so SuperScience labels that value
 as an agent-reported total instead of inventing a breakdown it cannot observe.
 
 ## Usage dashboard
@@ -242,7 +242,7 @@ usage events did not contain those fields, so their dashboard model falls back
 to the session's saved model binding and their activity date falls back to the
 session's latest activity date.
 
-When the provider explicitly rejects a built-in Wisp-agent request for
+When the provider explicitly rejects a built-in SuperScience-agent request for
 exceeding its context window, the conversation opens a recovery dialog instead
 of leaving the raw error as a dead end. **Compact and continue** archives the
 full history, folds older turns, and resumes after the retained tool results.
@@ -252,25 +252,25 @@ conversation** preserves the error and completed work without making another
 request. Pressing Escape immediately after the dialog opens is equivalent to
 pausing; it closes only this recovery surface.
 
-For OpenAI-compatible and Responses API profiles, Wisp sends its internal
+For OpenAI-compatible and Responses API profiles, SuperScience sends its internal
 `python` REPL tool as `wisp_python` and maps returned calls back to `python`.
 This avoids the reserved `python` function-name collision on Codex models,
 including when the request is translated by gateways such as CLIProxyAPI.
 
 API keys are stored in the OS keyring. They are not stored in SQLite.
 
-The desktop app stores model profile metadata in `.wisp/wisp.sqlite`. Existing single-model installs are migrated into a `default` model profile the first time settings are loaded.
+The desktop app stores model profile metadata in the SuperScience app-data SQLite store (`superscience.sqlite`). Existing single-model installs are migrated into a `default` model profile the first time settings are loaded.
 
 ## Headless CLI
 
-The `wisp-science` headless CLI uses environment variables and supports the
+The `superscience` headless CLI uses environment variables and supports the
 same API protocols:
 
 ```powershell
-$env:WISP_PROVIDER = "openai"           # openai, openai_responses, or anthropic
-$env:WISP_API_URL  = "https://api.deepseek.com"
-$env:WISP_MODEL    = "deepseek-v4-flash"
-$env:WISP_API_KEY  = "<your provider key>"
+$env:SUPERSCIENCE_PROVIDER = "openai"           # openai, openai_responses, or anthropic
+$env:SUPERSCIENCE_API_URL  = "https://api.deepseek.com"
+$env:SUPERSCIENCE_MODEL    = "deepseek-v4-flash"
+$env:SUPERSCIENCE_API_KEY  = "<your provider key>"
 cargo run -p superscience-cli
 ```
 

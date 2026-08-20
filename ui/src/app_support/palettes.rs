@@ -154,7 +154,6 @@ pub(crate) fn CommandPalette(
     on_open_artifact: Callback<(String, String, String)>,
     on_command: Callback<&'static str>,
     on_new_session: Callback<()>,
-    on_open_scratch: Callback<()>,
     on_project_settings: Callback<()>,
     on_manage_skills: Callback<()>,
     on_attach: Callback<ComposerReferenceChip>,
@@ -253,7 +252,6 @@ pub(crate) fn CommandPalette(
                 .filter(|s| !hidden.contains(&s.project_id))
                 .map(CommandPaletteItem::Session),
         );
-        out.push(CommandPaletteItem::Command("scratch"));
         out.push(CommandPaletteItem::Command("new"));
         out.push(CommandPaletteItem::Command("check-updates"));
         out.push(CommandPaletteItem::Command("star-us"));
@@ -280,7 +278,6 @@ pub(crate) fn CommandPalette(
             CommandPaletteItem::Session(s) => {
                 on_open_session.call((s.project_id, s.id, new_window))
             }
-            CommandPaletteItem::Command("scratch") => on_open_scratch.call(()),
             CommandPaletteItem::Command("new") => on_new_session.call(()),
             CommandPaletteItem::Command("check-updates") => on_command.call("check-updates"),
             CommandPaletteItem::Command("star-us") => on_command.call("star-us"),
@@ -359,8 +356,7 @@ pub(crate) fn CommandPalette(
                                 CommandPaletteItem::Project(p) => ("folder", p.name, p.description),
                                 CommandPaletteItem::Artifact(a) => ("doc", a.name, a.project_name.unwrap_or_default()),
                                 CommandPaletteItem::Session(s) => ("bubble", s.title, s.project_name),
-                                CommandPaletteItem::Command("scratch") => ("bubble", t(locale.get(), "command.scratch").to_string(), t(locale.get(), "command.category")),
-                                CommandPaletteItem::Command("new") => ("plus", t(locale.get(), "projects.new").to_string(), t(locale.get(), "command.category")),
+                                CommandPaletteItem::Command("new") => ("plus", t(locale.get(), "command.new_session").to_string(), t(locale.get(), "command.category")),
                                 CommandPaletteItem::Command("check-updates") => ("gear", t(locale.get(), "command.check_updates").to_string(), t(locale.get(), "command.category")),
                                 CommandPaletteItem::Command("star-us") => ("star", t(locale.get(), "command.star_us").to_string(), t(locale.get(), "command.category")),
                                 CommandPaletteItem::Command("settings") => ("gear", t(locale.get(), "proj_settings.title").to_string(), t(locale.get(), "command.category")),
@@ -435,22 +431,13 @@ pub(crate) fn ActionPalette(
         let help = t(loc, "command.group.help").to_string();
         let entries = [
             (
-                "scratch",
-                "bubble",
-                "command.scratch",
-                general.clone(),
-                "shift-n",
-                "scratch chat 随手 对话",
-                false,
-            ),
-            (
                 "new",
                 "plus",
                 "command.new_session",
                 general.clone(),
                 "n",
-                "new conversation session 新建 会话",
-                true,
+                "new conversation session 新建 会话 开始对话 start conversation",
+                false,
             ),
             (
                 "search",
@@ -696,15 +683,6 @@ pub(crate) fn ActionPalette(
                 false,
             ),
             (
-                "star-us",
-                "star",
-                "command.star_us",
-                help.clone(),
-                "",
-                "github star",
-                false,
-            ),
-            (
                 "docs",
                 "doc",
                 "menu.docs",
@@ -734,8 +712,6 @@ pub(crate) fn ActionPalette(
                 contains_search(&q, &[id, &title, &group, aliases]).then(|| {
                     let shortcut = match (mac, shortcut) {
                         (_, "") => String::new(),
-                        (true, "shift-n") => "⌘⇧N".into(),
-                        (false, "shift-n") => "Ctrl+Shift+N".into(),
                         (true, "shift-h") => "⌘⇧H".into(),
                         (false, "shift-h") => "Ctrl+Shift+H".into(),
                         (true, key) => format!("⌘{}", key.to_uppercase()),

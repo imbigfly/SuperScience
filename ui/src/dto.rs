@@ -4,4 +4,4 @@
 //! `crate::dto::*` paths. Backend contract tests in `src-tauri` deserialize
 //! command output into these same types to catch drift.
 
-pub(crate) use wisp_dto::*;
+pub(crate) use superscience_dto::*;

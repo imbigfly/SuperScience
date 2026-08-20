@@ -12,24 +12,28 @@ use sha2::{Digest, Sha256};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
-use tauri::State;
-use tokio::io::{AsyncRead, AsyncReadExt};
 use superscience_core::method_search::{
     inject_python_reachability_sentinel, locate_python_symbol, parse_evaluator_output,
     summarize_baseline, BaselineAuditSummary, FinalVerificationSpec, MethodSearchBudget,
     MethodSearchEvaluatorSpec, MethodSearchGuardrail, MethodSearchInput, MethodSearchMetrics,
     MethodSearchSpec, MethodSearchTarget, MethodStrategySource, ScoreDirection,
-    EVALUATOR_PROTOCOL_V1, MAX_EVALUATOR_OUTPUT_BYTES, METHOD_SEARCH_SCHEMA_V1,
+    EVALUATOR_PROTOCOL_V1, LEGACY_REACHABILITY_SENTINEL, MAX_EVALUATOR_OUTPUT_BYTES,
+    METHOD_SEARCH_SCHEMA_V1, REACHABILITY_SENTINEL,
 };
 use superscience_store::{
     logical_artifact_id, ArtifactCaptureTiming, ArtifactMaterialization, ArtifactVersionDraft,
     Store,
 };
 use superscience_tools::{Tool, ToolEnv, ToolResult};
+use tauri::State;
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 const MAX_AUDIT_STDERR_BYTES: usize = 32 * 1024;
 const MAX_PREPARATION_INPUTS: usize = 64;
-const SENTINEL_MARKER: &str = "wisp_method_search_reachability_sentinel";
+
+fn observes_reachability_sentinel(text: &str) -> bool {
+    text.contains(REACHABILITY_SENTINEL) || text.contains(LEGACY_REACHABILITY_SENTINEL)
+}
 
 pub(crate) struct PrepareMethodSearchTool {
     store: Store,
@@ -478,7 +482,10 @@ async fn save_json_snapshot<T: Serialize>(
 ) -> Result<(String, String), String> {
     let json_value = serde_json::to_value(value).map_err(|error| error.to_string())?;
     let (canonical, sha256) = superscience_store::canonical_json_sha256(&json_value);
-    let temp_dir = root.join(".superscience").join("method-search").join("preparation");
+    let temp_dir = root
+        .join(".superscience")
+        .join("method-search")
+        .join("preparation");
     std::fs::create_dir_all(&temp_dir).map_err(|error| error.to_string())?;
     let path = temp_dir.join(format!("{preparation_id}-{role}.json"));
     std::fs::write(&path, canonical.as_bytes()).map_err(|error| error.to_string())?;
@@ -750,8 +757,8 @@ pub(crate) async fn prepare_method_search_with_evaluator(
     verify_hashes(project_root, &protected)?;
     let sentinel_reachable = !sentinel_execution.timed_out
         && sentinel_execution.exit_code != Some(0)
-        && (sentinel_execution.stderr.contains(SENTINEL_MARKER)
-            || sentinel_execution.stdout.contains(SENTINEL_MARKER));
+        && (observes_reachability_sentinel(&sentinel_execution.stderr)
+            || observes_reachability_sentinel(&sentinel_execution.stdout));
     if !sentinel_reachable {
         return Err(
             "Evaluator did not observe the temporary target-symbol reachability sentinel".into(),
@@ -1222,8 +1229,10 @@ mod tests {
 
     impl TestDirectory {
         fn new() -> Self {
-            let path = std::env::temp_dir()
-                .join(format!("superscience-method-search-test-{}", uuid::Uuid::new_v4()));
+            let path = std::env::temp_dir().join(format!(
+                "superscience-method-search-test-{}",
+                uuid::Uuid::new_v4()
+            ));
             std::fs::create_dir_all(&path).unwrap();
             Self(path)
         }
@@ -1265,10 +1274,10 @@ mod tests {
                 std::fs::read_to_string(request.workspace.join(&request.target_path))
             }
             .map_err(|error| error.to_string())?;
-            if target.contains(SENTINEL_MARKER) {
+            if observes_reachability_sentinel(&target) {
                 return Ok(EvaluationExecution {
                     exit_code: Some(1),
-                    stderr: format!("RuntimeError: {SENTINEL_MARKER}"),
+                    stderr: format!("RuntimeError: {REACHABILITY_SENTINEL}"),
                     ..Default::default()
                 });
             }
@@ -1276,7 +1285,7 @@ mod tests {
             Ok(EvaluationExecution {
                 exit_code: Some(0),
                 stdout: format!(
-                    "wisp_evaluate: {{\"primary\":{primary},\"metrics\":{{\"accuracy\":{primary},\"runtime_seconds\":1.0}}}}"
+                    "superscience_evaluate: {{\"primary\":{primary},\"metrics\":{{\"accuracy\":{primary},\"runtime_seconds\":1.0}}}}"
                 ),
                 ..Default::default()
             })
@@ -1327,7 +1336,9 @@ mod tests {
         )
         .unwrap();
         std::fs::write(temp.path().join("data/validation.csv"), "x,y\n1,1\n").unwrap();
-        let store = Store::open(&temp.path().join("superscience.db")).await.unwrap();
+        let store = Store::open(&temp.path().join("superscience.db"))
+            .await
+            .unwrap();
         store
             .create_project("project", "Project", temp.path().to_str().unwrap())
             .await

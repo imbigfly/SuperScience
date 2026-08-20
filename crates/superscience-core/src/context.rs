@@ -2116,7 +2116,7 @@ mod tests {
             let call = ToolCall {
                 id: format!("call{round}"),
                 kind: "function".into(),
-                function: wisp_llm::FunctionCall {
+                function: superscience_llm::FunctionCall {
                     name: "read".into(),
                     arguments: "{}".into(),
                 },
@@ -2636,7 +2636,8 @@ mod tests {
         let mut ctx = ContextManager::new(10_000);
         ctx.append_user("USER_FACT=alpha");
         ctx.append_tool("call-1", "read", Content::text("TOOL_BODY=beta"));
-        let path = std::env::temp_dir().join(format!("superscience-transcript-{}", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("superscience-transcript-{}", std::process::id()));
         ctx.save_transcript(&path);
         let transcript = std::fs::read_to_string(&path).unwrap();
         assert!(transcript.contains("=== [0] USER ==="));

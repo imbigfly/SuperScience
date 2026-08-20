@@ -4475,15 +4475,15 @@ fn App() -> impl IntoView {
                         let next = if update.downloaded {
                             UpdateCheckModal::ReadyToInstall {
                                 version: update.latest_version,
-                                release_url: update.release_url,
+                                force_update: update.force_update,
                             }
                         } else {
                             UpdateCheckModal::Available {
                                 version: update.latest_version,
                                 notes: update.notes,
-                                release_url: update.release_url,
                                 install_supported: update.install_supported,
                                 downloading: update.downloading,
+                                force_update: update.force_update,
                             }
                         };
                         if matches!(modal.get_untracked(), Some(UpdateCheckModal::Checking)) {
@@ -4512,9 +4512,6 @@ fn App() -> impl IntoView {
                         if matches!(modal.get_untracked(), Some(UpdateCheckModal::Checking)) {
                             modal.set(Some(UpdateCheckModal::Failed {
                                 message: text,
-                                release_url: Some(
-                                    "https://github.com/xuzhougeng/wisp-science/releases".into(),
-                                ),
                             }));
                         }
                     }
@@ -4526,9 +4523,6 @@ fn App() -> impl IntoView {
                     if matches!(modal.get_untracked(), Some(UpdateCheckModal::Checking)) {
                         modal.set(Some(UpdateCheckModal::Failed {
                             message: text,
-                            release_url: Some(
-                                "https://github.com/xuzhougeng/wisp-science/releases".into(),
-                            ),
                         }));
                     }
                 }

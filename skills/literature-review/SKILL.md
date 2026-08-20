@@ -19,7 +19,7 @@ metadata:
       name: OpenAlex
       terms_url: https://openalex.org/OpenAlex_termsofservice.pdf
       privacy_url: https://openalex.org/OpenAlex_privacy_policy.pdf
-wisp:
+superscience:
   schema_version: 1
   domains: [scientific-literature]
   research_stages: [retrieval, validation, synthesis]

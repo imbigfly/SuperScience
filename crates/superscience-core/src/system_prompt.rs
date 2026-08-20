@@ -23,9 +23,10 @@ impl<'a> SystemPrompt<'a> {
         let project_instructions = std::fs::read_to_string(project_root.join("AGENTS.md"))
             .ok()
             .filter(|s| !s.trim().is_empty());
-        let user_rules = std::fs::read_to_string(project_root.join(".superscience").join("SUPERSCIENCE.md"))
-            .ok()
-            .filter(|s| !s.trim().is_empty());
+        let user_rules =
+            std::fs::read_to_string(superscience_paths::agent_context_path(project_root))
+                .ok()
+                .filter(|s| !s.trim().is_empty());
         Self {
             project_root,
             skills,
@@ -164,7 +165,7 @@ If a named workflow is disabled or unavailable, follow the same principles direc
         sections.join("\n\n") + "\n"
     }
 
-    /// The prompt section derived from AGENTS.md / .wisp/WISP.md. Compared
+    /// The prompt section derived from AGENTS.md / .superscience/SUPERSCIENCE.md. Compared
     /// against `extract_rules_section` of a persisted prompt to detect stale
     /// project rules in long-lived sessions.
     pub fn rules_section(&self) -> String {
@@ -254,7 +255,11 @@ mod tests {
         ));
         std::fs::create_dir_all(root.join(".superscience")).unwrap();
         std::fs::write(root.join("AGENTS.md"), "Use the repository checks.").unwrap();
-        std::fs::write(root.join(".superscience/SUPERSCIENCE.md"), "Prefer the project UI setting.").unwrap();
+        std::fs::write(
+            root.join(".superscience/SUPERSCIENCE.md"),
+            "Prefer the project UI setting.",
+        )
+        .unwrap();
 
         let out = SystemPrompt::new(&root, &SkillIndex::default(), None).assemble();
         let agents = out.find("Use the repository checks.").unwrap();
@@ -274,9 +279,13 @@ mod tests {
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
-        std::fs::create_dir_all(root.join(".wisp")).unwrap();
+        std::fs::create_dir_all(root.join(".superscience")).unwrap();
         std::fs::write(root.join("AGENTS.md"), "Use the repository checks.").unwrap();
-        std::fs::write(root.join(".wisp/WISP.md"), "Prefer the project UI setting.").unwrap();
+        std::fs::write(
+            root.join(".superscience/SUPERSCIENCE.md"),
+            "Prefer the project UI setting.",
+        )
+        .unwrap();
 
         let skills = SkillIndex::default();
         let sp = SystemPrompt::new(&root, &skills, None);
@@ -294,13 +303,13 @@ mod tests {
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
-        std::fs::create_dir_all(root.join(".wisp")).unwrap();
-        std::fs::write(root.join(".wisp/WISP.md"), "Old rule.").unwrap();
+        std::fs::create_dir_all(root.join(".superscience")).unwrap();
+        std::fs::write(root.join(".superscience/SUPERSCIENCE.md"), "Old rule.").unwrap();
 
         let out = SystemPrompt::new(&root, &SkillIndex::default(), None).assemble();
         let stored = SystemPrompt::extract_rules_section(&out).unwrap();
 
-        std::fs::write(root.join(".wisp/WISP.md"), "New rule.").unwrap();
+        std::fs::write(root.join(".superscience/SUPERSCIENCE.md"), "New rule.").unwrap();
         let current = SystemPrompt::new(&root, &SkillIndex::default(), None).rules_section();
         assert_ne!(stored, current, "edit must be detected as stale");
 
@@ -309,7 +318,7 @@ mod tests {
 
     #[test]
     fn extract_rules_section_handles_missing_files_and_foreign_prompts() {
-        // No AGENTS.md / WISP.md: section still exists ("No user-defined rules.")
+        // No AGENTS.md / SUPERSCIENCE.md: section still exists ("No user-defined rules.")
         let out = SystemPrompt::new(std::path::Path::new("/tmp"), &SkillIndex::default(), None)
             .assemble();
         let extracted = SystemPrompt::extract_rules_section(&out).unwrap();
@@ -326,8 +335,8 @@ mod tests {
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
-        std::fs::create_dir_all(root.join(".wisp")).unwrap();
-        std::fs::write(root.join(".wisp/WISP.md"), "Old rule.").unwrap();
+        std::fs::create_dir_all(root.join(".superscience")).unwrap();
+        std::fs::write(root.join(".superscience/SUPERSCIENCE.md"), "Old rule.").unwrap();
 
         let skills = SkillIndex::default();
         let original = SystemPrompt::new(&root, &skills, None).assemble();
@@ -339,7 +348,7 @@ mod tests {
         );
 
         std::fs::write(root.join("AGENTS.md"), "Use the repository checks.").unwrap();
-        std::fs::write(root.join(".wisp/WISP.md"), "New rule.").unwrap();
+        std::fs::write(root.join(".superscience/SUPERSCIENCE.md"), "New rule.").unwrap();
         let fresh = SystemPrompt::new(&root, &skills, None).rules_section();
         let reloaded = SystemPrompt::replace_rules_section(&original, &fresh).unwrap();
         assert!(reloaded.contains("Use the repository checks."));

@@ -212,7 +212,8 @@ mod tests {
 
     #[tokio::test]
     async fn explore_returns_anchor_and_archives_full_trace() {
-        let root = std::env::temp_dir().join(format!("superscience-explore-test-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("superscience-explore-test-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let data = root.join("notes.txt");
         std::fs::write(&data, "hello-anchor-data").unwrap();

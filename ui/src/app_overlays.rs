@@ -386,15 +386,14 @@ pub(crate) fn UpdateCheckOverlay(state: UpdateCheckOverlayState) -> impl IntoVie
             UpdateCheckModal::Available {
                 version,
                 notes,
-                release_url,
                 install_supported,
                 downloading,
+                force_update,
             } => {
                 let body = tf(locale.get(), "update_modal.available_body", &[("version", &version)]);
                 let notes_html = (!notes.trim().is_empty()).then(|| md_to_html(&notes));
-                let release_for_open = release_url.clone();
                 let version_for_download = version.clone();
-                let release_for_download = release_url.clone();
+                let force_for_download = force_update;
                 view! {
                     <div class="overlay">
                         <div class="modal confirm-modal update-check-modal" data-testid="update-check-modal">
@@ -404,39 +403,30 @@ pub(crate) fn UpdateCheckOverlay(state: UpdateCheckOverlayState) -> impl IntoVie
                                 <div class="update-notes md markdown" inner_html=html></div>
                             })}
                             <div class="row">
-                                <button
-                                    type="button"
-                                    class="update-modal-dismiss"
-                                    data-testid="update-check-dismiss"
-                                    on:click=move |_| {
-                                        update_check_enabled.set(false);
-                                        update_banner.set(None);
-                                        update_check_modal.set(None);
-                                        spawn_local(async {
-                                            let arg = to_value(&serde_json::json!({ "enabled": false })).unwrap_or(JsValue::NULL);
-                                            let _ = invoke("set_update_check_enabled", arg).await;
-                                        });
-                                    }
-                                >
-                                    {move || t(locale.get(), "update_modal.never")}
-                                </button>
-                                <button
-                                    type="button"
-                                    on:click=move |_| update_check_modal.set(None)
-                                >
-                                    {move || t(locale.get(), "update_modal.later")}
-                                </button>
-                                <button
-                                    type="button"
-                                    class:primary=move || !install_supported
-                                    data-testid="update-check-open-releases"
-                                    on:click=move |_| {
-                                        open_external_url(release_for_open.clone());
-                                        update_check_modal.set(None);
-                                    }
-                                >
-                                    {move || t(locale.get(), "update_modal.open_releases")}
-                                </button>
+                                {(!force_update).then(|| view! {
+                                    <button
+                                        type="button"
+                                        class="update-modal-dismiss"
+                                        data-testid="update-check-dismiss"
+                                        on:click=move |_| {
+                                            update_check_enabled.set(false);
+                                            update_banner.set(None);
+                                            update_check_modal.set(None);
+                                            spawn_local(async {
+                                                let arg = to_value(&serde_json::json!({ "enabled": false })).unwrap_or(JsValue::NULL);
+                                                let _ = invoke("set_update_check_enabled", arg).await;
+                                            });
+                                        }
+                                    >
+                                        {move || t(locale.get(), "update_modal.never")}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        on:click=move |_| update_check_modal.set(None)
+                                    >
+                                        {move || t(locale.get(), "update_modal.later")}
+                                    </button>
+                                })}
                                 {install_supported.then(|| view! {
                                     <button
                                         type="button"
@@ -445,13 +435,14 @@ pub(crate) fn UpdateCheckOverlay(state: UpdateCheckOverlayState) -> impl IntoVie
                                         prop:disabled=downloading
                                         on:click=move |_| {
                                             let version = version_for_download.clone();
-                                            let release_url = release_for_download.clone();
+                                            let force_update = force_for_download;
                                             let downloaded_bytes = create_rw_signal(0_u64);
                                             let total_bytes = create_rw_signal(None::<u64>);
                                             update_check_modal.set(Some(UpdateCheckModal::Downloading {
                                                 version: version.clone(),
                                                 downloaded_bytes,
                                                 total_bytes,
+                                                force_update,
                                             }));
                                             spawn_local(async move {
                                                 let callback = Closure::<dyn FnMut(JsValue)>::wrap(Box::new(
@@ -480,7 +471,7 @@ pub(crate) fn UpdateCheckOverlay(state: UpdateCheckOverlayState) -> impl IntoVie
                                                     Ok(_) => update_check_modal.set(Some(
                                                         UpdateCheckModal::ReadyToInstall {
                                                             version,
-                                                            release_url,
+                                                            force_update,
                                                         },
                                                     )),
                                                     Err(error) => update_check_modal.set(Some(
@@ -489,7 +480,6 @@ pub(crate) fn UpdateCheckOverlay(state: UpdateCheckOverlayState) -> impl IntoVie
                                                                 locale.get_untracked(),
                                                                 &js_error_text(error),
                                                             ),
-                                                            release_url: Some(release_url),
                                                         },
                                                     )),
                                                 }
@@ -513,6 +503,7 @@ pub(crate) fn UpdateCheckOverlay(state: UpdateCheckOverlayState) -> impl IntoVie
                 version,
                 downloaded_bytes,
                 total_bytes,
+                force_update: _,
             } => {
                 let title = tf(
                     locale.get(),
@@ -540,44 +531,33 @@ pub(crate) fn UpdateCheckOverlay(state: UpdateCheckOverlayState) -> impl IntoVie
                 }
                 .into_view()
             }
-            UpdateCheckModal::ReadyToInstall { version, release_url } => {
+            UpdateCheckModal::ReadyToInstall { version, force_update } => {
                 let body = tf(
                     locale.get(),
                     "update_modal.ready_body",
                     &[("version", &version)],
                 );
-                let release_for_open = release_url.clone();
                 let version_for_install = version.clone();
-                let release_for_install = release_url.clone();
                 view! {
                     <div class="overlay">
                         <div class="modal confirm-modal update-check-modal" data-testid="update-check-modal">
                             <h2>{move || t(locale.get(), "update_modal.ready_title")}</h2>
                             <div class="hint">{body}</div>
                             <div class="row">
-                                <button
-                                    type="button"
-                                    on:click=move |_| update_check_modal.set(None)
-                                >
-                                    {move || t(locale.get(), "update_modal.later")}
-                                </button>
-                                <button
-                                    type="button"
-                                    data-testid="update-check-open-releases"
-                                    on:click=move |_| {
-                                        open_external_url(release_for_open.clone());
-                                        update_check_modal.set(None);
-                                    }
-                                >
-                                    {move || t(locale.get(), "update_modal.open_releases")}
-                                </button>
+                                {(!force_update).then(|| view! {
+                                    <button
+                                        type="button"
+                                        on:click=move |_| update_check_modal.set(None)
+                                    >
+                                        {move || t(locale.get(), "update_modal.later")}
+                                    </button>
+                                })}
                                 <button
                                     type="button"
                                     class="primary"
                                     data-testid="update-check-install"
                                     on:click=move |_| {
                                         let version = version_for_install.clone();
-                                        let release_url = release_for_install.clone();
                                         update_check_modal.set(Some(UpdateCheckModal::Installing {
                                             version: version.clone(),
                                         }));
@@ -591,7 +571,6 @@ pub(crate) fn UpdateCheckOverlay(state: UpdateCheckOverlayState) -> impl IntoVie
                                                         locale.get_untracked(),
                                                         &js_error_text(error),
                                                     ),
-                                                    release_url: Some(release_url),
                                                 }));
                                             }
                                         });
@@ -642,8 +621,7 @@ pub(crate) fn UpdateCheckOverlay(state: UpdateCheckOverlayState) -> impl IntoVie
                 }
                 .into_view()
             }
-            UpdateCheckModal::Failed { message, release_url } => {
-                let has_release = release_url.is_some();
+            UpdateCheckModal::Failed { message } => {
                 view! {
                     <div class="overlay">
                         <div class="modal confirm-modal update-check-modal" data-testid="update-check-modal">
@@ -652,24 +630,11 @@ pub(crate) fn UpdateCheckOverlay(state: UpdateCheckOverlayState) -> impl IntoVie
                             <div class="row">
                                 <button
                                     type="button"
-                                    class:primary=move || !has_release
+                                    class="primary"
                                     on:click=move |_| update_check_modal.set(None)
                                 >
                                     {move || t(locale.get(), "update_modal.ok")}
                                 </button>
-                                {release_url.map(|url| view! {
-                                    <button
-                                        type="button"
-                                        class="primary"
-                                        data-testid="update-check-open-releases"
-                                        on:click=move |_| {
-                                            open_external_url(url.clone());
-                                            update_check_modal.set(None);
-                                        }
-                                    >
-                                        {move || t(locale.get(), "update_modal.open_releases")}
-                                    </button>
-                                })}
                             </div>
                         </div>
                     </div>

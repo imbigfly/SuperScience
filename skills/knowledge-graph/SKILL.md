@@ -64,8 +64,10 @@ artifact in the existing preview.
 Deliver:
 
 - `knowledge-graph/triples.json` — all triples, inferred flagged
-- `knowledge-graph/graph.html` — interactive graph (hover nodes/edges; inferred
-  edges are dashed)
+- `knowledge-graph/graph.html` — interactive graph: search nodes, click to
+  highlight a neighborhood, wheel/button zoom, Fit, drag nodes (pins them),
+  drag empty space to pan, double-click to unpin; inferred edges are dashed.
+  The canvas fills the preview pane when opened in the center tab.
 - a short count: nodes, original edges, inferred edges
 
 If extraction is empty, say so and stop. Do not generate a decorative graph

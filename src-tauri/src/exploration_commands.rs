@@ -10,13 +10,13 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tauri::{State, WebviewWindow};
 use superscience_store::{
     ArtifactHead, ContextArchiveRecord, Exploration, ExplorationBaselineArtifactHead,
     ExplorationBaselineEntity, ExplorationCheckpoint, ExplorationFamily, ExplorationStatus,
     ExplorationSummary, StateScope, Store, WorkspaceSnapshotRecord, AGENT_WORKFLOW_COMPLETION_TOOL,
     MAINLINE_SCOPE_KEY,
 };
+use tauri::{State, WebviewWindow};
 
 const ERR_SOURCE_BUSY: &str = "exploration_source_busy";
 const ERR_ACP_UNSUPPORTED: &str = "exploration_acp_unsupported";
@@ -672,7 +672,7 @@ async fn materialize_checkpoint_context_archive(
     object.insert(
         "context_archives".into(),
         serde_json::json!([{
-            "uri": format!("wisp-history:{}", archive.id),
+            "uri": format!("superscience-history:{}", archive.id),
             "path": format!(".superscience/history/{}.json", archive.id),
             "checksum": archive.checksum,
         }]),
@@ -693,7 +693,9 @@ pub(crate) fn exploration_runtime_injection(
     let StateScope::Exploration { exploration_id, .. } = scope else {
         return Ok(None);
     };
-    let references_path = root.join(".superscience").join("exploration-references.json");
+    let references_path = root
+        .join(".superscience")
+        .join("exploration-references.json");
     let references = std::fs::read_to_string(&references_path)
         .map_err(|error| format!("cannot read exploration reference manifest: {error}"))?;
     let parsed: serde_json::Value =
@@ -1435,7 +1437,10 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert!(injection.contains(&format!("wisp-history:{}", checkpoint.context_archive_id)));
+        assert!(injection.contains(&format!(
+            "superscience-history:{}",
+            checkpoint.context_archive_id
+        )));
         std::fs::write(
             Path::new(&first.workspace_dir).join("baseline.txt"),
             b"first",
@@ -1495,7 +1500,7 @@ mod tests {
         assert!(!denied.success);
         assert_eq!(denied.control, superscience_tools::ToolControl::StopBatch);
         assert!(prompts.lock().unwrap()[0].contains("cannot be rolled back"));
-        let denied_mainline_run = wisp_tools::Tool::run(
+        let denied_mainline_run = superscience_tools::Tool::run(
             &external_tool,
             &serde_json::json!({
                 "context_id": "local",
@@ -1510,7 +1515,7 @@ mod tests {
         assert!(!denied_mainline_run.success);
         assert_eq!(
             denied_mainline_run.control,
-            wisp_tools::ToolControl::StopBatch
+            superscience_tools::ToolControl::StopBatch
         );
         assert!(denied_mainline_run
             .content
@@ -1536,7 +1541,8 @@ mod tests {
             })
             .await
             .unwrap();
-        let first_artifact_id = superscience_store::scoped_logical_artifact_id("p", &first.id, logical_key);
+        let first_artifact_id =
+            superscience_store::scoped_logical_artifact_id("p", &first.id, logical_key);
         std::fs::write(
             Path::new(&first.workspace_dir).join("result.txt"),
             b"first result",
@@ -1665,7 +1671,8 @@ mod tests {
             .unwrap()
             .is_none());
 
-        let mut run = superscience_store::RunRecord::new("branch-run", "p", "local", "Run", "command");
+        let mut run =
+            superscience_store::RunRecord::new("branch-run", "p", "local", "Run", "command");
         run.frame_id = Some(first.frame_id.clone());
         service.store.create_run(&run).await.unwrap();
         service
@@ -1821,7 +1828,11 @@ mod tests {
             .append_message(
                 "main",
                 4,
-                &superscience_llm::Message::tool("complete-1", "attempt_completion", "completed analysis"),
+                &superscience_llm::Message::tool(
+                    "complete-1",
+                    "attempt_completion",
+                    "completed analysis",
+                ),
             )
             .await
             .unwrap();
@@ -1862,12 +1873,12 @@ mod tests {
             .unwrap();
         service
             .store
-            .append_message("branch", 1, &wisp_llm::Message::user("question"))
+            .append_message("branch", 1, &superscience_llm::Message::user("question"))
             .await
             .unwrap();
         service
             .store
-            .append_message("branch", 2, &wisp_llm::Message::assistant("answer"))
+            .append_message("branch", 2, &superscience_llm::Message::assistant("answer"))
             .await
             .unwrap();
         service

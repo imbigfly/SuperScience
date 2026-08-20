@@ -12,7 +12,7 @@ pub struct ContextStoragePrefs {
     pub context_id: String,
     /// Remote directory for uploaded data: absolute, `~/…`, or HOME-relative.
     pub remote_data_root: String,
-    /// HOME-relative root for run workdirs (default `.wisp-science/runs`).
+    /// HOME-relative root for run workdirs (default `.superscience/runs`).
     pub remote_workdir_root: String,
     /// Project-relative directory where retrieved outputs land.
     pub local_results_dir: String,

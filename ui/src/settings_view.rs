@@ -655,6 +655,21 @@ fn apply_catalog_limits(
 /// (label, api_url, model). The user only has to paste an API key.
 /// The "Coding" entries are the monthly coding-plan endpoints — those
 /// subscription keys only work there, not on the pay-per-token URLs.
+fn specialist_metric_count(list: &Option<Vec<String>>, inherit_label: &str) -> String {
+    match list {
+        Some(items) => items.len().to_string(),
+        None => inherit_label.to_string(),
+    }
+}
+
+fn specialist_sop_count(instructions: &str) -> String {
+    if instructions.trim().is_empty() {
+        "0".into()
+    } else {
+        "1".into()
+    }
+}
+
 const MODEL_PRESETS: [(&str, &str, &str); 5] = [
     ("Kimi", "https://api.moonshot.cn/v1", "kimi-k3"),
     ("GLM", "https://open.bigmodel.cn/api/paas/v4", "glm-5"),
@@ -1288,9 +1303,6 @@ pub(super) fn SettingsView(
                     <button class:active=move || settings_section.get()=="appearance"
                         on:click=move |_| go_settings_section.call("appearance".into())>
                         {move || t(locale.get(), "settings.nav.appearance")}</button>
-                    <button class:active=move || settings_section.get()=="pet"
-                        on:click=move |_| go_settings_section.call("pet".into())>
-                        {move || t(locale.get(), "settings.nav.pet")}</button>
                     <button class:active=move || settings_section.get()=="credentials"
                         on:click=move |_| go_settings_section.call("credentials".into())>
                         {move || t(locale.get(), "settings.nav.credentials")}</button>
@@ -3442,7 +3454,7 @@ pub(super) fn SettingsView(
                                                 }>{label}</button>
                                         }).collect_view()}
                                     </div>
-                                    <div class="settings-list">
+                                    <div class="model-card-grid">
                                         <For each=move || models.get() key=|m| (m.id.clone(), m.active) let:m>
                                             {
                                                 let pick_id = m.id.clone();
@@ -3451,7 +3463,8 @@ pub(super) fn SettingsView(
                                                 let edit = m.clone();
                                                 let is_active = m.active;
                                                 let is_chat_model = m.is_chat_model();
-                                                let can_delete = models.get().iter().any(|other| {
+                                                let builtin = m.is_builtin();
+                                                let can_delete = !builtin && models.get().iter().any(|other| {
                                                     other.id != m.id && other.is_chat_model()
                                                 });
                                                 let show_sub = !m.model.is_empty() && m.model != m.label;
@@ -3461,10 +3474,12 @@ pub(super) fn SettingsView(
                                                 let drop_id = m.id.clone();
                                                 let over_cls = m.id.clone();
                                                 view! {
-                                                    <div class="settings-list-row settings-list-row-link"
-                                                        class:settings-list-row-active=is_active
+                                                    <article class="model-card"
+                                                        class:active=is_active
+                                                        class:builtin=builtin
                                                         class:dragging=move || drag_model.get().as_deref() == Some(drag_cls.as_str())
                                                         class:model-drag-over=move || drop_model.get().as_deref() == Some(over_cls.as_str())
+                                                        data-testid=format!("model-card-{}", m.id)
                                                         attr:draggable="true"
                                                         on:dragstart=move |ev: web_sys::DragEvent| {
                                                             start_session_drag(&ev, &drag_id);
@@ -3517,54 +3532,60 @@ pub(super) fn SettingsView(
                                                             model_form_key.set(String::new());
                                                             model_form_msg.set(None);
                                                         }>
-                                                        <span class="settings-list-grip" aria-hidden="true" title=move || t(locale.get(), "models.reorder")>"\u{283F}"</span>
-                                                        <div class="settings-list-main">
-                                                            <span class="settings-list-title">
-                                                                {m.label.clone()}
-                                                                {m.use_for_vision.then(|| view! { <span class="settings-cap-badge" title="vision">"vision"</span> })}
-                                                                {m.use_for_image_generation.then(|| view! {
-                                                                    <span class="settings-cap-badge" title="image generation">"image gen"</span>
+                                                        <header class="model-card-head">
+                                                            <div class="model-card-meta">
+                                                                <strong class="model-card-title">
+                                                                    {m.label.clone()}
+                                                                    {builtin.then(|| view! {
+                                                                        <span class="model-card-badge">{move || t(locale.get(), "specialists.builtin")}</span>
+                                                                    })}
+                                                                    {is_active.then(|| view! {
+                                                                        <span class="model-card-badge active">{move || t(locale.get(), "models.use")}</span>
+                                                                    })}
+                                                                </strong>
+                                                                {show_sub.then(|| view! {
+                                                                    <span class="model-card-sub">{m.model.clone()}</span>
                                                                 })}
-                                                                {m.use_for_video_generation.then(|| view! {
-                                                                    <span class="settings-cap-badge" title="video generation">"video gen"</span>
-                                                                })}
-                                                            </span>
-                                                            {show_sub.then(|| view! {
-                                                                <span class="settings-list-sub">{m.model.clone()}</span>
-                                                            })}
-                                                        </div>
-                                                        <div class="settings-list-actions">
-                                                            {is_active.then(|| view! {
-                                                                <span class="settings-active-mark" title="active">"✓"</span>
-                                                            })}
-                                                            {(can_delete && !is_active).then(|| { let id = del_id.clone(); view! {
-                                                                <button class="settings-list-remove" type="button" title=move || t(locale.get(), "models.remove")
-                                                                    on:click=move |ev| {
-                                                                        ev.stop_propagation();
-                                                                        delete_confirm.set(Some(DeleteConfirm::Model {
-                                                                            id: id.clone(),
-                                                                            label: del_label.clone(),
-                                                                        }));
-                                                                    }>{compose_icon("close")}</button>
-                                                            }})}
-                                                            {(!is_active && is_chat_model).then(|| { let id = pick_id.clone(); view! {
-                                                                <button class="settings-list-use" type="button"
-                                                                    on:click=move |ev| {
-                                                                        ev.stop_propagation();
-                                                                        let id = id.clone();
-                                                                        spawn_local(async move {
-                                                                            let arg = to_value(&serde_json::json!({ "id": id })).unwrap();
-                                                                            if let Ok(v) = invoke_checked("set_active_model", arg).await {
-                                                                                if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ModelProfile>>(v) {
-                                                                                    models.set(list);
+                                                                <span class="model-card-url">{m.api_url.clone()}</span>
+                                                            </div>
+                                                            <div class="model-card-actions">
+                                                                {(can_delete && !is_active).then(|| { let id = del_id.clone(); view! {
+                                                                    <button class="model-card-action" type="button" title=move || t(locale.get(), "models.remove")
+                                                                        on:click=move |ev| {
+                                                                            ev.stop_propagation();
+                                                                            delete_confirm.set(Some(DeleteConfirm::Model {
+                                                                                id: id.clone(),
+                                                                                label: del_label.clone(),
+                                                                            }));
+                                                                        }>{compose_icon("close")}</button>
+                                                                }})}
+                                                                {(!is_active && is_chat_model).then(|| { let id = pick_id.clone(); view! {
+                                                                    <button class="model-card-use" type="button"
+                                                                        on:click=move |ev| {
+                                                                            ev.stop_propagation();
+                                                                            let id = id.clone();
+                                                                            spawn_local(async move {
+                                                                                let arg = to_value(&serde_json::json!({ "id": id })).unwrap();
+                                                                                if let Ok(v) = invoke_checked("set_active_model", arg).await {
+                                                                                    if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ModelProfile>>(v) {
+                                                                                        models.set(list);
+                                                                                    }
                                                                                 }
-                                                                            }
-                                                                        });
-                                                                    }>{move || t(locale.get(), "models.use")}</button>
-                                                            }})}
-                                                            <span class="settings-list-chevron" aria-hidden="true">"›"</span>
-                                                        </div>
-                                                    </div>
+                                                                            });
+                                                                        }>{move || t(locale.get(), "models.use")}</button>
+                                                                }})}
+                                                            </div>
+                                                        </header>
+                                                        <footer class="model-card-caps">
+                                                            {m.use_for_vision.then(|| view! { <span class="settings-cap-badge" title="vision">"vision"</span> })}
+                                                            {m.use_for_image_generation.then(|| view! {
+                                                                <span class="settings-cap-badge" title="image generation">"image gen"</span>
+                                                            })}
+                                                            {m.use_for_video_generation.then(|| view! {
+                                                                <span class="settings-cap-badge" title="video generation">"video gen"</span>
+                                                            })}
+                                                        </footer>
+                                                    </article>
                                                 }
                                             }
                                         </For>
@@ -4122,8 +4143,97 @@ pub(super) fn SettingsView(
                             </div>
                         }.into_view()
                     } else {
+                        let render_specialist_card = move |s: Specialist| {
+                            let edit = s.clone();
+                            let del_id = s.id.clone();
+                            let builtin = s.builtin;
+                            let icon = if s.icon.trim().is_empty() {
+                                "review".into()
+                            } else {
+                                s.icon.clone()
+                            };
+                            let avatar_clay = s.color == "clay" || s.color.trim().is_empty();
+                            let inherit = t(locale.get(), "specialists.metric.inherit");
+                            let materials = specialist_metric_count(&s.connectors, &inherit);
+                            let skills = specialist_metric_count(&s.skills, &inherit);
+                            let sop = specialist_sop_count(&s.instructions);
+                            let desc = if s.description.trim().is_empty() {
+                                t(locale.get(), "specialists.edit_hint")
+                            } else {
+                                s.description.clone()
+                            };
+                            let handle = if builtin {
+                                t(locale.get(), "specialists.handle.builtin")
+                            } else {
+                                t(locale.get(), "specialists.handle.custom")
+                            };
+                            let role = if builtin {
+                                t(locale.get(), "specialists.role.builtin")
+                            } else {
+                                t(locale.get(), "specialists.role.custom")
+                            };
+                            view! {
+                                <article class="specialist-card" data-testid=format!("specialist-card-{}", s.id)
+                                    title=move || t(locale.get(), "specialists.edit_hint")
+                                    on:click=move |_| {
+                                        model_form_msg.set(None);
+                                        specialist_skill_query.set(String::new());
+                                        specialist_form.set(Some(edit.clone()));
+                                    }>
+                                    <header class="specialist-card-head">
+                                        <span class="specialist-card-avatar" aria-hidden="true"
+                                            class:clay=avatar_clay>
+                                            {compose_icon(&icon)}
+                                        </span>
+                                        <div class="specialist-card-meta">
+                                            <strong class="specialist-card-title">
+                                                <span>{s.name.clone()}</span>
+                                                <span class="specialist-card-handle">{handle}</span>
+                                            </strong>
+                                            <span class="specialist-card-role">{role}</span>
+                                            <span class="specialist-card-status">
+                                                <i aria-hidden="true"></i>
+                                                {move || t(locale.get(), "specialists.status.ready")}
+                                            </span>
+                                        </div>
+                                        <div class="specialist-card-actions">
+                                            {(!builtin).then(|| {
+                                                let id = del_id.clone();
+                                                view! {
+                                                    <button type="button" class="specialist-card-action"
+                                                        data-testid=format!("specialist-remove-{}", id)
+                                                        title=move || t(locale.get(), "specialists.remove")
+                                                        aria-label=move || t(locale.get(), "specialists.remove")
+                                                        on:click=move |ev| {
+                                                            ev.stop_propagation();
+                                                            remove_specialist.call(id.clone());
+                                                        }>
+                                                        {compose_icon("close")}
+                                                    </button>
+                                                }
+                                            })}
+                                        </div>
+                                    </header>
+                                    <p class="specialist-card-desc">{desc}</p>
+                                    <footer class="specialist-card-metrics">
+                                        <div>
+                                            <b>{materials}</b>
+                                            <span>{move || t(locale.get(), "specialists.metric.materials")}</span>
+                                        </div>
+                                        <div>
+                                            <b>{skills}</b>
+                                            <span>{move || t(locale.get(), "specialists.metric.skills")}</span>
+                                        </div>
+                                        <div>
+                                            <b>{sop}</b>
+                                            <span>{move || t(locale.get(), "specialists.metric.sop")}</span>
+                                        </div>
+                                    </footer>
+                                </article>
+                            }
+                        };
                         view! {
-                        <div class="settings-pane settings-pane-list">
+                        <div class="settings-pane settings-pane-list specialists-pane">
                             <div class="settings-toolbar settings-toolbar-end">
                                 <span class="settings-filter">{move || {
                                     let n = specialists.get().len();
@@ -4155,63 +4265,15 @@ pub(super) fn SettingsView(
                                 </details>
                             </div>
                             <div class="conn-group-label">{move || t(locale.get(), "specialists.builtin")}</div>
-                            <div class="settings-list">
+                            <div class="specialist-card-grid">
                                 <For each=move || { specialists.get().into_iter().filter(|s| s.builtin).collect::<Vec<_>>() } key=|s| s.id.clone() let:s>
-                                    {
-                                        let edit = s.clone();
-                                        view! {
-                                            <div class="settings-list-row settings-list-row-link"
-                                                on:click=move |_| {
-                                                    model_form_msg.set(None);
-                                                    specialist_skill_query.set(String::new());
-                                                    specialist_form.set(Some(edit.clone()));
-                                                }>
-                                                <div class="settings-list-main">
-                                                    <span class="settings-list-title">{s.name.clone()}</span>
-                                                    {(!s.description.is_empty()).then(|| view! {
-                                                        <span class="settings-list-sub">{s.description.clone()}</span>
-                                                    })}
-                                                </div>
-                                                <div class="settings-list-actions">
-                                                    <span class="settings-list-chevron" aria-hidden="true">"›"</span>
-                                                </div>
-                                            </div>
-                                        }
-                                    }
+                                    {render_specialist_card(s)}
                                 </For>
                             </div>
                             <div class="conn-group-label">{move || t(locale.get(), "specialists.custom")}</div>
-                            <div class="settings-list">
+                            <div class="specialist-card-grid">
                                 <For each=move || { specialists.get().into_iter().filter(|s| !s.builtin).collect::<Vec<_>>() } key=|s| s.id.clone() let:s>
-                                    {
-                                        let edit = s.clone();
-                                        let del_id = s.id.clone();
-                                        view! {
-                                            <div class="settings-list-row settings-list-row-link"
-                                                on:click=move |_| {
-                                                    model_form_msg.set(None);
-                                                    specialist_skill_query.set(String::new());
-                                                    specialist_form.set(Some(edit.clone()));
-                                                }>
-                                                <div class="settings-list-main">
-                                                    <span class="settings-list-title">{s.name.clone()}</span>
-                                                    {(!s.description.is_empty()).then(|| view! {
-                                                        <span class="settings-list-sub">{s.description.clone()}</span>
-                                                    })}
-                                                </div>
-                                                <div class="settings-list-actions">
-                                                    {(!s.builtin).then(|| { let id = del_id.clone(); view! {
-                                                        <button class="settings-list-remove" type="button" title=move || t(locale.get(), "specialists.remove")
-                                                            on:click=move |ev| {
-                                                                ev.stop_propagation();
-                                                                remove_specialist.call(id.clone());
-                                                            }>{compose_icon("close")}</button>
-                                                    }})}
-                                                    <span class="settings-list-chevron" aria-hidden="true">"›"</span>
-                                                </div>
-                                            </div>
-                                        }
-                                    }
+                                    {render_specialist_card(s)}
                                 </For>
                             </div>
                         </div>
@@ -5549,9 +5611,11 @@ pub(super) fn SettingsView(
                 {move || (settings_section.get() == "channels" && channels_open.get().is_none()).then(|| view! {
                     <div class="settings-pane">
                         <div class="settings-form-grid">
-                            <div class="span-2 settings-sync-block">
-                                <h3>{move || t(locale.get(), "settings.sync.title")}</h3>
-                                <p class="settings-field-hint">{move || t(locale.get(), "settings.sync.hint")}</p>
+                            <details class="span-2 settings-sync-block">
+                                <summary class="settings-sync-summary">
+                                    <h3>{move || t(locale.get(), "settings.sync.title")}</h3>
+                                    <p class="settings-field-hint">{move || t(locale.get(), "settings.sync.hint")}</p>
+                                </summary>
                                 <label>{move || t(locale.get(), "settings.sync.backend")}
                                     <select data-testid="sync-backend"
                                         prop:value=move || settings.get().sync_backend
@@ -5613,7 +5677,7 @@ pub(super) fn SettingsView(
                                         <span>{move || t(locale.get(), "projects.sync.join")}</span>
                                     </button>
                                 </div>
-                            </div>
+                            </details>
                         </div>
                         <div class="row settings-footer">
                             <button type="button" disabled=move || settings_busy.get() on:click=move |_| show_settings.set(false)>{move || t(locale.get(), "settings.cancel")}</button>
@@ -5973,7 +6037,7 @@ pub(super) fn SettingsView(
                         }.into_view()
                     } else {
                         view! {
-                    <div class="settings-pane settings-pane-list">
+                    <div class="settings-pane settings-pane-list connections-pane">
                         <div class="settings-toolbar settings-toolbar-end">
                             <span class="settings-filter">{move || {
                                 let nb = connectors.get().map(|v| v.connectors.iter().filter(|c| c.kind == "bundled").count()).unwrap_or(0);

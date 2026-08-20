@@ -184,8 +184,8 @@ or conditions].
 
 > **Authority boundary (#665/#666/#680):** Mixed-jurisdiction review-level mappings are not part of this checklist. This section collects facts and exact bounded requirement pointers only; the output pathway is `institutional determination required`. Unknown selection or applicability stays unresolved, and neither this checklist nor #666 emits a review determination, readiness result, compliance conclusion, or authorization.
 
-Apply `shared/references/human_subjects_authority_protocol.md` and use only
-curated rows from `shared/human_subjects_authority_registry.json`. All shipped
+Apply `../academic-shared/references/human_subjects_authority_protocol.md` and use only
+curated rows from `../academic-shared/human_subjects_authority_registry.json`. All shipped
 profiles are bounded subsets.
 
 ### 8.1 Authority Context and Exact Facts
@@ -244,7 +244,7 @@ de-identification, or compliance status:
 - [ ] Every identifier/re-link key has a named holder, access boundary, purpose, and retention state
 - [ ] Platform collection, exports, logs, backups, recipients, transfers, encryption, access controls, retention, destruction, and incident handling are documented
 - [ ] Participant-facing statements match the actual data flow and withdrawal/deletion feasibility
-- [ ] Terminology is bound to the named convention in `shared/references/irb_terminology_glossary.md`
+- [ ] Terminology is bound to the named convention in `../academic-shared/references/irb_terminology_glossary.md`
 
 ### 8.5 Population and Context Facts — Illustrative and Unprofiled
 

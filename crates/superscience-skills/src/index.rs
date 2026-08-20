@@ -16,6 +16,53 @@ pub fn bundled_dir() -> Option<PathBuf> {
     superscience_paths::skills_dir()
 }
 
+/// Extra catalog directories from the environment. Docs and errors only mention
+/// `SUPERSCIENCE_SKILLS_PATH`; `WISP_SKILLS_PATH` is a silent upstream fallback.
+/// `:` and `;` are separators on every platform.
+pub fn extra_skill_dirs_from_env() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for key in [
+        superscience_paths::SKILLS_PATH_ENV,
+        superscience_paths::LEGACY_SKILLS_PATH_ENV,
+    ] {
+        if let Ok(extra) = std::env::var(key) {
+            for part in extra.split([':', ';']).filter(|part| !part.is_empty()) {
+                paths.push(PathBuf::from(part));
+            }
+        }
+    }
+    paths
+}
+
+/// Discovery order for a project: writable overlays first, bundled last.
+///
+/// `SkillIndex::load_scoped` lets the first path that defines a public name
+/// win, so project/global/extra copies shadow the signed bundled catalog.
+pub fn skill_source_paths(
+    project_root: &Path,
+    home: Option<&Path>,
+    extra: impl IntoIterator<Item = PathBuf>,
+    bundled: Option<PathBuf>,
+) -> Vec<(PathBuf, SkillSource)> {
+    let mut paths = vec![(
+        superscience_paths::project_skills_dir(project_root),
+        SkillSource::Project,
+    )];
+    if let Some(home) = home {
+        paths.push((
+            superscience_paths::global_skills_dir(home),
+            SkillSource::Global,
+        ));
+    }
+    for dir in extra {
+        paths.push((dir, SkillSource::Extra));
+    }
+    if let Some(bundled) = bundled {
+        paths.push((bundled, SkillSource::Bundled));
+    }
+    paths
+}
+
 #[derive(Debug, Clone)]
 pub struct Skill {
     pub name: String,
@@ -578,10 +625,14 @@ mod tests {
         assert!(idx.get("academic-paper").is_some());
         assert!(idx.get("nature-writing").is_some());
         assert!(idx.get("humanizer-zh").is_some());
+        assert!(idx.get("academic-search-pro").is_some());
         assert!(idx.get("nature-figure").is_some());
         assert!(idx.get("nature-statistics").is_some());
         assert!(idx.get("knowledge-graph").is_some());
         assert!(idx.get("playwright").is_some());
+        assert!(idx.get("journal-prescreen").is_some());
+        assert!(idx.get("handwriting-extract").is_some());
+        assert!(idx.get("topic-coach").is_some());
     }
 
     #[test]
@@ -635,6 +686,85 @@ mod tests {
         }
     }
 
+    fn is_ident_byte(b: u8) -> bool {
+        b.is_ascii_alphanumeric() || b == b'_'
+    }
+
+    /// `needle` at an identifier boundary (`host.read`, not `entry_host.read`).
+    fn contains_ident(hay: &str, needle: &str) -> bool {
+        let mut start = 0;
+        while let Some(offset) = hay[start..].find(needle) {
+            let abs = start + offset;
+            let before_ok = abs == 0 || !is_ident_byte(hay.as_bytes()[abs - 1]);
+            if before_ok {
+                return true;
+            }
+            start = abs + 1;
+        }
+        false
+    }
+
+    /// Legacy `host.*` SDK calls, not a local `host` variable (`host.split`).
+    fn contains_legacy_host_sdk(lower: &str) -> Option<&'static str> {
+        if lower.contains("import host") {
+            return Some("import host");
+        }
+        if lower.contains("`host.") {
+            return Some("`host.");
+        }
+        for api in [
+            "host.read",
+            "host.write",
+            "host.edit",
+            "host.shell",
+            "host.bash",
+            "host.run",
+            "host.exec",
+            "host.grep",
+            "host.glob",
+            "host.search",
+            "host.spawn",
+            "host.call",
+            "host.request",
+            "host.tool",
+            "host.listdir",
+            "host.list_dir",
+            "host.download",
+            "host.upload",
+            "host.fetch",
+        ] {
+            if contains_ident(lower, api) {
+                return Some(api);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn legacy_host_sdk_scan_ignores_hostname_helpers() {
+        assert_eq!(
+            contains_legacy_host_sdk(
+                r#"hint = host.split(".", 1)[0] if "." in host else none
+elif host.startswith("cas."):
+    entry_host = host
+"#
+            ),
+            None
+        );
+        assert_eq!(
+            contains_legacy_host_sdk("use `host.read` then host.write the file"),
+            Some("`host.")
+        );
+        assert_eq!(
+            contains_legacy_host_sdk("call host.shell to run the probe"),
+            Some("host.shell")
+        );
+        assert_eq!(
+            contains_legacy_host_sdk("from entry_host.read_env import x"),
+            None
+        );
+    }
+
     #[test]
     fn bundled_skills_do_not_depend_on_the_legacy_host_sdk() {
         fn visit(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
@@ -658,9 +788,13 @@ mod tests {
         for path in files {
             let source = std::fs::read_to_string(&path).expect("read bundled skill file");
             let lower = source.to_ascii_lowercase();
+            if let Some(stale) = contains_legacy_host_sdk(&lower) {
+                panic!(
+                    "legacy host contract {stale:?} remains in {}",
+                    path.display()
+                );
+            }
             for stale in [
-                "host.",
-                "import host",
                 "operon",
                 "claude-bioscience",
                 "claude science",
@@ -896,5 +1030,111 @@ mod tests {
             .any(|record| record.name == "broken" && record.parse_error.is_some()));
 
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn skill_source_paths_put_overlays_before_bundled() {
+        let project = PathBuf::from("/proj");
+        let home = PathBuf::from("/home/me");
+        let bundled = PathBuf::from("/app/skills");
+        let paths = skill_source_paths(
+            &project,
+            Some(&home),
+            [PathBuf::from("/extra")],
+            Some(bundled.clone()),
+        );
+        assert_eq!(paths[0].0, project.join(".superscience/skills"));
+        assert_eq!(paths[0].1, SkillSource::Project);
+        assert_eq!(paths.last().map(|(path, _)| path.clone()), Some(bundled));
+        assert!(paths
+            .iter()
+            .any(|(path, source)| path == &home.join(".superscience/skills")
+                && *source == SkillSource::Global));
+        assert!(paths.iter().any(
+            |(path, source)| path == &PathBuf::from("/extra") && *source == SkillSource::Extra
+        ));
+        assert!(
+            paths
+                .iter()
+                .all(|(path, _)| !path.components().any(|part| part.as_os_str() == ".wisp")),
+            "new installs must not discover .wisp/skills as a product path"
+        );
+    }
+
+    #[test]
+    fn bundled_planner_skills_keep_superscience_semantics() {
+        use crate::manifest::SkillSideEffects;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills");
+        let cases: &[(&str, &[&str], &[&str], SkillSideEffects)] = &[
+            (
+                "literature-review",
+                &["scientific-literature"],
+                &["critic", "retrieval", "synthesizer"],
+                SkillSideEffects::Network,
+            ),
+            (
+                "analysis-workflow",
+                &["bioinformatics"],
+                &["analyst", "validator"],
+                SkillSideEffects::CodeExecution,
+            ),
+            (
+                "bear-review",
+                &["scientific-literature"],
+                &["critic", "retrieval", "validator"],
+                SkillSideEffects::Network,
+            ),
+            (
+                "bear-propose",
+                &["scientific-literature"],
+                &["critic", "planner", "synthesizer"],
+                SkillSideEffects::Network,
+            ),
+            (
+                "bear-trace",
+                &["scientific-literature"],
+                &["retrieval", "synthesizer"],
+                SkillSideEffects::Network,
+            ),
+            (
+                "bear-scoop",
+                &["scientific-literature"],
+                &["critic", "retrieval"],
+                SkillSideEffects::Network,
+            ),
+        ];
+        for (name, domains, roles, side_effects) in cases {
+            let skill = parse_skill_file(&root.join(name).join("SKILL.md")).unwrap();
+            let meta = skill
+                .superscience
+                .as_ref()
+                .unwrap_or_else(|| panic!("{name} missing superscience metadata"));
+            assert_eq!(meta.domains, *domains, "{name} domains");
+            assert_eq!(meta.roles, *roles, "{name} roles");
+            assert_eq!(meta.side_effects, *side_effects, "{name} side_effects");
+        }
+    }
+
+    #[test]
+    fn bundled_skill_md_files_have_no_wisp_key_line() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills");
+        for entry in std::fs::read_dir(&root).unwrap() {
+            let entry = entry.unwrap();
+            if !entry.file_type().unwrap().is_dir() {
+                continue;
+            }
+            let skill_md = entry.path().join("SKILL.md");
+            if !skill_md.is_file() {
+                continue;
+            }
+            let text = std::fs::read_to_string(&skill_md).unwrap();
+            assert!(
+                !text
+                    .lines()
+                    .any(|line| line.trim() == "wisp:" || line.trim().starts_with("wisp:")),
+                "{} still has a wisp: frontmatter key",
+                skill_md.display()
+            );
+        }
     }
 }

@@ -120,8 +120,7 @@ impl ScientificResourceCatalog {
             .python()
             .is_file();
         let disabled = load_disabled_connectors(store).await;
-        let dev_command = std::env::var("WISP_MCP_COMMAND")
-            .ok()
+        let dev_command = superscience_paths::env_product_or_wisp("WISP_MCP_COMMAND")
             .filter(|command| command.split_whitespace().next().is_some());
         let mut connectors = if dev_command.is_some() {
             Vec::new()
@@ -618,7 +617,8 @@ fn context_supports_python(context: &ExecutionContext, managed_python: bool) -> 
 }
 
 fn context_supports_r(context: &ExecutionContext) -> bool {
-    if context.kind == ExecutionContextKind::Local && superscience_runtime::find_rscript().is_some() {
+    if context.kind == ExecutionContextKind::Local && superscience_runtime::find_rscript().is_some()
+    {
         return true;
     }
     let interpreter = json_string(

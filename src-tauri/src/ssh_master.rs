@@ -61,14 +61,14 @@ fn single_quoted(value: &str) -> String {
 /// Marker printed by the master shell after each RPC child exits. The leading
 /// newline lets us find it even when the child's output has no trailing one.
 fn exit_marker(nonce: &str) -> String {
-    format!("\n__SUPERSCIENCE_RPC_EXIT_{nonce}__:")
+    format!("\n__WISP_RPC_EXIT_{nonce}__:")
 }
 
 fn frame(payload: &SshPayload, nonce: &str) -> String {
-    let exit_line = format!("printf '\\n__SUPERSCIENCE_RPC_EXIT_{nonce}__:%s\\n' \"$?\"\n");
+    let exit_line = format!("printf '\\n__WISP_RPC_EXIT_{nonce}__:%s\\n' \"$?\"\n");
     match payload {
         SshPayload::Script(script) => {
-            let mut delimiter = format!("__SUPERSCIENCE_MASTER_{nonce}__");
+            let mut delimiter = format!("__WISP_MASTER_{nonce}__");
             while script.lines().any(|line| line == delimiter) {
                 delimiter.push('X');
             }
@@ -350,10 +350,10 @@ mod tests {
 
     #[test]
     fn script_frame_avoids_heredoc_delimiter_collision() {
-        let script = "echo one\n__SUPERSCIENCE_MASTER_abc__\necho two";
+        let script = "echo one\n__WISP_MASTER_abc__\necho two";
         let framed = frame(&SshPayload::Script(script.into()), "abc");
-        assert!(framed.starts_with("sh -s <<'__SUPERSCIENCE_MASTER_abc__X' 2>&1\n"));
-        assert!(framed.contains("\n__SUPERSCIENCE_MASTER_abc__X\nprintf"));
+        assert!(framed.starts_with("sh -s <<'__WISP_MASTER_abc__X' 2>&1\n"));
+        assert!(framed.contains("\n__WISP_MASTER_abc__X\nprintf"));
     }
 
     #[cfg(unix)]

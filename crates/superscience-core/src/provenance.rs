@@ -47,6 +47,7 @@ const SKIP_DIRS: &[&str] = &[
     ".venv",
     "node_modules",
     ".wisp",
+    ".superscience",
     "uploads",
     "__pycache__",
 ];

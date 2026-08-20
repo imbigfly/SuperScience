@@ -66,7 +66,9 @@ pub fn build_registry(
     reg.add(Box::new(superscience_skills::ListSkillCatalogTool::new(
         skills.clone(),
     )));
-    reg.add(Box::new(superscience_skills::SearchSkillsTool::new(skills.clone())));
+    reg.add(Box::new(superscience_skills::SearchSkillsTool::new(
+        skills.clone(),
+    )));
     reg.add(Box::new(superscience_skills::UseSkillTool::new(skills)));
     if memory_enabled {
         reg.add(Box::new(SearchMemoryTool::new(memory)));
@@ -97,19 +99,53 @@ impl Agent {
         vision_cfg: Option<ProviderConfig>,
         pii_firewall: bool,
     ) -> Self {
-        let provider =
-            superscience_llm::maybe_wrap_pii_firewall(superscience_llm::build(cfg.clone()), pii_firewall);
+        Self::with_pii_terms(
+            cfg,
+            skills,
+            memory,
+            root,
+            max_context,
+            max_iter,
+            memory_enabled,
+            vision_cfg,
+            pii_firewall,
+            Vec::new(),
+        )
+    }
+
+    pub fn with_pii_terms(
+        cfg: ProviderConfig,
+        skills: Arc<SkillIndex>,
+        memory: Arc<MemoryManager>,
+        root: PathBuf,
+        max_context: usize,
+        max_iter: usize,
+        memory_enabled: bool,
+        vision_cfg: Option<ProviderConfig>,
+        pii_firewall: bool,
+        pii_custom_terms: Vec<superscience_llm::CustomTerm>,
+    ) -> Self {
+        let provider = superscience_llm::maybe_wrap_pii_firewall_with_terms(
+            superscience_llm::build(cfg.clone()),
+            pii_firewall,
+            pii_custom_terms.clone(),
+        );
         let vision_provider = vision_cfg.map(|vision| {
-            superscience_llm::maybe_wrap_pii_firewall(superscience_llm::build(vision), pii_firewall)
+            superscience_llm::maybe_wrap_pii_firewall_with_terms(
+                superscience_llm::build(vision),
+                pii_firewall,
+                pii_custom_terms.clone(),
+            )
         });
         let mut tools = build_registry(skills, memory, memory_enabled);
         // The explore subagent shares the primary model but runs in its own
         // context; only its anchor (stats + conclusion + trace path) lands in
         // the main context.
         tools.add(Box::new(subagent::ExploreTool::new(
-            Arc::from(superscience_llm::maybe_wrap_pii_firewall(
+            Arc::from(superscience_llm::maybe_wrap_pii_firewall_with_terms(
                 superscience_llm::build(cfg),
                 pii_firewall,
+                pii_custom_terms,
             )),
             max_context,
         )));
@@ -154,7 +190,7 @@ impl Agent {
     }
 
     /// Convenience form of [`Self::from_parts`] that loads the conventional
-    /// `.wisp/session.json` path and starts a context with `max_context`.
+    /// `.superscience/session.json` path and starts a context with `max_context`.
     pub fn with_provider(
         provider: Box<dyn Provider>,
         vision_provider: Option<Box<dyn Provider>>,
@@ -163,7 +199,7 @@ impl Agent {
         max_context: usize,
         max_iter: usize,
     ) -> Self {
-        let session_path = root.join(".wisp").join("session.json");
+        let session_path = superscience_paths::session_json_path(&root);
         let mut ctx = ContextManager::new(max_context);
         ctx.load(&session_path);
         Self::from_parts(

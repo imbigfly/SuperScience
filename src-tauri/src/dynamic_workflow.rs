@@ -436,7 +436,8 @@ pub(crate) async fn resolve_proposal(
                         )
                     })?;
                 let context_value = serde_json::to_value(&context).map_err(|e| e.to_string())?;
-                let (_, context_revision) = superscience_store::canonical_json_sha256(&context_value);
+                let (_, context_revision) =
+                    superscience_store::canonical_json_sha256(&context_value);
                 let mut resolved_activity = RunActivitySpec {
                     activity: activity.activity,
                     context_id: activity.context_id,

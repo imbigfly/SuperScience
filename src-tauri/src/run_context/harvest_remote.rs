@@ -471,7 +471,7 @@ fn plan_from_manifest(
 /// long pulls (the automatic path); the manual retry path passes None because
 /// the parent is already terminal.
 pub(super) async fn harvest_ssh_run(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     runner: &dyn RunCommandRunner,
     owner_id: &str,
     remote: &RemoteRun,
@@ -500,7 +500,7 @@ pub(super) async fn harvest_ssh_run(
 /// selection is transferred and registered — one ArtifactVersion per file,
 /// one archive ArtifactVersion per directory — never the remote inventory.
 pub(super) async fn download_run_files(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     runner: &dyn RunCommandRunner,
     owner_id: &str,
     remote: &RemoteRun,
@@ -548,7 +548,7 @@ pub(super) async fn download_run_files(
 }
 
 async fn collect_pull_register(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     runner: &dyn RunCommandRunner,
     owner_id: &str,
     remote: &RemoteRun,
@@ -704,7 +704,7 @@ async fn collect_pull_register(
 }
 
 async fn ledger_harvest_persist(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     project_id: &str,
     context_id: &str,
     run_id: &str,
@@ -712,7 +712,7 @@ async fn ledger_harvest_persist(
     checksum: Option<String>,
     size_bytes: Option<i64>,
 ) -> Result<(), String> {
-    let mut entry = wisp_store::RemoteStagingEntry::new(
+    let mut entry = superscience_store::RemoteStagingEntry::new(
         project_id,
         context_id,
         Some(run_id.into()),
@@ -733,7 +733,7 @@ async fn ledger_harvest_persist(
 /// checksum before any file becomes visible at its final path.
 #[allow(clippy::too_many_arguments)]
 async fn pull_harvest_dir(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     runner: &dyn RunCommandRunner,
     owner_id: &str,
     remote: &RemoteRun,
@@ -755,7 +755,7 @@ async fn pull_harvest_dir(
         None,
         started,
     );
-    let mut transfer = wisp_store::RunRecord::new(
+    let mut transfer = superscience_store::RunRecord::new(
         &transfer_id,
         &remote.project_id,
         format!("ssh:{}", connection.alias),
@@ -772,7 +772,7 @@ async fn pull_harvest_dir(
     if !store
         .activate_run_lifecycle(
             &transfer_id,
-            wisp_store::RunStatus::Running,
+            superscience_store::RunStatus::Running,
             owner_id,
             super::ACTIVE_LEASE_SECS,
         )
@@ -808,8 +808,8 @@ async fn pull_harvest_dir(
     .await;
     let _ = std::fs::remove_dir_all(&partial);
     let (status, exit_code) = match &result {
-        Ok(()) => (wisp_store::RunStatus::Succeeded, Some(0)),
-        Err(_) => (wisp_store::RunStatus::Failed, Some(-1)),
+        Ok(()) => (superscience_store::RunStatus::Succeeded, Some(0)),
+        Err(_) => (superscience_store::RunStatus::Failed, Some(-1)),
     };
     let final_progress = transfer_progress(
         "download",
@@ -852,7 +852,7 @@ async fn pull_harvest_dir(
 
 #[allow(clippy::too_many_arguments)]
 async fn pull_and_verify(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     runner: &dyn RunCommandRunner,
     owner_id: &str,
     remote: &RemoteRun,
@@ -1293,7 +1293,7 @@ mod tests {
             (2, spec("big/*.bam", false, OutputResidency::Remote)),
         ];
         let payload = collect_payload(
-            ".wisp-science/runs/r1",
+            ".superscience/runs/r1",
             "tok",
             "r1",
             "~/wisp/proj/data",
@@ -1345,7 +1345,7 @@ mod tests {
         let stdout = format!(
             "noise\n__WISP_HARVEST__:file:0:10:{checksum}:results/out.tsv\n\
              __WISP_HARVEST__:bundle:1:99:{checksum}:132481:987654:bundle_1.tar.gz\n\
-             __WISP_HARVEST__:remote:2:5:{checksum}:/home/u/.wisp-science/artifacts/r/big/x.bam\n\
+             __WISP_HARVEST__:remote:2:5:{checksum}:/home/u/.superscience/artifacts/r/big/x.bam\n\
              __WISP_HARVEST_DONE__\n"
         );
         let entries = parse_collect_manifest(&stdout).unwrap();
@@ -1421,12 +1421,12 @@ mod tests {
 
     #[test]
     fn list_payload_filters_and_pages_on_the_server() {
-        let payload = list_payload(".wisp-science/runs/r1", "tok", "results", "tsv", 500, 500);
+        let payload = list_payload(".superscience/runs/r1", "tok", "results", "tsv", 500, 500);
         assert!(payload.contains("base=\"$workdir/inputs\"/'results'"));
         assert!(payload.contains("grep -i -F -- 'tsv'"));
         assert!(payload.contains("sed -n '501,1001p'"));
         assert!(payload.contains("find \"$name\" -type f | wc -l"));
-        let root = list_payload(".wisp-science/runs/r1", "tok", "", "", 0, 200);
+        let root = list_payload(".superscience/runs/r1", "tok", "", "", 0, 200);
         assert!(root.contains("base=\"$workdir/inputs\"\n"));
         assert!(root.contains("sed -n '1,201p'"));
     }
@@ -1456,7 +1456,7 @@ mod tests {
     #[test]
     fn delete_payload_removes_only_selected_paths_inside_the_workspace() {
         let payload = delete_payload(
-            ".wisp-science/runs/r1",
+            ".superscience/runs/r1",
             "tok",
             &["read_partitions".into(), "results/tmp.log".into()],
         );
@@ -1472,7 +1472,7 @@ mod tests {
     #[test]
     fn bundle_collection_uses_find_for_directory_selections() {
         let specs = vec![(0, spec("read_partitions", true, OutputResidency::Local))];
-        let payload = collect_payload(".wisp-science/runs/r1", "tok", "r1", "~/w/data", &specs);
+        let payload = collect_payload(".superscience/runs/r1", "tok", "r1", "~/w/data", &specs);
         assert!(payload.contains("if [ -d read_partitions ]; then"));
         assert!(payload.contains("find read_partitions -type f > \"$list\""));
     }

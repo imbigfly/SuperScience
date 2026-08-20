@@ -268,7 +268,7 @@ impl GenerateImageTool {
         if image.len() > MAX_IMAGE_BYTES {
             return Err("generated image is too large".into());
         }
-        let image = wisp_tools::image::encode_as_png(&image)?;
+        let image = superscience_tools::image::encode_as_png(&image)?;
         if image.len() > MAX_IMAGE_BYTES {
             return Err("generated PNG is too large".into());
         }

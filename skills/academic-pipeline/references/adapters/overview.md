@@ -3,8 +3,8 @@
 **Status**: Stable as of ARS v3.6.4
 **Applies to**: any adapter that produces a Material Passport `literature_corpus[]` field
 **Authoritative schemas**:
-- [`shared/contracts/passport/literature_corpus_entry.schema.json`](../../../shared/contracts/passport/literature_corpus_entry.schema.json)
-- [`shared/contracts/passport/rejection_log.schema.json`](../../../shared/contracts/passport/rejection_log.schema.json)
+- [`../academic-shared/contracts/passport/literature_corpus_entry.schema.json`](../../../shared/contracts/passport/literature_corpus_entry.schema.json)
+- [`../academic-shared/contracts/passport/rejection_log.schema.json`](../../../shared/contracts/passport/rejection_log.schema.json)
 
 ## 1. What an adapter is
 
@@ -148,6 +148,6 @@ The three reference adapters have pytest coverage under `scripts/adapters/tests/
 
 ## 10. Relationship to other ARS artifacts
 
-- [`shared/handoff_schemas.md`](../../../shared/handoff_schemas.md) Schema 9: the `literature_corpus[]` field lives inside the Material Passport.
+- [`../academic-shared/handoff_schemas.md`](../../../shared/handoff_schemas.md) Schema 9: the `literature_corpus[]` field lives inside the Material Passport.
 - [`academic-pipeline/references/passport_as_reset_boundary.md`](../passport_as_reset_boundary.md): `literature_corpus[]` is consumed across reset boundaries like any other passport field.
 - ARS agents that consume `literature_corpus[]` are **deferred** to v3.6.5+. As of v3.6.4, the field is a defined input port with no runtime consumer; adapters produce it, future ARS versions read it.

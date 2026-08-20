@@ -1,4 +1,5 @@
 Source: https://github.com/Imbad0202/academic-research-skills
-Version: v3.20.0 (3af9f03d5aadb0bca51af1440f20b5cbf97d6dba)
+Version: v3.20.1 (6837b4dfeaabd5a6da886e199b44ae7b52e8b931)
 License: CC BY-NC 4.0 (see LICENSE)
-Vendored: academic-paper, academic-paper-reviewer, academic-pipeline, deep-research
+Vendored: academic-paper, academic-paper-reviewer, academic-pipeline, deep-research, academic-shared
+Note: upstream ships a duplicated shared/ inside each skill; SuperScience lifts it to skills/academic-shared.

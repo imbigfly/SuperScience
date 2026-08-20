@@ -25,6 +25,8 @@
     "targets": "all",
     "createUpdaterArtifacts": false,
     "resources": {
+      "../docs/project-sync.md": "docs/project-sync.md",
+      "../docs/project-sync.zh-CN.md": "docs/project-sync.zh-CN.md",
       "../skills/": "skills/",
       "../python/": "python/",
       "../r/": "r/",
@@ -39,13 +41,5 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
-  },
-  "plugins": {
-    "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI0NzgxMDkzMTcwOTUxNzIKUldSeVVRa1hreEI0dE10Uk5iVU81djVSWFpwdHBIckZtU0xpdDhtalNJRWlNRGkyekZ6RG5KVGQK",
-      "endpoints": [
-        "https://github.com/imbigfly/SuperScience/releases/latest/download/latest.json"
-      ]
-    }
   }
 }

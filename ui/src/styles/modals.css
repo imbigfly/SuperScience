@@ -366,6 +366,8 @@ body:has(.window-titlebar) .feedback-modal { border-top: 1px solid var(--border)
 /* Confirm/approval dialog: pin the buttons and scroll only the message body, so
    a long command to approve can never push the Approve button off-screen (#63).
    Overrides the generic .modal whole-modal scroll above (later, equal specificity). */
+.catalog-skill-install-modal .hint { white-space: pre-wrap; }
+.catalog-skill-install-modal .catalog-skill-progress { margin: 0; }
 .confirm-modal { overflow: hidden; }
 .confirm-modal .hint {
   flex: 1 1 auto; min-height: 0; overflow-y: auto;

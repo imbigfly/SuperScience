@@ -63,8 +63,8 @@
 /* These kinds own their internal scrolling, so the outer box must not also
    scroll — two scroll containers means the sticky head and the inner toolbars
    fight over the same overflow. */
-.center-file-preview:is([data-preview-kind="structure"], [data-preview-kind="fasta"], [data-preview-kind="docx"], [data-preview-kind="xlsx"], [data-preview-kind="pptx"], [data-preview-kind="pdf"], [data-preview-kind="image"]) { display: flex; flex-direction: column; overflow: hidden; }
-.center-file-preview:is([data-preview-kind="structure"], [data-preview-kind="fasta"], [data-preview-kind="docx"], [data-preview-kind="xlsx"], [data-preview-kind="pptx"]) > .rp-heavy { display: flex; flex: 1 1 auto; min-height: 0; flex-direction: column; }
+.center-file-preview:is([data-preview-kind="structure"], [data-preview-kind="fasta"], [data-preview-kind="docx"], [data-preview-kind="xlsx"], [data-preview-kind="pptx"], [data-preview-kind="pdf"], [data-preview-kind="image"], [data-preview-kind="html"]) { display: flex; flex-direction: column; overflow: hidden; }
+.center-file-preview:is([data-preview-kind="structure"], [data-preview-kind="fasta"], [data-preview-kind="docx"], [data-preview-kind="xlsx"], [data-preview-kind="pptx"], [data-preview-kind="html"]) > .rp-heavy { display: flex; flex: 1 1 auto; min-height: 0; flex-direction: column; }
 .center-file-preview[data-preview-kind="structure"] .rp-3dmol { flex: 1 1 auto; min-height: 0; height: auto; }
 .center-file-preview[data-preview-kind="fasta"] .rp-fasta-wrap { flex: 1 1 auto; min-height: 0; max-height: none; }
 .center-file-preview.center-mcp-app-preview { display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; padding: 0; }
@@ -75,7 +75,16 @@
 .center-file-preview:is([data-preview-kind="xlsx"], [data-preview-kind="pptx"]) { padding: 0; }
 /* These kinds zero the pane padding, so the head's negative margins — sized to
    cancel that padding — would shove it out of the pane and clip it. */
-.center-file-preview:is([data-preview-kind="docx"], [data-preview-kind="xlsx"], [data-preview-kind="pptx"]) .center-file-head { margin: 0; }
+.center-file-preview:is([data-preview-kind="docx"], [data-preview-kind="xlsx"], [data-preview-kind="pptx"], [data-preview-kind="html"]) .center-file-head { margin: 0; }
+.center-file-preview[data-preview-kind="html"] { padding: 0; }
+.center-file-preview[data-preview-kind="html"] .rp-html {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  height: 100% !important;
+  border: none;
+  border-radius: 0;
+}
 .center-file-preview:is([data-preview-kind="xlsx"], [data-preview-kind="pptx"]) :is(.rp-xlsx, .rp-pptx) { flex: 1 1 auto; min-height: 0; }
 /* .rp-pdf's sunken card is right-pane chrome, where it frames a thumbnail. In
    the center it wraps the whole document instead, so the page reads as a card

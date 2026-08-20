@@ -6,11 +6,11 @@ license: Apache-2.0
 
 # Remote compute over SSH
 
-Use this skill after choosing an `ssh:<alias>` execution context. Wisp owns the
+Use this skill after choosing an `ssh:<alias>` execution context. SuperScience owns the
 job lifecycle locally: `run_in_context` creates the Run record, stages explicit
 inputs with persisted byte progress, and starts a detached supervisor on the server.
 The Runs panel and SQLite record remain authoritative if the conversation ends
-or Wisp restarts.
+or SuperScience restarts.
 
 ## Dispatch workflow
 
@@ -21,7 +21,7 @@ or Wisp restarts.
 2. Put the real command in one `run_in_context` call. Include environment
    activation in the command so the Run is reproducible.
 3. To watch the Run or wait for later work, call `monitor_run` with the
-   returned Run id. Wisp inserts a live card in the conversation, suspends
+   returned Run id. SuperScience inserts a live card in the conversation, suspends
    the tool without additional model calls, and resumes the same agent turn
    with the terminal result. If the result has `wait_interrupted: true`, the
    remote process is still running: answer the user from the snapshot, then
@@ -34,7 +34,7 @@ or Wisp restarts.
 Never monitor a Run with `Start-Sleep`, `sleep`, `ssh ... ps`, `kill -0`, a
 shell polling loop, `nohup`, background `&`, or hand-written PID files. Those
 duplicate the control plane and can strand the agent turn. A transient SSH
-error is stored as `last_poll_error`; do not resubmit, because Wisp retries the
+error is stored as `last_poll_error`; do not resubmit, because SuperScience retries the
 same idempotent remote handle.
 
 ```json
@@ -58,7 +58,7 @@ it does not consume model tokens while the Run Manager watches the job.
 If `wait_interrupted` is true, respond from the snapshot and call `monitor_run`
 again with the same id; do not resubmit.
 
-`input_paths` are project-relative local files. Wisp validates them, copies
+`input_paths` are project-relative local files. SuperScience validates them, copies
 them into an isolated `inputs/` directory, and flattens them to their basenames.
 The command starts in that directory, so the example above can use the staged
 script by basename. Upload progress, throughput, and ETA appear in the Run card. For a large dataset already on
@@ -70,17 +70,18 @@ successful login. Read stderr, correct the command from the probed
 capabilities, and continue. Stop only when SSH rejects authentication or host
 trust; do not repeat a rejected login with guessed credentials or SSH options.
 
-The control directory is `~/.wisp-science/runs/<run-id>` and the command starts
-in its `inputs/` subdirectory. stdout and stderr are
+The control directory is `~/.superscience/runs/<run-id>` and the command starts
+in its `inputs/` subdirectory. Older stored `~/.wisp-science/runs` roots remain
+valid. stdout and stderr are
 tailed into the Run record. The SSH supervisor requires `setsid`, GNU-compatible
 `timeout`, `bash`, and `/proc`; a missing prerequisite fails the Run instead of
-running without a wall-time limit. Wisp maps the supervisor timeout marker to
+running without a wall-time limit. SuperScience maps the supervisor timeout marker to
 `timed_out`.
 
 ## Results
 
 Declare `output_specs` with workdir-relative globs for the final products.
-After the Run succeeds, Wisp collects the matches on the server, checksums
+After the Run succeeds, SuperScience collects the matches on the server, checksums
 them, pulls them back through a persisted transfer Run, places them under the
 project's configured results directory, and registers each as an
 ArtifactVersion. The Run records `harvested_at` once registration completes;
@@ -117,10 +118,10 @@ Tasks and artifacts belong to the project; the server only computes. After the
 results are harvested (or knowingly abandoned), reclaim the workspace:
 
 - `cleanup_run_workspace({"run_id":"..."})` deletes the Run's
-  `~/.wisp-science/runs/<run-id>` directory (inputs, logs, intermediates). A
+  `~/.superscience/runs/<run-id>` directory (inputs, logs, intermediates). A
   succeeded Run with declared `output_specs` must be harvested first; the tool
   refuses otherwise so results are never lost. Registered artifacts stay in the
-  project. Before deletion Wisp pulls a trailing slice of stdout/stderr
+  project. Before deletion SuperScience pulls a trailing slice of stdout/stderr
   (at most 4 MiB per stream) into `runs/<id>/` — not the complete remote logs.
 - `list_remote_files({"context_id":"ssh:<alias>"})` shows every file this
   project placed on the server (staged inputs, uploads, and harvest-persisted
@@ -156,28 +157,28 @@ For a local upload via the agent, set `source_context_id` to `local`, provide
 the exact existing absolute local file or directory, and select an SSH
 destination.
 Omit `destination_path` to place the file under the project's configured
-remote data directory for that server. Wisp rejects globs, symlinks, special
+remote data directory for that server. SuperScience rejects globs, symlinks, special
 files, and existing remote destinations, and ledgers every successful upload
 so retracted files can be found and removed later. Call `monitor_run`
 with the returned Run id; call it again after `wait_interrupted`.
 
 For a local download, set `destination_context_id` to `local` and provide the
 exact new absolute local path. Ask the user when that path is unspecified.
-Wisp stages the item beside the destination, never overwrites an existing
+SuperScience stages the item beside the destination, never overwrites an existing
 path, and removes partial staging data after failure or cancellation. Call
 `monitor_run` with the returned Run id; call it again after `wait_interrupted`.
 
 When the user approves persistent A→B trust, call `configure_ssh_trust` first.
-It creates a dedicated key on A, carries only the public key through Wisp,
+It creates a dedicated key on A, carries only the public key through SuperScience,
 installs it on B, and verifies the directed edge. The transfer then prefers
 rsync when both servers provide it and falls back to scp. If the user does not
-want server SSH configuration changed, select the relay route; Wisp downloads
+want server SSH configuration changed, select the relay route; SuperScience downloads
 to a private local temporary directory and uploads with B's separately stored
 credentials.
 
 ## Cancellation and recovery
 
-`cancel_run({"run_id":"..."})` changes an SSH Run to `cancelling`. Wisp
+`cancel_run({"run_id":"..."})` changes an SSH Run to `cancelling`. SuperScience
 verifies the persisted token, PGID, and Linux process start time before sending
 TERM to the remote process group; it records `cancelled` only after remote
 confirmation. If the server is temporarily unreachable, the Run stays

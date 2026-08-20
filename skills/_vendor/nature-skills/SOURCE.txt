@@ -1,2 +1,8 @@
 Source: https://github.com/Yuan1z0825/nature-skills
+Commit: c171989db699bd601d4373912b3fb8db96ecc95b (2026-08-16)
+License: Apache-2.0 (see LICENSE)
 Vendored into skills/nature-* for SuperScience/天成科研助手 bundling.
+
+Local adaptations (do not drop on refresh):
+- nature-proposal-writer/SKILL.md frontmatter name stays nature-proposal-writer
+  (upstream uses researchwrite; SuperScience discovery requires name == directory).

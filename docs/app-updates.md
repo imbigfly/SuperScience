@@ -1,84 +1,89 @@
 # App updates
 
-SuperScience supports optional, signed in-app updates on macOS. Windows and Linux keep
-the update check and **Open Releases** path until their installers are enabled
-in a later change.
+The desktop client checks for updates through the TCTOKEN Open API, not GitHub
+Releases or the Tauri signed updater.
+
+## Check API
+
+```
+GET {base}/api/client/update/check?platform={macos|windows|linux}&version={CARGO_PKG_VERSION}&arch={m|intel|arm64|x64}
+```
+
+- Default base: `https://www.tctoken.cn` (same origin as account login).
+- Override with `TCTOKEN_API_BASE` to point at staging before the path is live
+  in production. No code change is required.
+- The request does not need a login token. The client uses an 8–15s timeout.
+- Response envelope: `{ success, message, data }`. `success=false` or an HTTP
+  error is a failed check. The dialog does **not** fall back to GitHub.
+- When the server has no package for the current platform/arch, the API may
+  return `client updates config not found`. The UI localizes that to “no
+  installer is published for this platform yet.”
+
+Whether an update exists is decided locally from semver: `latest > current`.
+If the server still sends `has_update=false`, that vetoes the prompt. A missing
+`has_update` field (current schema) is treated as “use semver”. `force_update`
+is honored only when that comparison also says the remote version is newer, so
+a server typo cannot force a downgrade.
+
+Platform and architecture are mapped as:
+
+| Runtime | Query value |
+| --- | --- |
+| macOS / Windows / Linux | `macos` / `windows` / `linux` |
+| macOS Apple Silicon / Intel | `m` / `intel` |
+| Windows or Linux `aarch64` / other | `arm64` / `x64` |
 
 ## User flow
 
-1. SuperScience checks the signed `latest.json` manifest. The Tauri updater chooses
-   `darwin-aarch64` or `darwin-x86_64` from the running binary's target.
-2. The update dialog shows the release notes. Nothing downloads until the user
-   selects **Download update**.
-3. SuperScience reports download progress and verifies the package signature. An
-   invalid signature never reaches the install step.
-4. A second dialog asks the user to select **Install and restart**.
-5. Installation is refused while an agent turn, approval, review, or persisted
-   Run Manager job is active.
+1. Startup, Settings, the menu, and the command palette all call the same
+   check. Startup is silent: a newer version only shows the sidebar card, never
+   a modal.
+2. When the user checks manually, the dialog shows release notes. Nothing
+   downloads until they choose **Download update**.
+3. **Download update** calls the check API again and uses the latest
+   `download_url`. A stale URL from an earlier check is not used. If that
+   lookup fails and a previous URL is still cached, in-app download falls back
+   to the cache. There is no “open download page” action.
+4. The client streams that `download_url` to a temporary file (DMG / EXE / other
+   installer). If `checksum` is a 64-character SHA-256 hex digest, the file is
+   verified before the install step. An empty checksum skips verification and
+   is logged.
+5. **Open installer** uses the system opener (`tauri-plugin-opener`). macOS
+   opens the DMG; Windows opens the installer. The app does not replace its
+   own bundle and does not restart itself. The “opening installer” dialog has
+   a **Close** button (Escape also dismisses it) so the current app stays
+   usable. Quit the old build after the system installer finishes.
+6. `force_update=true` hides **Later** and **Don't remind me**. The sidebar
+   card remains; the remaining actions are download and open the installer.
 
-The existing **Don't remind me**, **Later**, and **Open Releases** choices
-remain available. Updates are never forced.
+`install_supported` is true when a newer version exists and `download_url` is
+non-empty. macOS, Windows, and Linux share this path. If `download_url` is
+empty, the dialog does not offer download.
 
-An Apple Silicon Mac running the Intel build under Rosetta receives the Intel
-update. Installing the native Apple Silicon build once is required to switch
-architectures.
+## Failure and recovery
 
-## Failure and recovery behavior
-
-- Network loss, an interrupted download, a missing architecture, and signature
-  verification failure happen before installation and leave the current app
-  untouched. The verified package is kept only in memory, so quitting or losing
-  power during download simply requires downloading again.
-- If installation reports an error, SuperScience keeps the verified package available
-  for a later retry and offers the GitHub Releases fallback.
-- The Tauri macOS installer extracts the new app into a temporary directory
-  before replacing the installed bundle. A power loss during the final bundle
-  replacement cannot be recovered by an app that is no longer launchable. The
-  recovery path is to download the matching `.dmg` from GitHub Releases and
-  replace `superscience.app` in `/Applications`. Project data and settings live
-  outside the application bundle and are not removed by this repair.
-
-There is no background install or automatic downgrade. A rollback uses the same
-manual `.dmg` path with the desired older release.
+- A failed check shows the network or API error only. There is no GitHub
+  Releases link.
+- An interrupted download or checksum mismatch leaves the installed app
+  untouched. Download again from the dialog.
+- Active chats and runs do not block opening the installer. You still need to
+  quit the old app to finish a replace-in-place install.
+- There is no background install and no automatic downgrade.
 
 ## Release configuration
 
-Updater artifacts are enabled only for the macOS release workflow through
-`src-tauri/tauri.updater.conf.json`; ordinary development and diagnostic builds
-do not require a signing key. The release workflow requires these repository
-secrets:
-
-- `TAURI_SIGNING_PRIVATE_KEY`
-- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
-
-The matching public key and the
-`releases/latest/download/latest.json` endpoint are committed in
-`src-tauri/tauri.conf.json`. The private key must never be committed or copied
-into the application.
-
-Each tagged macOS release uploads both `.app.tar.gz` archives, their `.sig`
-files, and one merged `latest.json`. A follow-up workflow job verifies that the
-manifest contains non-empty signatures and URLs for both `darwin-aarch64` and
-`darwin-x86_64`.
-
-The first updater-capable release must still be installed manually by users of
-an older build whose release feed has no updater manifest. Updates between later
-updater-capable releases use the in-app flow.
+CI may still upload `latest.json` as a release artifact. The client no longer
+reads it. `src-tauri/tauri.conf.json` does not configure `plugins.updater`.
 
 ## Manual smoke test
 
-1. Publish the next tagged release from an updater-capable build with both
-   macOS targets (use a staging fork when the feed must not affect users).
-2. Confirm `latest.json`, two `.app.tar.gz` files, and two `.sig` files are
-   attached to the GitHub release.
-3. Install the previous Apple Silicon build, check for updates, and verify the
-   release notes and download progress.
-4. Cancel once before downloading, then download and cancel once before
-   installing; neither action should change the installed version.
-5. Start an agent turn or managed run and confirm installation is blocked.
-6. Finish the work, select **Install and restart**, and confirm the new version
-   launches with existing projects and settings.
-7. Repeat on an Intel Mac or an Intel runner/VM.
-8. Temporarily test a manifest with a bad signature and one with the current
-   architecture removed; both must show an error and **Open Releases**, without
-   presenting the install confirmation.
+1. Point `TCTOKEN_API_BASE` at an environment that already serves
+   `/api/client/update/check`.
+2. Install an older build, check for updates, and confirm the notes and
+   download progress.
+3. Cancel before downloading; the installed version must stay unchanged.
+4. Download, confirm checksum (or the skip-checksum log), then **Open
+   installer** and finish with the system UI.
+5. With `force_update=true`, confirm **Later** / **Don't remind me** are
+   hidden and Escape does not close the dialog.
+6. With the API down, confirm the error dialog has no download-page button.

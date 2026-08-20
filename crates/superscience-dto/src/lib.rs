@@ -1469,10 +1469,10 @@ fn default_theme_mode() -> String {
     "system".into()
 }
 fn default_light_palette() -> String {
-    "paper".into()
+    "codex".into()
 }
 fn default_dark_palette() -> String {
-    "charcoal".into()
+    "codex".into()
 }
 fn default_ui_font_size() -> u16 {
     14
@@ -1863,6 +1863,8 @@ pub struct ProjectSyncResult {
 pub struct DemoInfo {
     pub id: String,
     pub title: String,
+    #[serde(default)]
+    pub user_saved: bool,
 }
 
 #[derive(Deserialize, Clone)]
@@ -2032,7 +2034,7 @@ pub struct SessionInfo {
     pub pinned: bool,
     #[serde(default)]
     pub branch_state: Option<String>,
-    /// Persisted system prompt lags AGENTS.md / WISP.md; sidebar offers reload.
+    /// Persisted system prompt lags AGENTS.md / SUPERSCIENCE.md; sidebar offers reload.
     #[serde(default)]
     pub stale_prompt: bool,
 }
@@ -2532,7 +2534,7 @@ pub struct ProjectSummary {
 }
 
 /// Editable project settings (Project Settings modal). `agent_context` is the
-/// project's `.wisp/WISP.md`, injected into every seeded system prompt.
+/// project's `.superscience/SUPERSCIENCE.md`, injected into every seeded system prompt.
 #[derive(Clone, Deserialize, Default)]
 pub struct ProjectSettings {
     #[serde(default)]
@@ -2665,9 +2667,15 @@ pub const VIDEO_DURATION_MIN_SECS: u32 = 1;
 pub const VIDEO_DURATION_MAX_SECS: u32 = 15;
 pub const VIDEO_DURATION_DEFAULT_SECS: u32 = 5;
 
+pub const TCTOKEN_MODEL_ID: &str = "tctoken";
+
 impl ModelProfile {
     pub fn is_chat_model(&self) -> bool {
         !is_image_generation_model(&self.model) && !is_video_generation_model(&self.model)
+    }
+
+    pub fn is_builtin(&self) -> bool {
+        self.id == TCTOKEN_MODEL_ID
     }
 }
 
@@ -2762,6 +2770,24 @@ pub struct SkillRow {
     #[serde(default)]
     pub managed_by: Option<String>,
     pub dir: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillUpdateReport {
+    pub enabled: bool,
+    pub checked: bool,
+    #[serde(default)]
+    pub last_check_at: Option<String>,
+    #[serde(default)]
+    pub last_check_at_ms: Option<i64>,
+    #[serde(default)]
+    pub updated: Vec<String>,
+    #[serde(default)]
+    pub skipped: Vec<String>,
+    #[serde(default)]
+    pub errors: Vec<String>,
+    #[serde(default)]
+    pub dropped_overlays: Vec<String>,
 }
 
 #[derive(Clone, serde::Deserialize, PartialEq)]
@@ -3159,6 +3185,8 @@ pub struct UpdateCheck {
     pub downloaded: bool,
     #[serde(default)]
     pub downloading: bool,
+    #[serde(default)]
+    pub force_update: bool,
 }
 
 #[derive(Deserialize)]

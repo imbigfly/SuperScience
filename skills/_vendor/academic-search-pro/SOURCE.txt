@@ -1,0 +1,7 @@
+Source: https://skillhub.cn/skills/user_8d26dabd/academic-search-pro
+Author: 刘楠 / 科恩实验室
+Package: academic-search-pro-1.0.5.zip (user-provided local install package)
+Version: 1.0.5 (_meta.json); SKILL.md frontmatter still lists 1.0.3
+License: not included in the upstream package; vendored as-is from SkillHub zip
+Vendored into skills/academic-search-pro for SuperScience/天成科研助手 bundling.
+Do not place SKILL.md under this _vendor directory (discovery walks skills/*/SKILL.md).

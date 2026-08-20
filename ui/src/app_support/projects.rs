@@ -15,6 +15,7 @@ pub(crate) fn ProjectsScreen(
     on_open_demo: Callback<()>,
     on_open_scratch: Callback<()>,
     on_search: Callback<()>,
+    on_capability_action: Callback<crate::capabilities_home::CapabilityAction>,
     on_export_project: Callback<(String, String)>,
     project_transfer: RwSignal<Option<ProjectTransferProgress>>,
     privacy_mode_active: RwSignal<bool>,
@@ -566,7 +567,7 @@ pub(crate) fn ProjectsScreen(
             <div class="projects-head">
                 <div class="projects-brand">
                     <span class="projects-brand-mark" aria-hidden="true"></span>
-                    <div class="projects-title">"Wisp Science"</div>
+                    <div class="projects-title">"天成科研助手"</div>
                 </div>
                 <div class="projects-actions">
                     <button type="button" class="projects-icon-btn"
@@ -959,6 +960,29 @@ pub(crate) fn ProjectsScreen(
                     </div>
                 </div>
             })}
+            <crate::capabilities_home::CapabilitySceneTabs
+                locale=locale
+                on_activate=on_capability_action
+            />
+            <div class="director-cta" data-testid="director-cta">
+                <button
+                    type="button"
+                    class="director-cta-btn"
+                    data-testid="director-kickoff"
+                    on:click=move |_| {
+                        on_capability_action.call(
+                            crate::capabilities_home::CapabilityAction::GuidedChat {
+                                prompt_key: "caps.prompt.director_kickoff",
+                                skill: None,
+                                specialist: None,
+                            },
+                        );
+                    }
+                >
+                    {move || t(locale.get(), "home.director_cta")}
+                </button>
+                <p class="director-cta-hint">{move || t(locale.get(), "home.director_cta_hint")}</p>
+            </div>
             <div class="projects-cols">
                 <div class="projects-col">
                     <h2>{move || t(locale.get(), "projects.title")}</h2>
@@ -1209,7 +1233,7 @@ pub(crate) fn ProjectsScreen(
             <div class="projects-footer">
                 <span>{move || t(locale.get(), "projects.star_hint")}</span>
                 <button type="button" class="projects-star-link"
-                    on:click=move |_| open_external_url("https://github.com/xuzhougeng/wisp-science".into())>
+                    on:click=move |_| open_external_url("https://github.com/imbigfly/SuperScience".into())>
                     {move || t(locale.get(), "projects.star_link")}
                 </button>
             </div>

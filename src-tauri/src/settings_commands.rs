@@ -7,27 +7,31 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
+use superscience_llm::Message;
+use superscience_store::secrets::Secret;
 use tauri::State;
-use wisp_llm::Message;
-use wisp_store::secrets::Secret;
 
 const SYNC_RELAY_TOKEN: &str = "sync_relay_token";
 
 #[derive(serde::Serialize)]
 pub(super) struct TokenUsageOverview {
-    workspaces: Vec<wisp_store::ProjectTokenUsage>,
-    days: Vec<wisp_store::TokenUsageDay>,
-    models: Vec<wisp_store::ModelTokenUsage>,
-    tools: Vec<wisp_store::ToolCallUsage>,
+    workspaces: Vec<superscience_store::ProjectTokenUsage>,
+    days: Vec<superscience_store::TokenUsageDay>,
+    models: Vec<superscience_store::ModelTokenUsage>,
+    tools: Vec<superscience_store::ToolCallUsage>,
 }
 
 fn annotate_provider_error(error: impl ToString, proxy: Option<&str>) -> String {
-    wisp_llm::annotate_transport_error(&error.to_string(), proxy, &wisp_llm::ambient_proxy_env())
+    superscience_llm::annotate_transport_error(
+        &error.to_string(),
+        proxy,
+        &superscience_llm::ambient_proxy_env(),
+    )
 }
 
 async fn validate_provider_config(
     provider_name: &str,
-    mut cfg: wisp_llm::ProviderConfig,
+    mut cfg: superscience_llm::ProviderConfig,
     supports_vision: bool,
 ) -> Result<(), String> {
     let proxy = cfg.proxy.clone();
@@ -69,7 +73,7 @@ async fn validate_provider_config(
     } else {
         Message::user("Reply with OK.")
     };
-    wisp_llm::build(cfg)
+    superscience_llm::build(cfg)
         .complete(&[probe], &[])
         .await
         .map(|_| ())
@@ -273,7 +277,7 @@ pub(super) async fn set_settings(
     let locale = match settings.locale.trim() {
         "zh" | "zh-CN" | "zh-TW" => "zh",
         other if !other.is_empty() => other,
-        _ => "en",
+        _ => "zh",
     };
     state
         .store
@@ -492,7 +496,7 @@ async fn init_agent_infini(api_key: &str) -> Result<(), String> {
     })?;
     let mut command = tokio::process::Command::new(&bin);
     command.arg("init").arg("--api-key").arg(api_key);
-    wisp_tools::process::hide_console_async(&mut command);
+    superscience_tools::process::hide_console_async(&mut command);
     let out = command
         .output()
         .await
@@ -608,7 +612,7 @@ pub(super) async fn set_credential(
     // standalone probe, so they're stored as-is.
     if id == "openalex_api_key" && !value.is_empty() {
         let resp = reqwest::Client::builder()
-            .user_agent("wisp-science")
+            .user_agent(superscience_paths::PRODUCT_NAME)
             .timeout(std::time::Duration::from_secs(10))
             .build()
             .map_err(|e| e.to_string())?
@@ -702,7 +706,7 @@ pub(super) async fn validate_settings(
 /// 16x16 PNG — small enough to be free, large enough that vision APIs with a
 /// minimum-dimension rule don't reject it for the wrong reason.
 fn vision_probe_message() -> Message {
-    use wisp_llm::message::{Content, ImageUrl, Part};
+    use superscience_llm::message::{Content, ImageUrl, Part};
     const PROBE_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR42mM4EWBDEmIY1TCqYfhqAABNl1QQCkyLAQAAAABJRU5ErkJggg==";
     let mut msg = Message::user("");
     msg.content = Content::Parts(vec![
@@ -1001,7 +1005,7 @@ pub(super) async fn get_session_token_usage(
     project_id: String,
     offset: Option<i64>,
     limit: Option<i64>,
-) -> Result<wisp_store::SessionTokenUsagePage, String> {
+) -> Result<superscience_store::SessionTokenUsagePage, String> {
     state
         .store
         .token_usage_by_session(&project_id, offset.unwrap_or(0), limit.unwrap_or(20))

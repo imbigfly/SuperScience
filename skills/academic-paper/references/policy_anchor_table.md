@@ -7,12 +7,12 @@
 
 **Lint contract**: `scripts/check_policy_anchor_table.py` enforces 4-anchor coverage, 16-field-per-anchor canonical order, source_strength enum membership, and verbatim-quote presence for mandate/recommend/conditional cells. Mutation tests live at `scripts/test_check_policy_anchor_table.py`.
 
-**Nature ↔ v3.2 venue de-dup**: the Nature anchor below shares its substantive policy content with the v3.2 Nature venue renderer in `venue_disclosure_policies.md`. Both files cross-reference the canonical source pointer `shared/policy_data/nature_policy.md` so a future single-source-of-truth refactor can byte-compare imported substrings without breaking either consumer. The dedup pointer presence is lint-enforced via `verify_nature_dedup_with_venue` in `check_policy_anchor_table.py`.
+**Nature ↔ v3.2 venue de-dup**: the Nature anchor below shares its substantive policy content with the v3.2 Nature venue renderer in `venue_disclosure_policies.md`. Both files cross-reference the canonical source pointer `../academic-shared/policy_data/nature_policy.md` so a future single-source-of-truth refactor can byte-compare imported substrings without breaking either consumer. The dedup pointer presence is lint-enforced via `verify_nature_dedup_with_venue` in `check_policy_anchor_table.py`.
 
 **Forbidden by Decision Doc §4.3 (renderer must honour these):**
 - G1 — no `ai_disclosure` field is added to the corpus entry schema; the renderer reads this table at runtime, no schema change.
 - G9 — image-rights regimes stay anchor-specific; the renderer MUST NOT unify field #16 into a single boolean across the four tables.
-- The shared `shared/policy_data/nature_policy.md` source MUST live outside any anchor-specific or venue-specific file so neither consumer can drift unilaterally.
+- The shared `../academic-shared/policy_data/nature_policy.md` source MUST live outside any anchor-specific or venue-specific file so neither consumer can drift unilaterally.
 
 ---
 
@@ -84,7 +84,7 @@
 ## Anchor: nature
 
 **Snapshot:** `nature:wayback=20260513075542` (sha256: cf691cba…)
-**Source-of-truth pointer:** see `shared/policy_data/nature_policy.md` for the canonical substantive policy text; the v3.2 venue renderer (`venue_disclosure_policies.md` Nature entry) shares this source. **De-dup invariant:** edits to Nature-specific policy quotes must go through `shared/policy_data/nature_policy.md` first; both consumers re-cite from there. Lint contract enforced by `verify_nature_dedup_with_venue` in `check_policy_anchor_table.py`.
+**Source-of-truth pointer:** see `../academic-shared/policy_data/nature_policy.md` for the canonical substantive policy text; the v3.2 venue renderer (`venue_disclosure_policies.md` Nature entry) shares this source. **De-dup invariant:** edits to Nature-specific policy quotes must go through `../academic-shared/policy_data/nature_policy.md` first; both consumers re-cite from there. Lint contract enforced by `verify_nature_dedup_with_venue` in `check_policy_anchor_table.py`.
 **Anchor caveat:** Nature Portfolio AI editorial policy is **adopted** and applies across all Nature Portfolio journals. Author-facing surface covers four sections (AI authorship / Generative AI images / AI use by peer reviewers / Editorial use). ARS matrix covers author-side obligations only (AI authorship + Generative AI images). The policy is framework-level for text and prohibition-level for images (generative AI images banned by default with three carve-outs).
 
 | # | Field | Source strength | Verbatim quote | Locator | Value type |
@@ -154,4 +154,4 @@
 - Renderer protocol (consumer): `policy_anchor_disclosure_protocol.md` (forthcoming in this branch)
 - v3.2 venue policy database (Nature de-dup peer): `venue_disclosure_policies.md`
 - v3.2 disclosure mode protocol (extension target): `disclosure_mode_protocol.md`
-- Shared Nature policy source (canonical pointer, forthcoming): `shared/policy_data/nature_policy.md`
+- Shared Nature policy source (canonical pointer, forthcoming): `../academic-shared/policy_data/nature_policy.md`

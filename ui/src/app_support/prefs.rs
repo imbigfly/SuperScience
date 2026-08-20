@@ -2,8 +2,8 @@ use super::*;
 
 const MODEL_SWITCH_WARNING_DISABLED_KEY: &str = "superscience-model-switch-warning-disabled";
 
-const PRIVACY_MODE_ACTIVE_KEY: &str = "wisp-privacy-mode-active";
-const PRIVACY_MODE_PROJECTS_KEY: &str = "wisp-privacy-mode-projects";
+const PRIVACY_MODE_ACTIVE_KEY: &str = "superscience-privacy-mode-active";
+const PRIVACY_MODE_PROJECTS_KEY: &str = "superscience-privacy-mode-projects";
 
 pub(crate) fn load_privacy_mode() -> (bool, HashSet<String>) {
     let storage = web_sys::window().and_then(|window| window.local_storage().ok().flatten());
@@ -138,7 +138,7 @@ fn load_palette_mode(key: &str, fallback: &str, valid: &[&str]) -> String {
 pub(crate) fn load_light_palette() -> String {
     load_palette_mode(
         "superscience-light-palette",
-        "paper",
+        "codex",
         &["paper", "codex", "github", "catppuccin", "everforest"],
     )
 }
@@ -146,7 +146,7 @@ pub(crate) fn load_light_palette() -> String {
 pub(crate) fn load_dark_palette() -> String {
     load_palette_mode(
         "superscience-dark-palette",
-        "charcoal",
+        "codex",
         &["charcoal", "codex", "github", "catppuccin", "gruvbox"],
     )
 }
@@ -427,7 +427,10 @@ pub(crate) fn apply_font_prefs(ui_size: u16, code_size: u16, ui_family: &str, co
     if let Ok(Some(storage)) = window.local_storage() {
         let _ = storage.set_item("superscience-ui-font-size", &ui_size.to_string());
         let _ = storage.set_item("superscience-code-font-size", &code_size.to_string());
-        for (key, value) in [("superscience-font-ui", ui_family), ("superscience-font-mono", code_family)] {
+        for (key, value) in [
+            ("superscience-font-ui", ui_family),
+            ("superscience-font-mono", code_family),
+        ] {
             let _ = if value.is_empty() {
                 storage.remove_item(key)
             } else {
@@ -437,8 +440,8 @@ pub(crate) fn apply_font_prefs(ui_size: u16, code_size: u16, ui_family: &str, co
     }
 }
 
-const CUSTOM_CSS_STYLE_ID: &str = "wisp-custom-theme";
-const CUSTOM_CSS_STORAGE_KEY: &str = "wisp-custom-css";
+const CUSTOM_CSS_STYLE_ID: &str = "superscience-custom-theme";
+const CUSTOM_CSS_STORAGE_KEY: &str = "superscience-custom-css";
 const CUSTOM_CSS_MAX_BYTES: usize = 64_000;
 
 pub(crate) fn load_custom_css() -> String {
@@ -671,10 +674,10 @@ pub(crate) const CONTEXT_USAGE_DEFAULT_W: f64 = 420.0;
 
 pub(crate) const CONTEXT_USAGE_DEFAULT_H: f64 = 360.0;
 
-const CONTEXT_USAGE_X_KEY: &str = "wisp-context-usage-x";
-const CONTEXT_USAGE_Y_KEY: &str = "wisp-context-usage-y";
-const CONTEXT_USAGE_W_KEY: &str = "wisp-context-usage-w";
-const CONTEXT_USAGE_H_KEY: &str = "wisp-context-usage-h";
+const CONTEXT_USAGE_X_KEY: &str = "superscience-context-usage-x";
+const CONTEXT_USAGE_Y_KEY: &str = "superscience-context-usage-y";
+const CONTEXT_USAGE_W_KEY: &str = "superscience-context-usage-w";
+const CONTEXT_USAGE_H_KEY: &str = "superscience-context-usage-h";
 
 pub(crate) fn clamp_context_usage_geom(
     x: f64,

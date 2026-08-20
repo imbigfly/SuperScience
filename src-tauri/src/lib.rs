@@ -6,16 +6,16 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock};
+use superscience_core::{Agent, MemoryManager, Output, OutputFuture};
+use superscience_llm::{Message, ProviderConfig};
+use superscience_skills::{SkillIndex, SkillSource};
+use superscience_store::{LibraryStore, Store};
 #[cfg(target_os = "macos")]
 use tauri::menu::{
     AboutMetadata, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder,
 };
 use tauri::{ipc::Response, AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
-use wisp_core::{Agent, MemoryManager, Output, OutputFuture};
-use wisp_llm::{Message, ProviderConfig};
-use wisp_skills::{SkillIndex, SkillSource};
-use wisp_store::{LibraryStore, Store};
 
 mod acp;
 mod agent_turn;
@@ -37,6 +37,7 @@ mod delegation_isolation;
 mod delegation_resources;
 mod delegation_runtime;
 mod delegation_tool;
+mod demo_save;
 mod desktop_lifecycle;
 mod device_bridge;
 mod device_hub;
@@ -95,6 +96,7 @@ mod share_social;
 mod side_chat;
 mod skill_commands;
 mod skill_portfolio;
+mod skill_update;
 mod snapshot_store;
 mod specialist_tool;
 mod specialists;
@@ -102,6 +104,7 @@ mod ssh_guard;
 mod ssh_hosts;
 mod ssh_master;
 mod storage_prefs;
+mod tctoken;
 mod terminal_sessions;
 mod turn_memory;
 mod turn_undo;
@@ -188,7 +191,7 @@ enum AgentEvent {
         ctx_tokens: usize,
         max_context: usize,
         #[serde(default)]
-        context_usage: wisp_core::ContextUsage,
+        context_usage: superscience_core::ContextUsage,
     },
     Compaction {
         frame_id: String,
@@ -275,13 +278,15 @@ struct ConfirmRequest {
     preview: String,
 }
 
-type ConfirmSender = tokio::sync::oneshot::Sender<wisp_tools::ConfirmDecision>;
-type ConfirmReceiver = tokio::sync::oneshot::Receiver<wisp_tools::ConfirmDecision>;
+type ConfirmSender = tokio::sync::oneshot::Sender<superscience_tools::ConfirmDecision>;
+type ConfirmReceiver = tokio::sync::oneshot::Receiver<superscience_tools::ConfirmDecision>;
 
-async fn receive_confirm_decision(receiver: ConfirmReceiver) -> wisp_tools::ConfirmDecision {
+async fn receive_confirm_decision(
+    receiver: ConfirmReceiver,
+) -> superscience_tools::ConfirmDecision {
     receiver
         .await
-        .unwrap_or(wisp_tools::ConfirmDecision::Denied { feedback: None })
+        .unwrap_or(superscience_tools::ConfirmDecision::Denied { feedback: None })
 }
 
 async fn request_image_resize_confirmation(
@@ -466,13 +471,13 @@ fn should_hide_app_on_macos_close(window_label: &str, app_is_exiting: bool) -> b
 fn parse_confirm_payload(message: &str) -> (String, String) {
     // Plan-approval pause: the checklist rides in the message behind a marker so
     // the UI renders the dedicated plan card (preview = the checklist).
-    if let Some(rest) = message.strip_prefix(wisp_tools::plan::PLAN_APPROVAL_PREFIX) {
+    if let Some(rest) = message.strip_prefix(superscience_tools::plan::PLAN_APPROVAL_PREFIX) {
         return ("update_plan".to_string(), rest.to_string());
     }
     if let Some(rest) = message.strip_prefix(resource_leases::CONFIRM_PREFIX) {
         return (resource_leases::CONFIRM_TOOL.to_string(), rest.to_string());
     }
-    if let Some(rest) = message.strip_prefix(wisp_tools::image::RESIZE_CONFIRM_PREFIX) {
+    if let Some(rest) = message.strip_prefix(superscience_tools::image::RESIZE_CONFIRM_PREFIX) {
         return ("image_resize".to_string(), rest.to_string());
     }
     if let Some(rest) = message.strip_prefix("Run tool '") {
@@ -664,11 +669,11 @@ impl ApprovalMode {
             _ => ApprovalMode::Allow,
         }
     }
-    fn to_tools(self) -> wisp_tools::Approval {
+    fn to_tools(self) -> superscience_tools::Approval {
         match self {
-            ApprovalMode::Allow => wisp_tools::Approval::Allow,
-            ApprovalMode::Ask => wisp_tools::Approval::Ask,
-            ApprovalMode::Deny => wisp_tools::Approval::Deny,
+            ApprovalMode::Allow => superscience_tools::Approval::Allow,
+            ApprovalMode::Ask => superscience_tools::Approval::Ask,
+            ApprovalMode::Deny => superscience_tools::Approval::Deny,
         }
     }
 }
@@ -730,7 +735,7 @@ impl ApprovalPolicy {
         self.tools.get(tool).copied().unwrap_or(ApprovalMode::Allow)
     }
 
-    fn mode_for(&self, tool: &str) -> wisp_tools::Approval {
+    fn mode_for(&self, tool: &str) -> superscience_tools::Approval {
         let base = self.base_mode(tool);
         match self.scope {
             // Current behaviour: honour the per-tool mode as configured.
@@ -739,8 +744,8 @@ impl ApprovalPolicy {
             // block that survives (dangerous commands are gated separately in
             // the shell tool via `full()`).
             Scope::Auto | Scope::Full => match base {
-                ApprovalMode::Deny => wisp_tools::Approval::Deny,
-                _ => wisp_tools::Approval::Allow,
+                ApprovalMode::Deny => superscience_tools::Approval::Deny,
+                _ => superscience_tools::Approval::Allow,
             },
         }
     }
@@ -762,7 +767,7 @@ struct BioDomain {
 /// Read the static `mcp_bio/domains.json` connector map. Empty if the bundle is
 /// absent (dev checkouts without the vendored bio-tools).
 fn bio_domains() -> Vec<BioDomain> {
-    let Some(dir) = wisp_paths::bio_tools_dir() else {
+    let Some(dir) = superscience_paths::bio_tools_dir() else {
         return vec![];
     };
     let path = dir.join("lib").join("mcp_bio").join("domains.json");
@@ -886,7 +891,7 @@ struct SessionTranscriptPage {
     user_offset: usize,
     outline: Vec<SessionOutlineItem>,
     presentations: Vec<SessionPresentation>,
-    branches: Vec<wisp_store::SessionBranchLink>,
+    branches: Vec<superscience_store::SessionBranchLink>,
     #[serde(skip_serializing_if = "Option::is_none")]
     branch_state: Option<String>,
 }
@@ -1013,7 +1018,7 @@ async fn mark_seen_if_viewed(state: &AppState, frame_id: &str) {
 }
 
 async fn project_status_counts(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     project_id: &str,
     running: &HashSet<String>,
     awaiting: &HashSet<String>,
@@ -1062,11 +1067,11 @@ struct UiItem {
 }
 
 /// Index in `msgs` where the `user_index`‑th user turn starts (0-based user count).
-fn user_message_start(msgs: &[wisp_llm::Message], user_index: usize) -> usize {
+fn user_message_start(msgs: &[superscience_llm::Message], user_index: usize) -> usize {
     let mut seen = 0usize;
     for (i, m) in msgs.iter().enumerate() {
-        if m.role == wisp_llm::Role::User
-            && m.tool_name.as_deref() != Some(wisp_store::AGENT_WORKFLOW_COMPLETION_TOOL)
+        if m.role == superscience_llm::Role::User
+            && m.tool_name.as_deref() != Some(superscience_store::AGENT_WORKFLOW_COMPLETION_TOOL)
             && !m.content.as_text().trim().is_empty()
         {
             if seen == user_index {
@@ -1080,7 +1085,7 @@ fn user_message_start(msgs: &[wisp_llm::Message], user_index: usize) -> usize {
 
 /// Flatten persisted messages into UI transcript items (skips system turns,
 /// splits assistant reasoning into its own row).
-fn messages_to_items(msgs: &[wisp_llm::Message]) -> Vec<UiItem> {
+fn messages_to_items(msgs: &[superscience_llm::Message]) -> Vec<UiItem> {
     let tool_inputs: HashMap<&str, String> = msgs
         .iter()
         .flat_map(|message| message.tool_calls.iter())
@@ -1098,9 +1103,11 @@ fn messages_to_items(msgs: &[wisp_llm::Message]) -> Vec<UiItem> {
     let mut out = vec![];
     for m in msgs {
         match m.role {
-            wisp_llm::Role::User => {
+            superscience_llm::Role::User => {
                 let t = m.content.as_text();
-                if m.tool_name.as_deref() == Some(wisp_store::AGENT_WORKFLOW_COMPLETION_TOOL) {
+                if m.tool_name.as_deref()
+                    == Some(superscience_store::AGENT_WORKFLOW_COMPLETION_TOOL)
+                {
                     let ok = background_completion_ok(&t);
                     out.push(UiItem {
                         role: "tool".into(),
@@ -1133,7 +1140,7 @@ fn messages_to_items(msgs: &[wisp_llm::Message]) -> Vec<UiItem> {
                     });
                 }
             }
-            wisp_llm::Role::Assistant => {
+            superscience_llm::Role::Assistant => {
                 if let Some(r) = &m.reasoning {
                     if !r.trim().is_empty() {
                         out.push(UiItem {
@@ -1170,7 +1177,7 @@ fn messages_to_items(msgs: &[wisp_llm::Message]) -> Vec<UiItem> {
                     });
                 }
             }
-            wisp_llm::Role::Tool => {
+            superscience_llm::Role::Tool => {
                 let text = m.content.as_text();
                 if m.tool_name.as_deref() == Some("attempt_completion") {
                     if !text.trim().is_empty() {
@@ -1189,7 +1196,7 @@ fn messages_to_items(msgs: &[wisp_llm::Message]) -> Vec<UiItem> {
                             resources: Vec::new(),
                         });
                     }
-                } else if m.tool_name.as_deref() == Some(wisp_tools::ask_user::ASK_USER) {
+                } else if m.tool_name.as_deref() == Some(superscience_tools::ask_user::ASK_USER) {
                     // The question card body, same pattern as the plan row.
                     out.push(UiItem {
                         role: "question".into(),
@@ -1210,7 +1217,7 @@ fn messages_to_items(msgs: &[wisp_llm::Message]) -> Vec<UiItem> {
                     // Both plan sources persist the same `{v, source, entries}`
                     // body; the ACP one as its own row, the built-in one as the
                     // `propose_plan` result that paired with the model's call.
-                    Some(acp::PLAN_TOOL_NAME) | Some(wisp_tools::plan::PROPOSE_PLAN)
+                    Some(acp::PLAN_TOOL_NAME) | Some(superscience_tools::plan::PROPOSE_PLAN)
                 ) {
                     out.push(UiItem {
                         role: "plan".into(),
@@ -1264,7 +1271,7 @@ fn messages_to_items(msgs: &[wisp_llm::Message]) -> Vec<UiItem> {
                     });
                 }
             }
-            wisp_llm::Role::System => {}
+            superscience_llm::Role::System => {}
         }
     }
     out
@@ -1298,7 +1305,9 @@ fn bounded_ui_tool_input(value: &str) -> String {
 fn bounded_ui_tool_result(name: &str, value: &str) -> String {
     if matches!(
         name,
-        "attempt_completion" | wisp_tools::plan::PROPOSE_PLAN | wisp_tools::ask_user::ASK_USER
+        "attempt_completion"
+            | superscience_tools::plan::PROPOSE_PLAN
+            | superscience_tools::ask_user::ASK_USER
     ) {
         value.to_string()
     } else {
@@ -1372,7 +1381,15 @@ fn events_to_items(events: &[AgentEvent]) -> (Vec<UiItem>, HashMap<i64, usize>) 
     // Per-round usage folds into one row per turn, floated to the turn's tail —
     // same shape the live UI produces via `upsert_turn_usage`. Flushed when the
     // next user turn starts and again at the end of the stream.
-    let mut turn_usage: Option<(u64, u64, u64, u64, usize, usize, wisp_core::ContextUsage)> = None;
+    let mut turn_usage: Option<(
+        u64,
+        u64,
+        u64,
+        u64,
+        usize,
+        usize,
+        superscience_core::ContextUsage,
+    )> = None;
     for event in events {
         match event {
             AgentEvent::User { text, .. } => {
@@ -1510,8 +1527,8 @@ fn events_to_items(events: &[AgentEvent]) -> (Vec<UiItem>, HashMap<i64, usize>) 
                 // conversion; replay must mirror that path or a refresh turns
                 // the card back into a raw tool row (and loses its actions).
                 let card_role = match name.as_str() {
-                    wisp_tools::plan::PROPOSE_PLAN if *ok => Some("plan"),
-                    wisp_tools::ask_user::ASK_USER if *ok => Some("question"),
+                    superscience_tools::plan::PROPOSE_PLAN if *ok => Some("plan"),
+                    superscience_tools::ask_user::ASK_USER if *ok => Some("question"),
                     _ => None,
                 };
                 if let Some(role) = card_role {
@@ -1634,7 +1651,7 @@ fn usage_item(
     cached: u64,
     ctx_tokens: usize,
     max_context: usize,
-    context_usage: wisp_core::ContextUsage,
+    context_usage: superscience_core::ContextUsage,
 ) -> UiItem {
     UiItem {
         role: "usage".into(),
@@ -1867,7 +1884,7 @@ struct Settings {
     #[serde(default = "default_locale")]
     locale: String,
     /// Where the workspace/data root lives. Empty = platform default
-    /// (Documents/wisp-science). Applied on next launch (#6, #13).
+    /// (Documents/superscience). Applied on next launch (#6, #13).
     #[serde(default)]
     workspace_dir: String,
     /// Maximum LLM/tool iterations in one agent turn.
@@ -2022,7 +2039,7 @@ fn log_dev_llm_dispatch(
 /// mid-session change — e.g. 100 → 0 for unlimited monitoring — takes effect
 /// without waiting for an unrelated agent rebuild.
 fn apply_live_agent_settings(
-    agent: &mut wisp_core::Agent,
+    agent: &mut superscience_core::Agent,
     max_iter: usize,
     auto_compact: bool,
     auto_continue: bool,
@@ -2034,7 +2051,7 @@ fn apply_live_agent_settings(
 }
 
 fn default_locale() -> String {
-    "en".into()
+    "zh".into()
 }
 
 fn default_sync_backend() -> String {
@@ -2204,7 +2221,7 @@ fn ensure_writable(dir: PathBuf, app_data: &std::path::Path) -> PathBuf {
     }
 }
 
-/// `wisp_core::Output` backed by Tauri events. Confirmation awaits a Tokio
+/// `superscience_core::Output` backed by Tauri events. Confirmation awaits a Tokio
 /// oneshot satisfied by the `confirm_response` command, yielding the runtime
 /// so that command remains clickable. `frame_id` is the session frame id
 /// (carried on every event so the UI can route by session).
@@ -2250,7 +2267,7 @@ struct TauriOutput {
     /// Provenance sink: each tool-execution record the turn produces is sent here
     /// and persisted as an `execution_log` row by a background drain task.
     /// `None` disables it.
-    prov: Option<tokio::sync::mpsc::UnboundedSender<wisp_core::ProvenanceRecord>>,
+    prov: Option<tokio::sync::mpsc::UnboundedSender<superscience_core::ProvenanceRecord>>,
 }
 
 impl TauriOutput {
@@ -2283,9 +2300,9 @@ impl TauriOutput {
         &self,
         message: &str,
         allow_full_permission: bool,
-    ) -> wisp_tools::ConfirmDecision {
+    ) -> superscience_tools::ConfirmDecision {
         if allow_full_permission && self.full_permission() {
-            return wisp_tools::ConfirmDecision::Approved;
+            return superscience_tools::ConfirmDecision::Approved;
         }
         let (tool, preview) = parse_confirm_payload(message);
         let grant = approval_grant_key(message);
@@ -2297,7 +2314,7 @@ impl TauriOutput {
                     .unwrap_or(false)
             })
         {
-            return wisp_tools::ConfirmDecision::Approved;
+            return superscience_tools::ConfirmDecision::Approved;
         }
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.confirms.lock().unwrap().insert(
@@ -2404,7 +2421,7 @@ fn should_persist_ui_event(event: &AgentEvent) -> bool {
     )
 }
 
-fn provenance_ui_file_changes(rec: &wisp_core::ProvenanceRecord) -> &[String] {
+fn provenance_ui_file_changes(rec: &superscience_core::ProvenanceRecord) -> &[String] {
     // write/edit/generate_image already emit ToolEvent::FileChanged at the
     // moment their bytes land. Python, R, and shell writes are learned only
     // from the post-tool workspace diff, so forward that structured evidence
@@ -2462,7 +2479,7 @@ impl Output for TauriOutput {
         cached: u64,
         ctx_tokens: usize,
         max_context: usize,
-        context_usage: wisp_core::ContextUsage,
+        context_usage: superscience_core::ContextUsage,
     ) {
         self.emit(AgentEvent::Usage {
             frame_id: self.frame_id.clone(),
@@ -2522,8 +2539,8 @@ impl Output for TauriOutput {
     fn confirm(&self, _message: &str) -> bool {
         false
     }
-    fn confirm_decision(&self, _message: &str) -> wisp_tools::ConfirmDecision {
-        wisp_tools::ConfirmDecision::Denied { feedback: None }
+    fn confirm_decision(&self, _message: &str) -> superscience_tools::ConfirmDecision {
+        superscience_tools::ConfirmDecision::Denied { feedback: None }
     }
     fn confirm_async<'a>(&'a self, message: &'a str) -> OutputFuture<'a, bool> {
         Box::pin(async move { self.confirm_decision_async(message).await.approved() })
@@ -2531,19 +2548,19 @@ impl Output for TauriOutput {
     fn confirm_decision_async<'a>(
         &'a self,
         message: &'a str,
-    ) -> OutputFuture<'a, wisp_tools::ConfirmDecision> {
+    ) -> OutputFuture<'a, superscience_tools::ConfirmDecision> {
         Box::pin(async move {
             let allow_full_permission =
-                !message.starts_with(wisp_tools::image::RESIZE_CONFIRM_PREFIX);
+                !message.starts_with(superscience_tools::image::RESIZE_CONFIRM_PREFIX);
             self.request_confirmation(message, allow_full_permission)
                 .await
         })
     }
-    fn approval_mode(&self, tool: &str) -> wisp_tools::Approval {
+    fn approval_mode(&self, tool: &str) -> superscience_tools::Approval {
         self.approvals
             .read()
             .map(|p| p.mode_for(tool))
-            .unwrap_or(wisp_tools::Approval::Allow)
+            .unwrap_or(superscience_tools::Approval::Allow)
     }
     fn restrict_read_paths_to_project(&self) -> bool {
         self.restrict_read_paths_to_project
@@ -2552,7 +2569,7 @@ impl Output for TauriOutput {
         &'a self,
         tool: &'a str,
         args: &'a serde_json::Value,
-    ) -> OutputFuture<'a, Result<Option<wisp_tools::ToolResourceLease>, String>> {
+    ) -> OutputFuture<'a, Result<Option<superscience_tools::ToolResourceLease>, String>> {
         Box::pin(async move {
             let Some(request) = resource_leases::request_for_call(&self.project_root, tool, args)
             else {
@@ -2614,7 +2631,7 @@ impl Output for TauriOutput {
         self.project_write_locked
     }
     fn on_message(&self, msg: &Message) {
-        if msg.role == wisp_llm::Role::User {
+        if msg.role == superscience_llm::Role::User {
             self.emit(AgentEvent::User {
                 frame_id: self.frame_id.clone(),
                 text: msg.content.as_text(),
@@ -2629,7 +2646,7 @@ impl Output for TauriOutput {
             seq,
         });
     }
-    fn provenance(&self, rec: &wisp_core::ProvenanceRecord) {
+    fn provenance(&self, rec: &superscience_core::ProvenanceRecord) {
         for path in provenance_ui_file_changes(rec) {
             self.file_changed(path);
         }
@@ -2652,7 +2669,7 @@ impl Output for TauriOutput {
 }
 
 fn env_or(key: &str, default: &str) -> String {
-    std::env::var(key).unwrap_or_else(|_| default.to_string())
+    superscience_paths::env_product_or_wisp(key).unwrap_or_else(|| default.to_string())
 }
 
 fn normalized_provider(provider: &str) -> String {
@@ -2692,7 +2709,7 @@ async fn load_locale(store: &Store) -> String {
     match raw.as_deref().map(str::trim) {
         Some("zh") | Some("zh-CN") | Some("zh-TW") => "zh".into(),
         Some(other) if !other.is_empty() => other.to_string(),
-        _ => "en".into(),
+        _ => "zh".into(),
     }
 }
 
@@ -2902,7 +2919,7 @@ fn wire_macos_menu_events(window: &tauri::WebviewWindow) {
 fn install_macos_app_menu(app: &AppHandle, locale_tag: &str) -> Result<(), String> {
     let labels = mac_menu_labels(AppMenuLocale::from_tag(locale_tag));
     let about = AboutMetadata {
-        name: Some("wisp-science".into()),
+        name: Some(superscience_paths::PRODUCT_NAME.into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
         ..Default::default()
     };
@@ -3354,7 +3371,7 @@ fn skill_infos(
     tags: &BTreeMap<String, Vec<String>>,
     enabled: Option<&HashSet<String>>,
 ) -> Vec<SkillInfo> {
-    let bundled = wisp_skills::bundled_dir();
+    let bundled = superscience_skills::bundled_dir();
     skills
         .all()
         .iter()
@@ -3562,6 +3579,86 @@ async fn refresh_approval_policy(state: &AppState) {
     }
 }
 
+pub(crate) async fn load_pii_firewall_enabled(store: &Store) -> bool {
+    store
+        .get_setting("pii_firewall_enabled")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|s| match s.as_str() {
+            "true" | "1" => Some(true),
+            "false" | "0" => Some(false),
+            _ => serde_json::from_str::<bool>(&s).ok(),
+        })
+        .unwrap_or(true)
+}
+
+async fn save_pii_firewall_enabled(store: &Store, enabled: bool) -> Result<(), String> {
+    store
+        .set_setting(
+            "pii_firewall_enabled",
+            if enabled { "true" } else { "false" },
+        )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_pii_firewall_enabled(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(load_pii_firewall_enabled(&state.store).await)
+}
+
+#[tauri::command]
+async fn set_pii_firewall_enabled(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    save_pii_firewall_enabled(&state.store, enabled).await?;
+    clear_idle_agents(&state).await;
+    Ok(())
+}
+
+pub(crate) async fn load_pii_custom_terms(store: &Store) -> Vec<superscience_llm::CustomTerm> {
+    store
+        .get_setting("pii_custom_terms")
+        .await
+        .ok()
+        .flatten()
+        .map(|raw| superscience_llm::parse_custom_terms(&raw))
+        .unwrap_or_default()
+}
+
+async fn save_pii_custom_terms(
+    store: &Store,
+    terms: Vec<superscience_llm::CustomTerm>,
+) -> Result<(), String> {
+    let raw = serde_json::to_string(&terms).map_err(|e| e.to_string())?;
+    store
+        .set_setting("pii_custom_terms", &raw)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_pii_custom_terms(
+    state: State<'_, AppState>,
+) -> Result<Vec<superscience_llm::CustomTerm>, String> {
+    Ok(load_pii_custom_terms(&state.store).await)
+}
+
+#[tauri::command]
+async fn set_pii_custom_terms(
+    state: State<'_, AppState>,
+    terms: Vec<superscience_llm::CustomTerm>,
+) -> Result<Vec<superscience_llm::CustomTerm>, String> {
+    let cleaned: Vec<_> = terms
+        .into_iter()
+        .filter_map(|term| {
+            superscience_llm::CustomTerm::new(term.original, term.category, term.placeholder)
+        })
+        .collect();
+    save_pii_custom_terms(&state.store, cleaned.clone()).await?;
+    clear_idle_agents(&state).await;
+    Ok(cleaned)
+}
+
 async fn load_memory_enabled(store: &Store) -> bool {
     store
         .get_setting("memory_enabled")
@@ -3725,7 +3822,7 @@ fn memory_file_path(memory: &MemoryManager, name: &str) -> Result<std::path::Pat
 
 /// Build an `McpClient` from a user-configured connection. Stdio connections
 /// carry their own command/env/cwd (unrelated to the bundled Python venv).
-async fn connect_mcp(conn: &McpConnection) -> anyhow::Result<wisp_mcp::McpClient> {
+async fn connect_mcp(conn: &McpConnection) -> anyhow::Result<superscience_mcp::McpClient> {
     match &conn.transport {
         McpTransport::Stdio {
             command,
@@ -3743,11 +3840,11 @@ async fn connect_mcp(conn: &McpConnection) -> anyhow::Result<wisp_mcp::McpClient
                     cmd.current_dir(dir);
                 }
             }
-            wisp_tools::process::hide_console_async(&mut cmd);
-            wisp_mcp::McpClient::launch_with_command(cmd).await
+            superscience_tools::process::hide_console_async(&mut cmd);
+            superscience_mcp::McpClient::launch_with_command(cmd).await
         }
         McpTransport::Http { url, headers, auth } => match auth {
-            McpHttpAuth::None => wisp_mcp::McpClient::connect_http(url, headers).await,
+            McpHttpAuth::None => superscience_mcp::McpClient::connect_http(url, headers).await,
             McpHttpAuth::OAuth => mcp_oauth::connect(&conn.id, url, headers).await,
         },
     }
@@ -3868,19 +3965,19 @@ async fn load_image_attachments(
     project_id: &str,
     root: &Path,
     attachments: &[String],
-) -> Result<Vec<wisp_tools::ImageData>, String> {
+) -> Result<Vec<superscience_tools::ImageData>, String> {
     let paths = attachments
         .iter()
-        .filter(|attachment| wisp_tools::image::is_supported_image(Path::new(attachment)))
+        .filter(|attachment| superscience_tools::image::is_supported_image(Path::new(attachment)))
         .map(|attachment| {
-            let path = wisp_tools::safety::validate_file_path(root, attachment)?;
+            let path = superscience_tools::safety::validate_file_path(root, attachment)?;
             Ok((attachment, path))
         })
         .collect::<Result<Vec<_>, String>>()?;
     let oversized = paths
         .iter()
         .filter_map(|(attachment, path)| {
-            wisp_tools::image::needs_resize(path)
+            superscience_tools::image::needs_resize(path)
                 .ok()
                 .filter(|needed| *needed)
                 .map(|_| (*attachment).clone())
@@ -3904,10 +4001,10 @@ async fn load_image_attachments(
     paths
         .into_iter()
         .map(|(attachment, path)| {
-            let result = if wisp_tools::image::needs_resize(&path)? {
-                wisp_tools::image::view_image_resized(&path.to_string_lossy())
+            let result = if superscience_tools::image::needs_resize(&path)? {
+                superscience_tools::image::view_image_resized(&path.to_string_lossy())
             } else {
-                wisp_tools::image::view_image(&path.to_string_lossy())
+                superscience_tools::image::view_image(&path.to_string_lossy())
             };
             let mut image = result.image.ok_or(result.content)?;
             image.label = format!("Attached image: {attachment}. {}", image.label);
@@ -3926,20 +4023,12 @@ fn effective_api_key(new_key: Option<String>, stored_key: String) -> String {
 }
 
 fn skill_sources(root: &std::path::Path) -> Vec<(PathBuf, SkillSource)> {
-    let mut paths = vec![];
-    if let Some(b) = wisp_skills::bundled_dir() {
-        paths.push((b, SkillSource::Bundled));
-    }
-    paths.push((root.join(".wisp").join("skills"), SkillSource::Project));
-    if let Some(home) = dirs::home_dir() {
-        paths.push((home.join(".wisp").join("skills"), SkillSource::Global));
-    }
-    if let Ok(extra) = std::env::var("WISP_SKILLS_PATH") {
-        for p in extra.split([':', ';']).filter(|s| !s.is_empty()) {
-            paths.push((PathBuf::from(p), SkillSource::Extra));
-        }
-    }
-    paths
+    superscience_skills::skill_source_paths(
+        root,
+        dirs::home_dir().as_deref(),
+        superscience_skills::extra_skill_dirs_from_env(),
+        superscience_skills::bundled_dir(),
+    )
 }
 
 fn load_skill_index(root: &std::path::Path) -> SkillIndex {
@@ -3947,19 +4036,21 @@ fn load_skill_index(root: &std::path::Path) -> SkillIndex {
 }
 
 fn kernel_worker_path() -> PathBuf {
-    let configured = std::env::var("WISP_KERNEL_WORKER")
-        .ok()
-        .or_else(|| wisp_runtime::bundled_worker_path().map(|path| path.to_string_lossy().into()))
+    let configured = superscience_paths::env_product_or_wisp("WISP_KERNEL_WORKER")
+        .or_else(|| {
+            superscience_runtime::bundled_worker_path().map(|path| path.to_string_lossy().into())
+        })
         .unwrap_or_default();
-    wisp_runtime::resolve_bundled_script(&configured)
+    superscience_runtime::resolve_bundled_script(&configured)
 }
 
 fn r_kernel_worker_path() -> PathBuf {
-    let configured = std::env::var("WISP_R_KERNEL_WORKER")
-        .ok()
-        .or_else(|| wisp_runtime::bundled_r_worker_path().map(|path| path.to_string_lossy().into()))
+    let configured = superscience_paths::env_product_or_wisp("WISP_R_KERNEL_WORKER")
+        .or_else(|| {
+            superscience_runtime::bundled_r_worker_path().map(|path| path.to_string_lossy().into())
+        })
         .unwrap_or_default();
-    wisp_runtime::resolve_bundled_script(&configured)
+    superscience_runtime::resolve_bundled_script(&configured)
 }
 
 /// Wire language runtimes, bundled bio-tools MCP, and user-configured MCP
@@ -3976,8 +4067,8 @@ struct ToolWiringResult {
 
 #[allow(clippy::too_many_arguments)]
 async fn wire_runtimes_and_mcp(
-    registry: &mut wisp_tools::Registry,
-    runtime_manager: &wisp_runtime::RuntimeManager,
+    registry: &mut superscience_tools::Registry,
+    runtime_manager: &superscience_runtime::RuntimeManager,
     project_id: &str,
     scope_key: &str,
     frame_id: &str,
@@ -4017,7 +4108,7 @@ async fn wire_runtimes_and_mcp(
     let py_env = if needs_python_env {
         // Venv only: `ensure` would block the turn on a multi-minute wheel
         // download (#477). The startup bootstrap installs deps in background.
-        match wisp_runtime::PythonEnv::ensure_venv(app_data) {
+        match superscience_runtime::PythonEnv::ensure_venv(app_data) {
             Ok(env) => Some(env),
             Err(e) => {
                 result.errors.push(format!("Python environment: {e}"));
@@ -4035,7 +4126,7 @@ async fn wire_runtimes_and_mcp(
             session_context_tool::SessionExecutionContextTool::new(
                 // Keyed by conversation: parallel sessions of one project must
                 // never share interpreter state (#911).
-                Box::new(wisp_runtime::ReplTool::new_in_session(
+                Box::new(superscience_runtime::ReplTool::new_in_session(
                     runtime_manager.clone(),
                     project_id,
                     scope_key,
@@ -4057,7 +4148,7 @@ async fn wire_runtimes_and_mcp(
     if runtime_granted("r") && r_worker_path.is_file() {
         registry.add(Box::new(
             session_context_tool::SessionExecutionContextTool::new(
-                Box::new(wisp_runtime::RTool::new_in_session(
+                Box::new(superscience_runtime::RTool::new_in_session(
                     runtime_manager.clone(),
                     project_id,
                     scope_key,
@@ -4076,9 +4167,9 @@ async fn wire_runtimes_and_mcp(
     }
 
     // Bundled bio-tools. Per-connector (domain) enable is the only gate now:
-    // the `WISP_MCP_COMMAND` dev override always applies; otherwise mcp_bio
-    // launches unless every domain is disabled.
-    if let Ok(cmdline) = std::env::var("WISP_MCP_COMMAND") {
+    // the `WISP_MCP_COMMAND` / `SUPERSCIENCE_MCP_COMMAND` dev override always
+    // applies; otherwise mcp_bio launches unless every domain is disabled.
+    if let Some(cmdline) = superscience_paths::env_product_or_wisp("WISP_MCP_COMMAND") {
         if connector_allow.is_some_and(|allow| !allow.contains("dev-mcp")) {
             return finish_custom_mcp_wiring(result, registry, store, project_id, connector_allow)
                 .await;
@@ -4087,7 +4178,7 @@ async fn wire_runtimes_and_mcp(
             .split_whitespace()
             .map(|s| {
                 if s.ends_with(".py") {
-                    wisp_runtime::resolve_bundled_script(s)
+                    superscience_runtime::resolve_bundled_script(s)
                         .to_string_lossy()
                         .to_string()
                 } else {
@@ -4097,7 +4188,7 @@ async fn wire_runtimes_and_mcp(
             .collect();
         if !parts.is_empty() {
             let args: Vec<String> = parts[1..].to_vec();
-            match wisp_mcp::McpClient::launch(&parts[0], &args).await {
+            match superscience_mcp::McpClient::launch(&parts[0], &args).await {
                 Ok(client) => match register_mcp(registry, std::sync::Arc::new(client)).await {
                     Ok(names) => result.added_tools.extend(names),
                     Err(error) => result.errors.push(error),
@@ -4106,7 +4197,8 @@ async fn wire_runtimes_and_mcp(
             }
         }
     } else if let Some(env) = &py_env {
-        let pkg = std::env::var("WISP_MCP_PKG").unwrap_or_else(|_| "mcp_bio".into());
+        let pkg = superscience_paths::env_product_or_wisp("WISP_MCP_PKG")
+            .unwrap_or_else(|| "mcp_bio".into());
         // mcp_bio serves all 247 tools; drop disabled domains' tools at
         // registration. Skip the launch entirely if every domain is off.
         let blocked = |slug: &str| {
@@ -4123,7 +4215,9 @@ async fn wire_runtimes_and_mcp(
             .flat_map(|d| d.tools.iter().cloned())
             .collect();
         if !all_off {
-            match wisp_mcp::McpClient::launch_bio_tools(&env.python(), &pkg, &service_env).await {
+            match superscience_mcp::McpClient::launch_bio_tools(&env.python(), &pkg, &service_env)
+                .await
+            {
                 Ok(client) => {
                     match register_mcp_filtered(registry, std::sync::Arc::new(client), &skip).await
                     {
@@ -4141,7 +4235,7 @@ async fn wire_runtimes_and_mcp(
 
 async fn connect_plugin_mcp(
     launch: &plugins::PluginMcpLaunch,
-) -> anyhow::Result<wisp_mcp::McpClient> {
+) -> anyhow::Result<superscience_mcp::McpClient> {
     let mut command = tokio::process::Command::new(&launch.command);
     command
         .args(&launch.args)
@@ -4171,13 +4265,13 @@ async fn connect_plugin_mcp(
         .envs(&launch.env)
         .env("WISP_PLUGIN_ROOT", &launch.install_root)
         .env("CLAUDE_PLUGIN_ROOT", &launch.install_root);
-    wisp_tools::process::hide_console_async(&mut command);
-    wisp_mcp::McpClient::launch_with_command(command).await
+    superscience_tools::process::hide_console_async(&mut command);
+    superscience_mcp::McpClient::launch_with_command(command).await
 }
 
 async fn finish_custom_mcp_wiring(
     mut result: ToolWiringResult,
-    registry: &mut wisp_tools::Registry,
+    registry: &mut superscience_tools::Registry,
     store: &Store,
     project_id: &str,
     connector_allow: Option<&HashSet<String>>,
@@ -4274,15 +4368,15 @@ async fn finish_custom_mcp_wiring(
 }
 
 async fn register_mcp(
-    registry: &mut wisp_tools::Registry,
-    client: std::sync::Arc<wisp_mcp::McpClient>,
+    registry: &mut superscience_tools::Registry,
+    client: std::sync::Arc<superscience_mcp::McpClient>,
 ) -> Result<Vec<String>, String> {
     register_mcp_with_approval(registry, client, false).await
 }
 
 async fn register_mcp_with_approval(
-    registry: &mut wisp_tools::Registry,
-    client: std::sync::Arc<wisp_mcp::McpClient>,
+    registry: &mut superscience_tools::Registry,
+    client: std::sync::Arc<superscience_mcp::McpClient>,
     require_approval: bool,
 ) -> Result<Vec<String>, String> {
     register_mcp_filtered_with_approval(registry, client, &HashSet::new(), require_approval).await
@@ -4291,16 +4385,16 @@ async fn register_mcp_with_approval(
 /// Like `register_mcp`, but skips any tool whose name is in `skip` (used to drop
 /// disabled bio-tools domains from the shared `mcp_bio` aggregate).
 async fn register_mcp_filtered(
-    registry: &mut wisp_tools::Registry,
-    client: std::sync::Arc<wisp_mcp::McpClient>,
+    registry: &mut superscience_tools::Registry,
+    client: std::sync::Arc<superscience_mcp::McpClient>,
     skip: &HashSet<String>,
 ) -> Result<Vec<String>, String> {
     register_mcp_filtered_with_approval(registry, client, skip, false).await
 }
 
 async fn register_mcp_filtered_with_approval(
-    registry: &mut wisp_tools::Registry,
-    client: std::sync::Arc<wisp_mcp::McpClient>,
+    registry: &mut superscience_tools::Registry,
+    client: std::sync::Arc<superscience_mcp::McpClient>,
     skip: &HashSet<String>,
     require_approval: bool,
 ) -> Result<Vec<String>, String> {
@@ -4325,9 +4419,9 @@ async fn register_mcp_filtered_with_approval(
                 }
                 names.push(t.name.clone());
                 let tool = if require_approval {
-                    wisp_mcp::McpTool::new_requiring_approval(t, client.clone())
+                    superscience_mcp::McpTool::new_requiring_approval(t, client.clone())
                 } else {
-                    wisp_mcp::McpTool::new(t, client.clone())
+                    superscience_mcp::McpTool::new(t, client.clone())
                 };
                 registry.add(Box::new(tool));
             }
@@ -4387,7 +4481,7 @@ fn acp_bridge_launch(
         "--project-root".to_string(),
         ap.root.display().to_string(),
         "--resource-root".to_string(),
-        wisp_paths::resource_root().display().to_string(),
+        superscience_paths::resource_root().display().to_string(),
         "--project-id".to_string(),
         ap.id.clone(),
         "--frame-id".to_string(),
@@ -4421,7 +4515,7 @@ async fn resolve_composer_references(
     let mut context_lines = Vec::new();
     let mut runtime_lines = Vec::new();
 
-    let context_label = |context: &wisp_store::ExecutionContext| {
+    let context_label = |context: &superscience_store::ExecutionContext| {
         if context.label.trim().is_empty() {
             context.id.clone()
         } else {
@@ -4456,14 +4550,15 @@ async fn resolve_composer_references(
                     .ok_or_else(|| {
                         format!("Attached artifact '{id}' is unavailable in the active state.")
                     })?;
-                let artifact_root = if matches!(&scope, wisp_store::StateScope::Exploration { .. })
-                {
-                    working_root
-                } else {
-                    Path::new(&artifact.project_root)
-                };
-                let real = wisp_tools::safety::validate_file_path(artifact_root, &artifact.path)
-                    .map_err(|_| {
+                let artifact_root =
+                    if matches!(&scope, superscience_store::StateScope::Exploration { .. }) {
+                        working_root
+                    } else {
+                        Path::new(&artifact.project_root)
+                    };
+                let real =
+                    superscience_tools::safety::validate_file_path(artifact_root, &artifact.path)
+                        .map_err(|_| {
                         format!(
                             "Attached artifact '{}' is no longer readable.",
                             artifact.name
@@ -4486,7 +4581,7 @@ async fn resolve_composer_references(
                 let skill = skills.get(name).ok_or_else(|| {
                     format!("Selected skill '{name}' is unavailable or disabled.")
                 })?;
-                skill_blocks.push(wisp_skills::render_skill(skill));
+                skill_blocks.push(superscience_skills::render_skill(skill));
             }
             ComposerReferenceArg::Workflow { id } => {
                 if !seen.insert(format!("workflow:{id}")) {
@@ -4614,7 +4709,9 @@ async fn enable_referenced_contexts(store: &Store, refs: &[ComposerReferenceArg]
             continue;
         }
         match store.get_execution_context(id).await {
-            Ok(Some(context)) if context.kind != wisp_store::ExecutionContextKind::Local => {
+            Ok(Some(context))
+                if context.kind != superscience_store::ExecutionContextKind::Local =>
+            {
                 if let Err(e) = store
                     .set_session_execution_context_enabled(frame_id, id, true)
                     .await
@@ -4650,7 +4747,7 @@ async fn resolve_acp_artifact_references(
             .await
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("Attached artifact '{id}' no longer exists."))?;
-        let path = wisp_tools::safety::validate_file_path(
+        let path = superscience_tools::safety::validate_file_path(
             Path::new(&artifact.project_root),
             &artifact.path,
         )
@@ -4741,7 +4838,7 @@ async fn generate_review_with_backend(
                 max_tokens,
                 &reasoning_effort,
             )?;
-            let llm = wisp_llm::build(cfg);
+            let llm = superscience_llm::build(cfg);
             let reviewer_model = llm.model().to_string();
             let selected_profile = if reviewer.model_id.trim().is_empty() {
                 "active"
@@ -5133,7 +5230,7 @@ async fn review_session(
             .map_err(|e| format!("{e}"))?;
         if msgs
             .iter()
-            .all(|m| matches!(m.role, wisp_llm::Role::System))
+            .all(|m| matches!(m.role, superscience_llm::Role::System))
         {
             return Err("Nothing to review yet.".into());
         }
@@ -5220,7 +5317,7 @@ async fn generate_follow_up_questions(
         }
         _ => load_session_settings(&state.store, &session_id).await,
     };
-    let llm = wisp_llm::build(build_provider_config(
+    let llm = superscience_llm::build(build_provider_config(
         &provider,
         &api_url,
         &api_key,
@@ -5327,7 +5424,7 @@ async fn side_chat(
             max_tokens,
             &reasoning_effort,
         )?;
-        let llm = wisp_llm::build(cfg);
+        let llm = superscience_llm::build(cfg);
         llm.complete(
             &[
                 Message::system(side_chat::SYSTEM_PROMPT),
@@ -5349,7 +5446,7 @@ async fn side_chat(
 }
 
 fn mcp_lib_dir(_root: &std::path::Path) -> Option<PathBuf> {
-    wisp_paths::bio_tools_dir().map(|d| d.join("lib"))
+    superscience_paths::bio_tools_dir().map(|d| d.join("lib"))
 }
 
 fn list_mcp_servers(root: &std::path::Path) -> Vec<String> {
@@ -5661,15 +5758,18 @@ struct SharedLogFile(Arc<StdMutex<std::fs::File>>);
 impl SharedLogFile {
     fn create() -> Option<Self> {
         let dir = dirs::data_dir()?
-            .join("science.wisp-science")
-            .join("wisp-science")
+            .join(superscience_paths::WINDOWS_APPDATA_ID)
+            .join(superscience_paths::APP_DATA_DIR_NAME)
             .join("logs");
         std::fs::create_dir_all(&dir).ok()?;
-        let path = dir.join("wisp.log");
+        let path = dir.join(superscience_paths::WINDOWS_LOG_FILE);
         // Someone hitting a slow launch restarts the app before asking for
         // help, so the run that has to be explained is always the previous
         // one. Keep it.
-        let _ = std::fs::rename(&path, dir.join("wisp.previous.log"));
+        let _ = std::fs::rename(
+            &path,
+            dir.join(superscience_paths::WINDOWS_PREVIOUS_LOG_FILE),
+        );
         let file = std::fs::File::create(path).ok()?;
         Some(Self(Arc::new(StdMutex::new(file))))
     }
@@ -5825,7 +5925,6 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::Focused(focused) => {
                 record_window_focus(window.label(), *focused);
@@ -5866,7 +5965,7 @@ pub fn run() {
                 "main",
                 tauri::WebviewUrl::App("index.html".into()),
             )
-            .title("wisp science")
+            .title(superscience_paths::PRODUCT_NAME)
             .inner_size(1100.0, 760.0)
             .resizable(true)
             .disable_drag_drop_handler()
@@ -5876,15 +5975,15 @@ pub fn run() {
             main_builder.build().expect("create main window");
             let mut startup = StartupTimeline::default();
             if let Ok(res) = app.path().resource_dir() {
-                wisp_paths::set_resource_root(res);
+                superscience_paths::set_resource_root(res);
             }
             let app_data = app
                 .path()
                 .app_data_dir()
-                .unwrap_or_else(|_| PathBuf::from(".wisp"))
-                .join("wisp-science");
+                .unwrap_or_else(|_| PathBuf::from(superscience_paths::PROJECT_DIR_NAME))
+                .join(superscience_paths::APP_DATA_DIR_NAME);
             std::fs::create_dir_all(&app_data).expect("create app data dir");
-            let db_path = app_data.join("wisp.sqlite");
+            let db_path = app_data.join(superscience_paths::APP_DB_FILE);
             let store = startup.record("store", || {
                 tauri::async_runtime::block_on(Store::open(&db_path)).expect("open store")
             });
@@ -5909,7 +6008,7 @@ pub fn run() {
                 .expect("open global library")
             });
             let run_manager = run_context::RunManager::new();
-            let runtime_manager = wisp_runtime::RuntimeManager::new(Arc::new(
+            let runtime_manager = superscience_runtime::RuntimeManager::new(Arc::new(
                 runtime_launcher::TauriRuntimeLauncher::new(
                     store.clone(),
                     app_data.clone(),
@@ -5933,7 +6032,7 @@ pub fn run() {
                 let default_workspace = app
                     .path()
                     .document_dir()
-                    .map(|d| d.join("wisp-science"))
+                    .map(|d| d.join(superscience_paths::DEFAULT_WORKSPACE_DIR_NAME))
                     .unwrap_or_else(|_| app_data.join("workspace"));
                 let legacy_ws = store
                     .get_setting("workspace_dir")
@@ -5963,10 +6062,10 @@ pub fn run() {
             let default_workspace = app
                 .path()
                 .document_dir()
-                .map(|d| d.join("wisp-science"))
+                .map(|d| d.join(superscience_paths::DEFAULT_WORKSPACE_DIR_NAME))
                 .unwrap_or_else(|_| app_data.join("workspace"));
             let root = resolve_workspace(
-                std::env::var("WISP_WORKSPACE").ok(),
+                superscience_paths::env_or_legacy("SUPERSCIENCE_WORKSPACE", "WISP_WORKSPACE"),
                 Some(ws),
                 default_workspace,
             );
@@ -5991,8 +6090,8 @@ pub fn run() {
                 tauri::async_runtime::block_on(load_approval_grants(&store))
             })));
             let full_permission_sessions = Arc::new(StdRwLock::new(HashSet::new()));
-            let browser_extension_dir = wisp_paths::browser_extension_dir()
-                .unwrap_or_else(|| wisp_paths::resource_root().join("browser-extension"));
+            let browser_extension_dir = superscience_paths::browser_extension_dir()
+                .unwrap_or_else(|| superscience_paths::resource_root().join("browser-extension"));
             let browser_bridge = startup.record("browser_bridge", || {
                 tauri::async_runtime::block_on(browser_bridge::BrowserBridge::start(
                     browser_extension_dir,
@@ -6039,7 +6138,6 @@ pub fn run() {
                 bootstrap,
                 plugin_runtime_errors: StdMutex::new(HashMap::new()),
                 reviewing: Arc::new(StdMutex::new(HashSet::new())),
-                scratch: std::sync::RwLock::new(HashMap::new()),
             };
             app.manage(state);
             app.manage(app_updates::PendingAppUpdate::default());
@@ -6188,8 +6286,6 @@ pub fn run() {
             terminal_sessions::resize_terminal,
             terminal_sessions::close_terminal,
             session_commands::new_session,
-            scratch_commands::start_scratch_chat,
-            scratch_commands::close_scratch_chat,
             session_commands::branch_session,
             session_commands::preview_session_branch_merge,
             session_commands::summarize_session_branch_merge,
@@ -6291,7 +6387,12 @@ pub fn run() {
             skill_commands::set_skill_enabled,
             skill_commands::pick_skill_source,
             skill_commands::install_skill,
+            skill_commands::install_catalog_skill,
             skill_commands::remove_skill,
+            skill_update::get_skill_update_enabled,
+            skill_update::set_skill_update_enabled,
+            skill_update::get_skill_update_status,
+            skill_update::check_skill_updates,
             plugins::list_plugins,
             plugins::pick_plugin_source,
             plugins::install_plugin,
@@ -6301,6 +6402,8 @@ pub fn run() {
             seed::list_demos_cmd,
             seed::load_demo_cmd,
             seed::copy_demo_to_project_cmd,
+            demo_save::save_session_as_demo_cmd,
+            demo_save::delete_user_demo_cmd,
             approval_commands::confirm_response,
             approval_commands::list_approval_grants,
             approval_commands::get_session_full_permission,
@@ -6418,6 +6521,31 @@ pub fn run() {
             specialists::remove_specialist,
             specialists::set_session_specialist,
             specialists::get_session_specialist,
+            get_pii_firewall_enabled,
+            set_pii_firewall_enabled,
+            get_pii_custom_terms,
+            set_pii_custom_terms,
+            tctoken::tctoken_session_cmd,
+            tctoken::tctoken_login_cmd,
+            tctoken::tctoken_login_2fa_cmd,
+            tctoken::tctoken_logout_cmd,
+            tctoken::tctoken_get_remembered_login_cmd,
+            tctoken::tctoken_set_remembered_login_cmd,
+            tctoken::tctoken_clear_remembered_login_cmd,
+            tctoken::tctoken_account_cmd,
+            tctoken::tctoken_logs_cmd,
+            tctoken::tctoken_logs_stat_cmd,
+            tctoken::tctoken_topup_info_cmd,
+            tctoken::tctoken_topup_amount_cmd,
+            tctoken::tctoken_topup_pay_cmd,
+            tctoken::tctoken_topup_redeem_cmd,
+            tctoken::tctoken_topup_orders_cmd,
+            tctoken::tctoken_tokens_cmd,
+            tctoken::tctoken_token_key_cmd,
+            tctoken::tctoken_get_default_token_id_cmd,
+            tctoken::tctoken_set_default_token_cmd,
+            tctoken::tctoken_set_drawing_key_cmd,
+            tctoken::tctoken_provider_url_cmd,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Wisp")

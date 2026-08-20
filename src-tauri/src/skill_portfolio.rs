@@ -4,9 +4,9 @@ use crate::{active_skill_index, delegation_runtime, dynamic_workflow, models, Ap
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::Duration;
-use tauri::State;
 use superscience_llm::{Message, Provider};
 use superscience_skills::{SkillIndex, SkillSideEffects, SuperscienceSkillMetadata};
+use tauri::State;
 
 const MAX_RESEARCH_REQUEST_CHARS: usize = 10_000;
 const MAX_RATIONALE_CHARS: usize = 4_000;

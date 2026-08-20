@@ -12,8 +12,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use wisp_llm::{Message, Provider, Role};
-use wisp_store::{SessionSearchResult, Store};
+use superscience_llm::{Message, Provider, Role};
+use superscience_store::{SessionSearchResult, Store};
 
 pub const READER_RUBRIC: &str = "\
 You are Reader, a read-only retrieval specialist. You receive exactly one saved \
@@ -174,7 +174,7 @@ pub async fn read_references(
         &reasoning_effort,
     )
     .map_err(|error| format!("Reader model is unavailable: {error}"))?;
-    let llm: Arc<dyn Provider> = Arc::from(wisp_llm::build(cfg));
+    let llm: Arc<dyn Provider> = Arc::from(superscience_llm::build(cfg));
     // A reasoning model can burn the compact Reader budget on hidden reasoning
     // before writing any JSON (`max_output_tokens`, #784). Keep the profile's
     // full budget on hand so a chunk that hits the limit can retry once.
@@ -188,7 +188,7 @@ pub async fn read_references(
             &reasoning_effort,
         )
         .ok()
-        .map(|cfg| Arc::from(wisp_llm::build(cfg)))
+        .map(|cfg| Arc::from(superscience_llm::build(cfg)))
     } else {
         None
     };
@@ -394,7 +394,7 @@ async fn complete_chunk(
     llm: &dyn Provider,
     messages: &[Message],
     cancel: &AtomicBool,
-) -> Result<wisp_llm::Completion, ChunkFailure> {
+) -> Result<superscience_llm::Completion, ChunkFailure> {
     let request = llm.complete(messages, &[]);
     tokio::pin!(request);
     let completion = tokio::select! {
@@ -813,7 +813,7 @@ fn clip(text: &str, cap: usize) -> String {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
-    use wisp_store::{
+    use superscience_store::{
         ContextArchiveRecord, Exploration, ExplorationCheckpoint, ExplorationFamily,
         ExplorationStatus, WorkspaceSnapshotRecord,
     };
@@ -836,13 +836,13 @@ mod tests {
         async fn complete(
             &self,
             _messages: &[Message],
-            _tools: &[wisp_llm::ToolSchema],
-        ) -> wisp_llm::Result<wisp_llm::Completion> {
+            _tools: &[superscience_llm::ToolSchema],
+        ) -> superscience_llm::Result<superscience_llm::Completion> {
             let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
             self.max_active.fetch_max(active, Ordering::SeqCst);
             tokio::time::sleep(Duration::from_millis(25)).await;
             self.active.fetch_sub(1, Ordering::SeqCst);
-            Ok(wisp_llm::Completion {
+            Ok(superscience_llm::Completion {
                 content: r#"{"summary":"hit","evidence":[{"message_seq":1,"quote":"evidence","why":"match"}]}"#.into(),
                 ..Default::default()
             })
@@ -851,9 +851,9 @@ mod tests {
         async fn stream(
             &self,
             messages: &[Message],
-            tools: &[wisp_llm::ToolSchema],
-            _sink: &mut dyn wisp_llm::StreamSink,
-        ) -> wisp_llm::Result<wisp_llm::Completion> {
+            tools: &[superscience_llm::ToolSchema],
+            _sink: &mut dyn superscience_llm::StreamSink,
+        ) -> superscience_llm::Result<superscience_llm::Completion> {
             self.complete(messages, tools).await
         }
     }
@@ -1115,16 +1115,16 @@ mod tests {
         async fn complete(
             &self,
             _messages: &[Message],
-            _tools: &[wisp_llm::ToolSchema],
-        ) -> wisp_llm::Result<wisp_llm::Completion> {
+            _tools: &[superscience_llm::ToolSchema],
+        ) -> superscience_llm::Result<superscience_llm::Completion> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self.output_limit {
-                return Err(wisp_llm::LlmError::NotCompleted {
+                return Err(superscience_llm::LlmError::NotCompleted {
                     status: "incomplete".into(),
                     reason: "max_output_tokens".into(),
                 });
             }
-            Err(wisp_llm::LlmError::Api {
+            Err(superscience_llm::LlmError::Api {
                 status: 500,
                 body: self.error.clone(),
             })
@@ -1133,9 +1133,9 @@ mod tests {
         async fn stream(
             &self,
             messages: &[Message],
-            tools: &[wisp_llm::ToolSchema],
-            _sink: &mut dyn wisp_llm::StreamSink,
-        ) -> wisp_llm::Result<wisp_llm::Completion> {
+            tools: &[superscience_llm::ToolSchema],
+            _sink: &mut dyn superscience_llm::StreamSink,
+        ) -> superscience_llm::Result<superscience_llm::Completion> {
             self.complete(messages, tools).await
         }
     }

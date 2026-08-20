@@ -16,10 +16,10 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use superscience_skills::{list_resources, SkillIndex, SkillSource};
 use superscience_store::Store;
 use superscience_tools::{Approval, Tool, ToolEnv, ToolEvent, ToolResult};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 const DEFAULT_TOOL_SEARCH_LIMIT: usize = 5;
 const MAX_TOOL_SEARCH_LIMIT: usize = 10;
@@ -236,7 +236,9 @@ impl BridgeServer {
             id: self.cfg.project_id.clone(),
             root: self.cfg.project_root.clone(),
             skills: self.skills.clone(),
-            memory: Arc::new(superscience_core::MemoryManager::new(&self.cfg.project_root)),
+            memory: Arc::new(superscience_core::MemoryManager::new(
+                &self.cfg.project_root,
+            )),
         }
     }
 
@@ -421,7 +423,7 @@ impl BridgeServer {
     }
 
     async fn register_bundled_bio_tools(&mut self) {
-        if let Ok(command) = std::env::var("WISP_MCP_COMMAND") {
+        if let Some(command) = superscience_paths::env_product_or_wisp("WISP_MCP_COMMAND") {
             let allowed = self.allowed_connectors();
             if self.cfg.allowed_tools.is_some() && !allowed.contains("dev-mcp") {
                 return;
@@ -495,7 +497,8 @@ impl BridgeServer {
         let Ok(env) = superscience_runtime::PythonEnv::ensure_venv(&self.cfg.app_data) else {
             return;
         };
-        let pkg = std::env::var("WISP_MCP_PKG").unwrap_or_else(|_| "mcp_bio".into());
+        let pkg = superscience_paths::env_product_or_wisp("WISP_MCP_PKG")
+            .unwrap_or_else(|| "mcp_bio".into());
         let client = match superscience_mcp::McpClient::launch_bio_tools(
             &env.python(),
             &pkg,
@@ -1648,7 +1651,10 @@ mod tests {
 
     #[tokio::test]
     async fn delegated_bridge_lists_and_calls_only_granted_tools() {
-        let base = std::env::temp_dir().join(format!("superscience_mcp_filtered_{}", uuid::Uuid::new_v4()));
+        let base = std::env::temp_dir().join(format!(
+            "superscience_mcp_filtered_{}",
+            uuid::Uuid::new_v4()
+        ));
         let project_root = base.join("project");
         std::fs::create_dir_all(&project_root).unwrap();
         let mut server = BridgeServer::new(BridgeConfig {
@@ -1667,7 +1673,8 @@ mod tests {
         server
             .store
             .upsert_execution_context(
-                &superscience_store::ExecutionContext::new("ssh:not-selected", "Private host").unwrap(),
+                &superscience_store::ExecutionContext::new("ssh:not-selected", "Private host")
+                    .unwrap(),
             )
             .await
             .unwrap();
@@ -1699,8 +1706,10 @@ mod tests {
 
     #[tokio::test]
     async fn delegated_bridge_exposes_only_explicitly_granted_skills() {
-        let base =
-            std::env::temp_dir().join(format!("superscience_mcp_skill_filter_{}", uuid::Uuid::new_v4()));
+        let base = std::env::temp_dir().join(format!(
+            "superscience_mcp_skill_filter_{}",
+            uuid::Uuid::new_v4()
+        ));
         let project_root = base.join("project");
         for (name, body) in [
             ("papers", "paper guidance"),
@@ -1757,8 +1766,10 @@ mod tests {
 
     #[tokio::test]
     async fn dynamic_delegation_tools_are_listed_only_when_the_session_opted_in() {
-        let base =
-            std::env::temp_dir().join(format!("superscience_mcp_delegation_{}", uuid::Uuid::new_v4()));
+        let base = std::env::temp_dir().join(format!(
+            "superscience_mcp_delegation_{}",
+            uuid::Uuid::new_v4()
+        ));
         let project_root = base.join("project");
         let app_data = base.join("app-data");
         std::fs::create_dir_all(&project_root).unwrap();
@@ -1844,7 +1855,8 @@ mod tests {
 
     #[tokio::test]
     async fn delegated_bridge_exposes_bounded_nested_tools_without_session_toggle() {
-        let base = std::env::temp_dir().join(format!("superscience_mcp_nested_{}", uuid::Uuid::new_v4()));
+        let base =
+            std::env::temp_dir().join(format!("superscience_mcp_nested_{}", uuid::Uuid::new_v4()));
         let project_root = base.join("project");
         let app_data = base.join("app-data");
         std::fs::create_dir_all(&project_root).unwrap();
@@ -2048,8 +2060,10 @@ mod tests {
 
     #[tokio::test]
     async fn read_gateway_is_project_scoped_and_redacts_context_config() {
-        let base =
-            std::env::temp_dir().join(format!("superscience_mcp_read_gateway_{}", uuid::Uuid::new_v4()));
+        let base = std::env::temp_dir().join(format!(
+            "superscience_mcp_read_gateway_{}",
+            uuid::Uuid::new_v4()
+        ));
         let project_root = base.join("project");
         let app_data = base.join("app-data");
         std::fs::create_dir_all(&project_root).unwrap();

@@ -93,11 +93,11 @@ pub(super) fn WindowTitlebar(
             match action {
                 "quit" => spawn_local(async { window_control("close").await }),
                 "docs" => {
-                    open_external_url("https://github.com/xuzhougeng/wisp-science#readme".into())
+                    open_external_url("https://github.com/imbigfly/SuperScience#readme".into())
                 }
-                "star-us" => open_external_url("https://github.com/xuzhougeng/wisp-science".into()),
+                "star-us" => open_external_url("https://github.com/imbigfly/SuperScience".into()),
                 "issues" => {
-                    open_external_url("https://github.com/xuzhougeng/wisp-science/issues".into())
+                    open_external_url("https://github.com/imbigfly/SuperScience/issues".into())
                 }
                 other => on_action.call(other),
             }
@@ -130,7 +130,7 @@ pub(super) fn WindowTitlebar(
             <div class="window-brand" data-testid="window-snap-drag"
                 on:mousedown=begin_window_move>
                 <span class="window-brand-icon"></span>
-                <span>"wisp science"</span>
+                <span>"天成科研助手"</span>
                 <span class="window-brand-version">{concat!("v", env!("CARGO_PKG_VERSION"))}</span>
             </div>
             <nav class="window-menu" aria-label="Application menu">

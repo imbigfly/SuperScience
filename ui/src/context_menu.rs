@@ -290,6 +290,10 @@ pub enum SessionAction {
         id: String,
         mode: SessionTransferMode,
     },
+    SaveAsDemo {
+        id: String,
+        title: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -309,6 +313,8 @@ pub enum FolderAction {
 #[derive(Clone, PartialEq)]
 pub enum DemoAction {
     CopyToProject(String),
+    ExportToSeed { id: String, title: String },
+    Delete(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -430,6 +436,11 @@ pub fn session_menu(
             session_id.to_string(),
         ));
         items.push(item(
+            "saveSessionAsDemo",
+            i18n::t(locale, "ctx.save_as_demo"),
+            format!("{session_id}\u{1e}{title}"),
+        ));
+        items.push(item(
             "exportDebugRequest",
             i18n::t(locale, "ctx.export_debug_request"),
             session_id.to_string(),
@@ -456,23 +467,39 @@ pub fn session_menu(
     CtxMenu { x, y, items }
 }
 
-pub fn demo_menu(x: f64, y: f64, demo_id: &str, title: &str, locale: Locale) -> CtxMenu {
-    CtxMenu {
-        x,
-        y,
-        items: vec![
-            item(
-                "copyTitle",
-                i18n::t(locale, "ctx.copy_title"),
-                title.to_string(),
-            ),
-            item(
-                "copyDemoToProject",
-                i18n::t(locale, "ctx.copy_demo_to_project"),
-                demo_id.to_string(),
-            ),
-        ],
+pub fn demo_menu(
+    x: f64,
+    y: f64,
+    demo_id: &str,
+    title: &str,
+    user_saved: bool,
+    locale: Locale,
+) -> CtxMenu {
+    let mut items = vec![
+        item(
+            "copyTitle",
+            i18n::t(locale, "ctx.copy_title"),
+            title.to_string(),
+        ),
+        item(
+            "copyDemoToProject",
+            i18n::t(locale, "ctx.copy_demo_to_project"),
+            demo_id.to_string(),
+        ),
+    ];
+    if user_saved {
+        items.push(item(
+            "exportDemoToSeed",
+            i18n::t(locale, "ctx.export_demo_to_seed"),
+            format!("{demo_id}\u{1e}{title}"),
+        ));
     }
+    items.push(item(
+        "deleteUserDemo",
+        i18n::t(locale, "ctx.delete_user_demo"),
+        demo_id.to_string(),
+    ));
+    CtxMenu { x, y, items }
 }
 
 pub fn exploration_menu(
@@ -935,10 +962,22 @@ mod session_branch_action_tests {
     #[test]
     fn parses_demo_copy_action() {
         assert!(matches!(
+            super::session_action("saveSessionAsDemo", "ses-1\u{1e}Two-way ANOVA"),
+            Some(super::SessionAction::SaveAsDemo { id, title }) if id == "ses-1" && title == "Two-way ANOVA"
+        ));
+        assert!(matches!(
             super::demo_action("copyDemoToProject", "manifest_memory_01_long_context"),
             Some(super::DemoAction::CopyToProject(id)) if id == "manifest_memory_01_long_context"
         ));
         assert!(super::demo_action("copyDemoToProject", "").is_none());
+        assert!(matches!(
+            super::demo_action("deleteUserDemo", "manifest_user_20260818_session"),
+            Some(super::DemoAction::Delete(id)) if id == "manifest_user_20260818_session"
+        ));
+        assert!(matches!(
+            super::demo_action("exportDemoToSeed", "manifest_user_x\u{1e}Two-way ANOVA"),
+            Some(super::DemoAction::ExportToSeed { id, title }) if id == "manifest_user_x" && title == "Two-way ANOVA"
+        ));
     }
 }
 
@@ -1020,6 +1059,13 @@ pub fn session_action(action: &str, payload: &str) -> Option<SessionAction> {
             id: payload.to_string(),
             mode: SessionTransferMode::Move,
         }),
+        "saveSessionAsDemo" if !payload.is_empty() => {
+            let (id, title) = payload.split_once('\u{1e}')?;
+            Some(SessionAction::SaveAsDemo {
+                id: id.to_string(),
+                title: title.to_string(),
+            })
+        }
         _ => None,
     }
 }
@@ -1029,6 +1075,14 @@ pub fn demo_action(action: &str, payload: &str) -> Option<DemoAction> {
         "copyDemoToProject" if !payload.is_empty() => {
             Some(DemoAction::CopyToProject(payload.to_string()))
         }
+        "exportDemoToSeed" if !payload.is_empty() => {
+            let (id, title) = payload.split_once('\u{1e}')?;
+            Some(DemoAction::ExportToSeed {
+                id: id.to_string(),
+                title: title.to_string(),
+            })
+        }
+        "deleteUserDemo" if !payload.is_empty() => Some(DemoAction::Delete(payload.to_string())),
         _ => None,
     }
 }

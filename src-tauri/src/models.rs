@@ -105,6 +105,9 @@ impl Default for VideoGenerationOptions {
     }
 }
 
+pub const TCTOKEN_MODEL_ID: &str = superscience_dto::TCTOKEN_MODEL_ID;
+const TCTOKEN_API_URL: &str = "https://www.tctoken.cn/v1";
+
 const PROFILES_KEY: &str = "model_profiles";
 const ACTIVE_KEY: &str = "active_model_id";
 const VISION_KEY: &str = "vision_model_id";
@@ -262,7 +265,7 @@ fn secret_get(name: &str) -> String {
     if let Some(v) = secret_cache().lock().unwrap().get(name) {
         return v.clone();
     }
-    let v = wisp_store::secrets::Secret::get(name)
+    let v = superscience_store::secrets::Secret::get(name)
         .ok()
         .unwrap_or_default();
     secret_cache()
@@ -273,7 +276,7 @@ fn secret_get(name: &str) -> String {
 }
 
 fn secret_set(name: &str, value: &str) -> Result<(), String> {
-    wisp_store::secrets::Secret::set(name, value).map_err(|e| e.to_string())?;
+    superscience_store::secrets::Secret::set(name, value).map_err(|e| e.to_string())?;
     secret_cache()
         .lock()
         .unwrap()
@@ -282,7 +285,7 @@ fn secret_set(name: &str, value: &str) -> Result<(), String> {
 }
 
 fn secret_del(name: &str) -> Result<(), String> {
-    let r = wisp_store::secrets::Secret::delete(name).map_err(|e| e.to_string());
+    let r = superscience_store::secrets::Secret::delete(name).map_err(|e| e.to_string());
     // Remember "absent" so existence checks don't re-hit (and re-prompt) the keyring.
     secret_cache()
         .lock()
@@ -411,7 +414,7 @@ fn sanitized_custom_credentials(raw: &str) -> Vec<CustomCredential> {
 /// Load user-defined credential metadata from SQLite into the synchronous
 /// process cache used by runtime/MCP launch paths.
 pub async fn load_custom_credentials(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
 ) -> Result<Vec<CustomCredential>, String> {
     let raw = store
         .get_setting(CUSTOM_CREDENTIALS_KEY)
@@ -424,7 +427,7 @@ pub async fn load_custom_credentials(
 }
 
 async fn save_custom_credentials(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     credentials: &[CustomCredential],
 ) -> Result<(), String> {
     let raw = serde_json::to_string(credentials).map_err(|error| error.to_string())?;
@@ -437,7 +440,7 @@ async fn save_custom_credentials(
 }
 
 pub async fn custom_credential_status(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
 ) -> Result<Vec<CustomCredentialStatus>, String> {
     Ok(load_custom_credentials(store)
         .await?
@@ -452,7 +455,7 @@ pub async fn custom_credential_status(
 }
 
 pub async fn add_custom_credential(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     name: &str,
     env_var: &str,
     value: &str,
@@ -510,7 +513,10 @@ pub async fn add_custom_credential(
     })
 }
 
-pub async fn remove_custom_credential(store: &wisp_store::Store, id: &str) -> Result<(), String> {
+pub async fn remove_custom_credential(
+    store: &superscience_store::Store,
+    id: &str,
+) -> Result<(), String> {
     let mut credentials = load_custom_credentials(store).await?;
     let index = credentials
         .iter()
@@ -587,14 +593,17 @@ pub fn service_env() -> Vec<(String, String)> {
     env
 }
 
-async fn load_raw(store: &wisp_store::Store) -> Vec<ModelProfile> {
+async fn load_raw(store: &superscience_store::Store) -> Vec<ModelProfile> {
     let Some(raw) = store.get_setting(PROFILES_KEY).await.ok().flatten() else {
         return Vec::new();
     };
     serde_json::from_str::<Vec<ModelProfile>>(&raw).unwrap_or_default()
 }
 
-async fn save_raw(store: &wisp_store::Store, profiles: &[ModelProfile]) -> Result<(), String> {
+async fn save_raw(
+    store: &superscience_store::Store,
+    profiles: &[ModelProfile],
+) -> Result<(), String> {
     let json = serde_json::to_string(profiles).map_err(|e| e.to_string())?;
     store
         .set_setting(PROFILES_KEY, &json)
@@ -602,61 +611,19 @@ async fn save_raw(store: &wisp_store::Store, profiles: &[ModelProfile]) -> Resul
         .map_err(|e| e.to_string())
 }
 
-/// Ensure at least one profile exists. On the first read of a legacy install,
-/// migrate the single `provider`/`api_url`/`model` settings + `api_key` secret
-/// into a "default" profile so existing users keep working unchanged.
-async fn ensure(store: &wisp_store::Store) -> Vec<ModelProfile> {
-    let profiles = load_raw(store).await;
-    if !profiles.is_empty() {
-        return profiles;
-    }
-    let provider = store
-        .get_setting("provider")
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    let api_url = store
-        .get_setting("api_url")
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    let model = store
-        .get_setting("model")
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    let max_tokens = store
-        .get_setting("max_tokens")
-        .await
-        .ok()
-        .flatten()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    let reasoning_effort = store
-        .get_setting("reasoning_effort")
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    let default = ModelProfile {
-        id: "default".into(),
-        label: if model.trim().is_empty() {
-            "Default".into()
-        } else {
-            model.clone()
-        },
-        provider,
-        api_url,
+fn tctoken_profile() -> ModelProfile {
+    ModelProfile {
+        id: TCTOKEN_MODEL_ID.into(),
+        label: "Tctoken".into(),
+        provider: "openai".into(),
+        api_url: TCTOKEN_API_URL.into(),
         endpoint_suffix: String::new(),
-        model,
+        model: String::new(),
         has_api_key: false,
         active: false,
-        max_tokens,
+        max_tokens: 8192,
         context_window: DEFAULT_CONTEXT_WINDOW,
-        reasoning_effort,
+        reasoning_effort: String::new(),
         supports_vision: false,
         use_for_vision: false,
         use_for_image_generation: false,
@@ -668,19 +635,106 @@ async fn ensure(store: &wisp_store::Store) -> Vec<ModelProfile> {
         video_duration_secs: None,
         video_aspect_ratio: None,
         video_resolution: None,
-    };
-    let profiles = vec![default];
-    let _ = save_raw(store, &profiles).await;
-    let _ = store.set_setting(ACTIVE_KEY, "default").await;
-    // Carry the legacy key into the default profile's slot so it isn't lost.
-    let legacy = secret_get(LEGACY_KEY_SECRET);
-    if !legacy.is_empty() {
-        let _ = secret_set(&secret_name("default"), &legacy);
+    }
+}
+
+fn has_tctoken(profiles: &[ModelProfile]) -> bool {
+    profiles
+        .iter()
+        .any(|profile| profile.id == TCTOKEN_MODEL_ID)
+}
+
+/// Ensure at least one profile exists. On the first read of a legacy install,
+/// migrate the single `provider`/`api_url`/`model` settings + `api_key` secret
+/// into a "default" profile so existing users keep working unchanged.
+/// The built-in Tctoken profile is always present and cannot be deleted.
+async fn ensure(store: &superscience_store::Store) -> Vec<ModelProfile> {
+    let mut profiles = load_raw(store).await;
+    if profiles.is_empty() {
+        let provider = store
+            .get_setting("provider")
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let api_url = store
+            .get_setting("api_url")
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let model = store
+            .get_setting("model")
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let max_tokens = store
+            .get_setting("max_tokens")
+            .await
+            .ok()
+            .flatten()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let reasoning_effort = store
+            .get_setting("reasoning_effort")
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let has_legacy =
+            !provider.trim().is_empty() || !api_url.trim().is_empty() || !model.trim().is_empty();
+        if has_legacy {
+            let default = ModelProfile {
+                id: "default".into(),
+                label: if model.trim().is_empty() {
+                    "Default".into()
+                } else {
+                    model.clone()
+                },
+                provider,
+                api_url,
+                endpoint_suffix: String::new(),
+                model,
+                has_api_key: false,
+                active: false,
+                max_tokens,
+                context_window: DEFAULT_CONTEXT_WINDOW,
+                reasoning_effort,
+                supports_vision: false,
+                use_for_vision: false,
+                use_for_image_generation: false,
+                image_size: String::new(),
+                image_quality: String::new(),
+                image_aspect_ratio: String::new(),
+                image_resolution: String::new(),
+                use_for_video_generation: false,
+                video_duration_secs: None,
+                video_aspect_ratio: None,
+                video_resolution: None,
+            };
+            profiles = vec![tctoken_profile(), default];
+            let _ = save_raw(store, &profiles).await;
+            let _ = store.set_setting(ACTIVE_KEY, "default").await;
+            let legacy = secret_get(LEGACY_KEY_SECRET);
+            if !legacy.is_empty() {
+                let _ = secret_set(&secret_name("default"), &legacy);
+            }
+        } else {
+            profiles = vec![tctoken_profile()];
+            let _ = save_raw(store, &profiles).await;
+            let _ = store.set_setting(ACTIVE_KEY, TCTOKEN_MODEL_ID).await;
+        }
+        return profiles;
+    }
+    if !has_tctoken(&profiles) {
+        profiles.insert(0, tctoken_profile());
+        let _ = save_raw(store, &profiles).await;
     }
     profiles
 }
 
-async fn active_id(store: &wisp_store::Store, profiles: &[ModelProfile]) -> String {
+async fn active_id(store: &superscience_store::Store, profiles: &[ModelProfile]) -> String {
     let want = store
         .get_setting(ACTIVE_KEY)
         .await
@@ -699,12 +753,12 @@ async fn active_id(store: &wisp_store::Store, profiles: &[ModelProfile]) -> Stri
     }
 }
 
-pub async fn active_profile_id(store: &wisp_store::Store) -> String {
+pub async fn active_profile_id(store: &superscience_store::Store) -> String {
     let profiles = ensure(store).await;
     active_id(store, &profiles).await
 }
 
-pub async fn session_profile_id(store: &wisp_store::Store, frame_id: &str) -> String {
+pub async fn session_profile_id(store: &superscience_store::Store, frame_id: &str) -> String {
     let profiles = ensure(store).await;
     let bound = store
         .frame_model(frame_id)
@@ -722,7 +776,7 @@ pub async fn session_profile_id(store: &wisp_store::Store, frame_id: &str) -> St
     }
 }
 
-pub async fn session_label(store: &wisp_store::Store, frame_id: &str) -> String {
+pub async fn session_label(store: &superscience_store::Store, frame_id: &str) -> String {
     let profiles = ensure(store).await;
     let id = session_profile_id(store, frame_id).await;
     profiles
@@ -737,7 +791,7 @@ pub async fn session_label(store: &wisp_store::Store, frame_id: &str) -> String 
 /// An empty stored override (written by older builds for "provider default")
 /// counts as no override, so the profile default applies again.
 pub async fn session_reasoning_effort(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     frame_id: &str,
     profile_default: &str,
 ) -> String {
@@ -761,7 +815,7 @@ fn key_for(id: &str) -> String {
 }
 
 /// The active profile's `(provider, api_url, model, api_key)` for a turn.
-pub async fn active_config(store: &wisp_store::Store) -> (String, String, String, String) {
+pub async fn active_config(store: &superscience_store::Store) -> (String, String, String, String) {
     let profiles = ensure(store).await;
     let id = active_id(store, &profiles).await;
     let p = profiles
@@ -920,7 +974,7 @@ fn can_generate_videos(p: &ModelProfile) -> bool {
     supports_video_generation(&p.provider, &p.model)
 }
 
-async fn vision_id(store: &wisp_store::Store, profiles: &[ModelProfile]) -> Option<String> {
+async fn vision_id(store: &superscience_store::Store, profiles: &[ModelProfile]) -> Option<String> {
     let want = store
         .get_setting(VISION_KEY)
         .await
@@ -935,7 +989,7 @@ async fn vision_id(store: &wisp_store::Store, profiles: &[ModelProfile]) -> Opti
 }
 
 async fn image_generation_id(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     profiles: &[ModelProfile],
 ) -> Option<String> {
     let want = store
@@ -953,7 +1007,7 @@ async fn image_generation_id(
 /// The assigned vision profile's `(provider, api_url, model, api_key,
 /// max_tokens, reasoning_effort)`, if the user configured one.
 pub async fn vision_config(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
 ) -> Option<(String, String, String, String, u64, String)> {
     let profiles = ensure(store).await;
     let id = vision_id(store, &profiles).await?;
@@ -973,7 +1027,7 @@ pub async fn vision_config(
 /// Unlike vision, image generation has no implicit fallback: no assignment
 /// means the Scientific Illustrator deliberately uses SVG.
 pub async fn image_generation_config(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
 ) -> Option<(String, String, String, ImageGenerationOptions)> {
     let profiles = ensure(store).await;
     let id = image_generation_id(store, &profiles).await?;
@@ -991,8 +1045,25 @@ pub async fn image_generation_config(
     ))
 }
 
+/// Best-effort: write a TCTOKEN drawing key onto the assigned image-generation profile.
+pub(crate) async fn set_image_generation_api_key(
+    store: &superscience_store::Store,
+    key: &str,
+) -> Result<String, String> {
+    let key = key.trim();
+    if key.is_empty() {
+        return Err("Image-generation API key is empty.".into());
+    }
+    let profiles = ensure(store).await;
+    let id = image_generation_id(store, &profiles)
+        .await
+        .ok_or_else(|| "No image-generation model is assigned.".to_string())?;
+    secret_set(&secret_name(&id), key)?;
+    Ok(id)
+}
+
 async fn video_generation_id(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     profiles: &[ModelProfile],
 ) -> Option<String> {
     let want = store
@@ -1011,7 +1082,7 @@ async fn video_generation_id(
 /// there is no implicit fallback: no assignment means no `generate_video`
 /// tool is injected into the turn.
 pub async fn video_generation_config(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
 ) -> Option<(String, String, String, VideoGenerationOptions)> {
     let profiles = ensure(store).await;
     let id = video_generation_id(store, &profiles).await?;
@@ -1035,7 +1106,7 @@ pub async fn video_generation_config(
 /// Update the active profile's provider/api_url/model/label. The classic Settings
 /// form now edits whichever model is active, rather than a single global config.
 pub async fn set_active_fields(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     provider: &str,
     api_url: &str,
     model: &str,
@@ -1062,7 +1133,7 @@ pub async fn set_active_fields(
 }
 
 /// Display alias for the active profile (shown in the composer picker).
-pub async fn active_label(store: &wisp_store::Store) -> String {
+pub async fn active_label(store: &superscience_store::Store) -> String {
     let profiles = ensure(store).await;
     let id = active_id(store, &profiles).await;
     profiles
@@ -1074,7 +1145,7 @@ pub async fn active_label(store: &wisp_store::Store) -> String {
 
 /// Per-model advanced LLM options for the active profile, falling back to
 /// legacy global store keys when a profile has no values yet.
-pub async fn active_llm_advanced(store: &wisp_store::Store) -> (u64, String) {
+pub async fn active_llm_advanced(store: &superscience_store::Store) -> (u64, String) {
     let profiles = ensure(store).await;
     let id = active_id(store, &profiles).await;
     if let Some(p) = profiles.iter().find(|p| p.id == id) {
@@ -1141,7 +1212,7 @@ fn clamp_to_catalog(profile: &mut ModelProfile) {
 }
 
 /// Context capacity for the active HTTP model.
-pub async fn active_context_window(store: &wisp_store::Store) -> u64 {
+pub async fn active_context_window(store: &superscience_store::Store) -> u64 {
     let profiles = ensure(store).await;
     let id = active_id(store, &profiles).await;
     profiles
@@ -1152,7 +1223,7 @@ pub async fn active_context_window(store: &wisp_store::Store) -> u64 {
 }
 
 /// Context capacity for a concrete HTTP model profile.
-pub async fn profile_context_window(store: &wisp_store::Store, id: &str) -> Option<u64> {
+pub async fn profile_context_window(store: &superscience_store::Store, id: &str) -> Option<u64> {
     ensure(store)
         .await
         .iter()
@@ -1163,7 +1234,7 @@ pub async fn profile_context_window(store: &wisp_store::Store, id: &str) -> Opti
 /// Full LLM config for one profile id: (provider, api_url, model, api_key,
 /// max_tokens, reasoning_effort). None when the id doesn't exist.
 pub async fn profile_llm(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     id: &str,
 ) -> Option<(String, String, String, String, u64, String)> {
     let profiles = ensure(store).await;
@@ -1183,23 +1254,23 @@ pub async fn profile_llm(
 
 /// Stored key for a specific profile id, or None when the profile does not
 /// exist. The returned string may still be empty when the profile has no key.
-pub async fn profile_key(store: &wisp_store::Store, id: &str) -> Option<String> {
+pub async fn profile_key(store: &superscience_store::Store, id: &str) -> Option<String> {
     let profiles = ensure(store).await;
     profiles.iter().any(|p| p.id == id).then(|| key_for(id))
 }
 
 /// Whether the active profile has a key stored (for `get_settings`).
-pub async fn active_has_key(store: &wisp_store::Store) -> bool {
+pub async fn active_has_key(store: &superscience_store::Store) -> bool {
     let profiles = ensure(store).await;
     let id = active_id(store, &profiles).await;
     !key_for(&id).is_empty()
 }
 
-pub async fn active_supports_vision(store: &wisp_store::Store) -> bool {
+pub async fn active_supports_vision(store: &superscience_store::Store) -> bool {
     supports_vision(store, None).await
 }
 
-pub async fn supports_vision(store: &wisp_store::Store, profile_id: Option<&str>) -> bool {
+pub async fn supports_vision(store: &superscience_store::Store, profile_id: Option<&str>) -> bool {
     let profiles = ensure(store).await;
     let id = match profile_id.filter(|id| profiles.iter().any(|profile| profile.id == *id)) {
         Some(id) => id.to_string(),
@@ -1212,7 +1283,7 @@ pub async fn supports_vision(store: &wisp_store::Store, profile_id: Option<&str>
 }
 
 /// Profiles with `has_api_key`/`active` filled in, for the UI.
-async fn decorated(store: &wisp_store::Store) -> Vec<ModelProfile> {
+async fn decorated(store: &superscience_store::Store) -> Vec<ModelProfile> {
     let profiles = ensure(store).await;
     let id = active_id(store, &profiles).await;
     let vision = vision_id(store, &profiles).await;
@@ -1231,7 +1302,7 @@ async fn decorated(store: &wisp_store::Store) -> Vec<ModelProfile> {
         .collect()
 }
 
-pub(crate) async fn delegation_profiles(store: &wisp_store::Store) -> Vec<ModelProfile> {
+pub(crate) async fn delegation_profiles(store: &superscience_store::Store) -> Vec<ModelProfile> {
     decorated(store)
         .await
         .into_iter()
@@ -1443,6 +1514,9 @@ pub async fn remove_model(
     id: String,
 ) -> Result<Vec<ModelProfile>, String> {
     let mut profiles = ensure(&state.store).await;
+    if id == TCTOKEN_MODEL_ID {
+        return Err("The Tctoken model cannot be removed.".into());
+    }
     if profiles
         .iter()
         .filter(|p| p.id != id && is_chat_model(p))
@@ -1630,7 +1704,7 @@ mod tests {
         // repro for "checkbox lost after save+reopen": full backend round-trip
         // through save_raw + VISION_KEY + decorated.
         let tmp = std::env::temp_dir().join(format!("wisp_vision_{}.sqlite", uuid::Uuid::new_v4()));
-        let store = wisp_store::Store::open(&tmp).await.unwrap();
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
         let mut p = test_profile("m1", "claude", "claude-opus-4-8");
         p.supports_vision = true;
         save_raw(&store, &[test_profile("m0", "text", "deepseek"), p])
@@ -1647,6 +1721,36 @@ mod tests {
             json[1]["use_for_vision"], true,
             "IPC response lost vision assignment"
         );
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[tokio::test]
+    async fn ensure_creates_tctoken_when_empty() {
+        let tmp =
+            std::env::temp_dir().join(format!("wisp_tctoken_{}.sqlite", uuid::Uuid::new_v4()));
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
+        let profiles = ensure(&store).await;
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].id, TCTOKEN_MODEL_ID);
+        assert_eq!(profiles[0].label, "Tctoken");
+        assert_eq!(profiles[0].api_url, TCTOKEN_API_URL);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[tokio::test]
+    async fn ensure_injects_tctoken_into_existing_list() {
+        let tmp = std::env::temp_dir().join(format!(
+            "wisp_tctoken_inject_{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
+        save_raw(&store, &[test_profile("m1", "custom", "demo")])
+            .await
+            .unwrap();
+        let profiles = ensure(&store).await;
+        assert!(has_tctoken(&profiles));
+        assert!(profiles.iter().any(|profile| profile.id == "m1"));
+        assert_eq!(profiles[0].id, TCTOKEN_MODEL_ID);
         let _ = std::fs::remove_file(&tmp);
     }
 
@@ -1684,7 +1788,7 @@ mod tests {
             "wisp_session_models_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
-        let store = wisp_store::Store::open(&tmp).await.unwrap();
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
         store.create_project("p", "project", "").await.unwrap();
         save_raw(
             &store,
@@ -1713,7 +1817,7 @@ mod tests {
             "wisp_session_reasoning_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
-        let store = wisp_store::Store::open(&tmp).await.unwrap();
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
         store.create_project("p", "project", "").await.unwrap();
         let mut profile = test_profile("m1", "reasoner", "model-1");
         profile.reasoning_effort = "max".into();
@@ -1740,7 +1844,7 @@ mod tests {
             "wisp_session_reasoning_clear_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
-        let store = wisp_store::Store::open(&tmp).await.unwrap();
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
         store.create_project("p", "project", "").await.unwrap();
         store.create_frame("a", "p", "OPERON", "m1").await.unwrap();
         store.create_frame("b", "p", "OPERON", "m1").await.unwrap();
@@ -1772,7 +1876,7 @@ mod tests {
     async fn vision_capability_follows_the_input_profile() {
         let tmp =
             std::env::temp_dir().join(format!("wisp_input_vision_{}.sqlite", uuid::Uuid::new_v4()));
-        let store = wisp_store::Store::open(&tmp).await.unwrap();
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
         let text = test_profile("m0", "text", "text-model");
         let mut vision = test_profile("m1", "vision", "vision-model");
         vision.supports_vision = true;
@@ -1954,7 +2058,7 @@ mod tests {
     async fn image_generation_requires_an_explicit_gpt_image_2_assignment() {
         let tmp =
             std::env::temp_dir().join(format!("wisp_image_gen_{}.sqlite", uuid::Uuid::new_v4()));
-        let store = wisp_store::Store::open(&tmp).await.unwrap();
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
         let chat = test_profile("chat", "chat", "gpt-5.5");
         let mut image = test_profile("image", "image", "gpt-image-2");
         image.provider = "openai_responses".into();
@@ -2059,7 +2163,7 @@ mod tests {
     async fn video_generation_requires_an_explicit_assignment() {
         let tmp =
             std::env::temp_dir().join(format!("wisp_video_gen_{}.sqlite", uuid::Uuid::new_v4()));
-        let store = wisp_store::Store::open(&tmp).await.unwrap();
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
         let chat = test_profile("chat", "chat", "gpt-5.5");
         let mut video = test_profile("video", "video", "grok-imagine-video-1.5");
         video.video_duration_secs = Some(10);
@@ -2103,7 +2207,7 @@ mod tests {
             "wisp_video_gen_defaults_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
-        let store = wisp_store::Store::open(&tmp).await.unwrap();
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
         save_raw(
             &store,
             &[
@@ -2143,7 +2247,7 @@ mod tests {
             "wisp_image_gen_active_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
-        let store = wisp_store::Store::open(&tmp).await.unwrap();
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
         let chat = test_profile("chat", "chat", "gpt-5.5");
         let image = test_profile("image", "image", "gpt-image-2");
         save_raw(&store, &[chat, image]).await.unwrap();
@@ -2240,7 +2344,7 @@ mod tests {
             "wisp_model_endpoint_suffix_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
-        let store = wisp_store::Store::open(&tmp).await.unwrap();
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
 
         let mut anthropic = test_profile("anthropic", "deepseek-anthropic", "deepseek-chat");
         anthropic.provider = "anthropic".into();
@@ -2405,7 +2509,7 @@ mod tests {
             "wisp_custom_credentials_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
-        let store = wisp_store::Store::open(&tmp).await.unwrap();
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
         let suffix = uuid::Uuid::new_v4()
             .simple()
             .to_string()
@@ -2478,7 +2582,7 @@ mod tests {
     async fn profile_key_reads_the_requested_profile() {
         let tmp =
             std::env::temp_dir().join(format!("wisp_profile_key_{}.sqlite", uuid::Uuid::new_v4()));
-        let store = wisp_store::Store::open(&tmp).await.unwrap();
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
         save_raw(
             &store,
             &[

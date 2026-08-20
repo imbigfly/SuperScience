@@ -205,14 +205,19 @@ fn refresh_desktop_pet(status: RwSignal<PetStatus>, activity: RwSignal<DesktopPe
     });
 }
 
-fn desktop_state_label(state: &str) -> &'static str {
-    match state {
-        "running" => "Working",
-        "review" => "Reviewing",
-        "waiting" => "Needs you",
-        "failed" => "Failed",
-        "jumping" => "Done",
-        _ => "Idle",
+fn desktop_state_label(activity: &DesktopPetActivity) -> String {
+    match activity.state() {
+        "running" => activity
+            .active_runs
+            .values()
+            .find(|title| !title.trim().is_empty())
+            .cloned()
+            .unwrap_or_else(|| "Working".into()),
+        "review" => "Reviewing".into(),
+        "waiting" => "Needs you".into(),
+        "failed" => "Failed".into(),
+        "jumping" => "Done".into(),
+        _ => "Idle".into(),
     }
 }
 
@@ -337,12 +342,12 @@ pub(crate) fn PetDesktop() -> impl IntoView {
                     let current = activity.get();
                     let name = status.get().asset.map(|asset| asset.display_name)
                         .unwrap_or_else(|| "Pet".into());
-                    format!("{name}: {}", desktop_state_label(current.state()))
+                    format!("{name}: {}", desktop_state_label(&current))
                 }>
                 <span class="superscience-pet-sprite" aria-hidden="true"></span>
                 <span class="superscience-pet-status" aria-hidden="true"></span>
                 <span class="superscience-pet-state-label">
-                    {move || desktop_state_label(activity.get().state())}
+                    {move || desktop_state_label(&activity.get())}
                 </span>
             </button>
         </main>
@@ -423,7 +428,7 @@ pub(crate) fn PetOverlay(
 
 #[cfg(test)]
 mod tests {
-    use super::{DesktopPetActivity, PetRunStatus, PetRuntimeSnapshot};
+    use super::{desktop_state_label, DesktopPetActivity, PetRunStatus, PetRuntimeSnapshot};
 
     fn snapshot(active_runs: Vec<PetRunStatus>) -> PetRuntimeSnapshot {
         PetRuntimeSnapshot {
@@ -442,13 +447,11 @@ mod tests {
             title: "data_analysis.py".into(),
         }]));
         assert_eq!(activity.state(), "running");
-        assert_eq!(
-            activity.active_runs.values().next().map(String::as_str),
-            Some("data_analysis.py")
-        );
+        assert_eq!(desktop_state_label(&activity), "data_analysis.py");
 
         activity.replace_from_snapshot(snapshot(vec![]));
         assert_eq!(activity.state(), "jumping");
+        assert_eq!(desktop_state_label(&activity), "Done");
         assert_eq!(activity.sequence, 1);
 
         activity.replace_from_snapshot(snapshot(vec![]));

@@ -68,7 +68,7 @@ fn existing_artifact_path(
     root: &std::path::Path,
     path: &str,
 ) -> Result<std::path::PathBuf, String> {
-    let real = wisp_tools::safety::validate_file_path(root, path)?;
+    let real = superscience_tools::safety::validate_file_path(root, path)?;
     if !real.is_file() {
         return Err(format!("path '{path}' is not an existing file"));
     }
@@ -132,7 +132,7 @@ async fn register_artifact_at(
             .await
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "Artifact conversation no longer exists".to_string())?,
-        None => wisp_store::StateScope::mainline(ap.id.clone()),
+        None => superscience_store::StateScope::mainline(ap.id.clone()),
     };
     crate::exploration_commands::require_writable_scope(&state.store, &scope).await?;
     let real = existing_artifact_path(&ap.root, &path)?;
@@ -157,7 +157,8 @@ async fn register_artifact_at(
         .to_string_lossy()
         .replace('\\', "/");
     let logical_key = format!("path:{source_path}");
-    let id = wisp_store::scoped_logical_artifact_id(&ap.id, scope.scope_key(), &logical_key);
+    let id =
+        superscience_store::scoped_logical_artifact_id(&ap.id, scope.scope_key(), &logical_key);
     let captured = crate::snapshot_store::capture_file(
         &ap.root,
         &snapshot_source,
@@ -167,7 +168,7 @@ async fn register_artifact_at(
         i64::try_from(captured.size_bytes).map_err(|_| "artifact is too large".to_string())?;
     state
         .store
-        .save_artifact_version(&wisp_store::ArtifactVersionDraft {
+        .save_artifact_version(&superscience_store::ArtifactVersionDraft {
             version_id: None,
             artifact_id: id.clone(),
             project_id: ap.id.clone(),
@@ -181,7 +182,7 @@ async fn register_artifact_at(
             producing_run_id: None,
             env_snapshot_hash: None,
             materialization: captured.materialization,
-            capture_timing: wisp_store::ArtifactCaptureTiming::AtCreation,
+            capture_timing: superscience_store::ArtifactCaptureTiming::AtCreation,
         })
         .await
         .map_err(|e| format!("{e}"))?;
@@ -384,7 +385,7 @@ pub(super) async fn search_artifacts(
         crate::exploration_commands::working_project_for_active_frame(&state, window.label())
             .await?;
     let rows = match &scope {
-        wisp_store::StateScope::Exploration { exploration_id, .. } => {
+        superscience_store::StateScope::Exploration { exploration_id, .. } => {
             if all_projects.unwrap_or(false) || project_id.as_deref().is_some_and(|id| id != ap.id)
             {
                 return Err(
@@ -403,7 +404,7 @@ pub(super) async fn search_artifacts(
                 .await
                 .map_err(|e| format!("{e}"))?
         }
-        wisp_store::StateScope::Mainline { .. } => {
+        superscience_store::StateScope::Mainline { .. } => {
             let project_id = if all_projects.unwrap_or(false) {
                 None
             } else {
@@ -460,7 +461,7 @@ pub(super) fn missing_files(
     Ok(paths
         .into_iter()
         .filter(|p| {
-            wisp_tools::safety::validate_file_path(&ap.root, p)
+            superscience_tools::safety::validate_file_path(&ap.root, p)
                 .map(|real| !real.exists())
                 .unwrap_or(true)
         })
@@ -496,7 +497,7 @@ pub(super) async fn read_artifact(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("artifact '{id}' not found in the active state"))?;
-    let root = if matches!(&scope, wisp_store::StateScope::Exploration { .. }) {
+    let root = if matches!(&scope, superscience_store::StateScope::Exploration { .. }) {
         working_project.root
     } else {
         PathBuf::from(row.project_root)
@@ -536,7 +537,7 @@ pub(super) async fn read_artifact_bytes(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("artifact '{id}' not found in the active state"))?;
-    let root = if matches!(&scope, wisp_store::StateScope::Exploration { .. }) {
+    let root = if matches!(&scope, superscience_store::StateScope::Exploration { .. }) {
         working_project.root
     } else {
         PathBuf::from(row.project_root)
@@ -586,12 +587,12 @@ pub(super) async fn download_artifact(
         crate::run_context::remote_files::refuse_if_source_discarded(&state.store, &storage_path)
             .await?;
     }
-    let root = if matches!(&scope, wisp_store::StateScope::Exploration { .. }) {
+    let root = if matches!(&scope, superscience_store::StateScope::Exploration { .. }) {
         working_project.root
     } else {
         PathBuf::from(artifact.project_root)
     };
-    let source = wisp_tools::safety::validate_file_path(&root, &storage_path)?;
+    let source = superscience_tools::safety::validate_file_path(&root, &storage_path)?;
     if !source.is_file() {
         return Err(format!(
             "artifact '{}' is no longer readable",
@@ -649,7 +650,7 @@ pub(super) async fn read_artifact_version(
         .await
         .map_err(|e| format!("{e}"))?
         .ok_or_else(|| format!("artifact '{}' not found", version.artifact_id))?;
-    let root = if matches!(&scope, wisp_store::StateScope::Exploration { .. }) {
+    let root = if matches!(&scope, superscience_store::StateScope::Exploration { .. }) {
         working_project.root
     } else {
         PathBuf::from(artifact.project_root)
@@ -691,7 +692,7 @@ pub(super) async fn read_artifact_version_bytes(
         .await
         .map_err(|e| format!("{e}"))?
         .ok_or_else(|| format!("artifact '{}' not found", version.artifact_id))?;
-    let root = if matches!(&scope, wisp_store::StateScope::Exploration { .. }) {
+    let root = if matches!(&scope, superscience_store::StateScope::Exploration { .. }) {
         working_project.root
     } else {
         PathBuf::from(artifact.project_root)

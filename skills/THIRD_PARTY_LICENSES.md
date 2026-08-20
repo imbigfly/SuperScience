@@ -1294,7 +1294,14 @@ IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 See also `skills/_vendor/README.md` and per-source LICENSE files under `skills/_vendor/`.
 
 - **OfficeCLI** (https://github.com/iOfficeAI/OfficeCli) — Apache-2.0. Bundled as `officecli*`, `morph-ppt*`. Full LICENSE/NOTICE in `skills/_vendor/OfficeCli/` and `skills/officecli/`.
-- **academic-research-skills** (https://github.com/Imbad0202/academic-research-skills) — Creative Commons Attribution-NonCommercial 4.0. Bundled as `academic-paper`, `academic-paper-reviewer`, `academic-pipeline`, `deep-research` (each with embedded `shared/`). See `skills/_vendor/academic-research-skills/LICENSE`.
-- **nature-skills** (https://github.com/Yuan1z0825/nature-skills) — MIT. Bundled as `nature-*` including `nature-shared` and `nature-figure` assets. See `skills/_vendor/nature-skills/LICENSE`.
+- **academic-research-skills** (https://github.com/Imbad0202/academic-research-skills) — Creative Commons Attribution-NonCommercial 4.0. Bundled as `academic-paper`, `academic-paper-reviewer`, `academic-pipeline`, `deep-research` (each with embedded `shared/`). Pinned to **v3.20.1** (`6837b4dfeaabd5a6da886e199b44ae7b52e8b931`). See `skills/_vendor/academic-research-skills/LICENSE`.
+- **nature-skills** (https://github.com/Yuan1z0825/nature-skills) — Apache-2.0. Bundled as `nature-*` including `nature-shared` and `nature-figure` assets. See `skills/_vendor/nature-skills/LICENSE`. Pinned to `c171989db699bd601d4373912b3fb8db96ecc95b` (2026-08-16).
 - **Humanizer-zh** (https://github.com/op7418/Humanizer-zh) — MIT. Bundled as `humanizer-zh`. Translated from [blader/humanizer](https://github.com/blader/humanizer). See `skills/_vendor/humanizer-zh/LICENSE`.
+- **academic-search-pro** (https://skillhub.cn/skills/user_8d26dabd/academic-search-pro) — license file not shipped in the upstream zip. Bundled as `academic-search-pro` from user-provided `academic-search-pro-1.0.5.zip` (SkillHub author 刘楠 / 科恩实验室). See `skills/_vendor/academic-search-pro/SOURCE.txt`.
 - **Playwright** (https://github.com/microsoft/playwright) — Apache-2.0. Guidance-only skill `skills/playwright/` (runtime installs via npm; monorepo not vendored).
+
+### Optional user-installed skills (not bundled)
+
+These appear in the capability catalog but are **not** copied into the app package. The user confirms a first-use download from the upstream GitHub release.
+
+- **PPT Master** (https://github.com/hugohe3/ppt-master) — MIT. Capability tile **PPT Master** under AI drawing. First click downloads the official skill-only zip (`ppt-master-skill-*.zip`, about 56 MB) into `~/.superscience/skills/ppt-master/`. The full repository and examples are not shipped. After install, the same guided-chat path as other skills applies.

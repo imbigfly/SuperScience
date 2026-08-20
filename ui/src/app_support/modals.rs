@@ -46,6 +46,7 @@ pub(crate) enum UiConfirm {
     DeleteFileEntry { path: String, is_dir: bool },
     ReloadProjectRules(String),
     SaveAgentContext,
+    DeleteUserDemo(String),
 }
 
 #[derive(Clone)]
@@ -54,18 +55,19 @@ pub(crate) enum UpdateCheckModal {
     Available {
         version: String,
         notes: String,
-        release_url: String,
         install_supported: bool,
         downloading: bool,
+        force_update: bool,
     },
     Downloading {
         version: String,
         downloaded_bytes: RwSignal<u64>,
         total_bytes: RwSignal<Option<u64>>,
+        force_update: bool,
     },
     ReadyToInstall {
         version: String,
-        release_url: String,
+        force_update: bool,
     },
     Installing {
         version: String,
@@ -75,13 +77,18 @@ pub(crate) enum UpdateCheckModal {
     },
     Failed {
         message: String,
-        release_url: Option<String>,
     },
 }
 
 impl UpdateCheckModal {
     pub(crate) fn dismissible(&self) -> bool {
-        !matches!(self, Self::Downloading { .. } | Self::Installing { .. })
+        match self {
+            Self::Downloading { .. } => false,
+            Self::Available { force_update, .. } | Self::ReadyToInstall { force_update, .. } => {
+                !*force_update
+            }
+            _ => true,
+        }
     }
 }
 

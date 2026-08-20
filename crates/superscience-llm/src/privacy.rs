@@ -4,6 +4,7 @@
 //! conversational context while real identifiers never leave the host.
 
 use crate::message::{Completion, Content, Message, Part, Role, ToolSchema};
+use crate::privacy_custom::{apply_custom_terms, CustomTerm};
 use crate::provider::{Provider, Result, StreamSink};
 use async_trait::async_trait;
 use regex::Regex;
@@ -35,7 +36,7 @@ struct VaultInner {
     forward: HashMap<String, String>,
     /// token → original
     reverse: HashMap<String, String>,
-    counters: HashMap<&'static str, u32>,
+    counters: HashMap<String, u32>,
 }
 
 impl VaultInner {
@@ -44,9 +45,35 @@ impl VaultInner {
             return existing.clone();
         }
         let prefix = kind.prefix();
-        let n = self.counters.entry(prefix).or_insert(0);
+        let n = self.counters.entry(prefix.to_string()).or_insert(0);
         *n += 1;
         let token = format!("{prefix}_{n}");
+        self.forward.insert(original.to_string(), token.clone());
+        self.reverse.insert(token.clone(), original.to_string());
+        token
+    }
+
+    fn custom_token(&mut self, original: &str, prefix: &str, explicit: bool) -> String {
+        if let Some(existing) = self.forward.get(original) {
+            return existing.clone();
+        }
+        let token = if explicit {
+            let mut candidate = prefix.to_string();
+            if self.reverse.contains_key(&candidate) {
+                let n = self.counters.entry("custom_clash".into()).or_insert(0);
+                *n += 1;
+                candidate = format!("{prefix}_{n}");
+            }
+            candidate
+        } else {
+            let n = self.counters.entry(prefix.to_string()).or_insert(0);
+            *n += 1;
+            if prefix.chars().any(|c| !c.is_ascii()) {
+                format!("{prefix}{n}")
+            } else {
+                format!("{prefix}_{n}")
+            }
+        };
         self.forward.insert(original.to_string(), token.clone());
         self.reverse.insert(token.clone(), original.to_string());
         token
@@ -63,20 +90,67 @@ impl PiiVault {
         Self::default()
     }
 
+    pub fn token_for_custom(&self, original: &str, prefix: &str, explicit: bool) -> String {
+        self.inner
+            .lock()
+            .expect("pii vault lock")
+            .custom_token(original, prefix, explicit)
+    }
+
+    pub fn token_for_original(&self, original: &str) -> Option<String> {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|guard| guard.forward.get(original).cloned())
+    }
+
+    pub fn token_taken(&self, token: &str) -> bool {
+        self.inner
+            .lock()
+            .map(|guard| guard.reverse.contains_key(token))
+            .unwrap_or(true)
+    }
+
     pub fn rehydrate(&self, text: &str) -> String {
         let guard = self.inner.lock().expect("pii vault lock");
         if guard.reverse.is_empty() {
             return text.to_string();
         }
-        let mut out = text.to_string();
-        // Longer tokens first so EMAIL_12 is not partially eaten by EMAIL_1.
-        let mut tokens: Vec<_> = guard.reverse.keys().cloned().collect();
-        tokens.sort_by_key(|t| std::cmp::Reverse(t.len()));
-        for token in tokens {
-            if let Some(original) = guard.reverse.get(&token) {
-                out = out.replace(&token, original);
+        // Single pass on the original text so restoring token A (whose
+        // original happens to equal token B) cannot cascade into B's value.
+        let mut tokens: Vec<&String> = guard.reverse.keys().collect();
+        tokens.sort_by(|a, b| b.len().cmp(&a.len()));
+
+        let mut hits: Vec<(usize, usize, &String)> = Vec::new();
+        let mut i = 0;
+        while i < text.len() {
+            if !text.is_char_boundary(i) {
+                i += 1;
+                continue;
+            }
+            let rest = &text[i..];
+            if let Some(token) = tokens
+                .iter()
+                .copied()
+                .find(|token| !token.is_empty() && rest.starts_with(token.as_str()))
+            {
+                hits.push((i, i + token.len(), token));
+                i += token.len();
+            } else {
+                i += rest.chars().next().map(|ch| ch.len_utf8()).unwrap_or(1);
             }
         }
+
+        let mut out = String::with_capacity(text.len());
+        let mut cursor = 0;
+        for (start, end, token) in hits {
+            out.push_str(&text[cursor..start]);
+            if let Some(original) = guard.reverse.get(token) {
+                out.push_str(original);
+            }
+            cursor = end;
+        }
+        out.push_str(&text[cursor..]);
         out
     }
 }
@@ -128,9 +202,14 @@ fn is_science_allowlisted(value: &str) -> bool {
 }
 
 pub fn anonymize_text(vault: &PiiVault, text: &str) -> String {
+    anonymize_text_with_terms(vault, text, &[])
+}
+
+pub fn anonymize_text_with_terms(vault: &PiiVault, text: &str, terms: &[CustomTerm]) -> String {
+    let text = apply_custom_terms(vault, text, terms);
     let mut spans: Vec<(usize, usize, PiiKind, String)> = Vec::new();
     for (kind, re) in detectors() {
-        for m in re.find_iter(text) {
+        for m in re.find_iter(&text) {
             let value = m.as_str();
             if is_science_allowlisted(value) {
                 continue;
@@ -162,16 +241,16 @@ pub fn anonymize_text(vault: &PiiVault, text: &str) -> String {
     out
 }
 
-fn anonymize_content(vault: &PiiVault, content: &Content) -> Content {
+fn anonymize_content(vault: &PiiVault, content: &Content, terms: &[CustomTerm]) -> Content {
     match content {
-        Content::Text(s) => Content::Text(anonymize_text(vault, s)),
+        Content::Text(s) => Content::Text(anonymize_text_with_terms(vault, s, terms)),
         Content::Parts(parts) => Content::Parts(
             parts
                 .iter()
                 .map(|part| match part {
                     Part::Text { kind, text } => Part::Text {
                         kind: kind.clone(),
-                        text: anonymize_text(vault, text),
+                        text: anonymize_text_with_terms(vault, text, terms),
                     },
                     Part::Image { .. } => part.clone(),
                 })
@@ -180,16 +259,20 @@ fn anonymize_content(vault: &PiiVault, content: &Content) -> Content {
     }
 }
 
-fn anonymize_messages(vault: &PiiVault, messages: &[Message]) -> Vec<Message> {
+fn anonymize_messages(
+    vault: &PiiVault,
+    messages: &[Message],
+    terms: &[CustomTerm],
+) -> Vec<Message> {
     messages
         .iter()
         .map(|m| {
             let mut cloned = m.clone();
             // System / user / assistant / tool text can all leak identifiers.
-            cloned.content = anonymize_content(vault, &m.content);
+            cloned.content = anonymize_content(vault, &m.content, terms);
             if m.role == Role::Assistant {
                 if let Some(reasoning) = &m.reasoning {
-                    cloned.reasoning = Some(anonymize_text(vault, reasoning));
+                    cloned.reasoning = Some(anonymize_text_with_terms(vault, reasoning, terms));
                 }
             }
             cloned
@@ -218,22 +301,22 @@ struct RehydratingSink<'a> {
 
 impl<'a> RehydratingSink<'a> {
     fn flush_ready(buf: &mut String, vault: &PiiVault, emit: impl FnOnce(&str)) {
-        // Hold back a short suffix that might be an incomplete TOKEN_ prefix.
-        const HOLD: usize = 16;
         if buf.is_empty() {
             return;
         }
-        let split = if buf.len() <= HOLD {
-            // Still flush clearly complete tokens.
-            if let Some(rehydrated) = try_flush_complete_tokens(buf, vault) {
+        let split = hold_index(buf);
+        if split == 0 {
+            if can_flush_complete_chunk(buf) {
+                let out = vault.rehydrate(buf);
+                buf.clear();
+                if !out.is_empty() {
+                    emit(&out);
+                }
+            } else if let Some(rehydrated) = try_flush_complete_tokens(buf, vault) {
                 emit(&rehydrated);
             }
             return;
-        } else {
-            // HOLD bytes may land mid-UTF-8 codepoint (e.g. CJK); floor to a
-            // char boundary so streaming Chinese replies do not panic.
-            buf.floor_char_boundary(buf.len() - HOLD)
-        };
+        }
         let ready = buf[..split].to_string();
         let rest = buf[split..].to_string();
         *buf = rest;
@@ -242,6 +325,49 @@ impl<'a> RehydratingSink<'a> {
             emit(&out);
         }
     }
+}
+
+/// Hold an unclosed `〔…` and a short ASCII suffix that might still grow
+/// into `EMAIL_12`.
+fn hold_index(buf: &str) -> usize {
+    if let Some(pos) = last_unclosed_bracket_start(buf) {
+        return pos;
+    }
+    const HOLD: usize = 16;
+    if buf.len() <= HOLD {
+        return 0;
+    }
+    // HOLD bytes may land mid-UTF-8 codepoint (e.g. CJK); floor to a
+    // char boundary so streaming Chinese replies do not panic.
+    buf.floor_char_boundary(buf.len() - HOLD)
+}
+
+fn last_unclosed_bracket_start(buf: &str) -> Option<usize> {
+    let mut last_open = None;
+    let mut i = 0;
+    while i < buf.len() {
+        if !buf.is_char_boundary(i) {
+            i += 1;
+            continue;
+        }
+        if buf[i..].starts_with('〔') {
+            last_open = Some(i);
+            i += '〔'.len_utf8();
+            continue;
+        }
+        if buf[i..].starts_with('〕') {
+            last_open = None;
+            i += '〕'.len_utf8();
+            continue;
+        }
+        i += buf[i..].chars().next().map(|ch| ch.len_utf8()).unwrap_or(1);
+    }
+    last_open
+}
+
+fn can_flush_complete_chunk(buf: &str) -> bool {
+    last_unclosed_bracket_start(buf).is_none()
+        && !buf.ends_with(|ch: char| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 fn try_flush_complete_tokens(buf: &mut String, vault: &PiiVault) -> Option<String> {
@@ -305,13 +431,19 @@ impl RehydratingSink<'_> {
 pub struct PiiFirewallProvider {
     inner: Box<dyn Provider>,
     vault: PiiVault,
+    terms: Vec<CustomTerm>,
 }
 
 impl PiiFirewallProvider {
     pub fn new(inner: Box<dyn Provider>) -> Self {
+        Self::with_terms(inner, Vec::new())
+    }
+
+    pub fn with_terms(inner: Box<dyn Provider>, terms: Vec<CustomTerm>) -> Self {
         Self {
             inner,
             vault: PiiVault::new(),
+            terms,
         }
     }
 }
@@ -327,7 +459,7 @@ impl Provider for PiiFirewallProvider {
     }
 
     async fn complete(&self, messages: &[Message], tools: &[ToolSchema]) -> Result<Completion> {
-        let sanitized = anonymize_messages(&self.vault, messages);
+        let sanitized = anonymize_messages(&self.vault, messages, &self.terms);
         let completion = self.inner.complete(&sanitized, tools).await?;
         Ok(rehydrate_completion(&self.vault, completion))
     }
@@ -338,7 +470,7 @@ impl Provider for PiiFirewallProvider {
         tools: &[ToolSchema],
         sink: &mut dyn StreamSink,
     ) -> Result<Completion> {
-        let sanitized = anonymize_messages(&self.vault, messages);
+        let sanitized = anonymize_messages(&self.vault, messages, &self.terms);
         let mut wrapped = RehydratingSink {
             inner: sink,
             vault: self.vault.clone(),
@@ -353,8 +485,16 @@ impl Provider for PiiFirewallProvider {
 
 /// Wrap a provider with the outbound PII firewall when `enabled`.
 pub fn maybe_wrap(inner: Box<dyn Provider>, enabled: bool) -> Box<dyn Provider> {
+    maybe_wrap_with_terms(inner, enabled, Vec::new())
+}
+
+pub fn maybe_wrap_with_terms(
+    inner: Box<dyn Provider>,
+    enabled: bool,
+    terms: Vec<CustomTerm>,
+) -> Box<dyn Provider> {
     if enabled {
-        Box::new(PiiFirewallProvider::new(inner))
+        Box::new(PiiFirewallProvider::with_terms(inner, terms))
     } else {
         inner
     }
@@ -393,6 +533,24 @@ mod tests {
         let vault = PiiVault::new();
         let src = "Use GSE153250 and GSM1234567 for the study.";
         assert_eq!(anonymize_text(&vault, src), src);
+    }
+
+    #[test]
+    fn custom_terms_run_before_regex_and_rehydrate() {
+        let vault = PiiVault::new();
+        let terms = vec![crate::CustomTerm::new(
+            "协和医院",
+            crate::CustomCategory::Hospital,
+            Some("医院A".into()),
+        )
+        .unwrap()];
+        let src = "联系 协和医院 的 jane@lab.org";
+        let out = anonymize_text_with_terms(&vault, src, &terms);
+        assert!(out.contains("〔词1〕"), "{out}");
+        assert!(out.contains("EMAIL_1"), "{out}");
+        assert!(!out.contains("协和医院"), "{out}");
+        assert!(!out.contains("jane@lab.org"), "{out}");
+        assert_eq!(vault.rehydrate(&out), src);
     }
 
     struct SharedEcho {
@@ -486,5 +644,31 @@ mod tests {
         }
         re.finish();
         assert_eq!(sink.text, msg);
+    }
+
+    #[test]
+    fn streaming_holds_split_custom_token() {
+        let vault = PiiVault::new();
+        let terms = vec![crate::CustomTerm::new(
+            "张三",
+            crate::CustomCategory::Custom,
+            Some("〔词1〕".into()),
+        )
+        .unwrap()];
+        assert_eq!(anonymize_text_with_terms(&vault, "张三", &terms), "〔词1〕");
+        let mut sink = CollectSink {
+            text: String::new(),
+        };
+        let mut re = RehydratingSink {
+            inner: &mut sink,
+            vault,
+            text_buf: String::new(),
+            reasoning_buf: String::new(),
+        };
+        re.on_text("见过");
+        re.on_text("〔");
+        re.on_text("词1〕了。");
+        re.finish();
+        assert_eq!(sink.text, "见过张三了。");
     }
 }

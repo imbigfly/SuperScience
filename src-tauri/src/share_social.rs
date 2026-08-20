@@ -6,7 +6,7 @@
 
 use super::*;
 use serde::{Deserialize, Serialize};
-use wisp_llm::Message;
+use superscience_llm::Message;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -362,7 +362,7 @@ pub(super) async fn generate_share_social_copy(
     )?;
     let completion = tokio::time::timeout(
         SHARE_COPY_TIMEOUT,
-        wisp_llm::build(config).complete(
+        superscience_llm::build(config).complete(
             &[Message::system(SHARE_COPY_SYSTEM), Message::user(prompt)],
             &[],
         ),

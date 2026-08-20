@@ -53,7 +53,7 @@ pub(crate) fn ssh_uri_for_context_path(context_id: &str, remote_path: &str) -> S
 pub(crate) const SOURCE_DISCARDED_ERROR: &str = "source_discarded: This artifact's source server was discarded; the remote file is no longer available through Wisp.";
 
 pub(crate) async fn refuse_if_source_discarded(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     uri: &str,
 ) -> Result<(), String> {
     if store
@@ -67,7 +67,7 @@ pub(crate) async fn refuse_if_source_discarded(
 }
 
 pub(crate) async fn refuse_if_context_path_discarded(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     context_id: &str,
     remote_path: &str,
 ) -> Result<(), String> {
@@ -78,7 +78,7 @@ pub(crate) async fn refuse_if_context_path_discarded(
 /// close the staging ledger. Remote bytes are not deleted — the machine is
 /// being thrown away.
 pub(crate) async fn abandon_context_sources(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     alias: &str,
 ) -> Result<u64, String> {
     let marked = store
@@ -93,7 +93,7 @@ pub(crate) async fn abandon_context_sources(
 }
 
 pub(crate) async fn list_remote_files(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     project_id: &str,
     context_id: &str,
 ) -> Result<Vec<RemoteFileView>, String> {
@@ -139,7 +139,7 @@ pub(crate) async fn list_remote_files(
         // the path, so the older ledger row must never trigger `rm`.
         let transfer_live = entry.source == "transfer"
             && run.as_ref().map_or(true, |run| {
-                !run.status.is_terminal() || run.status == wisp_store::RunStatus::Succeeded
+                !run.status.is_terminal() || run.status == superscience_store::RunStatus::Succeeded
             });
         let input_live = entry.source == "run_input"
             && run
@@ -185,10 +185,10 @@ fn removal_payload(paths: &[(String, String)]) -> String {
 /// Replaced rows share a path with a newer entry that owns the bytes. They
 /// are closed in-ledger only — `rm` would delete the current file.
 pub(crate) async fn remove_remote_files(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     runner: &dyn RunCommandRunner,
     project_id: &str,
-    context: &wisp_store::ExecutionContext,
+    context: &superscience_store::ExecutionContext,
     ids: &[String],
     force: bool,
 ) -> Result<u64, String> {
@@ -288,9 +288,9 @@ pub(crate) struct ContextDisposalReport {
 }
 
 pub(crate) async fn context_disposal_report(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     _project_id: &str,
-    context: &wisp_store::ExecutionContext,
+    context: &superscience_store::ExecutionContext,
 ) -> Result<ContextDisposalReport, String> {
     let alias = context.id.strip_prefix("ssh:").unwrap_or(&context.id);
     let external_references = store

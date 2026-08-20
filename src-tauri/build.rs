@@ -28,7 +28,10 @@ fn bake_model_catalog() {
     let dest = out_dir.join("model_catalog.json");
     println!("cargo:rerun-if-changed=model_catalog.snapshot.json");
     println!("cargo:rerun-if-env-changed=WISP_CATALOG_OFFLINE");
-    if std::env::var_os("WISP_CATALOG_OFFLINE").is_none() {
+    println!("cargo:rerun-if-env-changed=SUPERSCIENCE_CATALOG_OFFLINE");
+    let catalog_offline = std::env::var_os("SUPERSCIENCE_CATALOG_OFFLINE").is_some()
+        || std::env::var_os("WISP_CATALOG_OFFLINE").is_some();
+    if !catalog_offline {
         match fetch_distilled_catalog() {
             Ok(json) => {
                 fs::write(&dest, json).expect("write distilled model catalog");

@@ -1000,7 +1000,7 @@ mod share_tests {
     #[test]
     fn png_payload_carries_the_requested_width() {
         let payload: Value = serde_json::from_str(&share_png_payload(
-            "wisp-science",
+            "SuperScience",
             "2026-08-19",
             "footer",
             &[share_png_row(ShareRole::User, "You", "hi")],
@@ -1069,13 +1069,13 @@ mod share_tests {
             },
         ];
         let html = share_html_document(
-            "wisp-science",
+            "SuperScience",
             "2026-08-14",
             "Shared",
             &rows,
             &ShareHtmlTheme::default(),
         );
-        assert!(html.contains("<title>wisp-science</title>"));
+        assert!(html.contains("<title>SuperScience</title>"));
         assert!(html.contains("<html lang=\"en\">"));
         assert!(html.contains("<article class=\"msg user\">"));
         assert!(html.contains("user-bubble"));
@@ -1095,7 +1095,7 @@ mod share_tests {
         assert!(!html.contains("class=\"card\""));
         assert!(!html.contains("class=\"bubble\""));
         let themed = share_html_document(
-            "wisp-science",
+            "SuperScience",
             "2026-08-14",
             "Shared",
             &rows,

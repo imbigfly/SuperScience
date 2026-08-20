@@ -88,10 +88,10 @@ async fn process_runner_timeout_cleans_up_inherited_pipes() {
 
 #[tokio::test]
 async fn run_in_context_preview_keeps_long_commands_intact() {
-    use wisp_tools::Tool;
+    use superscience_tools::Tool;
     let tmp =
         std::env::temp_dir().join(format!("wisp_run_preview_{}.sqlite", uuid::Uuid::new_v4()));
-    let store = wisp_store::Store::open(&tmp).await.unwrap();
+    let store = superscience_store::Store::open(&tmp).await.unwrap();
     let tool = RunInContextTool::new(store, RunManager::new(), "p".into(), None);
     let command = format!(
         "grep -in snakemake {} {}",
@@ -113,7 +113,7 @@ async fn run_in_context_preview_keeps_long_commands_intact() {
 struct RunToolTestEnv(PathBuf);
 
 #[async_trait::async_trait]
-impl wisp_tools::ToolEnv for RunToolTestEnv {
+impl superscience_tools::ToolEnv for RunToolTestEnv {
     fn project_root(&self) -> &std::path::Path {
         &self.0
     }
@@ -122,13 +122,13 @@ impl wisp_tools::ToolEnv for RunToolTestEnv {
         true
     }
 
-    async fn emit(&self, _event: wisp_tools::ToolEvent) {}
+    async fn emit(&self, _event: superscience_tools::ToolEvent) {}
 }
 
 struct DenyRunToolEnv(PathBuf);
 
 #[async_trait::async_trait]
-impl wisp_tools::ToolEnv for DenyRunToolEnv {
+impl superscience_tools::ToolEnv for DenyRunToolEnv {
     fn project_root(&self) -> &std::path::Path {
         &self.0
     }
@@ -137,16 +137,16 @@ impl wisp_tools::ToolEnv for DenyRunToolEnv {
         false
     }
 
-    async fn emit(&self, _event: wisp_tools::ToolEvent) {}
+    async fn emit(&self, _event: superscience_tools::ToolEvent) {}
 }
 
 struct GuidanceRunToolEnv {
     root: PathBuf,
-    queue: Arc<wisp_core::GuidanceQueue>,
+    queue: Arc<superscience_core::GuidanceQueue>,
 }
 
 #[async_trait::async_trait]
-impl wisp_tools::ToolEnv for GuidanceRunToolEnv {
+impl superscience_tools::ToolEnv for GuidanceRunToolEnv {
     fn project_root(&self) -> &std::path::Path {
         &self.root
     }
@@ -155,7 +155,7 @@ impl wisp_tools::ToolEnv for GuidanceRunToolEnv {
         true
     }
 
-    async fn emit(&self, _event: wisp_tools::ToolEvent) {}
+    async fn emit(&self, _event: superscience_tools::ToolEvent) {}
 
     fn guidance_pending(&self) -> bool {
         self.queue
@@ -167,10 +167,10 @@ impl wisp_tools::ToolEnv for GuidanceRunToolEnv {
 
 #[tokio::test]
 async fn denied_dangerous_run_stops_the_model_batch() {
-    use wisp_tools::{Tool, ToolControl};
+    use superscience_tools::{Tool, ToolControl};
     let tmp = std::env::temp_dir().join(format!("wisp_run_deny_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     let tool = RunInContextTool::new(store, RunManager::new(), "p".into(), None);
@@ -193,10 +193,10 @@ async fn denied_dangerous_run_stops_the_model_batch() {
 
 #[tokio::test]
 async fn run_in_context_can_suspend_until_terminal_without_get_run_calls() {
-    use wisp_tools::Tool;
+    use superscience_tools::Tool;
     let tmp = std::env::temp_dir().join(format!("wisp_run_wait_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -225,18 +225,18 @@ async fn run_in_context_can_suspend_until_terminal_without_get_run_calls() {
         .await;
 
     assert!(result.success, "{}", result.content);
-    let run: wisp_store::RunRecord = serde_json::from_str(&result.content).unwrap();
-    assert_eq!(run.status, wisp_store::RunStatus::Succeeded);
+    let run: superscience_store::RunRecord = serde_json::from_str(&result.content).unwrap();
+    assert_eq!(run.status, superscience_store::RunStatus::Succeeded);
     assert_eq!(run.stdout_tail.as_deref(), Some("finished"));
     let _ = std::fs::remove_dir_all(tmp);
 }
 
 #[tokio::test]
 async fn run_in_context_wait_reports_a_failed_run_as_a_failed_tool_call() {
-    use wisp_tools::Tool;
+    use superscience_tools::Tool;
     let tmp = std::env::temp_dir().join(format!("wisp_run_wait_fail_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -272,19 +272,19 @@ async fn run_in_context_wait_reports_a_failed_run_as_a_failed_tool_call() {
         !result.success,
         "failed Run must not render as a green tool call"
     );
-    let run: wisp_store::RunRecord = serde_json::from_str(&result.content).unwrap();
-    assert_eq!(run.status, wisp_store::RunStatus::Failed);
+    let run: superscience_store::RunRecord = serde_json::from_str(&result.content).unwrap();
+    assert_eq!(run.status, superscience_store::RunStatus::Failed);
     assert_eq!(run.exit_code, Some(127));
     let _ = std::fs::remove_dir_all(tmp);
 }
 
 #[tokio::test]
 async fn run_in_context_preflight_blocks_missing_packages_before_creating_a_run() {
-    use wisp_tools::Tool;
+    use superscience_tools::Tool;
     let tmp =
         std::env::temp_dir().join(format!("wisp_run_preflight_fail_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -321,10 +321,10 @@ async fn run_in_context_preflight_blocks_missing_packages_before_creating_a_run(
 
 #[tokio::test]
 async fn run_in_context_preflight_is_structured_and_persisted_with_the_run() {
-    use wisp_tools::Tool;
+    use superscience_tools::Tool;
     let tmp = std::env::temp_dir().join(format!("wisp_run_preflight_ok_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -359,8 +359,8 @@ async fn run_in_context_preflight_is_structured_and_persisted_with_the_run() {
         .await;
 
     assert!(result.success, "{}", result.content);
-    let run: wisp_store::RunRecord = serde_json::from_str(&result.content).unwrap();
-    assert_eq!(run.status, wisp_store::RunStatus::Succeeded);
+    let run: superscience_store::RunRecord = serde_json::from_str(&result.content).unwrap();
+    assert_eq!(run.status, superscience_store::RunStatus::Succeeded);
     let snapshot: serde_json::Value = serde_json::from_str(&run.env_snapshot_json).unwrap();
     assert_eq!(snapshot["preflight"]["status"], "passed");
     assert_eq!(snapshot["preflight"]["language"], "python");
@@ -389,10 +389,10 @@ async fn run_in_context_preflight_is_structured_and_persisted_with_the_run() {
 
 #[tokio::test]
 async fn run_in_context_rejects_nested_ssh_transfer_commands() {
-    use wisp_tools::Tool;
+    use superscience_tools::Tool;
     let tmp = std::env::temp_dir().join(format!("wisp_run_ssh_guard_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -400,7 +400,9 @@ async fn run_in_context_rejects_nested_ssh_transfer_commands() {
         .await
         .unwrap();
     store
-        .upsert_execution_context(&wisp_store::ExecutionContext::new("local", "Local").unwrap())
+        .upsert_execution_context(
+            &superscience_store::ExecutionContext::new("local", "Local").unwrap(),
+        )
         .await
         .unwrap();
     let runner = Arc::new(FakeRunRunner::new(ok_output("should not run")));
@@ -432,22 +434,22 @@ async fn run_in_context_rejects_nested_ssh_transfer_commands() {
 
 #[tokio::test]
 async fn monitor_run_waits_once_for_an_existing_run() {
-    use wisp_tools::Tool;
+    use superscience_tools::Tool;
     let tmp = std::env::temp_dir().join(format!("wisp_monitor_run_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
         .create_project("p", "project", &tmp.to_string_lossy())
         .await
         .unwrap();
-    let run = wisp_store::RunRecord::new("long-run", "p", "local", "Long run", "command");
+    let run = superscience_store::RunRecord::new("long-run", "p", "local", "Long run", "command");
     store.create_run(&run).await.unwrap();
     assert!(store
         .activate_run_lifecycle(
             "long-run",
-            wisp_store::RunStatus::Submitted,
+            superscience_store::RunStatus::Submitted,
             "monitor-owner",
             60,
         )
@@ -475,7 +477,7 @@ async fn monitor_run_waits_once_for_an_existing_run() {
             .finish_active_run_owned(
                 "long-run",
                 "monitor-owner",
-                wisp_store::RunStatus::Succeeded,
+                superscience_store::RunStatus::Succeeded,
                 Some(0),
             )
             .await
@@ -491,27 +493,28 @@ async fn monitor_run_waits_once_for_an_existing_run() {
         .await;
 
     assert!(result.success, "{}", result.content);
-    let run: wisp_store::RunRecord = serde_json::from_str(&result.content).unwrap();
-    assert_eq!(run.status, wisp_store::RunStatus::Succeeded);
+    let run: superscience_store::RunRecord = serde_json::from_str(&result.content).unwrap();
+    assert_eq!(run.status, superscience_store::RunStatus::Succeeded);
     let _ = std::fs::remove_dir_all(tmp);
 }
 
 #[tokio::test]
 async fn monitor_run_returns_early_when_mid_turn_guidance_is_pending() {
-    use wisp_tools::Tool;
+    use superscience_tools::Tool;
     let tmp = std::env::temp_dir().join(format!(
         "wisp_monitor_run_guidance_{}",
         uuid::Uuid::new_v4()
     ));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
         .create_project("p", "project", &tmp.to_string_lossy())
         .await
         .unwrap();
-    let mut run = wisp_store::RunRecord::new("long-run", "p", "ssh:gpu", "Long run", "ssh_direct");
+    let mut run =
+        superscience_store::RunRecord::new("long-run", "p", "ssh:gpu", "Long run", "ssh_direct");
     run.command = Some("sleep 3600".into());
     run.stdout_tail = Some("phase 2 of 9\n".into());
     run.last_polled_at = Some(chrono::Utc::now().timestamp());
@@ -519,14 +522,14 @@ async fn monitor_run_returns_early_when_mid_turn_guidance_is_pending() {
     assert!(store
         .activate_run_lifecycle(
             "long-run",
-            wisp_store::RunStatus::Running,
+            superscience_store::RunStatus::Running,
             "monitor-owner",
             60,
         )
         .await
         .unwrap());
 
-    let queue = Arc::new(wisp_core::GuidanceQueue::default());
+    let queue = Arc::new(superscience_core::GuidanceQueue::default());
     let env = GuidanceRunToolEnv {
         root: tmp.clone(),
         queue: queue.clone(),
@@ -558,15 +561,15 @@ async fn monitor_run_returns_early_when_mid_turn_guidance_is_pending() {
     );
     assert!(value["wait_detached"].is_null());
     let still = store.get_run("long-run").await.unwrap().unwrap();
-    assert_eq!(still.status, wisp_store::RunStatus::Running);
+    assert_eq!(still.status, superscience_store::RunStatus::Running);
     let _ = std::fs::remove_dir_all(tmp);
 }
 
 #[test]
 fn builds_commands_for_local_ssh_and_wsl() {
-    let local = wisp_store::ExecutionContext::new("local", "Local").unwrap();
-    let ssh = wisp_store::ExecutionContext::new("ssh:gpu-box", "GPU").unwrap();
-    let wsl = wisp_store::ExecutionContext::new("wsl:Ubuntu-22.04", "Ubuntu").unwrap();
+    let local = superscience_store::ExecutionContext::new("local", "Local").unwrap();
+    let ssh = superscience_store::ExecutionContext::new("ssh:gpu-box", "GPU").unwrap();
+    let wsl = superscience_store::ExecutionContext::new("wsl:Ubuntu-22.04", "Ubuntu").unwrap();
 
     let local_cmd = build_run_command(&local, "echo hi", Some(PathBuf::from("/tmp")));
     assert_eq!(local_cmd.script, "echo hi");
@@ -586,10 +589,12 @@ fn builds_commands_for_local_ssh_and_wsl() {
 #[tokio::test]
 async fn submit_run_records_success() {
     let tmp = std::env::temp_dir().join(format!("wisp_submit_run_{}.sqlite", uuid::Uuid::new_v4()));
-    let store = wisp_store::Store::open(&tmp).await.unwrap();
+    let store = superscience_store::Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
     store
-        .upsert_execution_context(&wisp_store::ExecutionContext::new("local", "Local").unwrap())
+        .upsert_execution_context(
+            &superscience_store::ExecutionContext::new("local", "Local").unwrap(),
+        )
         .await
         .unwrap();
     let runner = FakeRunRunner::new(Ok(RunCommandOutput {
@@ -616,14 +621,14 @@ async fn submit_run_records_success() {
     .await
     .unwrap();
 
-    assert_eq!(res.status, wisp_store::RunStatus::Succeeded);
+    assert_eq!(res.status, superscience_store::RunStatus::Succeeded);
     assert_eq!(res.exit_code, Some(0));
     assert_eq!(res.stdout_tail.as_deref(), Some("hello\n"));
     let run = store.get_run(&res.run_id).await.unwrap().unwrap();
     assert_eq!(run.context_id, "local");
     assert_eq!(run.command.as_deref(), Some("echo hello"));
     assert_eq!(run.title, "Hello");
-    assert_eq!(run.status, wisp_store::RunStatus::Succeeded);
+    assert_eq!(run.status, superscience_store::RunStatus::Succeeded);
     // The success must come from executing the submitted command, not a
     // preloaded result short-circuiting the runner.
     let commands = runner.commands.lock().unwrap();
@@ -644,7 +649,7 @@ async fn local_run_binds_inputs_before_execution_and_snapshots_environment() {
     let tmp = std::env::temp_dir().join(format!("wisp_local_run_inputs_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(tmp.join("data")).unwrap();
     std::fs::write(tmp.join("data/input.csv"), b"x\n1\n").unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -678,8 +683,11 @@ async fn local_run_binds_inputs_before_execution_and_snapshots_environment() {
 
     let inputs = store.list_run_inputs(&result.run_id).await.unwrap();
     assert_eq!(inputs.len(), 1);
-    assert_eq!(inputs[0].basis, wisp_store::LineageBasis::Declared);
-    assert_eq!(inputs[0].confidence, wisp_store::LineageConfidence::Exact);
+    assert_eq!(inputs[0].basis, superscience_store::LineageBasis::Declared);
+    assert_eq!(
+        inputs[0].confidence,
+        superscience_store::LineageConfidence::Exact
+    );
     let version = store
         .get_artifact_version(inputs[0].artifact_version_id.as_deref().unwrap())
         .await
@@ -687,7 +695,7 @@ async fn local_run_binds_inputs_before_execution_and_snapshots_environment() {
         .unwrap();
     assert_eq!(
         version.materialization,
-        wisp_store::ArtifactMaterialization::Snapshot
+        superscience_store::ArtifactMaterialization::Snapshot
     );
     let snapshot = tmp.join(&version.storage_path);
     std::fs::write(tmp.join("data/input.csv"), b"x\n2\n").unwrap();
@@ -711,10 +719,12 @@ async fn submit_run_records_failure() {
         "wisp_submit_run_fail_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
-    let store = wisp_store::Store::open(&tmp).await.unwrap();
+    let store = superscience_store::Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
     store
-        .upsert_execution_context(&wisp_store::ExecutionContext::new("local", "Local").unwrap())
+        .upsert_execution_context(
+            &superscience_store::ExecutionContext::new("local", "Local").unwrap(),
+        )
         .await
         .unwrap();
     let runner = FakeRunRunner::new(Err("timed out".into()));
@@ -737,11 +747,11 @@ async fn submit_run_records_failure() {
     .await
     .unwrap();
 
-    assert_eq!(res.status, wisp_store::RunStatus::Failed);
+    assert_eq!(res.status, superscience_store::RunStatus::Failed);
     assert_eq!(res.exit_code, Some(-1));
     assert_eq!(res.stderr_tail.as_deref(), Some("timed out"));
     let run = store.get_run(&res.run_id).await.unwrap().unwrap();
-    assert_eq!(run.status, wisp_store::RunStatus::Failed);
+    assert_eq!(run.status, superscience_store::RunStatus::Failed);
     assert_eq!(run.stderr_tail.as_deref(), Some("timed out"));
 
     let _ = std::fs::remove_file(&tmp);
@@ -753,13 +763,15 @@ async fn submit_run_harvests_output_specs_on_success() {
         std::env::temp_dir().join(format!("wisp_submit_run_harvest_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(tmp.join("results")).unwrap();
     std::fs::write(tmp.join("results/out.tsv"), b"x\ty\n").unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store.create_project("p", "proj", "").await.unwrap();
     store.create_frame("f", "p", "OPERON", "m").await.unwrap();
     store
-        .upsert_execution_context(&wisp_store::ExecutionContext::new("local", "Local").unwrap())
+        .upsert_execution_context(
+            &superscience_store::ExecutionContext::new("local", "Local").unwrap(),
+        )
         .await
         .unwrap();
     let runner = FakeRunRunner::new(Ok(RunCommandOutput {
@@ -814,15 +826,16 @@ async fn background_run_can_be_cancelled_without_waiting_for_the_command() {
         "wisp_background_run_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
-    let store = wisp_store::Store::open(&tmp).await.unwrap();
+    let store = superscience_store::Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
-    let mut run = wisp_store::RunRecord::new("local-run", "p", "local", "Local", "local_detached");
+    let mut run =
+        superscience_store::RunRecord::new("local-run", "p", "local", "Local", "local_detached");
     run.command = Some("long-running-analysis".into());
     run.timeout_secs = Some(60);
-    run.remote_workdir = Some("~/.wisp-science/runs/local-run".into());
+    run.remote_workdir = Some("~/.superscience/runs/local-run".into());
     run.remote_handle_json =
         Some(serde_json::to_string(&test_local_handle("local-run", true, None)).unwrap());
-    run.status = wisp_store::RunStatus::Running;
+    run.status = superscience_store::RunStatus::Running;
     store.create_run(&run).await.unwrap();
     let runner = Arc::new(ScriptedRunRunner::new(vec![ok_output(
         "__WISP_CANCEL__:cancelled\n",
@@ -834,7 +847,7 @@ async fn background_run_can_be_cancelled_without_waiting_for_the_command() {
     manager.cancel(&store, "local-run").await.unwrap();
     assert_eq!(
         store.get_run("local-run").await.unwrap().unwrap().status,
-        wisp_store::RunStatus::Cancelling
+        superscience_store::RunStatus::Cancelling
     );
     assert!(manager.has_in_flight_project(&store, "p").await.unwrap());
     assert!(!manager
@@ -844,7 +857,7 @@ async fn background_run_can_be_cancelled_without_waiting_for_the_command() {
     cancel_gate.add_permits(1);
     assert_eq!(
         wait_for_terminal(&store, "local-run").await.status,
-        wisp_store::RunStatus::Cancelled
+        superscience_store::RunStatus::Cancelled
     );
 
     let _ = std::fs::remove_file(&tmp);
@@ -854,15 +867,16 @@ async fn background_run_can_be_cancelled_without_waiting_for_the_command() {
 async fn second_cancel_force_finishes_a_wedged_cancelling_run() {
     let tmp =
         std::env::temp_dir().join(format!("wisp_force_cancel_{}.sqlite", uuid::Uuid::new_v4()));
-    let store = wisp_store::Store::open(&tmp).await.unwrap();
+    let store = superscience_store::Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
-    let mut run = wisp_store::RunRecord::new("stuck-run", "p", "local", "Local", "local_detached");
+    let mut run =
+        superscience_store::RunRecord::new("stuck-run", "p", "local", "Local", "local_detached");
     run.command = Some("Write-Host stuck".into());
     run.timeout_secs = Some(60);
-    run.remote_workdir = Some("~\\.wisp-science\\runs\\stuck-run".into());
+    run.remote_workdir = Some("~\\.superscience\\runs\\stuck-run".into());
     run.remote_handle_json =
         Some(serde_json::to_string(&test_local_handle("stuck-run", true, None)).unwrap());
-    run.status = wisp_store::RunStatus::Cancelling;
+    run.status = superscience_store::RunStatus::Cancelling;
     run.last_poll_error = Some("SSH cancel response omitted status".into());
     store.create_run(&run).await.unwrap();
     // Cancel RPC stays wedged; the second cancel must not wait on it.
@@ -874,7 +888,7 @@ async fn second_cancel_force_finishes_a_wedged_cancelling_run() {
     manager.cancel(&store, "stuck-run").await.unwrap();
     assert_eq!(
         store.get_run("stuck-run").await.unwrap().unwrap().status,
-        wisp_store::RunStatus::Cancelled
+        superscience_store::RunStatus::Cancelled
     );
 
     let _ = std::fs::remove_file(&tmp);
@@ -886,11 +900,13 @@ async fn remote_run_is_rejected_when_not_selected_for_its_session() {
         "wisp_remote_run_selection_{}.sqlite",
         uuid::Uuid::new_v4()
     ));
-    let store = wisp_store::Store::open(&tmp).await.unwrap();
+    let store = superscience_store::Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
     store.create_frame("f", "p", "OPERON", "m").await.unwrap();
     store
-        .upsert_execution_context(&wisp_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap())
+        .upsert_execution_context(
+            &superscience_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap(),
+        )
         .await
         .unwrap();
     let request = SubmitRunRequest {
@@ -919,7 +935,7 @@ async fn remote_run_is_rejected_when_not_selected_for_its_session() {
 async fn ssh_run_detaches_persists_handle_and_finishes_from_poller() {
     let tmp = std::env::temp_dir().join(format!("wisp_ssh_lifecycle_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -927,7 +943,7 @@ async fn ssh_run_detaches_persists_handle_and_finishes_from_poller() {
         .await
         .unwrap();
     store.create_frame("f", "p", "OPERON", "m").await.unwrap();
-    let mut context = wisp_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap();
+    let mut context = superscience_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap();
     context.config_json = serde_json::json!({ "alias": "gpu" }).to_string();
     context.last_probe_status = Some("ok".into());
     store.upsert_execution_context(&context).await.unwrap();
@@ -972,16 +988,16 @@ async fn ssh_run_detaches_persists_handle_and_finishes_from_poller() {
 
     assert!(matches!(
         submitted.status,
-        wisp_store::RunStatus::Submitted | wisp_store::RunStatus::Running
+        superscience_store::RunStatus::Submitted | superscience_store::RunStatus::Running
     ));
     assert!(submitted
         .remote_workdir
         .as_deref()
         .unwrap()
-        .starts_with("~/.wisp-science/runs/"));
+        .starts_with("~/.superscience/runs/"));
     poll_gate.add_permits(1);
     let finished = wait_for_terminal(&store, &submitted.run_id).await;
-    assert_eq!(finished.status, wisp_store::RunStatus::Succeeded);
+    assert_eq!(finished.status, superscience_store::RunStatus::Succeeded);
     assert_eq!(finished.exit_code, Some(0));
     assert_eq!(finished.stdout_tail.as_deref(), Some("complete"));
     assert!(finished
@@ -1018,7 +1034,7 @@ async fn ssh_launch_failure_stops_after_the_first_attempt() {
     let tmp = std::env::temp_dir().join(format!("wisp_ssh_stage_once_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
     std::fs::write(tmp.join("input.fasta"), b">seq\nACGT\n").unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -1026,7 +1042,7 @@ async fn ssh_launch_failure_stops_after_the_first_attempt() {
         .await
         .unwrap();
     store.create_frame("f", "p", "OPERON", "m").await.unwrap();
-    let mut context = wisp_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap();
+    let mut context = superscience_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap();
     context.config_json = serde_json::json!({ "alias": "gpu" }).to_string();
     context.last_probe_status = Some("ok".into());
     store.upsert_execution_context(&context).await.unwrap();
@@ -1063,13 +1079,14 @@ async fn ssh_launch_failure_stops_after_the_first_attempt() {
         .unwrap();
 
     let finished = wait_for_terminal(&store, &submitted.run_id).await;
-    assert_eq!(finished.status, wisp_store::RunStatus::Failed);
+    assert_eq!(finished.status, superscience_store::RunStatus::Failed);
     assert!(finished
         .last_poll_error
         .as_deref()
         .unwrap()
         .contains(SSH_RETRY_STOPPED_MARKER));
-    let progress: wisp_store::RunProgress = serde_json::from_str(&finished.progress_json).unwrap();
+    let progress: superscience_store::RunProgress =
+        serde_json::from_str(&finished.progress_json).unwrap();
     assert_eq!(progress.phase, "uploaded");
     assert_eq!(progress.completed_bytes, 10);
     assert_eq!(progress.total_bytes, 10);
@@ -1098,7 +1115,7 @@ async fn local_launch_timeout_reattaches_when_supervisor_acknowledged() {
         uuid::Uuid::new_v4()
     ));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -1111,13 +1128,19 @@ async fn local_launch_timeout_reattaches_when_supervisor_acknowledged() {
         unreachable!()
     };
     let token = token.clone();
-    let mut run = wisp_store::RunRecord::new("local-run", "p", "local", "Local", "local_detached");
+    let mut run =
+        superscience_store::RunRecord::new("local-run", "p", "local", "Local", "local_detached");
     run.command = Some("long-analysis".into());
     run.timeout_secs = Some(60);
     run.remote_handle_json = Some(serde_json::to_string(&handle).unwrap());
     store.create_run(&run).await.unwrap();
     assert!(store
-        .activate_run_lifecycle("local-run", wisp_store::RunStatus::Submitted, "owner", 360)
+        .activate_run_lifecycle(
+            "local-run",
+            superscience_store::RunStatus::Submitted,
+            "owner",
+            360
+        )
         .await
         .unwrap());
 
@@ -1153,27 +1176,28 @@ async fn local_launch_timeout_reattaches_when_supervisor_acknowledged() {
 async fn recovery_fails_unconfirmed_ssh_run_without_reconnecting() {
     let tmp = std::env::temp_dir().join(format!("wisp_ssh_stale_start_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
         .create_project("p", "proj", &tmp.to_string_lossy())
         .await
         .unwrap();
-    let mut run = wisp_store::RunRecord::new("stale", "p", "ssh:gpu", "Stale", "ssh_direct");
+    let mut run =
+        superscience_store::RunRecord::new("stale", "p", "ssh:gpu", "Stale", "ssh_direct");
     run.command = Some("echo stale".into());
     run.timeout_secs = Some(60);
     run.last_poll_error = Some("connection timed out".into());
-    run.remote_workdir = Some("~/.wisp-science/runs/stale".into());
+    run.remote_workdir = Some("~/.superscience/runs/stale".into());
     run.remote_handle_json = Some(serde_json::to_string(&test_handle("stale", false)).unwrap());
-    run.status = wisp_store::RunStatus::Submitted;
+    run.status = superscience_store::RunStatus::Submitted;
     store.create_run(&run).await.unwrap();
     let runner = Arc::new(ScriptedRunRunner::new(Vec::new()));
     let manager = RunManager::with_runner(runner.clone());
 
     assert_eq!(manager.recover(&store).await.unwrap(), 0);
     let finished = wait_for_terminal(&store, "stale").await;
-    assert_eq!(finished.status, wisp_store::RunStatus::Failed);
+    assert_eq!(finished.status, superscience_store::RunStatus::Failed);
     assert!(finished
         .last_poll_error
         .as_deref()
@@ -1187,7 +1211,7 @@ async fn recovery_fails_unconfirmed_ssh_run_without_reconnecting() {
 async fn recovery_reattaches_ssh_after_transient_error_and_marks_local_lost() {
     let tmp = std::env::temp_dir().join(format!("wisp_ssh_recover_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -1195,16 +1219,18 @@ async fn recovery_reattaches_ssh_after_transient_error_and_marks_local_lost() {
         .await
         .unwrap();
 
-    let mut remote = wisp_store::RunRecord::new("remote", "p", "ssh:gpu", "Remote", "ssh_direct");
+    let mut remote =
+        superscience_store::RunRecord::new("remote", "p", "ssh:gpu", "Remote", "ssh_direct");
     remote.command = Some("long-analysis".into());
     remote.timeout_secs = Some(3600);
-    remote.remote_workdir = Some("~/.wisp-science/runs/remote".into());
+    remote.remote_workdir = Some("~/.superscience/runs/remote".into());
     remote.remote_handle_json = Some(serde_json::to_string(&test_handle("remote", true)).unwrap());
-    remote.status = wisp_store::RunStatus::Running;
+    remote.status = superscience_store::RunStatus::Running;
     store.create_run(&remote).await.unwrap();
 
-    let mut local = wisp_store::RunRecord::new("local-run", "p", "local", "Local", "command");
-    local.status = wisp_store::RunStatus::Running;
+    let mut local =
+        superscience_store::RunRecord::new("local-run", "p", "local", "Local", "command");
+    local.status = superscience_store::RunStatus::Running;
     store.create_run(&local).await.unwrap();
 
     let runner = Arc::new(ScriptedRunRunner::new(vec![
@@ -1215,12 +1241,12 @@ async fn recovery_reattaches_ssh_after_transient_error_and_marks_local_lost() {
     assert_eq!(manager.recover(&store).await.unwrap(), 1);
 
     let finished = wait_for_terminal(&store, "remote").await;
-    assert_eq!(finished.status, wisp_store::RunStatus::Succeeded);
+    assert_eq!(finished.status, superscience_store::RunStatus::Succeeded);
     assert_eq!(finished.stdout_tail.as_deref(), Some("reconnected"));
     assert!(finished.last_poll_error.is_none());
     assert_eq!(
         store.get_run("local-run").await.unwrap().unwrap().status,
-        wisp_store::RunStatus::Lost
+        superscience_store::RunStatus::Lost
     );
     let _ = std::fs::remove_dir_all(&tmp);
 }
@@ -1229,7 +1255,7 @@ async fn recovery_reattaches_ssh_after_transient_error_and_marks_local_lost() {
 async fn confirmed_ssh_run_stops_polling_after_authentication_failure() {
     let tmp = std::env::temp_dir().join(format!("wisp_ssh_auth_stop_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -1237,12 +1263,13 @@ async fn confirmed_ssh_run_stops_polling_after_authentication_failure() {
         .await
         .unwrap();
 
-    let mut run = wisp_store::RunRecord::new("remote", "p", "ssh:gpu", "Remote", "ssh_direct");
+    let mut run =
+        superscience_store::RunRecord::new("remote", "p", "ssh:gpu", "Remote", "ssh_direct");
     run.command = Some("long-analysis".into());
     run.timeout_secs = Some(3600);
-    run.remote_workdir = Some("~/.wisp-science/runs/remote".into());
+    run.remote_workdir = Some("~/.superscience/runs/remote".into());
     run.remote_handle_json = Some(serde_json::to_string(&test_handle("remote", true)).unwrap());
-    run.status = wisp_store::RunStatus::Running;
+    run.status = superscience_store::RunStatus::Running;
     store.create_run(&run).await.unwrap();
 
     let runner = Arc::new(ScriptedRunRunner::new(vec![Err(
@@ -1252,7 +1279,7 @@ async fn confirmed_ssh_run_stops_polling_after_authentication_failure() {
 
     assert_eq!(manager.recover(&store).await.unwrap(), 0);
     let finished = wait_for_terminal(&store, "remote").await;
-    assert_eq!(finished.status, wisp_store::RunStatus::Lost);
+    assert_eq!(finished.status, superscience_store::RunStatus::Lost);
     assert!(finished
         .last_poll_error
         .as_deref()
@@ -1266,19 +1293,20 @@ async fn confirmed_ssh_run_stops_polling_after_authentication_failure() {
 async fn ssh_cancel_stays_cancelling_until_remote_group_confirms() {
     let tmp = std::env::temp_dir().join(format!("wisp_ssh_cancel_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
         .create_project("p", "proj", &tmp.to_string_lossy())
         .await
         .unwrap();
-    let mut run = wisp_store::RunRecord::new("remote", "p", "ssh:gpu", "Remote", "ssh_direct");
+    let mut run =
+        superscience_store::RunRecord::new("remote", "p", "ssh:gpu", "Remote", "ssh_direct");
     run.command = Some("long-analysis".into());
     run.timeout_secs = Some(3600);
-    run.remote_workdir = Some("~/.wisp-science/runs/remote".into());
+    run.remote_workdir = Some("~/.superscience/runs/remote".into());
     run.remote_handle_json = Some(serde_json::to_string(&test_handle("remote", true)).unwrap());
-    run.status = wisp_store::RunStatus::Running;
+    run.status = superscience_store::RunStatus::Running;
     store.create_run(&run).await.unwrap();
     let runner = Arc::new(ScriptedRunRunner::new(vec![ok_output(
         "__WISP_CANCEL__:cancelled\n",
@@ -1292,12 +1320,12 @@ async fn ssh_cancel_stays_cancelling_until_remote_group_confirms() {
     manager.cancel(&store, "remote").await.unwrap();
     assert_eq!(
         store.get_run("remote").await.unwrap().unwrap().status,
-        wisp_store::RunStatus::Cancelling
+        superscience_store::RunStatus::Cancelling
     );
     cancel_gate.add_permits(1);
     assert_eq!(
         wait_for_terminal(&store, "remote").await.status,
-        wisp_store::RunStatus::Cancelled
+        superscience_store::RunStatus::Cancelled
     );
     let commands = runner.commands.lock().unwrap();
     let payload = commands[0].stdin.as_deref().unwrap();
@@ -1311,7 +1339,7 @@ async fn ssh_cancel_stays_cancelling_until_remote_group_confirms() {
 async fn cancelling_ssh_input_staging_aborts_the_transfer() {
     let tmp = std::env::temp_dir().join(format!("wisp_ssh_upload_cancel_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -1319,12 +1347,13 @@ async fn cancelling_ssh_input_staging_aborts_the_transfer() {
         .await
         .unwrap();
     let manager = RunManager::with_runner(Arc::new(ScriptedRunRunner::new(Vec::new())));
-    let mut run = wisp_store::RunRecord::new("upload", "p", "ssh:gpu", "Upload", "ssh_direct");
+    let mut run =
+        superscience_store::RunRecord::new("upload", "p", "ssh:gpu", "Upload", "ssh_direct");
     run.command = Some("analysis input.dat".into());
     run.timeout_secs = Some(3600);
-    run.remote_workdir = Some("~/.wisp-science/runs/upload".into());
+    run.remote_workdir = Some("~/.superscience/runs/upload".into());
     run.remote_handle_json = Some(serde_json::to_string(&test_handle("upload", false)).unwrap());
-    run.progress_json = serde_json::to_string(&wisp_store::RunProgress {
+    run.progress_json = serde_json::to_string(&superscience_store::RunProgress {
         phase: "uploading".into(),
         direction: "upload".into(),
         completed_bytes: 25,
@@ -1337,7 +1366,7 @@ async fn cancelling_ssh_input_staging_aborts_the_transfer() {
         updated_at: chrono::Utc::now().timestamp(),
     })
     .unwrap();
-    run.status = wisp_store::RunStatus::Submitted;
+    run.status = superscience_store::RunStatus::Submitted;
     store.create_run(&run).await.unwrap();
     assert!(store
         .claim_run_lifecycle("upload", &manager.owner_id, ACTIVE_LEASE_SECS)
@@ -1355,8 +1384,9 @@ async fn cancelling_ssh_input_staging_aborts_the_transfer() {
 
     assert!(task.await.unwrap_err().is_cancelled());
     let run = store.get_run("upload").await.unwrap().unwrap();
-    assert_eq!(run.status, wisp_store::RunStatus::Cancelled);
-    let progress: wisp_store::RunProgress = serde_json::from_str(&run.progress_json).unwrap();
+    assert_eq!(run.status, superscience_store::RunStatus::Cancelled);
+    let progress: superscience_store::RunProgress =
+        serde_json::from_str(&run.progress_json).unwrap();
     assert_eq!(progress.phase, "cancelled");
     assert_eq!(progress.completed_bytes, 25);
     let _ = std::fs::remove_dir_all(&tmp);
@@ -1545,19 +1575,19 @@ impl RunCommandRunner for StreamingRunRunner {
 async fn local_run_streams_bounded_output_and_heartbeat_before_completion() {
     let tmp = std::env::temp_dir().join(format!("wisp_run_stream_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
         .create_project("p", "project", &tmp.to_string_lossy())
         .await
         .unwrap();
-    let run = wisp_store::RunRecord::new("streaming", "p", "local", "Streaming", "command");
+    let run = superscience_store::RunRecord::new("streaming", "p", "local", "Streaming", "command");
     store.create_run(&run).await.unwrap();
     assert!(store
         .activate_run_lifecycle(
             "streaming",
-            wisp_store::RunStatus::Running,
+            superscience_store::RunStatus::Running,
             "stream-owner",
             60,
         )
@@ -1607,7 +1637,7 @@ async fn local_run_streams_bounded_output_and_heartbeat_before_completion() {
     })
     .await
     .expect("first chunk was never flushed to the store");
-    assert_eq!(live.status, wisp_store::RunStatus::Running);
+    assert_eq!(live.status, superscience_store::RunStatus::Running);
     assert_eq!(live.stdout_tail.as_deref(), Some("phase 1 complete\n"));
     assert!(live.last_polled_at.is_some(), "heartbeat was not recorded");
 
@@ -1726,7 +1756,7 @@ fn ok_output(stdout: &str) -> Result<RunCommandOutput, String> {
 async fn ssh_download_uses_context_connection_options() {
     let tmp = std::env::temp_dir().join(format!("wisp-run-download-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store.create_project("p", "project", "").await.unwrap();
@@ -1738,7 +1768,7 @@ async fn ssh_download_uses_context_connection_options() {
     let identity =
         std::env::temp_dir().join(format!("wisp-run-download-key-{}", uuid::Uuid::new_v4()));
     std::fs::write(&identity, b"test-key\n").unwrap();
-    let mut context = wisp_store::ExecutionContext::new("ssh:CPU", "CPU").unwrap();
+    let mut context = superscience_store::ExecutionContext::new("ssh:CPU", "CPU").unwrap();
     context.config_json = serde_json::json!({
         "alias": "cpu.example",
         "user": "alice",
@@ -1788,8 +1818,9 @@ async fn ssh_download_uses_context_connection_options() {
         .pop()
         .unwrap();
     assert_eq!(run.kind, "file_transfer");
-    assert_eq!(run.status, wisp_store::RunStatus::Succeeded);
-    let progress: wisp_store::RunProgress = serde_json::from_str(&run.progress_json).unwrap();
+    assert_eq!(run.status, superscience_store::RunStatus::Succeeded);
+    let progress: superscience_store::RunProgress =
+        serde_json::from_str(&run.progress_json).unwrap();
     assert_eq!(progress.phase, "downloaded");
     assert_eq!(progress.completed_bytes, 42);
     let _ = std::fs::remove_file(identity);
@@ -1845,7 +1876,7 @@ fn test_handle(run_id: &str, confirmed: bool) -> RemoteRunHandle {
             identity_file: None,
             auth_method: crate::ssh_hosts::SshAuthMethod::Key,
         },
-        workdir: format!(".wisp-science/runs/{run_id}"),
+        workdir: format!(".superscience/runs/{run_id}"),
         token: "test-token".into(),
         inputs_staged: false,
         pgid: confirmed.then_some(4242),
@@ -1868,7 +1899,7 @@ fn test_local_handle(run_id: &str, confirmed: bool, command_cwd: Option<&str>) -
     };
     RemoteRunHandle::LocalDetached {
         transport,
-        workdir: format!(".wisp-science/runs/{run_id}"),
+        workdir: format!(".superscience/runs/{run_id}"),
         token: "test-token".into(),
         inputs_staged: true,
         pgid: confirmed.then_some(4242),
@@ -1891,7 +1922,7 @@ fn test_wsl_handle(run_id: &str, confirmed: bool, command_cwd: Option<&str>) -> 
                 "-s".into(),
             ],
         },
-        workdir: format!(".wisp-science/runs/{run_id}"),
+        workdir: format!(".superscience/runs/{run_id}"),
         token: "test-token".into(),
         inputs_staged: true,
         pgid: confirmed.then_some(4242),
@@ -1943,7 +1974,7 @@ fn remote_poll_transport_errors_back_off_without_exceeding_the_lease() {
 #[test]
 fn persisted_ssh_handles_without_staging_flag_remain_compatible() {
     let handle: RemoteRunHandle = serde_json::from_str(
-        r#"{"kind":"ssh_direct","connection":{"alias":"gpu"},"workdir":".wisp-science/runs/old","token":"old-token","pgid":null,"start_time":null}"#,
+        r#"{"kind":"ssh_direct","connection":{"alias":"gpu"},"workdir":".superscience/runs/old","token":"old-token","pgid":null,"start_time":null}"#,
     )
     .unwrap();
     assert!(!handle.inputs_staged());
@@ -1986,7 +2017,10 @@ fn scp_local_paths_strip_windows_extended_length_prefixes() {
     );
 }
 
-async fn wait_for_terminal(store: &wisp_store::Store, run_id: &str) -> wisp_store::RunRecord {
+async fn wait_for_terminal(
+    store: &superscience_store::Store,
+    run_id: &str,
+) -> superscience_store::RunRecord {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let run = store.get_run(run_id).await.unwrap().unwrap();
@@ -2004,7 +2038,7 @@ async fn wait_for_terminal(store: &wisp_store::Store, run_id: &str) -> wisp_stor
 async fn local_and_wsl_timeout_accepts_values_above_300s() {
     let tmp = std::env::temp_dir().join(format!("wisp_timeout_clamp_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -2013,10 +2047,12 @@ async fn local_and_wsl_timeout_accepts_values_above_300s() {
         .unwrap();
     store.create_frame("f", "p", "OPERON", "m").await.unwrap();
     store
-        .upsert_execution_context(&wisp_store::ExecutionContext::new("local", "Local").unwrap())
+        .upsert_execution_context(
+            &superscience_store::ExecutionContext::new("local", "Local").unwrap(),
+        )
         .await
         .unwrap();
-    let mut wsl = wisp_store::ExecutionContext::new("wsl:Ubuntu", "Ubuntu").unwrap();
+    let mut wsl = superscience_store::ExecutionContext::new("wsl:Ubuntu", "Ubuntu").unwrap();
     wsl.config_json = serde_json::json!({ "distro": "Ubuntu" }).to_string();
     store.upsert_execution_context(&wsl).await.unwrap();
     store
@@ -2038,7 +2074,7 @@ async fn local_and_wsl_timeout_accepts_values_above_300s() {
                 output_specs: None,
             },
             Some(tmp.clone()),
-            wisp_store::RunStatus::Submitted,
+            superscience_store::RunStatus::Submitted,
             "owner",
             REMOTE_START_LEASE_SECS,
             None,
@@ -2062,7 +2098,7 @@ async fn local_and_wsl_timeout_accepts_values_above_300s() {
 async fn local_detached_run_finishes_from_poller() {
     let tmp = std::env::temp_dir().join(format!("wisp_local_lifecycle_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -2070,7 +2106,9 @@ async fn local_detached_run_finishes_from_poller() {
         .await
         .unwrap();
     store
-        .upsert_execution_context(&wisp_store::ExecutionContext::new("local", "Local").unwrap())
+        .upsert_execution_context(
+            &superscience_store::ExecutionContext::new("local", "Local").unwrap(),
+        )
         .await
         .unwrap();
     let runner = Arc::new(ScriptedRunRunner::new(vec![
@@ -2103,12 +2141,12 @@ async fn local_detached_run_finishes_from_poller() {
         .unwrap();
     let workdir = submitted.remote_workdir.as_deref().unwrap();
     #[cfg(windows)]
-    assert!(workdir.starts_with("~\\.wisp-science\\runs\\"), "{workdir}");
+    assert!(workdir.starts_with("~\\.superscience\\runs\\"), "{workdir}");
     #[cfg(not(windows))]
-    assert!(workdir.starts_with("~/.wisp-science/runs/"), "{workdir}");
+    assert!(workdir.starts_with("~/.superscience/runs/"), "{workdir}");
     poll_gate.add_permits(1);
     let finished = wait_for_terminal(&store, &submitted.run_id).await;
-    assert_eq!(finished.status, wisp_store::RunStatus::Succeeded);
+    assert_eq!(finished.status, superscience_store::RunStatus::Succeeded);
     assert_eq!(finished.stdout_tail.as_deref(), Some("local-done"));
     assert_eq!(finished.timeout_secs, Some(7200));
     let commands = runner.commands.lock().unwrap();
@@ -2152,7 +2190,7 @@ async fn local_detached_run_finishes_from_poller() {
 async fn wsl_detached_run_uses_wsl_transport_and_finishes() {
     let tmp = std::env::temp_dir().join(format!("wisp_wsl_lifecycle_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -2160,7 +2198,7 @@ async fn wsl_detached_run_uses_wsl_transport_and_finishes() {
         .await
         .unwrap();
     store.create_frame("f", "p", "OPERON", "m").await.unwrap();
-    let mut wsl = wisp_store::ExecutionContext::new("wsl:Ubuntu", "Ubuntu").unwrap();
+    let mut wsl = superscience_store::ExecutionContext::new("wsl:Ubuntu", "Ubuntu").unwrap();
     wsl.config_json = serde_json::json!({ "distro": "Ubuntu" }).to_string();
     store.upsert_execution_context(&wsl).await.unwrap();
     store
@@ -2194,7 +2232,7 @@ async fn wsl_detached_run_uses_wsl_transport_and_finishes() {
         .await
         .unwrap();
     let finished = wait_for_terminal(&store, &submitted.run_id).await;
-    assert_eq!(finished.status, wisp_store::RunStatus::Succeeded);
+    assert_eq!(finished.status, superscience_store::RunStatus::Succeeded);
     assert_eq!(finished.timeout_secs, Some(600));
     let commands = runner.commands.lock().unwrap();
     assert!(commands.iter().all(|command| command.program == "wsl.exe"));
@@ -2218,7 +2256,7 @@ fn windows_control_payloads_contain_process_identity_and_timeout() {
             transport: LocalTransport::Windows {
                 context_id: "local".into(),
             },
-            workdir: ".wisp-science/runs/win".into(),
+            workdir: ".superscience/runs/win".into(),
             token: "test-token".into(),
             inputs_staged: true,
             pgid: Some(4242),
@@ -2284,7 +2322,7 @@ fn windows_transport_executes_stdin_as_one_script() {
         transport: LocalTransport::Windows {
             context_id: "local".into(),
         },
-        workdir: ".wisp-science/runs/win".into(),
+        workdir: ".superscience/runs/win".into(),
         token: "test-token".into(),
         inputs_staged: true,
         pgid: None,
@@ -2349,7 +2387,7 @@ fn handle_ack_preserves_identities_containing_colons_and_spaces() {
 async fn local_detached_real_shell_lifecycle() {
     let tmp = std::env::temp_dir().join(format!("wisp_local_real_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -2357,7 +2395,9 @@ async fn local_detached_real_shell_lifecycle() {
         .await
         .unwrap();
     store
-        .upsert_execution_context(&wisp_store::ExecutionContext::new("local", "Local").unwrap())
+        .upsert_execution_context(
+            &superscience_store::ExecutionContext::new("local", "Local").unwrap(),
+        )
         .await
         .unwrap();
     let manager = RunManager::new();
@@ -2381,7 +2421,7 @@ async fn local_detached_real_shell_lifecycle() {
     let finished = wait_for_terminal(&store, &submitted.run_id).await;
     assert_eq!(
         finished.status,
-        wisp_store::RunStatus::Succeeded,
+        superscience_store::RunStatus::Succeeded,
         "stderr={:?} poll_error={:?} handle={:?}",
         finished.stderr_tail,
         finished.last_poll_error,
@@ -2410,8 +2450,8 @@ fn sha256_hex_of(bytes: &[u8]) -> String {
     hex::encode(digest.finalize())
 }
 
-fn harvest_test_context() -> wisp_store::ExecutionContext {
-    let mut context = wisp_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap();
+fn harvest_test_context() -> superscience_store::ExecutionContext {
+    let mut context = superscience_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap();
     context.config_json = serde_json::json!({ "alias": "gpu" }).to_string();
     context.last_probe_status = Some("ok".into());
     context
@@ -2435,7 +2475,7 @@ fn harvest_test_remote(
         harvest_root: Some(tmp.to_path_buf()),
         handle: RemoteRunHandle::SshDirect {
             connection,
-            workdir: format!(".wisp-science/runs/{run_id}"),
+            workdir: format!(".superscience/runs/{run_id}"),
             token: "harvest-token".into(),
             inputs_staged: true,
             pgid: Some(4242),
@@ -2444,8 +2484,8 @@ fn harvest_test_remote(
     }
 }
 
-async fn seed_harvest_run(tmp: &Path, run_id: &str) -> wisp_store::Store {
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+async fn seed_harvest_run(tmp: &Path, run_id: &str) -> superscience_store::Store {
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -2457,9 +2497,10 @@ async fn seed_harvest_run(tmp: &Path, run_id: &str) -> wisp_store::Store {
         .upsert_execution_context(&harvest_test_context())
         .await
         .unwrap();
-    let mut run = wisp_store::RunRecord::new(run_id, "p", "ssh:gpu", "Remote", "ssh_direct");
+    let mut run =
+        superscience_store::RunRecord::new(run_id, "p", "ssh:gpu", "Remote", "ssh_direct");
     run.frame_id = Some("f".into());
-    run.status = wisp_store::RunStatus::Succeeded;
+    run.status = superscience_store::RunStatus::Succeeded;
     store.create_run(&run).await.unwrap();
     store
 }
@@ -2545,7 +2586,7 @@ async fn ssh_harvest_downloads_verifies_and_registers_selected_outputs() {
     let store = seed_harvest_run(&tmp, "run-h").await;
     let table = b"a\tb\n1\t2\n".to_vec();
     let archive = b"fake-targz-bytes".to_vec();
-    let remote_path = "/home/alice/.wisp-science/artifacts/run-h/big/x.bam";
+    let remote_path = "/home/alice/.superscience/artifacts/run-h/big/x.bam";
     let manifest = format!(
         "__WISP_HARVEST__:file:0:{}:{}:results/out.tsv\n\
          __WISP_HARVEST__:bundle:1:{}:{}:132481:987654:bundle_1.tar.gz\n\
@@ -2611,7 +2652,7 @@ async fn ssh_harvest_downloads_verifies_and_registers_selected_outputs() {
     assert_eq!(version.checksum.as_deref(), Some("ab".repeat(32).as_str()));
     assert_eq!(
         version.materialization,
-        wisp_store::ArtifactMaterialization::External
+        superscience_store::ArtifactMaterialization::External
     );
     let staged = store
         .list_remote_staging("p", "ssh:gpu", false)
@@ -2637,7 +2678,10 @@ async fn ssh_harvest_downloads_verifies_and_registers_selected_outputs() {
         .filter(|run| run.kind == "file_transfer")
         .collect();
     assert_eq!(transfers.len(), 1);
-    assert_eq!(transfers[0].status, wisp_store::RunStatus::Succeeded);
+    assert_eq!(
+        transfers[0].status,
+        superscience_store::RunStatus::Succeeded
+    );
     assert_eq!(transfers[0].command.as_deref(), Some("harvest run-h"));
     // The collect script only ran once and validated the workdir token.
     {
@@ -2647,7 +2691,7 @@ async fn ssh_harvest_downloads_verifies_and_registers_selected_outputs() {
         assert!(payload.contains("harvest-token"));
         assert!(payload.contains("tar -czf"));
         // Default remote data root derives from the project name ("proj").
-        assert!(payload.contains("persist=\"$HOME/wisp/proj/data/artifacts/run-h\""));
+        assert!(payload.contains("persist=\"$HOME/superscience/proj/data/artifacts/run-h\""));
     }
 
     // A retried harvest re-registers nothing: same versions, same lineage rows.
@@ -2725,7 +2769,7 @@ async fn ssh_harvest_checksum_mismatch_registers_nothing() {
         .filter(|run| run.kind == "file_transfer")
         .collect();
     assert_eq!(transfers.len(), 1);
-    assert_eq!(transfers[0].status, wisp_store::RunStatus::Failed);
+    assert_eq!(transfers[0].status, superscience_store::RunStatus::Failed);
     // The partial download directory does not leak.
     let landing = tmp.join("remote/gpu/run-bad");
     if landing.exists() {
@@ -2779,7 +2823,7 @@ async fn ssh_harvest_collect_error_reports_bundle_guidance() {
 async fn ssh_submit_rejects_shell_unsafe_output_globs() {
     let tmp = std::env::temp_dir().join(format!("wisp_ssh_glob_guard_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -2838,7 +2882,7 @@ async fn ssh_submit_rejects_shell_unsafe_output_globs() {
 async fn ssh_run_workdir_honors_stored_workdir_root_pref() {
     let tmp = std::env::temp_dir().join(format!("wisp_workdir_pref_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -2855,7 +2899,7 @@ async fn ssh_run_workdir_honors_stored_workdir_root_pref() {
         .await
         .unwrap();
     store
-        .upsert_context_storage_prefs(&wisp_store::ContextStoragePrefs {
+        .upsert_context_storage_prefs(&superscience_store::ContextStoragePrefs {
             project_id: "p".into(),
             context_id: "ssh:gpu".into(),
             remote_data_root: "~/wisp/proj/data".into(),
@@ -2905,11 +2949,11 @@ async fn ssh_harvest_uses_stored_local_results_dir_and_data_root() {
     std::fs::create_dir_all(&tmp).unwrap();
     let store = seed_harvest_run(&tmp, "run-p").await;
     store
-        .upsert_context_storage_prefs(&wisp_store::ContextStoragePrefs {
+        .upsert_context_storage_prefs(&superscience_store::ContextStoragePrefs {
             project_id: "p".into(),
             context_id: "ssh:gpu".into(),
             remote_data_root: "/scratch/proj".into(),
-            remote_workdir_root: ".wisp-science/runs".into(),
+            remote_workdir_root: ".superscience/runs".into(),
             local_results_dir: "results/from-gpu".into(),
             created_at: 0,
             updated_at: 0,
@@ -2969,13 +3013,14 @@ fn log_pull_absent() -> Result<RunCommandOutput, String> {
 }
 
 async fn seed_cleanup_run(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     run_id: &str,
-    status: wisp_store::RunStatus,
+    status: superscience_store::RunStatus,
     specs_json: &str,
     harvested: bool,
 ) {
-    let mut run = wisp_store::RunRecord::new(run_id, "p", "ssh:gpu", "Remote", "ssh_direct");
+    let mut run =
+        superscience_store::RunRecord::new(run_id, "p", "ssh:gpu", "Remote", "ssh_direct");
     run.frame_id = Some("f".into());
     run.status = status;
     run.command = Some("make outputs".into());
@@ -2984,7 +3029,7 @@ async fn seed_cleanup_run(
         crate::ssh_hosts::SshConnection::from_execution_context(&harvest_test_context()).unwrap();
     let handle = RemoteRunHandle::SshDirect {
         connection,
-        workdir: format!(".wisp-science/runs/{run_id}"),
+        workdir: format!(".superscience/runs/{run_id}"),
         token: "cleanup-token".into(),
         inputs_staged: true,
         pgid: Some(4242),
@@ -3002,7 +3047,7 @@ async fn seed_cleanup_run(
 async fn cleanup_requires_terminal_state_and_harvested_outputs() {
     let tmp = std::env::temp_dir().join(format!("wisp_cleanup_guard_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -3021,7 +3066,7 @@ async fn cleanup_requires_terminal_state_and_harvested_outputs() {
     seed_cleanup_run(
         &store,
         "run-active",
-        wisp_store::RunStatus::Running,
+        superscience_store::RunStatus::Running,
         "[]",
         false,
     )
@@ -3029,7 +3074,7 @@ async fn cleanup_requires_terminal_state_and_harvested_outputs() {
     seed_cleanup_run(
         &store,
         "run-unharvested",
-        wisp_store::RunStatus::Succeeded,
+        superscience_store::RunStatus::Succeeded,
         &specs,
         false,
     )
@@ -3037,7 +3082,7 @@ async fn cleanup_requires_terminal_state_and_harvested_outputs() {
     seed_cleanup_run(
         &store,
         "run-failed",
-        wisp_store::RunStatus::Failed,
+        superscience_store::RunStatus::Failed,
         &specs,
         false,
     )
@@ -3084,7 +3129,7 @@ async fn cleanup_requires_terminal_state_and_harvested_outputs() {
         assert!(logs_payload.contains("stdout"));
         assert!(!logs_payload.contains("rm -rf"));
         let payload = commands[1].stdin.as_deref().unwrap();
-        assert!(payload.contains("workdir=\"$HOME/.wisp-science/runs/run-failed\""));
+        assert!(payload.contains("workdir=\"$HOME/.superscience/runs/run-failed\""));
         assert!(payload.contains("rm -rf \"$workdir\""));
         assert!(payload.contains("cleanup-token"));
     }
@@ -3104,7 +3149,7 @@ async fn cleanup_requires_terminal_state_and_harvested_outputs() {
 async fn cleanup_rejects_foreign_workdirs_and_records_failures() {
     let tmp = std::env::temp_dir().join(format!("wisp_cleanup_paths_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -3121,11 +3166,12 @@ async fn cleanup_rejects_foreign_workdirs_and_records_failures() {
     for (run_id, workdir) in [
         ("run-root", "/"),
         ("run-home", "runs/../run-home"),
-        ("run-other", ".wisp-science/runs/another-run"),
+        ("run-other", ".superscience/runs/another-run"),
     ] {
-        let mut run = wisp_store::RunRecord::new(run_id, "p", "ssh:gpu", "Remote", "ssh_direct");
+        let mut run =
+            superscience_store::RunRecord::new(run_id, "p", "ssh:gpu", "Remote", "ssh_direct");
         run.frame_id = Some("f".into());
-        run.status = wisp_store::RunStatus::Failed;
+        run.status = superscience_store::RunStatus::Failed;
         let connection =
             crate::ssh_hosts::SshConnection::from_execution_context(&harvest_test_context())
                 .unwrap();
@@ -3165,7 +3211,7 @@ async fn cleanup_rejects_foreign_workdirs_and_records_failures() {
     seed_cleanup_run(
         &store,
         "run-flaky",
-        wisp_store::RunStatus::Failed,
+        superscience_store::RunStatus::Failed,
         "[]",
         false,
     )
@@ -3202,7 +3248,7 @@ async fn cleanup_rejects_foreign_workdirs_and_records_failures() {
 async fn cleanup_refuses_while_an_external_reference_points_into_the_workdir() {
     let tmp = std::env::temp_dir().join(format!("wisp_cleanup_extref_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -3217,33 +3263,33 @@ async fn cleanup_refuses_while_an_external_reference_points_into_the_workdir() {
     seed_cleanup_run(
         &store,
         "run-ref",
-        wisp_store::RunStatus::Succeeded,
+        superscience_store::RunStatus::Succeeded,
         "[]",
         true,
     )
     .await;
     // Simulate a (buggy or legacy) External reference into the workdir itself.
     let version_id = store
-        .save_artifact_version(&wisp_store::ArtifactVersionDraft {
+        .save_artifact_version(&superscience_store::ArtifactVersionDraft {
             version_id: None,
-            artifact_id: wisp_store::logical_artifact_id("p", "path:stuck.bam"),
+            artifact_id: superscience_store::logical_artifact_id("p", "path:stuck.bam"),
             project_id: "p".into(),
             root_frame_id: "f".into(),
             filename: "stuck.bam".into(),
             content_type: "data".into(),
-            storage_path: "ssh://gpu/home/alice/.wisp-science/runs/run-ref/inputs/stuck.bam".into(),
+            storage_path: "ssh://gpu/home/alice/.superscience/runs/run-ref/inputs/stuck.bam".into(),
             logical_key: Some("path:stuck.bam".into()),
             size_bytes: None,
             checksum: None,
             producing_run_id: Some("run-ref".into()),
             env_snapshot_hash: None,
-            materialization: wisp_store::ArtifactMaterialization::External,
-            capture_timing: wisp_store::ArtifactCaptureTiming::AtCreation,
+            materialization: superscience_store::ArtifactMaterialization::External,
+            capture_timing: superscience_store::ArtifactCaptureTiming::AtCreation,
         })
         .await
         .unwrap();
     store
-        .save_run_output(&wisp_store::RunOutput {
+        .save_run_output(&superscience_store::RunOutput {
             id: uuid::Uuid::new_v4().to_string(),
             run_id: "run-ref".into(),
             artifact_version_id: version_id,
@@ -3273,7 +3319,7 @@ async fn ssh_input_staging_ledgers_uploaded_files() {
     let tmp = std::env::temp_dir().join(format!("wisp_staging_ledger_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
     std::fs::write(tmp.join("input.fasta"), b">seq\nACGT\n").unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -3331,7 +3377,7 @@ async fn ssh_input_staging_ledgers_uploaded_files() {
     assert_eq!(
         entries[0].remote_path,
         format!(
-            "~/.wisp-science/runs/{}/inputs/input.fasta",
+            "~/.superscience/runs/{}/inputs/input.fasta",
             submitted.run_id
         )
     );
@@ -3344,7 +3390,7 @@ async fn ssh_input_staging_ledgers_uploaded_files() {
 async fn remote_files_classify_and_remove_only_ledgered_paths() {
     let tmp = std::env::temp_dir().join(format!("wisp_remote_files_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -3358,22 +3404,22 @@ async fn remote_files_classify_and_remove_only_ledgered_paths() {
     seed_cleanup_run(
         &store,
         "run-live",
-        wisp_store::RunStatus::Succeeded,
+        superscience_store::RunStatus::Succeeded,
         "[]",
         true,
     )
     .await;
-    let mut active = wisp_store::RemoteStagingEntry::new(
+    let mut active = superscience_store::RemoteStagingEntry::new(
         "p",
         "ssh:gpu",
         Some("run-live".into()),
-        "~/.wisp-science/runs/run-live/inputs/input.fasta",
+        "~/.superscience/runs/run-live/inputs/input.fasta",
         "run_input",
     );
     active.created_at = 100;
     store.record_remote_staging(&active).await.unwrap();
     // Replaced: an older upload to the same path as a newer one.
-    let mut old_upload = wisp_store::RemoteStagingEntry::new(
+    let mut old_upload = superscience_store::RemoteStagingEntry::new(
         "p",
         "ssh:gpu",
         None,
@@ -3382,7 +3428,7 @@ async fn remote_files_classify_and_remove_only_ledgered_paths() {
     );
     old_upload.created_at = 200;
     store.record_remote_staging(&old_upload).await.unwrap();
-    let mut new_upload = wisp_store::RemoteStagingEntry::new(
+    let mut new_upload = superscience_store::RemoteStagingEntry::new(
         "p",
         "ssh:gpu",
         None,
@@ -3529,7 +3575,7 @@ async fn remote_files_classify_and_remove_only_ledgered_paths() {
 async fn discarding_a_server_marks_external_artifacts_and_blocks_fetch() {
     let tmp = std::env::temp_dir().join(format!("wisp_discard_src_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -3543,9 +3589,9 @@ async fn discarding_a_server_marks_external_artifacts_and_blocks_fetch() {
         .unwrap();
     let uri = "ssh://gpu/scratch/proj/artifacts/r1/big.bam";
     store
-        .save_artifact_version(&wisp_store::ArtifactVersionDraft {
+        .save_artifact_version(&superscience_store::ArtifactVersionDraft {
             version_id: None,
-            artifact_id: wisp_store::logical_artifact_id("p", "path:big.bam"),
+            artifact_id: superscience_store::logical_artifact_id("p", "path:big.bam"),
             project_id: "p".into(),
             root_frame_id: "f".into(),
             filename: "big.bam".into(),
@@ -3556,12 +3602,12 @@ async fn discarding_a_server_marks_external_artifacts_and_blocks_fetch() {
             checksum: None,
             producing_run_id: None,
             env_snapshot_hash: None,
-            materialization: wisp_store::ArtifactMaterialization::External,
-            capture_timing: wisp_store::ArtifactCaptureTiming::AtCreation,
+            materialization: superscience_store::ArtifactMaterialization::External,
+            capture_timing: superscience_store::ArtifactCaptureTiming::AtCreation,
         })
         .await
         .unwrap();
-    let mut persist = wisp_store::RemoteStagingEntry::new(
+    let mut persist = superscience_store::RemoteStagingEntry::new(
         "p",
         "ssh:gpu",
         Some("r1".into()),
@@ -3618,7 +3664,7 @@ async fn discarding_a_server_marks_external_artifacts_and_blocks_fetch() {
 async fn orphan_file_sweep_reclaims_only_expired_unreferenced_entries() {
     let tmp = std::env::temp_dir().join(format!("wisp_orphan_gc_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -3632,7 +3678,7 @@ async fn orphan_file_sweep_reclaims_only_expired_unreferenced_entries() {
         .unwrap();
     let now = chrono::Utc::now().timestamp();
     let seed_entry = |run_id: Option<&str>, path: &str, source: &str, age_days: i64| {
-        let mut entry = wisp_store::RemoteStagingEntry::new(
+        let mut entry = superscience_store::RemoteStagingEntry::new(
             "p",
             "ssh:gpu",
             run_id.map(Into::into),
@@ -3647,7 +3693,7 @@ async fn orphan_file_sweep_reclaims_only_expired_unreferenced_entries() {
     seed_cleanup_run(
         &store,
         "run-fail",
-        wisp_store::RunStatus::Failed,
+        superscience_store::RunStatus::Failed,
         "[]",
         false,
     )
@@ -3671,14 +3717,14 @@ async fn orphan_file_sweep_reclaims_only_expired_unreferenced_entries() {
     seed_cleanup_run(
         &store,
         "run-live",
-        wisp_store::RunStatus::Running,
+        superscience_store::RunStatus::Running,
         "[]",
         false,
     )
     .await;
     let active_old = seed_entry(
         Some("run-live"),
-        "~/.wisp-science/runs/run-live/inputs/input.fasta",
+        "~/.superscience/runs/run-live/inputs/input.fasta",
         "run_input",
         40,
     );
@@ -3747,7 +3793,7 @@ async fn orphan_file_sweep_reclaims_only_expired_unreferenced_entries() {
 async fn transfer_without_handle_fails_instead_of_lost_on_reconcile() {
     let tmp = std::env::temp_dir().join(format!("wisp_xfer_reclaim_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -3755,16 +3801,17 @@ async fn transfer_without_handle_fails_instead_of_lost_on_reconcile() {
         .await
         .unwrap();
     store.create_frame("f", "p", "OPERON", "m").await.unwrap();
-    let mut run = wisp_store::RunRecord::new("xfer-1", "p", "ssh:gpu", "Upload", "file_transfer");
+    let mut run =
+        superscience_store::RunRecord::new("xfer-1", "p", "ssh:gpu", "Upload", "file_transfer");
     run.frame_id = Some("f".into());
-    run.status = wisp_store::RunStatus::Running;
+    run.status = superscience_store::RunStatus::Running;
     store.create_run(&run).await.unwrap();
 
     let manager = RunManager::with_runner(Arc::new(ScriptedRunRunner::new(vec![])));
     let lost = manager.recover(&store).await.unwrap();
     assert_eq!(lost, 0);
     let run = store.get_run("xfer-1").await.unwrap().unwrap();
-    assert_eq!(run.status, wisp_store::RunStatus::Failed);
+    assert_eq!(run.status, superscience_store::RunStatus::Failed);
     assert!(
         run.last_poll_error
             .as_deref()
@@ -3780,7 +3827,7 @@ async fn transfer_without_handle_fails_instead_of_lost_on_reconcile() {
 async fn disposal_report_counts_every_project_on_the_host() {
     let tmp = std::env::temp_dir().join(format!("wisp_disposal_all_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -3796,7 +3843,7 @@ async fn disposal_report_counts_every_project_on_the_host() {
     let context = harvest_test_context();
     store.upsert_execution_context(&context).await.unwrap();
     store
-        .record_remote_staging(&wisp_store::RemoteStagingEntry::new(
+        .record_remote_staging(&superscience_store::RemoteStagingEntry::new(
             "p1",
             "ssh:gpu",
             None,
@@ -3806,7 +3853,7 @@ async fn disposal_report_counts_every_project_on_the_host() {
         .await
         .unwrap();
     store
-        .record_remote_staging(&wisp_store::RemoteStagingEntry::new(
+        .record_remote_staging(&superscience_store::RemoteStagingEntry::new(
             "p2",
             "ssh:gpu",
             None,
@@ -3817,9 +3864,9 @@ async fn disposal_report_counts_every_project_on_the_host() {
         .unwrap();
     let uri = "ssh://gpu/scratch/p2/out.bam";
     store
-        .save_artifact_version(&wisp_store::ArtifactVersionDraft {
+        .save_artifact_version(&superscience_store::ArtifactVersionDraft {
             version_id: None,
-            artifact_id: wisp_store::logical_artifact_id("p2", "path:out.bam"),
+            artifact_id: superscience_store::logical_artifact_id("p2", "path:out.bam"),
             project_id: "p2".into(),
             root_frame_id: "f2".into(),
             filename: "out.bam".into(),
@@ -3830,8 +3877,8 @@ async fn disposal_report_counts_every_project_on_the_host() {
             checksum: None,
             producing_run_id: None,
             env_snapshot_hash: None,
-            materialization: wisp_store::ArtifactMaterialization::External,
-            capture_timing: wisp_store::ArtifactCaptureTiming::AtCreation,
+            materialization: superscience_store::ArtifactMaterialization::External,
+            capture_timing: superscience_store::ArtifactCaptureTiming::AtCreation,
         })
         .await
         .unwrap();
@@ -3851,7 +3898,7 @@ async fn disposal_report_counts_every_project_on_the_host() {
 async fn workspace_cleanup_marks_staged_inputs_removed() {
     let tmp = std::env::temp_dir().join(format!("wisp_cleanup_ledger_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -3866,17 +3913,17 @@ async fn workspace_cleanup_marks_staged_inputs_removed() {
     seed_cleanup_run(
         &store,
         "run-led",
-        wisp_store::RunStatus::Failed,
+        superscience_store::RunStatus::Failed,
         "[]",
         false,
     )
     .await;
     store
-        .record_remote_staging(&wisp_store::RemoteStagingEntry::new(
+        .record_remote_staging(&superscience_store::RemoteStagingEntry::new(
             "p",
             "ssh:gpu",
             Some("run-led".into()),
-            "~/.wisp-science/runs/run-led/inputs/input.fasta",
+            "~/.superscience/runs/run-led/inputs/input.fasta",
             "run_input",
         ))
         .await
@@ -3911,7 +3958,7 @@ async fn workspace_cleanup_marks_staged_inputs_removed() {
 async fn cleanup_pulls_full_logs_into_the_project_first() {
     let tmp = std::env::temp_dir().join(format!("wisp_cleanup_logs_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -3926,7 +3973,7 @@ async fn cleanup_pulls_full_logs_into_the_project_first() {
     seed_cleanup_run(
         &store,
         "run-logs",
-        wisp_store::RunStatus::Failed,
+        superscience_store::RunStatus::Failed,
         "[]",
         false,
     )
@@ -3975,7 +4022,7 @@ async fn cleanup_pulls_full_logs_into_the_project_first() {
 async fn cleanup_aborts_when_log_pull_fails_and_falls_back_without_encoder() {
     let tmp = std::env::temp_dir().join(format!("wisp_cleanup_logfail_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -3987,16 +4034,17 @@ async fn cleanup_aborts_when_log_pull_fails_and_falls_back_without_encoder() {
         .upsert_execution_context(&harvest_test_context())
         .await
         .unwrap();
-    let mut run = wisp_store::RunRecord::new("run-nolog", "p", "ssh:gpu", "Remote", "ssh_direct");
+    let mut run =
+        superscience_store::RunRecord::new("run-nolog", "p", "ssh:gpu", "Remote", "ssh_direct");
     run.frame_id = Some("f".into());
-    run.status = wisp_store::RunStatus::Failed;
+    run.status = superscience_store::RunStatus::Failed;
     run.command = Some("make outputs".into());
     run.stdout_tail = Some("tail out".into());
     let connection =
         crate::ssh_hosts::SshConnection::from_execution_context(&harvest_test_context()).unwrap();
     let handle = RemoteRunHandle::SshDirect {
         connection,
-        workdir: ".wisp-science/runs/run-nolog".into(),
+        workdir: ".superscience/runs/run-nolog".into(),
         token: "cleanup-token".into(),
         inputs_staged: true,
         pgid: Some(4242),
@@ -4042,7 +4090,7 @@ async fn cleanup_aborts_when_log_pull_fails_and_falls_back_without_encoder() {
 async fn transfer_upload_ledgers_its_destination() {
     let tmp = std::env::temp_dir().join(format!("wisp_transfer_ledger_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -4177,7 +4225,7 @@ async fn download_run_files_registers_one_row_per_selection() {
 async fn run_review_browse_and_delete_require_a_terminal_ssh_run() {
     let tmp = std::env::temp_dir().join(format!("wisp_review_guard_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -4192,7 +4240,7 @@ async fn run_review_browse_and_delete_require_a_terminal_ssh_run() {
     seed_cleanup_run(
         &store,
         "run-open",
-        wisp_store::RunStatus::Running,
+        superscience_store::RunStatus::Running,
         "[]",
         false,
     )
@@ -4200,7 +4248,7 @@ async fn run_review_browse_and_delete_require_a_terminal_ssh_run() {
     seed_cleanup_run(
         &store,
         "run-done",
-        wisp_store::RunStatus::Succeeded,
+        superscience_store::RunStatus::Succeeded,
         "[]",
         false,
     )
@@ -4252,7 +4300,7 @@ async fn run_review_browse_and_delete_require_a_terminal_ssh_run() {
 async fn review_prompt_reserved_for_unresolved_product_decisions() {
     let tmp = std::env::temp_dir().join(format!("wisp_review_prompt_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -4269,7 +4317,7 @@ async fn review_prompt_reserved_for_unresolved_product_decisions() {
     seed_cleanup_run(
         &store,
         "run-unharvested",
-        wisp_store::RunStatus::Succeeded,
+        superscience_store::RunStatus::Succeeded,
         specs,
         false,
     )
@@ -4277,7 +4325,7 @@ async fn review_prompt_reserved_for_unresolved_product_decisions() {
     seed_cleanup_run(
         &store,
         "run-harvested",
-        wisp_store::RunStatus::Succeeded,
+        superscience_store::RunStatus::Succeeded,
         specs,
         true,
     )
@@ -4285,7 +4333,7 @@ async fn review_prompt_reserved_for_unresolved_product_decisions() {
     seed_cleanup_run(
         &store,
         "run-active",
-        wisp_store::RunStatus::Running,
+        superscience_store::RunStatus::Running,
         "[]",
         false,
     )
@@ -4293,7 +4341,7 @@ async fn review_prompt_reserved_for_unresolved_product_decisions() {
     seed_cleanup_run(
         &store,
         "run-files",
-        wisp_store::RunStatus::Succeeded,
+        superscience_store::RunStatus::Succeeded,
         "[]",
         false,
     )
@@ -4301,7 +4349,7 @@ async fn review_prompt_reserved_for_unresolved_product_decisions() {
     seed_cleanup_run(
         &store,
         "run-empty",
-        wisp_store::RunStatus::Succeeded,
+        superscience_store::RunStatus::Succeeded,
         "[]",
         false,
     )
@@ -4360,9 +4408,10 @@ async fn review_prompt_reserved_for_unresolved_product_decisions() {
         .unwrap());
 
     // Exploratory local command runs are out of scope regardless of state.
-    let mut local = wisp_store::RunRecord::new("run-local", "p", "local", "Local", "command");
+    let mut local =
+        superscience_store::RunRecord::new("run-local", "p", "local", "Local", "command");
     local.frame_id = Some("f".into());
-    local.status = wisp_store::RunStatus::Succeeded;
+    local.status = superscience_store::RunStatus::Succeeded;
     store.create_run(&local).await.unwrap();
     assert!(!manager
         .should_prompt_run_review(&store, "run-local")
@@ -4375,14 +4424,15 @@ async fn review_prompt_reserved_for_unresolved_product_decisions() {
 // --- retention sweep ---------------------------------------------------------
 
 async fn seed_retention_run(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     run_id: &str,
-    status: wisp_store::RunStatus,
+    status: superscience_store::RunStatus,
     ended_days_ago: i64,
     specs_json: &str,
     harvested: bool,
 ) {
-    let mut run = wisp_store::RunRecord::new(run_id, "p", "ssh:gpu", "Remote", "ssh_direct");
+    let mut run =
+        superscience_store::RunRecord::new(run_id, "p", "ssh:gpu", "Remote", "ssh_direct");
     run.frame_id = Some("f".into());
     run.status = status;
     run.command = Some("make outputs".into());
@@ -4392,7 +4442,7 @@ async fn seed_retention_run(
         crate::ssh_hosts::SshConnection::from_execution_context(&harvest_test_context()).unwrap();
     let handle = RemoteRunHandle::SshDirect {
         connection,
-        workdir: format!(".wisp-science/runs/{run_id}"),
+        workdir: format!(".superscience/runs/{run_id}"),
         token: "retention-token".into(),
         inputs_staged: true,
         pgid: Some(4242),
@@ -4410,7 +4460,7 @@ async fn seed_retention_run(
 async fn retention_sweep_cleans_only_expired_eligible_runs() {
     let tmp = std::env::temp_dir().join(format!("wisp_retention_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
         .await
         .unwrap();
     store
@@ -4431,7 +4481,7 @@ async fn retention_sweep_cleans_only_expired_eligible_runs() {
     seed_retention_run(
         &store,
         "run-old",
-        wisp_store::RunStatus::Succeeded,
+        superscience_store::RunStatus::Succeeded,
         30,
         "[]",
         false,
@@ -4457,7 +4507,7 @@ async fn retention_sweep_cleans_only_expired_eligible_runs() {
     seed_retention_run(
         &store,
         "run-done",
-        wisp_store::RunStatus::Succeeded,
+        superscience_store::RunStatus::Succeeded,
         8,
         &specs,
         true,
@@ -4466,7 +4516,7 @@ async fn retention_sweep_cleans_only_expired_eligible_runs() {
     seed_retention_run(
         &store,
         "run-unharvested",
-        wisp_store::RunStatus::Succeeded,
+        superscience_store::RunStatus::Succeeded,
         8,
         &specs,
         false,
@@ -4475,7 +4525,7 @@ async fn retention_sweep_cleans_only_expired_eligible_runs() {
     seed_retention_run(
         &store,
         "run-recent",
-        wisp_store::RunStatus::Succeeded,
+        superscience_store::RunStatus::Succeeded,
         2,
         "[]",
         false,
@@ -4484,7 +4534,7 @@ async fn retention_sweep_cleans_only_expired_eligible_runs() {
     seed_retention_run(
         &store,
         "run-failed-old",
-        wisp_store::RunStatus::Failed,
+        superscience_store::RunStatus::Failed,
         15,
         &specs,
         false,
@@ -4493,7 +4543,7 @@ async fn retention_sweep_cleans_only_expired_eligible_runs() {
     seed_retention_run(
         &store,
         "run-failed-new",
-        wisp_store::RunStatus::Failed,
+        superscience_store::RunStatus::Failed,
         8,
         &specs,
         false,
@@ -4502,7 +4552,7 @@ async fn retention_sweep_cleans_only_expired_eligible_runs() {
     seed_retention_run(
         &store,
         "run-active",
-        wisp_store::RunStatus::Running,
+        superscience_store::RunStatus::Running,
         15,
         "[]",
         false,

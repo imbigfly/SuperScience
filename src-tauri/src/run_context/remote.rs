@@ -442,7 +442,7 @@ pub(super) async fn stage_remote_inputs(
         // Ledger the staged inputs so orphaned files remain findable if the
         // run record or workdir outlives this app's knowledge of them.
         for (name, size) in &inputs {
-            let mut entry = wisp_store::RemoteStagingEntry::new(
+            let mut entry = superscience_store::RemoteStagingEntry::new(
                 remote.project_id.clone(),
                 format!("ssh:{}", connection.alias),
                 Some(remote.run_id.clone()),

@@ -634,7 +634,8 @@ impl Store {
         for row in rows {
             let id: String = row.try_get("id")?;
             let encoded: String = row.try_get("content")?;
-            let Ok(mut content) = serde_json::from_str::<superscience_llm::Content>(&encoded) else {
+            let Ok(mut content) = serde_json::from_str::<superscience_llm::Content>(&encoded)
+            else {
                 continue;
             };
             let superscience_llm::Content::Text(text) = &mut content else {

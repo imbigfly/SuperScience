@@ -56,7 +56,7 @@ persisted `file_transfer` Run, preserving cancellation, timeout, progress, and
 audit records. The destination is ledgered when the attempt starts, so a
 failed or cancelled partial stays visible and can be deleted. A successful
 upload stays active on that server (it is project data, not sweep fodder).
-Existing remote destinations are never silently overwritten. Restarting Wisp
+Existing remote destinations are never silently overwritten. Restarting SuperScience
 retries a persisted transfer handle instead of marking the Run lost.
 
 ## User-approved trust

@@ -12,13 +12,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
-use tauri::State;
-use tauri_plugin_opener::OpenerExt;
-use wisp_store::{
+use superscience_store::{
     ArtifactHead, ArtifactMaterialization, Exploration, ExplorationEffect, ExplorationPromotion,
     ExplorationPromotionStatus, ExplorationStatus, ExternalResource, ResearchEdge, ResearchNode,
     ResearchNodeKind, RunRecord, StateScope, Store, MAINLINE_SCOPE_KEY,
 };
+use tauri::State;
+use tauri_plugin_opener::OpenerExt;
 
 const ERR_MAINLINE_ADVANCED: &str = "MainlineAdvanced";
 const ERR_EXPLORATION_BUSY: &str = "ExplorationBusy";
@@ -530,7 +530,7 @@ impl ExplorationPromotionService {
         })
     }
 
-    /// Artifact snapshots live under the exploration's internal `.wisp`
+    /// Artifact snapshots live under the exploration's internal `.superscience`
     /// directory, which is deliberately absent from the user-facing workspace
     /// diff. Copy every selected private snapshot through the same rollback
     /// journal before its workspace is disposed.
@@ -641,7 +641,7 @@ impl ExplorationPromotionService {
         &self,
         candidates: &[Exploration],
         snapshots: &[WorkspaceSnapshot],
-        context_archives: &[wisp_store::ContextArchiveRecord],
+        context_archives: &[superscience_store::ContextArchiveRecord],
     ) {
         let backend = self.workspace_backend();
         for candidate in candidates {
@@ -742,7 +742,7 @@ impl ExplorationPromotionService {
         }
     }
 
-    async fn dispose_context_archive(&self, archive: &wisp_store::ContextArchiveRecord) {
+    async fn dispose_context_archive(&self, archive: &superscience_store::ContextArchiveRecord) {
         match self.store.get_context_archive(&archive.id).await {
             Ok(Some(_)) => return,
             Err(error) => {
@@ -1303,7 +1303,7 @@ async fn load_round_snapshots(
 async fn load_round_context_archives(
     service: &ExplorationPromotionService,
     candidates: &[Exploration],
-) -> Vec<wisp_store::ContextArchiveRecord> {
+) -> Vec<superscience_store::ContextArchiveRecord> {
     let mut archives = Vec::new();
     for candidate in candidates {
         let Ok(Some(checkpoint)) = service
@@ -1322,7 +1322,7 @@ async fn load_round_context_archives(
         };
         if !archives
             .iter()
-            .any(|existing: &wisp_store::ContextArchiveRecord| existing.id == archive.id)
+            .any(|existing: &superscience_store::ContextArchiveRecord| existing.id == archive.id)
         {
             archives.push(archive);
         }
@@ -1331,7 +1331,7 @@ async fn load_round_context_archives(
 }
 
 fn changed_artifact_keys(
-    baseline: &[wisp_store::ExplorationBaselineArtifactHead],
+    baseline: &[superscience_store::ExplorationBaselineArtifactHead],
     current: &[ArtifactHead],
 ) -> Vec<String> {
     let before = baseline
@@ -1363,8 +1363,8 @@ fn changed_artifact_keys(
 }
 
 fn changed_entity_keys(
-    baseline: &[wisp_store::ExplorationBaselineEntity],
-    current: &[wisp_store::ExplorationBaselineEntity],
+    baseline: &[superscience_store::ExplorationBaselineEntity],
+    current: &[superscience_store::ExplorationBaselineEntity],
 ) -> Vec<String> {
     let before = baseline
         .iter()
@@ -2015,7 +2015,7 @@ fn coded(code: &str, message: &str) -> String {
 mod tests {
     use super::*;
     use crate::exploration_commands::ExplorationService;
-    use wisp_store::{
+    use superscience_store::{
         scoped_logical_artifact_id, ArtifactCaptureTiming, ArtifactMaterialization,
         ArtifactVersionDraft, ExternalResource, ResearchNode, RunRecord, RunStatus, StateScope,
     };
@@ -2041,11 +2041,11 @@ mod tests {
             .await
             .unwrap();
         store
-            .append_message("main", 1, &wisp_llm::Message::user("question"))
+            .append_message("main", 1, &superscience_llm::Message::user("question"))
             .await
             .unwrap();
         store
-            .append_message("main", 2, &wisp_llm::Message::assistant("answer"))
+            .append_message("main", 2, &superscience_llm::Message::assistant("answer"))
             .await
             .unwrap();
         let service = ExplorationService::new(store.clone(), app_data.clone());
@@ -2054,7 +2054,7 @@ mod tests {
 
     async fn baseline_artifact(store: &Store) -> (String, String) {
         let logical_key = "path:baseline.txt";
-        let artifact_id = wisp_store::logical_artifact_id("p", logical_key);
+        let artifact_id = superscience_store::logical_artifact_id("p", logical_key);
         let version_id = store
             .save_artifact_version(&ArtifactVersionDraft {
                 version_id: Some("baseline-version".into()),
@@ -2275,7 +2275,7 @@ mod tests {
             .append_message(
                 &selected.frame_id,
                 3,
-                &wisp_llm::Message::user("try selected approach"),
+                &superscience_llm::Message::user("try selected approach"),
             )
             .await
             .unwrap();
@@ -2283,7 +2283,7 @@ mod tests {
             .append_message(
                 &selected.frame_id,
                 4,
-                &wisp_llm::Message::assistant("selected result"),
+                &superscience_llm::Message::assistant("selected result"),
             )
             .await
             .unwrap();
@@ -2590,7 +2590,7 @@ mod tests {
             .append_message(
                 &result.mainline_frame_id,
                 5,
-                &wisp_llm::Message::user("continue"),
+                &superscience_llm::Message::user("continue"),
             )
             .await
             .unwrap();
@@ -2678,11 +2678,15 @@ mod tests {
             .await
             .unwrap();
         store
-            .append_message("main", 3, &wisp_llm::Message::user("continued mainline"))
+            .append_message(
+                "main",
+                3,
+                &superscience_llm::Message::user("continued mainline"),
+            )
             .await
             .unwrap();
         store
-            .append_message("main", 4, &wisp_llm::Message::assistant("done"))
+            .append_message("main", 4, &superscience_llm::Message::assistant("done"))
             .await
             .unwrap();
         let preview = ExplorationPromotionService::new(store.clone(), app_data)

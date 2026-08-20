@@ -1329,6 +1329,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
+name = "superscience-dto"
+version = "1.5.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "superscience-ui"
+version = "1.5.0"
+dependencies = [
+ "console_error_panic_hook",
+ "futures-channel",
+ "js-sys",
+ "leptos",
+ "pulldown-cmark",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "superscience-dto",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "syn"
 version = "2.0.118"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1686,32 +1712,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
 dependencies = [
  "memchr",
-]
-
-[[package]]
-name = "superscience-dto"
-version = "1.5.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "wisp-ui"
-version = "1.5.0"
-dependencies = [
- "console_error_panic_hook",
- "futures-channel",
- "js-sys",
- "leptos",
- "pulldown-cmark",
- "serde",
- "serde-wasm-bindgen",
- "serde_json",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
- "superscience-dto",
 ]
 
 [[package]]

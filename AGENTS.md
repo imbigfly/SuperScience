@@ -23,6 +23,7 @@ Do not implement broad product vision in one change. Prefer small PRs that add o
 
 ## Engineering Rules
 
+- Branding must not break upstream merges. Keep wire-protocol markers, remote script tokens, and upstream env names as `WISP_*` / `__WISP_*`. User-visible SuperScience names go in UI (`t()` display rewrite), docs, and `superscience-paths` (`env_product_or_wisp` / `env_or_legacy`). Do not rename identifiers that exist in `xuzhougeng/wisp-science` just to match the product name.
 - Keep Windows and macOS behavior explicit. Avoid Unix-only assumptions unless gated behind an SSH/WSL context.
 - Never require a real SSH host, GPU, SLURM cluster, WSL distro, API key, or network access in automated tests. Use pure parsing tests, fake command runners, temporary directories, and mocked Tauri commands.
 - Store secrets in the existing keyring path, not SQLite. SSH private key contents must never be copied into SQLite.

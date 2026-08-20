@@ -4,7 +4,7 @@
 //! these tests turn silent serde drift into a compile-time/test failure.
 //!
 //! Pattern: build the backend value → `serde_json::to_value` (what tauri IPC
-//! sends) → deserialize into the `wisp_dto` type → assert field fidelity.
+//! sends) → deserialize into the `superscience_dto` type → assert field fidelity.
 
 use serde_json::json;
 
@@ -32,7 +32,7 @@ fn ssh_host_contract() {
     // The UI's password placeholder depends on this flag being serialized.
     assert_eq!(json.get("has_password"), Some(&json!(true)));
 
-    let dto: wisp_dto::SshHost = serde_json::from_value(json).unwrap();
+    let dto: superscience_dto::SshHost = serde_json::from_value(json).unwrap();
     assert_eq!(dto.alias, "gpu");
     assert_eq!(dto.host_name.as_deref(), Some("10.0.0.5"));
     assert_eq!(dto.user.as_deref(), Some("alice"));
@@ -69,7 +69,7 @@ fn model_profile_contract() {
         video_aspect_ratio: Some("9:16".into()),
         video_resolution: Some("720p".into()),
     };
-    let dto: wisp_dto::ModelProfile = roundtrip(&backend);
+    let dto: superscience_dto::ModelProfile = roundtrip(&backend);
     assert_eq!(dto.id, "p1");
     assert_eq!(dto.label, "Fast");
     assert_eq!(dto.provider, "openai");
@@ -88,16 +88,16 @@ fn model_profile_contract() {
     assert_eq!(dto.video_duration_secs, Some(8));
     assert_eq!(dto.video_aspect_ratio.as_deref(), Some("9:16"));
     assert_eq!(dto.video_resolution.as_deref(), Some("720p"));
-    assert!(wisp_dto::is_video_generation_model(
+    assert!(superscience_dto::is_video_generation_model(
         "xai/grok-imagine-video-1.5-preview"
     ));
-    assert!(!wisp_dto::is_video_generation_model(
+    assert!(!superscience_dto::is_video_generation_model(
         "grok-imagine-video-2.0"
     ));
-    assert_eq!(wisp_dto::VIDEO_ASPECT_RATIOS.len(), 5);
-    assert_eq!(wisp_dto::VIDEO_RESOLUTIONS.len(), 3);
-    assert_eq!(wisp_dto::VIDEO_DURATION_MIN_SECS, 1);
-    assert_eq!(wisp_dto::VIDEO_DURATION_MAX_SECS, 15);
+    assert_eq!(superscience_dto::VIDEO_ASPECT_RATIOS.len(), 5);
+    assert_eq!(superscience_dto::VIDEO_RESOLUTIONS.len(), 3);
+    assert_eq!(superscience_dto::VIDEO_DURATION_MIN_SECS, 1);
+    assert_eq!(superscience_dto::VIDEO_DURATION_MAX_SECS, 15);
 }
 
 #[test]
@@ -119,8 +119,11 @@ fn share_social_copy_contract() {
     assert_eq!(json.get("platform"), Some(&json!("xiaohongshu")));
     assert!(json.get("highlights").is_some());
     assert!(json.get("variants").is_some());
-    let dto: wisp_dto::ShareSocialCopy = serde_json::from_value(json).unwrap();
-    assert_eq!(dto.platform, wisp_dto::ShareSocialPlatform::Xiaohongshu);
+    let dto: superscience_dto::ShareSocialCopy = serde_json::from_value(json).unwrap();
+    assert_eq!(
+        dto.platform,
+        superscience_dto::ShareSocialPlatform::Xiaohongshu
+    );
     assert_eq!(dto.highlights[0].title, "Clean peak");
     assert_eq!(dto.highlights[0].message_indexes, vec![1, 3]);
     assert_eq!(dto.variants[0].body, "主峰在 530 nm。");
@@ -129,9 +132,9 @@ fn share_social_copy_contract() {
 
 #[test]
 fn execution_context_contract() {
-    let backend = wisp_store::ExecutionContext {
+    let backend = superscience_store::ExecutionContext {
         id: "ssh:gpu".into(),
-        kind: wisp_store::ExecutionContextKind::Ssh,
+        kind: superscience_store::ExecutionContextKind::Ssh,
         label: "GPU box".into(),
         config_json: "{\"alias\":\"gpu\"}".into(),
         capabilities_json: "{}".into(),
@@ -141,7 +144,7 @@ fn execution_context_contract() {
         created_at: 1_700_000_000,
         updated_at: 1_700_000_001,
     };
-    let dto: wisp_dto::ExecutionContext = roundtrip(&backend);
+    let dto: superscience_dto::ExecutionContext = roundtrip(&backend);
     assert_eq!(dto.id, "ssh:gpu");
     // Backend enum serializes lowercase; the UI matches on these strings.
     assert_eq!(dto.kind, "ssh");
@@ -154,13 +157,13 @@ fn execution_context_contract() {
 
 #[test]
 fn run_summary_contract() {
-    let backend = wisp_store::RunSummary {
+    let backend = superscience_store::RunSummary {
         id: "run-1".into(),
         frame_id: Some("frame-1".into()),
         context_id: "ssh:gpu".into(),
         title: "align reads".into(),
         kind: "shell".into(),
-        status: wisp_store::RunStatus::TimedOut,
+        status: superscience_store::RunStatus::TimedOut,
         created_at: 1,
         started_at: Some(2),
         ended_at: Some(3),
@@ -175,7 +178,7 @@ fn run_summary_contract() {
         cleanup_error: None,
         output_fingerprint: "abc".into(),
     };
-    let dto: wisp_dto::RunSummary = roundtrip(&backend);
+    let dto: superscience_dto::RunSummary = roundtrip(&backend);
     assert_eq!(dto.id, "run-1");
     assert_eq!(dto.frame_id.as_deref(), Some("frame-1"));
     assert_eq!(dto.context_id, "ssh:gpu");
@@ -206,7 +209,7 @@ fn project_transfer_progress_contract() {
     assert!(json.get("projectId").is_some());
     assert!(json.get("completedFiles").is_some());
 
-    let dto: wisp_dto::ProjectTransferProgress = serde_json::from_value(json).unwrap();
+    let dto: superscience_dto::ProjectTransferProgress = serde_json::from_value(json).unwrap();
     assert_eq!(dto.direction, "export");
     assert_eq!(dto.stage, "copying");
     assert_eq!(dto.project_id.as_deref(), Some("proj-1"));

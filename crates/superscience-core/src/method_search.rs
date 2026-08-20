@@ -5,8 +5,12 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
 
 pub const METHOD_SEARCH_SCHEMA_V1: &str = "superscience.method-search.v1";
-pub const EVALUATOR_PROTOCOL_V1: &str = "wisp_evaluate_jsonl_v1";
-pub const EVALUATOR_RESULT_PREFIX: &str = "wisp_evaluate: ";
+pub const EVALUATOR_PROTOCOL_V1: &str = "superscience_evaluate_jsonl_v1";
+pub const EVALUATOR_RESULT_PREFIX: &str = "superscience_evaluate: ";
+pub const LEGACY_EVALUATOR_PROTOCOL_V1: &str = "wisp_evaluate_jsonl_v1";
+pub const LEGACY_EVALUATOR_RESULT_PREFIX: &str = "wisp_evaluate: ";
+pub const REACHABILITY_SENTINEL: &str = "superscience_method_search_reachability_sentinel";
+pub const LEGACY_REACHABILITY_SENTINEL: &str = "wisp_method_search_reachability_sentinel";
 pub const MAX_EVALUATOR_OUTPUT_BYTES: usize = 64 * 1024;
 pub const MAX_CANDIDATE_SOURCE_BYTES: usize = 256 * 1024;
 
@@ -150,7 +154,9 @@ pub fn inject_python_reachability_sentinel(source: &str, symbol: &str) -> anyhow
     let mut output = String::with_capacity(source.len() + 96);
     output.push_str(&source[..span.header_end]);
     output.push_str(&span.body_indent);
-    output.push_str("raise RuntimeError(\"wisp_method_search_reachability_sentinel\")\n");
+    output.push_str(&format!(
+        "raise RuntimeError(\"{REACHABILITY_SENTINEL}\")\n"
+    ));
     output.push_str(&source[span.header_end..]);
     Ok(output)
 }
@@ -346,7 +352,8 @@ impl MethodSearchSpec {
             || !(3..=10).contains(&self.evaluator.repetitions)
             || self.evaluator.timeout_seconds == 0
             || self.evaluator.timeout_seconds > 300
-            || self.evaluator.protocol != EVALUATOR_PROTOCOL_V1
+            || (self.evaluator.protocol != EVALUATOR_PROTOCOL_V1
+                && self.evaluator.protocol != LEGACY_EVALUATOR_PROTOCOL_V1)
         {
             anyhow::bail!("method-search evaluator contract is outside v1 limits");
         }
@@ -513,10 +520,13 @@ pub fn parse_evaluator_output(
     }
     let lines = stdout
         .lines()
-        .filter_map(|line| line.strip_prefix(EVALUATOR_RESULT_PREFIX))
+        .filter_map(|line| {
+            line.strip_prefix(EVALUATOR_RESULT_PREFIX)
+                .or_else(|| line.strip_prefix(LEGACY_EVALUATOR_RESULT_PREFIX))
+        })
         .collect::<Vec<_>>();
     if lines.len() != 1 {
-        anyhow::bail!("evaluator must emit exactly one wisp_evaluate result line");
+        anyhow::bail!("evaluator must emit exactly one superscience_evaluate result line");
     }
     let result: EvaluatorResult = serde_json::from_str(lines[0])?;
     result.validate_for(spec)?;
@@ -871,8 +881,17 @@ mod tests {
     #[test]
     fn evaluator_protocol_is_exact_and_finite() {
         let spec = spec();
-        let output = "log\nwisp_evaluate: {\"primary\":0.8,\"metrics\":{\"accuracy\":0.8,\"runtime_seconds\":12.0}}";
+        let output = "log\nsuperscience_evaluate: {\"primary\":0.8,\"metrics\":{\"accuracy\":0.8,\"runtime_seconds\":12.0}}";
         assert_eq!(parse_evaluator_output(output, &spec).unwrap().primary, 0.8);
+        assert_eq!(
+            parse_evaluator_output(
+                "log\nwisp_evaluate: {\"primary\":0.8,\"metrics\":{\"accuracy\":0.8,\"runtime_seconds\":12.0}}",
+                &spec,
+            )
+            .unwrap()
+            .primary,
+            0.8
+        );
         assert!(parse_evaluator_output(&format!("{output}\n{output}"), &spec).is_err());
         assert!(parse_evaluator_output(
             r#"wisp_evaluate: {"primary":0.8,"metrics":{"accuracy":0.7,"runtime_seconds":12.0}}"#,
@@ -912,7 +931,7 @@ mod tests {
     fn python_symbol_sentinel_and_replacement_are_scoped() {
         let source = "import math\n\ndef fit_model(\n    rows,\n    seed=0,\n):\n    value = len(rows)\n    return value\n\ndef untouched():\n    return 1\n";
         let sentinel = inject_python_reachability_sentinel(source, "fit_model").unwrap();
-        assert!(sentinel.contains("wisp_method_search_reachability_sentinel"));
+        assert!(sentinel.contains(REACHABILITY_SENTINEL));
         assert!(sentinel.contains("def untouched():"));
 
         let replacement = "def fit_model(\n    rows,\n    seed=0,\n):\n    return len(rows) + 1\n";

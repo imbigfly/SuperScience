@@ -11,7 +11,7 @@ use superscience_llm::ToolSchema;
 use superscience_tools::{Approval, Tool, ToolEnv, ToolResult};
 
 const TRUST_EDGES_SETTING: &str = "ssh_trust_edges_v1";
-const PUBLIC_KEY_MARKER: &str = "__SUPERSCIENCE_PUBLIC_KEY__:";
+const PUBLIC_KEY_MARKER: &str = "__WISP_PUBLIC_KEY__:";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct SshTrustEdge {
@@ -128,7 +128,7 @@ impl TransferHandle {
 }
 
 pub(crate) async fn persist_transfer_handle(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     owner_id: &str,
     run_id: &str,
     handle: &TransferHandle,
@@ -142,7 +142,7 @@ pub(crate) async fn persist_transfer_handle(
 }
 
 async fn ledger_upload_attempt(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     run_id: &str,
     destination_alias: &str,
     destination_path: &str,
@@ -151,7 +151,7 @@ async fn ledger_upload_attempt(
     let Ok(Some(run)) = store.get_run(run_id).await else {
         return Ok(());
     };
-    let mut entry = wisp_store::RemoteStagingEntry::new(
+    let mut entry = superscience_store::RemoteStagingEntry::new(
         run.project_id,
         format!("ssh:{destination_alias}"),
         Some(run_id.to_string()),
@@ -470,11 +470,11 @@ async fn configure_trust(
             error
         }
     })?;
-    if !verify.stdout.contains("__SUPERSCIENCE_TRUST_VERIFIED__") {
+    if !verify.stdout.contains("__WISP_TRUST_VERIFIED__") {
         let detail = verify
             .stderr
             .lines()
-            .find_map(|line| line.strip_prefix("__SUPERSCIENCE_TRUST_FAILED__:"))
+            .find_map(|line| line.strip_prefix("__WISP_TRUST_FAILED__:"))
             .unwrap_or("source could not authenticate to the destination");
         return Err(format!(
             "Server-to-server SSH verification failed: {detail}"
@@ -551,7 +551,7 @@ grep -Fv -- {marker} "$auth" > "$tmp" || true
 printf '%s\n' {public_key} >> "$tmp"
 chmod 600 "$tmp"
 mv "$tmp" "$auth"
-printf '__SUPERSCIENCE_TRUST_INSTALLED__\n'
+printf '__WISP_TRUST_INSTALLED__\n'
 "#
     )
 }
@@ -601,7 +601,7 @@ fn verify_trust_payload(
         .collect::<Vec<_>>()
         .join(" ");
     format!(
-        "set -eu\ncommand -v ssh >/dev/null 2>&1 || {{ echo 'ssh is not installed on the source' >&2; exit 69; }}\nset +e\nssh {args} {} true\nrc=$?\nset -e\nif [ \"$rc\" = 0 ]; then printf '__SUPERSCIENCE_TRUST_VERIFIED__\\n'; else printf '__SUPERSCIENCE_TRUST_FAILED__:ssh exit %s\\n' \"$rc\" >&2; fi\n",
+        "set -eu\ncommand -v ssh >/dev/null 2>&1 || {{ echo 'ssh is not installed on the source' >&2; exit 69; }}\nset +e\nssh {args} {} true\nrc=$?\nset -e\nif [ \"$rc\" = 0 ]; then printf '__WISP_TRUST_VERIFIED__\\n'; else printf '__WISP_TRUST_FAILED__:ssh exit %s\\n' \"$rc\" >&2; fi\n",
         shell_single_quote(target)
     )
 }
@@ -901,7 +901,7 @@ pub(crate) fn join_remote_upload_destination(dir: &str, item_name: &str) -> Resu
 /// require the destination to be attached to the current session — Files can
 /// browse any registered, probed host.
 pub(crate) async fn submit_local_uploads_to_context(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     manager: &RunManager,
     project_id: &str,
     frame_id: Option<&str>,
@@ -920,7 +920,7 @@ pub(crate) async fn submit_local_uploads_to_context(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("Execution context not found: {context_id}"))?;
-    if context.kind != wisp_store::ExecutionContextKind::Ssh {
+    if context.kind != superscience_store::ExecutionContextKind::Ssh {
         return Err(format!("Execution context is not SSH: {context_id}"));
     }
     crate::ssh_hosts::require_managed_ssh_ready(&context)?;
@@ -966,7 +966,7 @@ pub(crate) async fn submit_local_uploads_to_context(
 /// When the caller omits destination_path for an SSH destination, uploads land
 /// under this project's configured remote data root for that server.
 async fn default_remote_destination(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     project_id: &str,
     context_id: &str,
     source_path: &str,
@@ -1145,7 +1145,7 @@ async fn submit_transfer(
                     )
                     .await,
             )?;
-            if !output.stdout.contains("__SUPERSCIENCE_TRUST_VERIFIED__") {
+            if !output.stdout.contains("__WISP_TRUST_VERIFIED__") {
                 edge = None;
             }
         }
@@ -1266,12 +1266,12 @@ if [ "$selected" = rsync ]; then
   rsh='ssh -T -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes'
   if [ -n "$key" ]; then printf -v quoted_key '%q' "$key"; rsh="$rsh -o IdentitiesOnly=yes -i $quoted_key"; fi
   {rsh_port}
-  printf '__SUPERSCIENCE_TRANSFER_TRANSPORT__:rsync\n'
+  printf '__WISP_TRANSFER_TRANSPORT__:rsync\n'
   rsync -a -s --partial -e "$rsh" "$src" "$target:$dst"
 else
   command -v scp >/dev/null 2>&1 || {{ echo 'scp is not installed on the source' >&2; exit 69; }}
   if [ -d "$src" ]; then scp_options+=( -r ); fi
-  printf '__SUPERSCIENCE_TRANSFER_TRANSPORT__:scp\n'
+  printf '__WISP_TRANSFER_TRANSPORT__:scp\n'
   scp "${{scp_options[@]}}" "$src" "$target:$dst"
 fi
 "#,
@@ -1288,8 +1288,8 @@ impl RunManager {
     /// mark a transfer `lost` — there is no remote supervisor to reattach.
     pub(super) async fn reclaim_transfer(
         &self,
-        store: wisp_store::Store,
-        run: &wisp_store::RunRecord,
+        store: superscience_store::Store,
+        run: &superscience_store::RunRecord,
     ) -> Result<(), String> {
         if self.active.lock().await.contains_key(&run.id) {
             return Ok(());
@@ -1312,7 +1312,7 @@ impl RunManager {
                 .finish_active_run_owned(
                     &run.id,
                     &self.owner_id,
-                    wisp_store::RunStatus::Failed,
+                    superscience_store::RunStatus::Failed,
                     Some(-1),
                 )
                 .await;
@@ -1522,7 +1522,7 @@ impl RunManager {
 
     async fn fail_transfer(
         &self,
-        store: &wisp_store::Store,
+        store: &superscience_store::Store,
         run_id: &str,
         error: &str,
     ) -> Result<(), String> {
@@ -1533,7 +1533,7 @@ impl RunManager {
             .finish_active_run_owned(
                 run_id,
                 &self.owner_id,
-                wisp_store::RunStatus::Failed,
+                superscience_store::RunStatus::Failed,
                 Some(-1),
             )
             .await;
@@ -2076,7 +2076,7 @@ async fn require_rsync_available(
 /// rsync continues from the partial data instead of starting over.
 #[allow(clippy::too_many_arguments)]
 async fn rsync_download_into_partial(
-    store: &wisp_store::Store,
+    store: &superscience_store::Store,
     owner_id: &str,
     run_id: &str,
     runner: &dyn super::RunCommandRunner,
@@ -2336,7 +2336,7 @@ async fn local_upload_lifecycle(
     // Success keeps the attempt row (it is already the current file). Failure
     // leaves it as an orphan so partials can be cleaned. A crash before this
     // point still has the attempt row from `ledger_upload_attempt`.
-    if status == wisp_store::RunStatus::Succeeded {
+    if status == superscience_store::RunStatus::Succeeded {
         if let Err(error) = ledger_upload_attempt(
             store,
             run_id,
@@ -2844,12 +2844,12 @@ mod tests {
                     }),
                     Ok(RunCommandOutput {
                         exit_code: 0,
-                        stdout: "__SUPERSCIENCE_TRUST_INSTALLED__\n".into(),
+                        stdout: "__WISP_TRUST_INSTALLED__\n".into(),
                         stderr: String::new(),
                     }),
                     Ok(RunCommandOutput {
                         exit_code: 0,
-                        stdout: "__SUPERSCIENCE_TRUST_VERIFIED__\n".into(),
+                        stdout: "__WISP_TRUST_VERIFIED__\n".into(),
                         stderr: String::new(),
                     }),
                 ]
@@ -3119,10 +3119,11 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
-        assert_eq!(run.status, wisp_store::RunStatus::Failed);
+        assert_eq!(run.status, superscience_store::RunStatus::Failed);
         assert_eq!(run.kind, "file_transfer");
         assert_eq!(run.exit_code, Some(-1));
-        let progress: wisp_store::RunProgress = serde_json::from_str(&run.progress_json).unwrap();
+        let progress: superscience_store::RunProgress =
+            serde_json::from_str(&run.progress_json).unwrap();
         assert_eq!(progress.phase, "failed");
         let stderr = run.stderr_tail.as_deref().unwrap();
         assert!(
@@ -3269,7 +3270,7 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
-        assert_eq!(run.status, wisp_store::RunStatus::Failed);
+        assert_eq!(run.status, superscience_store::RunStatus::Failed);
         let files = crate::run_context::remote_files::list_remote_files(&store, "p", "ssh:a")
             .await
             .unwrap();
@@ -3310,16 +3311,16 @@ mod tests {
         )
         .await
         .unwrap();
-        // Project "project" → default remote data root ~/wisp/project/data.
+        // Project "project" → default remote data root ~/superscience/project/data.
         assert_eq!(
             response["destination_path"].as_str().unwrap(),
-            "~/wisp/project/data/sample data.bam"
+            "~/superscience/project/data/sample data.bam"
         );
         let run_id = response["run_id"].as_str().unwrap().to_string();
         loop {
             let run = store.get_run(&run_id).await.unwrap().unwrap();
             if run.status.is_terminal() {
-                assert_eq!(run.status, wisp_store::RunStatus::Succeeded);
+                assert_eq!(run.status, superscience_store::RunStatus::Succeeded);
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -3328,7 +3329,7 @@ mod tests {
         assert!(commands.iter().any(|command| command
             .args
             .iter()
-            .any(|arg| arg == "alice@a.example:~/wisp/project/data/sample data.bam")));
+            .any(|arg| arg == "alice@a.example:~/superscience/project/data/sample data.bam")));
         drop(commands);
         let _ = std::fs::remove_dir_all(root);
     }
@@ -3337,11 +3338,11 @@ mod tests {
     async fn upload_default_destination_honors_stored_prefs() {
         let (root, store) = test_store().await;
         store
-            .upsert_context_storage_prefs(&wisp_store::ContextStoragePrefs {
+            .upsert_context_storage_prefs(&superscience_store::ContextStoragePrefs {
                 project_id: "p".into(),
                 context_id: "ssh:a".into(),
                 remote_data_root: "/scratch/proj".into(),
-                remote_workdir_root: ".wisp-science/runs".into(),
+                remote_workdir_root: ".superscience/runs".into(),
                 local_results_dir: "remote/a".into(),
                 created_at: 0,
                 updated_at: 0,
@@ -3590,7 +3591,7 @@ mod tests {
         loop {
             let run = store.get_run(&run_id).await.unwrap().unwrap();
             if run.status.is_terminal() {
-                assert_eq!(run.status, wisp_store::RunStatus::Succeeded);
+                assert_eq!(run.status, superscience_store::RunStatus::Succeeded);
                 assert_eq!(run.kind, "file_transfer");
                 break;
             }
@@ -3726,7 +3727,7 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
-        assert_eq!(run.status, wisp_store::RunStatus::Succeeded);
+        assert_eq!(run.status, superscience_store::RunStatus::Succeeded);
         let commands = runner.commands.lock().unwrap();
         assert_eq!(commands.len(), 3);
         assert_eq!(commands[0].script, "check local upload destination");
@@ -3791,7 +3792,7 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
-        assert_eq!(run.status, wisp_store::RunStatus::Failed);
+        assert_eq!(run.status, superscience_store::RunStatus::Failed);
         let stderr = run.stderr_tail.unwrap_or_default();
         assert!(stderr.contains("rsync is not installed on a"), "{stderr}");
         assert_eq!(runner.commands.lock().unwrap().len(), 1);
@@ -3866,7 +3867,7 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
-        assert_eq!(run.status, wisp_store::RunStatus::Succeeded);
+        assert_eq!(run.status, superscience_store::RunStatus::Succeeded);
         assert_eq!(std::fs::read(&destination).unwrap(), b"rsync bytes");
         assert!(!destination
             .parent()

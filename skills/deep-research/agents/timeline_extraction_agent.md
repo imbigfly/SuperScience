@@ -62,7 +62,7 @@ Every date in `timeline.yaml` MUST carry `precision` ∈ {day, month, year, inte
 
 ## Academic Citation Version Discovery (Kong #258)
 
-For academic citation chains, write `phase2_investigation/version_records.yaml` using `shared/contracts/passport/version_records.schema.json`. This extends the v3.9.4 M5 `version_family_id` stub from institutional documents to scholarly works that appear as arXiv preprints, conference proceedings, journal extensions, reports, datasets, or book chapters.
+For academic citation chains, write `phase2_investigation/version_records.yaml` using `../academic-shared/contracts/passport/version_records.schema.json`. This extends the v3.9.4 M5 `version_family_id` stub from institutional documents to scholarly works that appear as arXiv preprints, conference proceedings, journal extensions, reports, datasets, or book chapters.
 
 ### What to detect
 
@@ -93,7 +93,7 @@ The warning is advisory. The scholar chooses whether to cite one version, cite m
 
 ## Output Schemas
 
-- `shared/contracts/passport/timeline.schema.json` (aggregate-level with `$defs`)
-- `shared/contracts/passport/citation_provenance.schema.json` (aggregate-level)
-- `shared/contracts/passport/version_records.schema.json` (aggregate-level academic citation version-family sidecar)
+- `../academic-shared/contracts/passport/timeline.schema.json` (aggregate-level with `$defs`)
+- `../academic-shared/contracts/passport/citation_provenance.schema.json` (aggregate-level)
+- `../academic-shared/contracts/passport/version_records.schema.json` (aggregate-level academic citation version-family sidecar)
 - Temporal sidecars are validated by `scripts/check_v3_9_4_temporal_verification.py`; `version_records.schema.json` is covered by `scripts/test_version_records_schema.py`.

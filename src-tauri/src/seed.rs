@@ -15,10 +15,10 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use tauri::State;
-use uuid::Uuid;
 use superscience_llm::Message;
 use superscience_store::Store;
+use tauri::State;
+use uuid::Uuid;
 
 use crate::resource_refs;
 use crate::AppState;
@@ -31,10 +31,82 @@ pub fn bundled_dir() -> Option<PathBuf> {
     superscience_paths::seed_dir()
 }
 
+/// User-saved example transcripts live next to the app database.
+pub fn user_demos_dir(app_data: &Path) -> PathBuf {
+    app_data.join("user-demos")
+}
+
+fn hidden_ids_path(app_data: &Path) -> PathBuf {
+    user_demos_dir(app_data).join("hidden_ids.json")
+}
+
+pub(crate) fn load_hidden_ids(app_data: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(hidden_ids_path(app_data)) else {
+        return Vec::new();
+    };
+    serde_json::from_str::<Vec<String>>(&text)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|id| {
+            id.starts_with("manifest_")
+                && !id.contains('/')
+                && !id.contains('\\')
+                && !id.contains("..")
+        })
+        .collect()
+}
+
+pub(crate) fn save_hidden_ids(app_data: &Path, ids: &[String]) -> Result<(), String> {
+    let dir = user_demos_dir(app_data);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create user-demos: {e}"))?;
+    let body = serde_json::to_string_pretty(ids).map_err(|e| e.to_string())?;
+    std::fs::write(hidden_ids_path(app_data), format!("{body}\n"))
+        .map_err(|e| format!("write hidden ids: {e}"))
+}
+
+pub(crate) fn hide_bundled_demo(app_data: &Path, id: &str) -> Result<(), String> {
+    let bundled = bundled_dir().ok_or_else(|| "Bundled example library not found.".to_string())?;
+    if !bundled.join(format!("{id}.json")).is_file() {
+        return Err(format!("demo '{id}' not found"));
+    }
+    let mut hidden = load_hidden_ids(app_data);
+    if !hidden.iter().any(|existing| existing == id) {
+        hidden.push(id.to_string());
+        hidden.sort();
+        save_hidden_ids(app_data, &hidden)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn unhide_demo(app_data: &Path, id: &str) {
+    let mut hidden = load_hidden_ids(app_data);
+    let before = hidden.len();
+    hidden.retain(|existing| existing != id);
+    if hidden.len() != before {
+        let _ = save_hidden_ids(app_data, &hidden);
+    }
+}
+
+pub(crate) fn demo_search_dirs(app_data: Option<&Path>) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(app_data) = app_data {
+        let user = user_demos_dir(app_data);
+        if user.is_dir() {
+            dirs.push(user);
+        }
+    }
+    if let Some(bundled) = bundled_dir() {
+        dirs.push(bundled);
+    }
+    dirs
+}
+
 #[derive(Serialize, Clone)]
 pub struct DemoInfo {
     pub id: String,
     pub title: String,
+    #[serde(default)]
+    pub user_saved: bool,
 }
 
 /// One transcript row returned to the UI (same shape as session `UiItem`).
@@ -108,8 +180,8 @@ fn normalize_locale(locale: Option<&str>) -> &'static str {
 }
 
 #[tauri::command(rename = "list_demos")]
-pub(super) fn list_demos_cmd(locale: Option<String>) -> Vec<DemoInfo> {
-    list_demos(locale.as_deref())
+pub(super) fn list_demos_cmd(state: State<'_, AppState>, locale: Option<String>) -> Vec<DemoInfo> {
+    list_demos_with_user(locale.as_deref(), Some(&state.app_data))
 }
 
 #[tauri::command(rename = "load_demo")]
@@ -120,8 +192,9 @@ pub(super) fn load_demo_cmd(
     locale: Option<String>,
 ) -> Result<Demo, String> {
     let ap = state.active(window.label());
-    extract_demo_assets(&id, &ap.root)?;
-    load_demo(&id, locale.as_deref()).ok_or_else(|| format!("demo '{id}' not found"))
+    extract_demo_assets_in(&id, &ap.root, &demo_search_dirs(Some(&state.app_data)))?;
+    load_demo_from(&id, locale.as_deref(), Some(&state.app_data))
+        .ok_or_else(|| format!("demo '{id}' not found"))
 }
 
 #[tauri::command(rename = "copy_demo_to_project")]
@@ -141,12 +214,13 @@ pub(super) async fn copy_demo_to_project_cmd(
     }
     let _activity = state.begin_project_activity(&target_project_id)?;
     let model_id = crate::models::active_profile_id(&state.store).await;
-    copy_demo_into_project(
+    copy_demo_into_project_from(
         &state.store,
         &id,
         &target_project_id,
         Path::new(&workspace_dir),
         &model_id,
+        Some(&state.app_data),
     )
     .await
 }
@@ -166,6 +240,25 @@ struct DemoSeedTurn {
 
 fn default_seed_repeat() -> usize {
     1
+}
+
+impl From<crate::UiItem> for DemoUiItem {
+    fn from(item: crate::UiItem) -> Self {
+        Self {
+            role: item.role,
+            text: item.text,
+            tool_name: item.tool_name,
+            ok: item.ok,
+            duration_ms: item.duration_ms,
+            input: item.input,
+            model_name: item.model_name,
+            call_id: item.call_id,
+            kind: item.kind,
+            status: item.status,
+            locations: item.locations,
+            resources: item.resources,
+        }
+    }
 }
 
 fn seed_item(role: &str, text: &str) -> DemoUiItem {
@@ -198,7 +291,7 @@ fn expand_seed_turns(turns: Vec<DemoSeedTurn>) -> Vec<DemoUiItem> {
     out
 }
 
-fn clean(text: &str) -> String {
+pub(crate) fn clean(text: &str) -> String {
     static IMG: OnceLock<Regex> = OnceLock::new();
     static ART: OnceLock<Regex> = OnceLock::new();
     let img = IMG.get_or_init(|| Regex::new(r"!\[([^\]]*)\]\(\{\{artifact:[^}]+\}\}\)").unwrap());
@@ -208,7 +301,10 @@ fn clean(text: &str) -> String {
 }
 
 fn title_from_request(req: &str) -> String {
-    let first = req.split(['.', '。', '!', '！', '?', '？']).next().unwrap_or(req);
+    let first = req
+        .split(['.', '。', '!', '！', '?', '？'])
+        .next()
+        .unwrap_or(req);
     first.trim().chars().take(70).collect()
 }
 
@@ -221,74 +317,114 @@ fn read_base_title(path: &Path) -> Option<String> {
     Some(title_from_request(req))
 }
 
-fn overlay_path(locale: &str, id: &str) -> Option<PathBuf> {
+fn overlay_path_in(dir: &Path, locale: &str, id: &str) -> Option<PathBuf> {
     if locale == "en" {
         return None;
     }
-    let dir = bundled_dir()?;
     let path = dir.join(locale).join(format!("{id}.i18n.json"));
     path.is_file().then_some(path)
 }
 
-fn load_overlay(locale: &str, id: &str) -> Option<DemoI18nOverlay> {
-    let path = overlay_path(locale, id)?;
+fn load_overlay_in(dir: &Path, locale: &str, id: &str) -> Option<DemoI18nOverlay> {
+    let path = overlay_path_in(dir, locale, id)?;
     let text = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&text).ok()
 }
 
-/// Enumerate `manifest_*.json` in the bundled seed dir.
-pub fn list_demos(locale: Option<&str>) -> Vec<DemoInfo> {
-    let locale = normalize_locale(locale);
-    let Some(dir) = bundled_dir() else {
-        return vec![];
-    };
+fn list_demos_in(dir: &Path, locale: &str, user_saved: bool) -> Vec<DemoInfo> {
     let mut out = vec![];
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.extension().and_then(|s| s.to_str()) != Some("json") {
-                continue;
-            }
-            let stem = p
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string();
-            if !stem.starts_with("manifest_") {
-                continue;
-            }
-            let title = if let Some(overlay) = load_overlay(locale, &stem) {
-                overlay
-                    .request
-                    .as_deref()
-                    .map(title_from_request)
-                    .filter(|t| !t.is_empty())
-                    .or_else(|| read_base_title(&p))
-                    .unwrap_or_else(|| stem.trim_start_matches("manifest_").to_string())
-            } else {
-                read_base_title(&p)
-                    .unwrap_or_else(|| stem.trim_start_matches("manifest_").to_string())
-            };
-            out.push(DemoInfo { id: stem, title });
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
         }
+        let stem = p
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        if !stem.starts_with("manifest_") {
+            continue;
+        }
+        let title = if let Some(overlay) = load_overlay_in(dir, locale, &stem) {
+            overlay
+                .request
+                .as_deref()
+                .map(title_from_request)
+                .filter(|t| !t.is_empty())
+                .or_else(|| read_base_title(&p))
+                .unwrap_or_else(|| stem.trim_start_matches("manifest_").to_string())
+        } else {
+            read_base_title(&p).unwrap_or_else(|| stem.trim_start_matches("manifest_").to_string())
+        };
+        out.push(DemoInfo {
+            id: stem,
+            title,
+            user_saved,
+        });
     }
-    // Numeric id prefixes (manifest_esr1_01_…) keep the research narrative order.
-    out.sort_by(|a, b| a.id.cmp(&b.id));
     out
 }
 
-fn assets_tarball(id: &str) -> Option<PathBuf> {
-    let dir = bundled_dir()?;
+/// Enumerate bundled `seed/` demos (tests and the no-app-data path).
+pub fn list_demos(locale: Option<&str>) -> Vec<DemoInfo> {
+    list_demos_with_user(locale, None)
+}
+
+pub fn list_demos_with_user(locale: Option<&str>, app_data: Option<&Path>) -> Vec<DemoInfo> {
+    let locale = normalize_locale(locale);
+    let mut user = app_data
+        .map(user_demos_dir)
+        .filter(|dir| dir.is_dir())
+        .map(|dir| list_demos_in(&dir, locale, true))
+        .unwrap_or_default();
+    // Newest user save first (`manifest_user_YYYYMMDD_HHMMSS_*`).
+    user.sort_by(|a, b| b.id.cmp(&a.id));
+    let mut bundled = bundled_dir()
+        .map(|dir| list_demos_in(&dir, locale, false))
+        .unwrap_or_default();
+    bundled.sort_by(|a, b| a.id.cmp(&b.id));
+    let hidden: HashMap<_, _> = app_data
+        .map(load_hidden_ids)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|id| (id, ()))
+        .collect();
+    user.retain(|demo| !hidden.contains_key(&demo.id));
+    let user_ids: HashMap<_, _> = user.iter().map(|d| (d.id.clone(), ())).collect();
+    bundled.retain(|demo| !user_ids.contains_key(&demo.id) && !hidden.contains_key(&demo.id));
+    user.extend(bundled);
+    user
+}
+
+fn assets_tarball_in(dir: &Path, id: &str) -> Option<PathBuf> {
     let suffix = id.strip_prefix("manifest_")?;
     let path = dir.join(format!("assets_{suffix}.tar.gz"));
     path.is_file().then_some(path)
+}
+
+fn assets_tarball(id: &str) -> Option<PathBuf> {
+    demo_search_dirs(None)
+        .into_iter()
+        .find_map(|dir| assets_tarball_in(&dir, id))
 }
 
 /// Extract bundled demo files into `dest` (workspace root), flattening the
 /// `example_*` folder inside each tarball so transcript filenames resolve.
 /// Demos without an assets archive are a no-op.
 pub fn extract_demo_assets(id: &str, dest: &Path) -> Result<(), String> {
-    let Some(tar_path) = assets_tarball(id) else {
+    extract_demo_assets_in(id, dest, &demo_search_dirs(None))
+}
+
+pub(crate) fn extract_demo_assets_in(
+    id: &str,
+    dest: &Path,
+    dirs: &[PathBuf],
+) -> Result<(), String> {
+    let Some(tar_path) = dirs.iter().find_map(|dir| assets_tarball_in(dir, id)) else {
         return Ok(());
     };
     std::fs::create_dir_all(dest).map_err(|e| format!("create demo dest: {e}"))?;
@@ -344,14 +480,21 @@ fn apply_overlay(mut demo: Demo, overlay: DemoI18nOverlay) -> Demo {
     demo
 }
 
-struct DemoManifest {
+pub(crate) struct DemoManifest {
     demo: Demo,
     workspace_files: BTreeMap<String, String>,
+    dir: PathBuf,
 }
 
 fn load_demo_manifest(id: &str) -> Option<DemoManifest> {
-    let dir = bundled_dir()?;
-    let path = dir.join(format!("{id}.json"));
+    load_demo_manifest_from(id, None)
+}
+
+pub(crate) fn load_demo_manifest_from(id: &str, app_data: Option<&Path>) -> Option<DemoManifest> {
+    let (dir, path) = demo_search_dirs(app_data).into_iter().find_map(|dir| {
+        let path = dir.join(format!("{id}.json"));
+        path.is_file().then_some((dir, path))
+    })?;
     let text = std::fs::read_to_string(&path).ok()?;
     let v: Value = serde_json::from_str(&text).ok()?;
     let req = v
@@ -383,7 +526,8 @@ fn load_demo_manifest(id: &str) -> Option<DemoManifest> {
         .pointer("/root_frame/output_data/workspace_files")
         .and_then(|x| serde_json::from_value::<BTreeMap<String, String>>(x.clone()).ok())
         .unwrap_or_default();
-    let title = read_base_title(&path).unwrap_or_else(|| id.trim_start_matches("manifest_").to_string());
+    let title =
+        read_base_title(&path).unwrap_or_else(|| id.trim_start_matches("manifest_").to_string());
     Some(DemoManifest {
         demo: Demo {
             id: id.to_string(),
@@ -394,14 +538,19 @@ fn load_demo_manifest(id: &str) -> Option<DemoManifest> {
             items,
         },
         workspace_files,
+        dir,
     })
 }
 
 /// Load one demo by id (the manifest file stem, e.g. `manifest_esr1_03_rnaseq`).
 pub fn load_demo(id: &str, locale: Option<&str>) -> Option<Demo> {
+    load_demo_from(id, locale, None)
+}
+
+pub fn load_demo_from(id: &str, locale: Option<&str>, app_data: Option<&Path>) -> Option<Demo> {
     let locale = normalize_locale(locale);
-    let mut manifest = load_demo_manifest(id)?;
-    if let Some(overlay) = load_overlay(locale, id) {
+    let mut manifest = load_demo_manifest_from(id, app_data)?;
+    if let Some(overlay) = load_overlay_in(&manifest.dir, locale, id) {
         manifest.demo = apply_overlay(manifest.demo, overlay);
     }
     Some(manifest.demo)
@@ -477,14 +626,25 @@ pub async fn copy_demo_into_project(
     workspace: &Path,
     model_id: &str,
 ) -> Result<String, String> {
-    let manifest =
-        load_demo_manifest(demo_id).ok_or_else(|| format!("demo '{demo_id}' not found"))?;
+    copy_demo_into_project_from(store, demo_id, project_id, workspace, model_id, None).await
+}
+
+pub async fn copy_demo_into_project_from(
+    store: &Store,
+    demo_id: &str,
+    project_id: &str,
+    workspace: &Path,
+    model_id: &str,
+    app_data: Option<&Path>,
+) -> Result<String, String> {
+    let manifest = load_demo_manifest_from(demo_id, app_data)
+        .ok_or_else(|| format!("demo '{demo_id}' not found"))?;
     let messages = demo_items_to_messages(&manifest.demo.items);
     if messages.is_empty() {
         return Err(format!("demo '{demo_id}' has no conversation to copy"));
     }
     write_workspace_files(workspace, &manifest.workspace_files)?;
-    extract_demo_assets(demo_id, workspace)?;
+    extract_demo_assets_in(demo_id, workspace, &demo_search_dirs(app_data))?;
     let frame_id = Uuid::new_v4().to_string();
     store
         .create_frame(&frame_id, project_id, "OPERON", model_id)
@@ -511,6 +671,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
 
+        extract_demo_assets("manifest_01_stats_two_way", &tmp).expect("extract stats assets");
+        assert!(tmp.join("expression_matrix.csv").is_file());
+        assert!(tmp.join("fig1_eda.png").is_file());
+
         extract_demo_assets("manifest_esr1_03_rnaseq", &tmp).expect("extract rnaseq assets");
         assert!(tmp.join("GSE153250_counts_matrix.tsv").is_file());
         assert!(tmp.join("GSE153250_sample_groups.txt").is_file());
@@ -527,16 +691,40 @@ mod tests {
     }
 
     #[test]
+    fn user_saved_demos_list_first() {
+        let tmp = std::env::temp_dir().join(format!("superscience-user-demos-{}", Uuid::new_v4()));
+        let user = tmp.join("user-demos");
+        std::fs::create_dir_all(&user).unwrap();
+        std::fs::write(
+            user.join("manifest_user_20260818_100000_session.json"),
+            r#"{"root_frame":{"input_data":{"request":"Saved two-way ANOVA example."},"output_data":{"response":"done","items":[]}}}"#,
+        )
+        .unwrap();
+        let demos = list_demos_with_user(Some("en"), Some(&tmp));
+        assert_eq!(demos[0].id, "manifest_user_20260818_100000_session");
+        assert!(demos[0].user_saved);
+        assert!(demos
+            .iter()
+            .any(|d| d.id == "manifest_01_stats_two_way" && !d.user_saved));
+        hide_bundled_demo(&tmp, "manifest_01_stats_two_way").unwrap();
+        let demos = list_demos_with_user(Some("en"), Some(&tmp));
+        assert!(!demos.iter().any(|d| d.id == "manifest_01_stats_two_way"));
+        assert!(demos[0].user_saved);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn lists_and_loads_bundled_demos() {
         let demos = list_demos(Some("en"));
         assert_eq!(
             demos.len(),
-            6,
-            "bundled seed should ship the five ESR1 demos plus the long-context memory demo"
+            7,
+            "bundled seed should ship the stats two-way demo, five ESR1 demos, and the long-context memory demo"
         );
         assert_eq!(
             demos.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(),
             [
+                "manifest_01_stats_two_way",
                 "manifest_esr1_01_datasets",
                 "manifest_esr1_02_samples",
                 "manifest_esr1_03_rnaseq",
@@ -584,6 +772,27 @@ mod tests {
             }
         }
 
+        let stats = load_demo("manifest_01_stats_two_way", Some("en")).expect("stats demo");
+        assert!(
+            stats.request.contains("two-way ANOVA") || stats.request.contains("tissue"),
+            "stats demo request should mention the two-way ANOVA / tissue design"
+        );
+        assert!(
+            stats.items.iter().any(|i| i.role == "tool"),
+            "stats demo should include tool operation records"
+        );
+        assert!(
+            stats
+                .items
+                .iter()
+                .any(|i| i.role == "user" && i.text.contains("完整表达矩阵")),
+            "stats demo should keep the uploaded expression-matrix turn"
+        );
+        assert!(
+            stats.response.contains("200") && stats.response.contains("双向方差分析"),
+            "stats demo response should report the two-way ANOVA result"
+        );
+
         let datasets = load_demo("manifest_esr1_01_datasets", Some("en")).expect("datasets demo");
         assert!(
             datasets.request.contains("MCF7") || datasets.request.contains("ESR1"),
@@ -609,7 +818,8 @@ mod tests {
             "rnaseq response should mention the study"
         );
 
-        let downstream = load_demo("manifest_esr1_04_downstream", Some("en")).expect("downstream demo");
+        let downstream =
+            load_demo("manifest_esr1_04_downstream", Some("en")).expect("downstream demo");
         assert!(
             downstream.request.contains("differential")
                 || downstream.request.contains("GSEA")
@@ -617,7 +827,8 @@ mod tests {
             "downstream demo request should mention enrichment/DEG"
         );
 
-        let hypotheses = load_demo("manifest_esr1_05_hypotheses", Some("en")).expect("hypotheses demo");
+        let hypotheses =
+            load_demo("manifest_esr1_05_hypotheses", Some("en")).expect("hypotheses demo");
         assert!(
             hypotheses.request.contains("research projects")
                 || hypotheses.request.contains("scientific"),
@@ -714,13 +925,53 @@ mod tests {
             tokens > 80_000,
             "copied session too short to exercise a real fold: {tokens}"
         );
-        assert!(workspace.join(".wisp/memory/2026-08-13.md").is_file());
-        assert!(workspace.join(".wisp/memory/2025-05-20.md").is_file());
+        assert!(workspace
+            .join(".superscience/memory/2026-08-13.md")
+            .is_file());
+        assert!(workspace
+            .join(".superscience/memory/2025-05-20.md")
+            .is_file());
         assert!(workspace.join("AGENTS.md").is_file());
-        assert!(workspace.join(".wisp/WISP.md").is_file());
+        assert!(workspace.join(".superscience/SUPERSCIENCE.md").is_file());
         let sessions = store.list_sessions("p").await.unwrap();
         assert_eq!(sessions.len(), 1);
         assert!(sessions[0].1.contains("Long-context memory demo"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn copies_stats_two_way_demo_into_a_project_workspace() {
+        let tmp = std::env::temp_dir().join(format!("wisp-copy-stats-{}", Uuid::new_v4()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let store = Store::open(&tmp.join("wisp.sqlite")).await.unwrap();
+        let workspace = tmp.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        store
+            .create_project("p", "Demo Target", workspace.to_str().unwrap())
+            .await
+            .unwrap();
+
+        let session_id = copy_demo_into_project(
+            &store,
+            "manifest_01_stats_two_way",
+            "p",
+            &workspace,
+            "test-model",
+        )
+        .await
+        .expect("copy stats demo");
+
+        let messages = store.load_messages(&session_id).await.unwrap();
+        assert!(messages
+            .iter()
+            .any(|m| m.content.as_text().contains("完整表达矩阵")));
+        assert!(workspace.join("uploads/完整表达矩阵.csv").is_file());
+        assert!(workspace
+            .join("deg-two-way/input/expression_matrix.csv")
+            .is_file());
+        assert!(workspace.join("fig1_eda.png").is_file());
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -741,8 +992,22 @@ mod tests {
     fn chinese_overlay_rewrites_titles_and_request() {
         let en = list_demos(Some("en"));
         let zh = list_demos(Some("zh"));
-        assert_eq!(zh.len(), 5);
-        assert_eq!(en.len(), 5);
+        assert_eq!(zh.len(), 7);
+        assert_eq!(en.len(), 7);
+
+        assert_eq!(zh[0].id, "manifest_01_stats_two_way");
+        let zh_stats = zh
+            .iter()
+            .find(|d| d.id == "manifest_01_stats_two_way")
+            .expect("zh stats");
+        assert!(
+            zh_stats
+                .title
+                .chars()
+                .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+            "zh stats title should contain Chinese characters, got {:?}",
+            zh_stats.title
+        );
 
         let en_first = en
             .iter()
@@ -757,14 +1022,19 @@ mod tests {
             "zh overlay should localize the sidebar title"
         );
         assert!(
-            zh_first.title.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+            zh_first
+                .title
+                .chars()
+                .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
             "zh title should contain Chinese characters, got {:?}",
             zh_first.title
         );
 
         let demo = load_demo("manifest_esr1_01_datasets", Some("zh")).expect("load zh demo");
         assert!(
-            demo.request.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+            demo.request
+                .chars()
+                .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
             "zh request should be Chinese, got {:?}",
             demo.request.chars().take(80).collect::<String>()
         );
@@ -774,7 +1044,9 @@ mod tests {
             .find(|i| i.role == "user")
             .expect("user row");
         assert!(
-            user.text.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+            user.text
+                .chars()
+                .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
             "zh user message should be Chinese"
         );
         // Tool rows remain from the English base.

@@ -28,7 +28,7 @@ pub use tool::Tool;
 
 use serde_json::Value;
 use std::collections::HashSet;
-use wisp_llm::ToolSchema;
+use superscience_llm::ToolSchema;
 
 /// Where a schema in the model request comes from. This is intentionally a
 /// request-time view rather than tool metadata: deferred MCP tools collapse

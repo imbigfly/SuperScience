@@ -1,9 +1,9 @@
 # Headless agent testing
 
-Wisp has two complementary headless interfaces:
+SuperScience has two complementary headless interfaces:
 
-- `wisp-science eval` runs repeatable agent conformance and regression suites.
-- `wisp-science rpc` runs a long-lived agent over a versioned JSONL stdin/stdout protocol.
+- `superscience eval` runs repeatable agent conformance and regression suites.
+- `superscience rpc` runs a long-lived agent over a versioned JSONL stdin/stdout protocol.
 
 Both exercise the production `Agent` loop and tool registry. The default eval
 suite uses a deterministic scripted provider, temporary workspaces, and fixture
@@ -15,7 +15,7 @@ scheduler, Python, or R installation.
 Run the built-in suite:
 
 ```bash
-cargo run -p wisp-cli -- eval \
+cargo run -p superscience-cli -- eval \
   --artifacts target/headless-agent-eval \
   --save target/headless-agent-eval/report.json
 ```
@@ -30,13 +30,13 @@ Useful selection and stress controls:
 
 ```bash
 # Select by stable case id or require a tag.
-cargo run -p wisp-cli -- eval --case targeted-edit --tag filesystem
+cargo run -p superscience-cli -- eval --case targeted-edit --tag filesystem
 
 # Detect nondeterminism and exercise concurrent workspace isolation.
-cargo run -p wisp-cli -- eval --repeat 20 --parallel 4
+cargo run -p superscience-cli -- eval --repeat 20 --parallel 4
 
 # Preserve only failed temporary projects for investigation.
-cargo run -p wisp-cli -- eval \
+cargo run -p superscience-cli -- eval \
   --keep-failed-workspace --artifacts target/headless-agent-eval
 ```
 
@@ -52,7 +52,7 @@ rate is below the requested threshold, or a baseline regression crosses a
 configured threshold:
 
 ```bash
-cargo run -p wisp-cli -- eval \
+cargo run -p superscience-cli -- eval \
   --max-tool-calls 8 \
   --max-input-tokens 200000 \
   --max-duration-ms 15000 \
@@ -60,8 +60,8 @@ cargo run -p wisp-cli -- eval \
   --input-cost-microusd-per-million 3000000 \
   --output-cost-microusd-per-million 15000000
 
-cargo run -p wisp-cli -- eval --save baseline.json
-cargo run -p wisp-cli -- eval \
+cargo run -p superscience-cli -- eval --save baseline.json
+cargo run -p superscience-cli -- eval \
   --compare baseline.json \
   --max-token-regression-percent 10 \
   --max-round-regression 2 \
@@ -72,13 +72,13 @@ Cost rates are explicit integer micro-USD per million tokens; offline defaults
 are zero. Cached input is excluded from the billable input estimate.
 
 Use `--mode live` to run the same declarative suite against the configured
-provider. Live mode requires the normal `WISP_API_KEY`, `WISP_PROVIDER`, and
-`WISP_MODEL` environment variables. Scripted steps are ignored in live mode;
+provider. Live mode requires the normal `SUPERSCIENCE_API_KEY`, `SUPERSCIENCE_PROVIDER`, and
+`SUPERSCIENCE_MODEL` environment variables. Scripted steps are ignored in live mode;
 live suites should use tolerant semantic assertions rather than exact prose.
 
 ### Memory and compaction dataset
 
-`crates/wisp-cli/eval-suites/memory-v1.yaml` is a deterministic offline
+`crates/superscience-cli/eval-suites/memory-v1.yaml` is a deterministic offline
 dataset for the memory mechanism. It verifies three axes:
 
 1. **Compression without forgetting.** One scenario per compaction trigger
@@ -89,22 +89,22 @@ dataset for the memory mechanism. It verifies three axes:
    `max_compaction_ratio_percent`, and asserts through `final_request_contains`
    / `final_request_not_contains` that the post-compaction request still
    carries the early facts, the `[context summary checkpoint]`, the
-   `wisp-history:` archive pointer, and the recent tail, while the folded
+   `superscience-history:` archive pointer, and the recent tail, while the folded
    filler is gone.
 2. **Retrieval correctness.** `search_memory` scenarios over seeded
-   `.wisp/memory/*.md` notes: multi-query fan-out that must return the right
+   `.superscience/memory/*.md` notes: multi-query fan-out that must return the right
    chunk and exclude distractors, CJK matching, an explicit empty-result miss,
    and the setting gate (the tool is not registered while memory is disabled).
-3. **Stage loading.** Session-start rules (`AGENTS.md` + `.wisp/WISP.md` in
+3. **Stage loading.** Session-start rules (`AGENTS.md` + `.superscience/SUPERSCIENCE.md` in
    the system prompt), per-turn ephemeral host injection reaching the provider
    request, injections *not* surviving a restart as durable history, and
    durable project notes remaining retrievable after a restart.
 
 ```bash
-cargo run -p wisp-cli -- eval --suite crates/wisp-cli/eval-suites/memory-v1.yaml
+cargo run -p superscience-cli -- eval --suite crates/superscience-cli/eval-suites/memory-v1.yaml
 ```
 
-The suite also runs inside `cargo test -p wisp-cli` so regressions surface in
+The suite also runs inside `cargo test -p superscience-cli` so regressions surface in
 the normal workspace test run. Case knobs added for this dataset:
 `memory_enabled` registers the production `search_memory` tool, and
 `runtime_injections` mirrors the host's per-turn global-memory injection.
@@ -116,7 +116,7 @@ compaction or restart. Scripted steps may fail deterministically with
 
 ### Cross-model compaction benchmark
 
-The repository includes `crates/wisp-cli/eval-suites/live-compaction-v1.yaml`
+The repository includes `crates/superscience-cli/eval-suites/live-compaction-v1.yaml`
 for comparing models after production semantic compaction. It measures exact
 task continuity in a realistic longitudinal-study handoff. Before compaction,
 the model must discover and read study inputs, calculate cohort results with
@@ -130,13 +130,13 @@ Configure one provider endpoint/key, then repeat `--model` for every model that
 endpoint exposes:
 
 ```bash
-export WISP_API_KEY=<provider-key>
-export WISP_PROVIDER=openai
-export WISP_API_URL=https://api.example.com/v1
+export SUPERSCIENCE_API_KEY=<provider-key>
+export SUPERSCIENCE_PROVIDER=openai
+export SUPERSCIENCE_API_URL=https://api.example.com/v1
 
-cargo run -p wisp-cli -- eval \
+cargo run -p superscience-cli -- eval \
   --mode live \
-  --suite crates/wisp-cli/eval-suites/live-compaction-v1.yaml \
+  --suite crates/superscience-cli/eval-suites/live-compaction-v1.yaml \
   --model model-a \
   --model model-b \
   --model model-c \
@@ -159,7 +159,7 @@ providers, then compare their saved reports independently.
 
 ### Live memory dataset
 
-`crates/wisp-cli/eval-suites/live-memory-v1.yaml` runs the memory mechanism
+`crates/superscience-cli/eval-suites/live-memory-v1.yaml` runs the memory mechanism
 against a real configured model. It covers the same three axes as the offline
 `memory-v1` dataset, with assertions that still work without a scripted
 provider snapshot:
@@ -170,11 +170,11 @@ provider snapshot:
    model must report those values without reading the archive. The scenario
    must actually compact, shrink to at most 80% of its original token
    estimate, and finish through `attempt_completion`.
-2. **Retrieval.** Facts exist only in `.wisp/memory/*.md`. The model must
+2. **Retrieval.** Facts exist only in `.superscience/memory/*.md`. The model must
    call `search_memory` and use the retrieved chunk, including a CJK query
    and durable notes that remain retrievable after `restart`. Distractor
    studies must not leak into the answer.
-3. **Stage loading.** `AGENTS.md`, `.wisp/WISP.md`, and a per-turn
+3. **Stage loading.** `AGENTS.md`, `.superscience/SUPERSCIENCE.md`, and a per-turn
    `<global_memory>` injection must appear in the live completion.
 
 Overflow recovery, the memory-off tool gate, and `final_request_*` body
@@ -182,13 +182,13 @@ checks stay in the offline dataset: a live provider cannot script a
 deterministic 400, and live mode does not record request snapshots.
 
 ```bash
-export WISP_API_KEY=<provider-key>
-export WISP_PROVIDER=openai
-export WISP_API_URL=https://api.example.com/v1
+export SUPERSCIENCE_API_KEY=<provider-key>
+export SUPERSCIENCE_PROVIDER=openai
+export SUPERSCIENCE_API_URL=https://api.example.com/v1
 
-cargo run -p wisp-cli -- eval \
+cargo run -p superscience-cli -- eval \
   --mode live \
-  --suite crates/wisp-cli/eval-suites/live-memory-v1.yaml \
+  --suite crates/superscience-cli/eval-suites/live-memory-v1.yaml \
   --model model-a \
   --parallel 1 \
   --artifacts target/live-memory \
@@ -203,7 +203,7 @@ they never require an API key.
 The same long-context scenario is also bundled as an Example-project demo
 (`seed/manifest_memory_01_long_context.json`). Open **Example project**,
 right-click **Long-context memory demo**, and choose **Copy to a project…**
-to materialize the transcript (and `.wisp/memory` notes) in a real workspace.
+to materialize the transcript (and `.superscience/memory` notes) in a real workspace.
 The transcript is a complete GSE153250 ESR1-knockdown RNA-seq analysis
 session recorded live with the wisp CLI (58 turns, ~104K estimated tokens;
 see `scripts/export_memory_demo.py`). The opening assistant turn locks the
@@ -268,7 +268,7 @@ include the provider call ID and full parsed arguments when available. Setup
 diagnostics go to stderr, leaving stdout machine-readable.
 
 ```bash
-cargo run -p wisp-cli -- run --output jsonl "Inspect this project"
+cargo run -p superscience-cli -- run --output jsonl "Inspect this project"
 ```
 
 This mode is intentionally non-interactive: an approval request is emitted and
@@ -279,7 +279,7 @@ denied. Use RPC when the controller must answer approvals or cancel a turn.
 Start a persistent process with the normal provider configuration:
 
 ```bash
-cargo run -p wisp-cli -- rpc
+cargo run -p superscience-cli -- rpc
 ```
 
 Commands are one JSON object per stdin line. All commands must use
@@ -299,7 +299,7 @@ While a turn is active the controller may send `ping`, `cancel`,
 `approval_response`, or `shutdown`; a second prompt is rejected. Every event
 has the schema, sequence, process `session_id`, and relevant `command_id`.
 
-When a tool needs confirmation, Wisp emits:
+When a tool needs confirmation, SuperScience emits:
 
 ```json
 {"schema":"wisp.agent-rpc.v1","type":"approval_required","approval_id":"...","message":"Run tool 'write'?", "command_id":"turn-1"}

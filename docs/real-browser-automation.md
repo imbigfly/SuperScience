@@ -2,11 +2,11 @@
 
 > **Acknowledgement:** this feature is inspired by GenericAgent's
 > [GA Web / TMWebDriver](https://github.com/lsdefine/GenericAgent) architecture.
-> Wisp's Rust bridge and Manifest V3 extension are an independent
+> SuperScience's Rust bridge and Manifest V3 extension are an independent
 > implementation. Detailed provenance is bundled in
 > `browser-extension/NOTICE.md`.
 
-Wisp exposes `web_scan` and `web_execute_js` against tabs in the user's existing
+SuperScience exposes `web_scan` and `web_execute_js` against tabs in the user's existing
 Chrome/Chromium profile. It does not start Playwright, Selenium, a headless
 browser, or a temporary profile. The controlled pages therefore keep the
 profile's cookies and login state, installed extensions, GPU/WebGL behavior,
@@ -14,27 +14,27 @@ and normal browser fingerprint.
 
 ## Install the bridge extension
 
-The user can ask Wisp to **configure the browser**. The Agent calls the
+The user can ask SuperScience to **configure the browser**. The Agent calls the
 read-only `browser_setup` tool and reports the current connection status, the
 exact extension directory on that installation, and the following steps.
 
-1. Start Wisp Science.
-2. Open `chrome://extensions` in the Chrome/Chromium profile Wisp should use.
+1. Start SuperScience.
+2. Open `chrome://extensions` in the Chrome/Chromium profile SuperScience should use.
 3. Enable **Developer mode**.
 4. Choose **Load unpacked** and select the bundled `browser-extension/`
    directory. In a source checkout this is the repository's
    `browser-extension/` directory. An installed build reports its exact bundled
    path through `browser_setup`. Select the directory itself, not an individual
-   file or archive inside it. The reported path comes from the running Wisp
-   binary's native Tauri resource directory and must be copied verbatim; Wisp
+   file or archive inside it. The reported path comes from the running SuperScience
+   binary's native Tauri resource directory and must be copied verbatim; SuperScience
    never translates it between Windows, WSL, macOS, or Linux path formats.
-5. Open the extension popup and confirm that it says **Connected to Wisp**.
+5. Open the extension popup and confirm that it says **Connected to SuperScience**.
 
-If the extension is not connected, live page retrieval fails closed. Wisp
+If the extension is not connected, live page retrieval fails closed. SuperScience
 shows a chat banner that the current answer includes no live web results,
 and the Agent must stop on live, latest, current, or URL-specific requests
 instead of answering from memory. After Chrome is open and the popup shows
-**Connected to Wisp**, use **Retry after connecting** to run the same
+**Connected to SuperScience**, use **Retry after connecting** to run the same
 request again.
 
 The banner describes the answer on screen, not the session. It is derived from
@@ -45,11 +45,11 @@ turn can mix refused attempts with successful ones and still be a live answer.
 A connected extension also counts as connected even when a build cannot verify
 its own bundled `browser-extension/` copy.
 
-The unpacked extension remains installed in that browser profile across Wisp
-and browser restarts. After updating Wisp, click **Reload** on the extension
+The unpacked extension remains installed in that browser profile across SuperScience
+and browser restarts. After updating SuperScience, click **Reload** on the extension
 card in `chrome://extensions` so the service worker picks up `wait_tab.js`.
-It reconnects to `ws://127.0.0.1:18765` when Wisp is running. Only loopback
-connections whose WebSocket origin is a Chrome extension with Wisp's bundled,
+It reconnects to `ws://127.0.0.1:18765` when SuperScience is running. Only loopback
+connections whose WebSocket origin is a Chrome extension with SuperScience's bundled,
 stable extension ID are accepted.
 
 ## Human-verification handoff
@@ -62,7 +62,7 @@ and wait for confirmation. It then scans the same tab again and continues only
 after the challenge is gone. The persistent browser profile keeps any clearance
 cookie issued after the manual verification.
 
-Wisp does not attempt to click, solve, or bypass CAPTCHA challenges. A page that
+SuperScience does not attempt to click, solve, or bypass CAPTCHA challenges. A page that
 merely mentions the phrase **Are you a robot?** without the accompanying
 human-verification prompt does not trigger the handoff.
 
@@ -70,7 +70,7 @@ human-verification prompt does not trigger the handoff.
 
 GA Web controls web-page tabs. It cannot operate Chrome/Edge toolbar download
 bubbles or native operating-system **Open**, **Save**, and **Save As** dialogs.
-Page JavaScript and the Wisp extension cannot access those browser or operating
+Page JavaScript and the SuperScience extension cannot access those browser or operating
 system surfaces.
 
 For unattended browser downloads, make this one-time browser-profile change:
@@ -79,14 +79,14 @@ For unattended browser downloads, make this one-time browser-profile change:
    `edge://settings/downloads` in Edge.
 2. Turn off **Ask where to save each file before downloading**.
 3. Downloads will then use the browser's configured default download directory
-   without opening a native location prompt. An authorized Wisp filesystem tool
+   without opening a native location prompt. An authorized SuperScience filesystem tool
    can process or move the saved file afterward.
 
 For unattended batches that download more than one file from the same site:
 
-1. Before triggering the batch, Wisp explains the following browser settings
+1. Before triggering the batch, SuperScience explains the following browser settings
    and waits for the user to confirm that configuration is complete. Until the
-   user confirms, Wisp downloads at most one file.
+   user confirms, SuperScience downloads at most one file.
 2. Open `chrome://settings/content/automaticDownloads` in Chrome, or
    `edge://settings/content/automaticDownloads` in Edge.
 3. Add only the trusted target site to **Allowed to automatically download
@@ -126,7 +126,7 @@ These settings must be changed manually because internal settings pages such as
   scroll with `web_execute_js` to reach content below the fold. It needs a
   vision-capable model configured in **Settings → Models**, like `view_image`.
 
-Both tools normally require at least one Wisp approval. The approval can be
+Both tools normally require at least one SuperScience approval. The approval can be
 granted once, for the session, for the project, or globally through the existing
 approval card. A conversation with **Full Permission** enabled auto-approves the
 same request. Treat broad grants carefully: the extension has access to every
@@ -138,14 +138,14 @@ HTTP(S) tab in that Chrome profile.
   to reconnect. It has no dedicated cookie-export API, does not remove page CSP,
   disable dialogs, or change content settings. Approved page JavaScript or raw
   CDP commands are still powerful and should be treated as access to the tab.
-- Ordinary execution uses Chrome's scripting API. Wisp falls back to a temporary
+- Ordinary execution uses Chrome's scripting API. SuperScience falls back to a temporary
   CDP attachment only when page CSP prevents that execution, or when the caller
   explicitly requests a CDP method.
 - Chrome internal pages such as `chrome://settings` cannot be scripted. Only
   HTTP(S) tabs are advertised.
 - JavaScript-created DOM events are not trusted events. Use an explicitly
   approved CDP `Input.*` command when a site requires trusted input.
-- Wisp and GenericAgent's TMWebDriver use the same default port. Run only one
+- SuperScience and GenericAgent's TMWebDriver use the same default port. Run only one
   bridge server on port `18765` at a time.
 - **Settings → Browser** stores global host block and prefer lists. A blocked
   host (and its subdomains) cannot be opened or navigated to through

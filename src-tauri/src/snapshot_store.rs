@@ -90,8 +90,10 @@ pub(crate) fn capture_file(
 
         let checksum = hex::encode(digest.finalize());
         if output.is_some() {
-            let destination_dir =
-                secure_directory(&root, &[".superscience", "artifacts", "sha256", &checksum[..2]])?;
+            let destination_dir = secure_directory(
+                &root,
+                &[".superscience", "artifacts", "sha256", &checksum[..2]],
+            )?;
             let destination = destination_dir.join(snapshot_filename(&checksum, &source));
             let temp = temp_path
                 .as_ref()

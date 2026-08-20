@@ -50,7 +50,7 @@ cases:
       completion_contains: ["EARLY_FACT_ALPHA=0.05", "EARLY_FACT_BETA=HCC-2024"]
       final_request_contains:
         - "[context summary checkpoint]"
-        - "wisp-history:"
+        - "superscience-history:"
         - EARLY_FACT_ALPHA
         - EARLY_FACT_BETA
         - RECENT_NOTE_TWO
@@ -86,7 +86,7 @@ cases:
       completion_contains: ["EARLY_FACT_ALPHA=0.05", "EARLY_FACT_BETA=HCC-2024"]
       final_request_contains:
         - "[context summary checkpoint]"
-        - "wisp-history:"
+        - "superscience-history:"
         - EARLY_FACT_ALPHA
         - EARLY_FACT_BETA
         - RECENT_NOTE_TWO
@@ -121,12 +121,12 @@ cases:
       completion_contains: ["EARLY_FACT_ALPHA=0.05", "EARLY_FACT_BETA=HCC-2024"]
       final_request_contains:
         - "[context summary checkpoint]"
-        - "wisp-history:"
+        - "superscience-history:"
         - EARLY_FACT_ALPHA
         - EARLY_FACT_BETA
       final_request_not_contains: [FORGOTTEN_FILLER_ZZZ]
 
-  # --- 2. Retrieval: search_memory over seeded .wisp/memory notes ---------
+  # --- 2. Retrieval: search_memory over seeded .superscience/memory notes ---------
 
   - id: memory-retrieval-multi-query
     description: Complementary exact+concept queries retrieve the right chunk and only that chunk.
@@ -135,7 +135,7 @@ cases:
     memory_enabled: true
     allowed_tools: [search_memory, attempt_completion]
     files:
-      .wisp/memory/2025-06-01.md: |
+      .superscience/memory/2025-06-01.md: |
         [TURN-MEMORY · session demo1 · turn 2]
         MEMORY_FACT_TS999: the QC threshold for study TS-999 is min_genes=200.
 
@@ -170,7 +170,7 @@ cases:
     memory_enabled: true
     allowed_tools: [search_memory, attempt_completion]
     files:
-      .wisp/memory/2025-05-20.md: |
+      .superscience/memory/2025-05-20.md: |
         [TURN-MEMORY · session demo2 · turn 5]
         MEMORY_FACT_CJK：单细胞分析内存不足时使用 backed 模式分批读取。
     script:
@@ -194,7 +194,7 @@ cases:
     memory_enabled: true
     allowed_tools: [search_memory, attempt_completion]
     files:
-      .wisp/memory/2025-06-01.md: |
+      .superscience/memory/2025-06-01.md: |
         [TURN-MEMORY · session demo1 · turn 2]
         MEMORY_FACT_TS999: the QC threshold for study TS-999 is min_genes=200.
     script:
@@ -233,13 +233,13 @@ cases:
   # --- 3. Loading stages: session start, per-turn injection, durable notes -
 
   - id: stage-session-start-rules-loaded
-    description: AGENTS.md and .wisp/WISP.md are loaded into the seeded system prompt.
+    description: AGENTS.md and .superscience/SUPERSCIENCE.md are loaded into the seeded system prompt.
     tags: [memory, stage, session-start]
     prompt: Confirm which project rules are loaded.
     allowed_tools: [attempt_completion]
     files:
       AGENTS.md: "PROJECT_RULE_MARKER_71: always report units in the final answer.\n"
-      .wisp/WISP.md: "USER_RULE_MARKER_72: prefer concise summaries.\n"
+      .superscience/SUPERSCIENCE.md: "USER_RULE_MARKER_72: prefer concise summaries.\n"
     script:
       - tool_calls:
           - {id: done-1, name: attempt_completion, arguments: {result: "loaded PROJECT_RULE_MARKER_71 and USER_RULE_MARKER_72"}}
@@ -290,7 +290,7 @@ cases:
     memory_enabled: true
     allowed_tools: [search_memory, attempt_completion]
     files:
-      .wisp/memory/2025-04-10.md: |
+      .superscience/memory/2025-04-10.md: |
         [TURN-MEMORY · session demo3 · turn 7]
         MEMORY_FACT_DURABLE_55: the atlas normalization uses CPM with log1p.
     script:

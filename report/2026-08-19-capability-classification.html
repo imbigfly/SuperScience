@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>天成科研助手 · 能力卡片分类报告</title>
+  <style>
+    :root {
+      --bg: #f4f1ea;
+      --paper: #fffdf8;
+      --ink: #1c1914;
+      --muted: #6b6458;
+      --line: #e4ddd0;
+      --accent: #1f4d3a;
+      --accent-soft: #e7f0ea;
+      --warn: #8a4b12;
+      --warn-soft: #f8efe3;
+      --gap: #6b3d5c;
+      --gap-soft: #f4e8ef;
+      --chip: #ece7dc;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: "Source Han Sans SC", "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(1200px 500px at 10% -10%, #e8efe8 0%, transparent 55%),
+        var(--bg);
+      color: var(--ink);
+      line-height: 1.65;
+    }
+    .wrap { max-width: 1080px; margin: 0 auto; padding: 40px 24px 80px; }
+    header.hero {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 36px 40px 32px;
+      box-shadow: 0 10px 30px rgba(28, 25, 20, 0.04);
+    }
+    .kicker {
+      font-size: 12px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--accent);
+      font-weight: 700;
+      margin: 0 0 10px;
+    }
+    h1 { margin: 0 0 10px; font-size: 32px; letter-spacing: -0.03em; line-height: 1.25; }
+    .lead { margin: 0; color: var(--muted); max-width: 46em; }
+    .meta {
+      display: flex; flex-wrap: wrap; gap: 8px;
+      margin-top: 22px;
+    }
+    .pill {
+      background: var(--chip);
+      border-radius: 999px;
+      padding: 4px 12px;
+      font-size: 13px;
+      color: var(--ink);
+    }
+    nav.toc {
+      margin: 28px 0 8px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 10px;
+    }
+    nav.toc a {
+      text-decoration: none;
+      color: inherit;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+    }
+    nav.toc a:hover { border-color: #c9c0af; }
+    nav.toc strong { font-size: 14px; }
+    nav.toc span { color: var(--muted); font-size: 13px; }
+    section {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 28px 32px 24px;
+      margin-top: 18px;
+    }
+    h2 { margin: 0 0 8px; font-size: 22px; letter-spacing: -0.02em; }
+    h3 { margin: 22px 0 8px; font-size: 16px; }
+    p.note { color: var(--muted); margin: 0 0 16px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 10px 12px; vertical-align: top; border-top: 1px solid var(--line); }
+    th { font-size: 12px; letter-spacing: 0.06em; color: var(--muted); font-weight: 700; }
+    tr:first-child th { border-top: 0; }
+    .tag {
+      display: inline-block;
+      font-size: 12px;
+      padding: 1px 8px;
+      border-radius: 999px;
+      background: var(--chip);
+      white-space: nowrap;
+    }
+    .tag.preview { background: #f3e6d4; color: var(--warn); }
+    .tag.misplaced { background: var(--warn-soft); color: var(--warn); }
+    .tag.gap { background: var(--gap-soft); color: var(--gap); }
+    .callout {
+      background: var(--accent-soft);
+      border-radius: 12px;
+      padding: 12px 14px;
+      color: #24483a;
+      font-size: 14px;
+    }
+    .callout.warn { background: var(--warn-soft); color: #5e3510; }
+    .callout.gap { background: var(--gap-soft); color: #4d2a42; }
+    ul.suggest { margin: 8px 0 0; padding-left: 1.2em; }
+    ul.suggest li { margin: 8px 0; }
+    .bars { display: grid; gap: 8px; margin: 8px 0 4px; }
+    .bar-row { display: grid; grid-template-columns: 160px 1fr 36px; gap: 10px; align-items: center; font-size: 13px; }
+    .bar { height: 10px; background: #eee8db; border-radius: 999px; overflow: hidden; }
+    .bar > i { display: block; height: 100%; background: var(--accent); border-radius: inherit; }
+    .bar.thin > i { background: #9a3f6c; }
+    footer {
+      margin-top: 28px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    @media print {
+      body { background: #fff; }
+      .wrap { padding: 0; }
+      header.hero, section { box-shadow: none; break-inside: avoid; }
+      nav.toc { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="hero">
+      <p class="kicker">Capability classification · 2026-08-19</p>
+      <h1>能力卡片分类报告</h1>
+      <p class="lead">
+        对照天成科研助手当前首页 / 设置「能力」里的 <strong>49 张卡片</strong>（另加首页「科研主任」入口），
+        按科研标准过程重归类。一张卡只标一个主归属；跨阶段用法在备注里说明。
+      </p>
+      <div class="meta">
+        <span class="pill">来源：ui/src/capabilities_home.rs · capability_catalog()</span>
+        <span class="pill">现有 Tab：论文撰写 / AI画图 / 数据清洗 / 统计分析 / 结构与组学 / 研究资产 / 协作扩展</span>
+        <span class="pill">目标分类：选题立项 · 研究设计 · 实施分析 · 写作发表 · AI画图 · 数据清洗 · 协作扩展</span>
+      </div>
+    </header>
+
+    <nav class="toc">
+      <a href="#s1"><strong>1. 选题与立项</strong><span>10</span></a>
+      <a href="#s2"><strong>2. 研究设计与规划</strong><span>1</span></a>
+      <a href="#s3"><strong>3. 研究实施与数据分析</strong><span>7</span></a>
+      <a href="#s4"><strong>4. 论文写作与发表</strong><span>13</span></a>
+      <a href="#s5"><strong>5. AI画图</strong><span>8</span></a>
+      <a href="#s6"><strong>6. 数据清洗</strong><span>1+2</span></a>
+      <a href="#s7"><strong>7. 协作扩展</strong><span>4</span></a>
+      <a href="#other"><strong>未自然落入</strong><span>4+1</span></a>
+    </nav>
+
+    <section>
+      <h2>数量一览</h2>
+      <p class="note">主归属合计 49 张卡片。后三类是横切工具，不是科研阶段。</p>
+      <div class="bars">
+        <div class="bar-row"><span>选题与立项</span><div class="bar"><i style="width:77%"></i></div><b>10</b></div>
+        <div class="bar-row"><span>研究设计与规划</span><div class="bar thin"><i style="width:8%"></i></div><b>1</b></div>
+        <div class="bar-row"><span>研究实施与数据分析</span><div class="bar"><i style="width:54%"></i></div><b>7</b></div>
+        <div class="bar-row"><span>论文写作与发表</span><div class="bar"><i style="width:100%"></i></div><b>13</b></div>
+        <div class="bar-row"><span>AI画图</span><div class="bar"><i style="width:62%"></i></div><b>8</b></div>
+        <div class="bar-row"><span>数据清洗（含错位）</span><div class="bar"><i style="width:23%"></i></div><b>3</b></div>
+        <div class="bar-row"><span>协作扩展</span><div class="bar"><i style="width:31%"></i></div><b>4</b></div>
+        <div class="bar-row"><span>工作台 / 未归入</span><div class="bar"><i style="width:23%"></i></div><b>3</b></div>
+      </div>
+      <p class="note" style="margin-top:14px">13 + 10 + 8 + 7 + 4 + 3 + 3 + 1 = 49。首页「科研主任」不是目录卡片，单独列出。</p>
+    </section>
+
+    <section id="s1">
+      <h2>1. 选题与立项</h2>
+      <p class="note">文献摸底、找缺口、写本子。现有「研究资产」里的检索/阅读，大部分应落到这里。</p>
+      <table>
+        <tr><th>卡片</th><th>现在所在 Tab</th><th>归入理由</th></tr>
+        <tr><td>基金/开题写作</td><td><span class="tag">论文撰写</span></td><td>直接写立项本子、开题报告</td></tr>
+        <tr><td>深度学术调研</td><td><span class="tag">论文撰写</span></td><td>围绕问题做带引用的调研简报；后期写作也会再用</td></tr>
+        <tr><td>跨库文献检索</td><td><span class="tag">研究资产</span></td><td>多库检索、去重、出文献表 / BibTeX</td></tr>
+        <tr><td>多源文献检索</td><td><span class="tag">研究资产</span></td><td>检索，并可看引用关系</td></tr>
+        <tr><td>文献流水线</td><td><span class="tag">研究资产</span></td><td>检索 → 打分 → 精读 → 归档</td></tr>
+        <tr><td>合法全文获取</td><td><span class="tag">研究资产</span></td><td>按 DOI / 题名走合法途径取 PDF</td></tr>
+        <tr><td>深读论文卡片</td><td><span class="tag">研究资产</span></td><td>单篇主张、方法、图、局限</td></tr>
+        <tr><td>中英对照阅读器</td><td><span class="tag">研究资产</span></td><td>PDF 精读</td></tr>
+        <tr><td>文本知识图谱</td><td><span class="tag">统计分析</span></td><td>从文献抽出关系，辅助找缺口</td></tr>
+        <tr><td>生物数据库</td><td><span class="tag">统计分析</span></td><td>PubMed / GEO / UniProt / PDB 摸底；实施阶段也会查</td></tr>
+      </table>
+    </section>
+
+    <section id="s2">
+      <h2>2. 研究设计与规划</h2>
+      <p class="note">这一类几乎是空的。现有卡片里，只有「管过程」比较贴，没有真正的方案设计。</p>
+      <div class="callout gap">缺口：纳入/排除标准、样本量与把握度、随机化与分组、伦理与注册、实验协议、统计分析计划（SAP）。现有统计卡偏「已经有数据了再算」，不是「还没做先设计」。</div>
+      <table>
+        <tr><th>卡片</th><th>现在所在 Tab</th><th>归入理由</th></tr>
+        <tr><td>研究图谱</td><td><span class="tag">研究资产</span></td><td>看问题、数据、产物、决策如何串起来</td></tr>
+      </table>
+      <h3>勉强可兼放，但不作主归属</h3>
+      <table>
+        <tr><th>卡片</th><th>更合适的主归属</th><th>说明</th></tr>
+        <tr><td>研究到成稿流水线</td><td>论文写作与发表</td><td>名字像规划，实际是调研→写→审→改</td></tr>
+        <tr><td>统计建模与检验</td><td>研究实施与数据分析</td><td>可以做样本量，卡片主业仍是事后分析</td></tr>
+      </table>
+    </section>
+
+    <section id="s3">
+      <h2>3. 研究实施与数据分析</h2>
+      <p class="note">进实验室、上机、跑分析、留记录。清洗单独成类，不重复计入。</p>
+      <table>
+        <tr><th>卡片</th><th>现在所在 Tab</th><th>归入理由</th></tr>
+        <tr><td>统计建模与检验</td><td><span class="tag">统计分析</span></td><td>假设检验、回归、探索性分析</td></tr>
+        <tr><td>Python / R 分析</td><td><span class="tag">统计分析</span></td><td>活会话里算、出可编辑图</td></tr>
+        <tr><td>统计报告审核</td><td><span class="tag">统计分析</span></td><td>核 p 值、置信区间和表述；也服务写作</td></tr>
+        <tr><td>结构预测与分子设计</td><td><span class="tag">结构与组学</span></td><td>折叠、对接、序列设计</td></tr>
+        <tr><td>单细胞与分析流程</td><td><span class="tag">结构与组学</span></td><td>scvi / scGPT 一类可复现流程</td></tr>
+        <tr><td>实验日志</td><td><span class="tag">研究资产</span></td><td>把台账整理成结构化记录</td></tr>
+        <tr><td>远程算力与长任务</td><td><span class="tag">统计分析</span></td><td>SSH / WSL / 长任务，是实施基础设施</td></tr>
+      </table>
+    </section>
+
+    <section id="s4">
+      <h2>4. 论文写作与发表</h2>
+      <p class="note">从起草到修回、证据冻结、专利初稿。现有「论文撰写」的主体在这里。</p>
+      <table>
+        <tr><th>卡片</th><th>现在所在 Tab</th><th>归入理由</th></tr>
+        <tr><td>学术论文写作</td><td><span class="tag">论文撰写</span></td><td>提纲、各节、改稿、排版</td></tr>
+        <tr><td>研究到成稿流水线</td><td><span class="tag">论文撰写</span></td><td>端到端成稿编排</td></tr>
+        <tr><td>多角色审稿</td><td><span class="tag">论文撰写</span></td><td>投稿前多视角挑刺</td></tr>
+        <tr><td>Nature 风格起草</td><td><span class="tag">论文撰写</span></td><td>按顶刊口吻写章节</td></tr>
+        <tr><td>Nature 风格润色</td><td><span class="tag">论文撰写</span></td><td>措辞和语气</td></tr>
+        <tr><td>去除AI痕迹</td><td><span class="tag">论文撰写</span></td><td>去套话和机械句式</td></tr>
+        <tr><td>Nature 引用补全</td><td><span class="tag">论文撰写</span></td><td>给段落补参考文献</td></tr>
+        <tr><td>修回信/答复信</td><td><span class="tag">论文撰写</span></td><td>按条回审稿人</td></tr>
+        <tr><td>投稿前模拟审稿</td><td><span class="tag">论文撰写</span></td><td>审稿人口吻预审</td></tr>
+        <tr><td>数据可用性 / FAIR</td><td><span class="tag">论文撰写</span></td><td>数据可用性声明与共享方案</td></tr>
+        <tr><td>参考文献核验</td><td><span class="tag">论文撰写</span></td><td>核题名、年份、作者、DOI</td></tr>
+        <tr><td>论文转专利初稿</td><td><span class="tag">论文撰写</span></td><td>发表后的知识产权</td></tr>
+        <tr><td>论文证据工作区</td><td><span class="tag">研究资产</span></td><td>冻结某一稿的证据，供事后核对</td></tr>
+      </table>
+    </section>
+
+    <section id="s5">
+      <h2>5. AI画图</h2>
+      <p class="note">与当前产品分组一致。其中 3 张仍是预告卡，点击不会开工。</p>
+      <table>
+        <tr><th>卡片</th><th>状态</th><th>说明</th></tr>
+        <tr><td>投稿级科研作图</td><td>可用</td><td>Python / R 投稿图</td></tr>
+        <tr><td>R语言生信图</td><td>可用</td><td>火山图、热图、PCA、生存曲线等</td></tr>
+        <tr><td>AI 插图生成</td><td>可用</td><td>调用已配置的生图模型</td></tr>
+        <tr><td>论文转组会 PPT</td><td>可用</td><td>更接近「发表与汇报」，见建议</td></tr>
+        <tr><td>PPT Master</td><td>可用</td><td>首次使用会下载技能</td></tr>
+        <tr><td>AI机制图</td><td><span class="tag preview">预告</span></td><td>点了不开工</td></tr>
+        <tr><td>图片可编辑</td><td><span class="tag preview">预告</span></td><td>点了不开工</td></tr>
+        <tr><td>生信图布局</td><td><span class="tag preview">预告</span></td><td>点了不开工</td></tr>
+      </table>
+    </section>
+
+    <section id="s6">
+      <h2>6. 数据清洗</h2>
+      <p class="note">真正属于科研清洗的只有 1 张。另外 2 张是产品历史放进来的工作台能力。</p>
+      <table>
+        <tr><th>卡片</th><th>判定</th><th>说明</th></tr>
+        <tr><td>数据清洗与整形</td><td>应保留</td><td>看表、清列、给出可分析数据</td></tr>
+        <tr><td>出站隐私脱敏</td><td><span class="tag misplaced">错位</span></td><td>云端发送前的隐私开关，不是科研清洗</td></tr>
+        <tr><td>配置本机环境</td><td><span class="tag misplaced">错位</span></td><td>检查 / 安装 Python、uv、Node、sci</td></tr>
+      </table>
+    </section>
+
+    <section id="s7">
+      <h2>7. 协作扩展</h2>
+      <p class="note">与当前产品分组一致，属于横切通道，不进入科研阶段主轴。</p>
+      <table>
+        <tr><th>卡片</th><th>作用</th></tr>
+        <tr><td>飞书 / 微信接入</td><td>打开通道设置，用外部应用驱动同一桌面会话</td></tr>
+        <tr><td>真实浏览器</td><td>控制本机 Chrome（需配套扩展）</td></tr>
+        <tr><td>Playwright 无头浏览器</td><td>脚本驱动无头浏览器，做测试 / 截图 / 抓取</td></tr>
+        <tr><td>插件扩展</td><td>安装额外 Skill + MCP</td></tr>
+      </table>
+    </section>
+
+    <section id="other">
+      <h2>没有自然落入 1–7 的</h2>
+      <p class="note">这些更像工作台，而不是科研步骤。若强行塞进某一阶段，首页会变乱。</p>
+      <table>
+        <tr><th>卡片 / 入口</th><th>现在所在</th><th>更像什么</th></tr>
+        <tr><td>Word / Excel / PPT</td><td><span class="tag">论文撰写</span></td><td>通用办公；可兼写作与汇报</td></tr>
+        <tr><td>文件与收藏库</td><td><span class="tag">研究资产</span></td><td>工作台：重新打开文件和图</td></tr>
+        <tr><td>打开演示</td><td><span class="tag">研究资产</span></td><td>上手示例，不消耗 API Key</td></tr>
+        <tr><td>科研主任（首页 CTA）</td><td>不是目录卡片</td><td>跨阶段编排，不该塞进某一类</td></tr>
+      </table>
+    </section>
+
+    <section>
+      <h2>和现在 7 个 Tab 的对照</h2>
+      <table>
+        <tr><th>现在的 Tab</th><th>张数</th><th>按新分类后主要去向</th></tr>
+        <tr><td>论文撰写</td><td>15</td><td>大部分进「写作与发表」；调研 / 开题进「选题」；Office 进工作台</td></tr>
+        <tr><td>研究资产</td><td>11</td><td>文献进「选题」；实验日志进「实施」；证据工作区进「发表」；图谱进「规划」</td></tr>
+        <tr><td>统计分析</td><td>6</td><td>分析进「实施」；知识图谱、生物库进「选题」</td></tr>
+        <tr><td>结构与组学</td><td>2</td><td>全部进「实施」</td></tr>
+        <tr><td>AI画图</td><td>8</td><td>保持</td></tr>
+        <tr><td>数据清洗</td><td>3</td><td>只留清洗；隐私和环境建议外移</td></tr>
+        <tr><td>协作扩展</td><td>4</td><td>保持</td></tr>
+      </table>
+    </section>
+
+    <section>
+      <h2>分类建议</h2>
+      <ul class="suggest">
+        <li><strong>前 4 类和后 3 类不是同一层。</strong>1–4 是科研阶段，5–7 是横切工具。混在同一级 Tab，用户会问「写论文时作图该点哪个」。更稳的做法：主轴用选题 → 规划 → 实施 → 写作；画图、清洗、协作、工作台做侧轴或固定底栏。</li>
+        <li><strong>「研究设计与规划」目前撑不起来。</strong>如果现在就做成独立 Tab，会显得空。要么先并入选题，要么补样本量、协议、分析计划后再拆开。</li>
+        <li><strong>「选题」里文献太多，建议再拆一层。</strong>10 张里 8 张是检索/阅读。可把开题写作、深度调研、生物数据库留在选题；检索、流水线、下载、深读、对照阅读、知识图谱放到「文献与证据」。否则选题会变成第二个「研究资产」。</li>
+        <li><strong>PPT 不宜长期放在 AI画图。</strong>组会 PPT、Office 更接近「发表与汇报」。AI画图留给机制图、生信图、插图。</li>
+        <li><strong>统计报告审核更靠近写作，而不是实施。</strong>它审的是写进稿子的统计表述，不是跑模型。</li>
+        <li><strong>一张卡不要假装只属于一个阶段。</strong>深度调研、文献流水线、生物数据库、统计审核、成稿流水线会被反复用。界面上用「主分类 + 也用于某某」，不要靠复制卡片。</li>
+        <li><strong>若按阶段改 Tab，建议按这个顺序补空位：</strong>① 研究设计（分析计划 / 样本量 / 实验协议）；② 选题（科学问题拆解、创新点，可与科研主任合并）；③ 实施（质控、复现检查）。</li>
+      </ul>
+    </section>
+
+    <footer>
+      报告日期 2026-08-19 · 产品版本 1.5.0 能力目录 · 仅分类建议，尚未改首页 Tab。
+    </footer>
+  </div>
+</body>
+</html>

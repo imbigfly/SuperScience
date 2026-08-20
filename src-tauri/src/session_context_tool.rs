@@ -204,7 +204,9 @@ mod tests {
         store.create_project("p", "Project", "").await.unwrap();
         store.create_frame("f", "p", "OPERON", "m").await.unwrap();
         store
-            .upsert_execution_context(&superscience_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap())
+            .upsert_execution_context(
+                &superscience_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap(),
+            )
             .await
             .unwrap();
         (store, path)

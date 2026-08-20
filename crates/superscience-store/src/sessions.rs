@@ -959,7 +959,9 @@ pub(crate) async fn reconcile_session_branches_after_truncate(
             && tool_name.as_deref() != Some(crate::AGENT_WORKFLOW_COMPLETION_TOOL)
             && row
                 .try_get::<Option<String>, _>("content")?
-                .and_then(|content| serde_json::from_str::<superscience_llm::Content>(&content).ok())
+                .and_then(|content| {
+                    serde_json::from_str::<superscience_llm::Content>(&content).ok()
+                })
                 .is_some_and(|content| !content.as_text().trim().is_empty())
         {
             retained_turns.push(false);

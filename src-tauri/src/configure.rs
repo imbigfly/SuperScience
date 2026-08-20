@@ -8,10 +8,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
+use superscience_llm::ToolSchema;
+use superscience_store::Store;
+use superscience_tools::{Tool, ToolEnv, ToolResult};
 use tauri::State;
-use wisp_llm::ToolSchema;
-use wisp_store::Store;
-use wisp_tools::{Tool, ToolEnv, ToolResult};
 
 use crate::AppState;
 
@@ -198,10 +198,10 @@ fn default_theme() -> String {
     "system".into()
 }
 fn default_light_palette() -> String {
-    "paper".into()
+    "codex".into()
 }
 fn default_dark_palette() -> String {
-    "charcoal".into()
+    "codex".into()
 }
 fn default_ui_font_size() -> u16 {
     UI_FONT_DEFAULT
@@ -360,7 +360,7 @@ For specialists, get the `specialists` key then call save_specialist (pass id to
             "set" => match apply_patch(&self.store, &parsed.values).await {
                 Ok(outcome) => {
                     if !outcome.presentation.is_null() {
-                        env.emit(wisp_tools::ToolEvent::Presentation {
+                        env.emit(superscience_tools::ToolEvent::Presentation {
                             kind: "app_prefs".into(),
                             payload: outcome.presentation,
                         })
@@ -379,7 +379,7 @@ For specialists, get the `specialists` key then call save_specialist (pass id to
                 };
                 match storage_report(&self.store, &self.app_data, project).await {
                     Ok((text, payload)) => {
-                        env.emit(wisp_tools::ToolEvent::Presentation {
+                        env.emit(superscience_tools::ToolEvent::Presentation {
                             kind: "storage_usage".into(),
                             payload,
                         })
@@ -669,7 +669,7 @@ async fn current_values(store: &Store) -> Result<Map<String, Value>, String> {
         .get_setting("locale")
         .await
         .map_err(|error| error.to_string())?
-        .unwrap_or_else(|| "en".into());
+        .unwrap_or_else(|| "zh".into());
     let max_iter = store
         .get_setting("max_iter")
         .await
@@ -1223,7 +1223,7 @@ mod tests {
         async fn confirm(&self, _message: &str) -> bool {
             true
         }
-        async fn emit(&self, _event: wisp_tools::ToolEvent) {}
+        async fn emit(&self, _event: superscience_tools::ToolEvent) {}
     }
 
     async fn test_store() -> (Store, PathBuf, PathBuf) {

@@ -7,7 +7,7 @@ description: >
   **以下情况请主动触发本技能**：用户想同时看到"支持和反对"、"这个观点稳不稳"、"帮我做一个全面的论点评估"、"正反两面都找一找"——即使没有说"bear-review"，只要意图是**对一个观点做完整的证据格局分析**，就使用本技能。
 
   不适用于：只找支持（用 bear-support）、只找反对（用 bear-counter）、选题查重（用 bear-scoop）、概念地图（用 bear-map）、溯源演化史（用 bear-trace）。
-wisp:
+superscience:
   schema_version: 1
   domains: [scientific-literature]
   research_stages: [retrieval, validation, synthesis]

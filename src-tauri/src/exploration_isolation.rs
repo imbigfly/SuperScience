@@ -7,7 +7,7 @@
 //! interpreter.
 
 use std::path::{Path, PathBuf};
-use wisp_store::{StateScope, Store};
+use superscience_store::{StateScope, Store};
 
 const ERR_SCOPE_VIOLATION: &str = "exploration_scope_violation";
 

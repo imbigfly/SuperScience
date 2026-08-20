@@ -78,6 +78,14 @@ enum UserCenterTab {
     Keys,
 }
 
+fn is_tctoken_session_expired(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("session expired")
+        || lower.contains("unauthorized")
+        || lower.contains("invalid access token")
+        || lower.contains("not logged in.")
+}
+
 pub(crate) fn refresh_tctoken_session(session: RwSignal<TctokenSession>) {
     spawn_local(async move {
         let value = invoke("tctoken_session", JsValue::UNDEFINED).await;
@@ -105,7 +113,8 @@ pub(crate) fn UserCenterOverlay(
 
     let apply_remembered_login = move || {
         spawn_local(async move {
-            let Ok(value) = invoke_checked("tctoken_get_remembered_login", JsValue::UNDEFINED).await
+            let Ok(value) =
+                invoke_checked("tctoken_get_remembered_login", JsValue::UNDEFINED).await
             else {
                 return;
             };
@@ -170,11 +179,38 @@ pub(crate) fn UserCenterOverlay(
                 provider_url.set(url);
             }
         });
-        refresh_tctoken_session(session);
-        if !session.get_untracked().logged_in {
-            apply_remembered_login();
+        // A leftover local token still looks logged-in. Validate via the
+        // account fetch instead of refreshing the stale profile first.
+        if session.get_untracked().logged_in {
+            return;
         }
+        refresh_tctoken_session(session);
+        apply_remembered_login();
     });
+
+    let switch_to_login = move || {
+        session.set(TctokenSession::default());
+        account.set(None);
+        require_2fa.set(false);
+        apply_remembered_login();
+        spawn_local(async move {
+            let _ = invoke_checked("tctoken_logout", JsValue::UNDEFINED).await;
+        });
+    };
+
+    let fail_or_expire = move |err: wasm_bindgen::JsValue| {
+        let raw = js_error_text(err);
+        let msg = localize_backend(locale.get_untracked(), &raw);
+        if is_tctoken_session_expired(&raw) || is_tctoken_session_expired(&msg) {
+            switch_to_login();
+            status.set(Some((
+                false,
+                t(locale.get_untracked(), "user_center.session_expired").into(),
+            )));
+            return;
+        }
+        status.set(Some((false, msg)));
+    };
 
     let load_account = move || {
         spawn_local(async move {
@@ -196,10 +232,7 @@ pub(crate) fn UserCenterOverlay(
                     }
                     Err(err) => status.set(Some((false, err.to_string()))),
                 },
-                Err(err) => {
-                    let msg = localize_backend(locale.get_untracked(), &js_error_text(err));
-                    status.set(Some((false, msg)));
-                }
+                Err(err) => fail_or_expire(err),
             }
             if let Ok(value) = invoke_checked("tctoken_topup_info", JsValue::UNDEFINED).await {
                 if let Ok(info) = from_value::<Value>(value) {
@@ -260,12 +293,7 @@ pub(crate) fn UserCenterOverlay(
                         task_rows.set(items);
                     }
                 }
-                Err(err) => {
-                    status.set(Some((
-                        false,
-                        localize_backend(locale.get_untracked(), &js_error_text(err)),
-                    )));
-                }
+                Err(err) => fail_or_expire(err),
             }
             let stat_args = to_value(&serde_json::json!({
                 "logType": log_type,
@@ -298,23 +326,14 @@ pub(crate) fn UserCenterOverlay(
                                 if let Some(arr) = v.as_array() {
                                     Some(arr.clone())
                                 } else {
-                                    v.get("items")
-                                        .and_then(|i| i.as_array())
-                                        .cloned()
+                                    v.get("items").and_then(|i| i.as_array()).cloned()
                                 }
                             })
-                            .unwrap_or_else(|| {
-                                data.as_array().cloned().unwrap_or_default()
-                            });
+                            .unwrap_or_else(|| data.as_array().cloned().unwrap_or_default());
                         orders.set(items);
                     }
                 }
-                Err(err) => {
-                    status.set(Some((
-                        false,
-                        localize_backend(locale.get_untracked(), &js_error_text(err)),
-                    )));
-                }
+                Err(err) => fail_or_expire(err),
             }
             busy.set(false);
         });
@@ -338,11 +357,12 @@ pub(crate) fn UserCenterOverlay(
                             .filter(|id| *id > 0)
                             .collect();
                         tokens.set(items);
-                        let saved = invoke_checked("tctoken_get_default_token_id", JsValue::UNDEFINED)
-                            .await
-                            .ok()
-                            .and_then(|v| from_value::<Option<i64>>(v).ok())
-                            .flatten();
+                        let saved =
+                            invoke_checked("tctoken_get_default_token_id", JsValue::UNDEFINED)
+                                .await
+                                .ok()
+                                .and_then(|v| from_value::<Option<i64>>(v).ok())
+                                .flatten();
                         let target = saved
                             .filter(|id| ids.contains(id))
                             .or_else(|| ids.first().copied());
@@ -350,8 +370,7 @@ pub(crate) fn UserCenterOverlay(
                             drawing_token_id.set(Some(id));
                             // First key becomes the default when none was saved yet.
                             if saved != Some(id) {
-                                let args =
-                                    to_value(&serde_json::json!({ "id": id })).unwrap();
+                                let args = to_value(&serde_json::json!({ "id": id })).unwrap();
                                 let _ = invoke_checked("tctoken_set_default_token", args).await;
                             }
                         } else {
@@ -359,12 +378,7 @@ pub(crate) fn UserCenterOverlay(
                         }
                     }
                 }
-                Err(err) => {
-                    status.set(Some((
-                        false,
-                        localize_backend(locale.get_untracked(), &js_error_text(err)),
-                    )));
-                }
+                Err(err) => fail_or_expire(err),
             }
             busy.set(false);
         });
@@ -1312,7 +1326,18 @@ fn copy_text(text: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::TctokenSession;
+    use super::{is_tctoken_session_expired, TctokenSession};
+
+    #[test]
+    fn treats_invalid_access_token_as_expired_session() {
+        assert!(is_tctoken_session_expired(
+            "Unauthorized, invalid access token"
+        ));
+        assert!(is_tctoken_session_expired(
+            "Session expired. Please log in again."
+        ));
+        assert!(!is_tctoken_session_expired("Amount must be positive."));
+    }
 
     #[test]
     fn display_label_prefers_display_name_when_signed_in() {

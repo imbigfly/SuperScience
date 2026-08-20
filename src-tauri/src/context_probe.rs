@@ -573,7 +573,11 @@ fn platform_script<'a>(
     }
 }
 
-fn platform_owned(ctx: &superscience_store::ExecutionContext, posix: String, windows: String) -> String {
+fn platform_owned(
+    ctx: &superscience_store::ExecutionContext,
+    posix: String,
+    windows: String,
+) -> String {
     if cfg!(target_os = "windows") && ctx.kind == superscience_store::ExecutionContextKind::Local {
         windows
     } else {
@@ -943,7 +947,7 @@ mod tests {
 
     #[test]
     fn empty_probe_output_marks_capabilities_absent_instead_of_failing() {
-        let ctx = wisp_store::ExecutionContext::new("wsl:Ubuntu", "Empty").unwrap();
+        let ctx = superscience_store::ExecutionContext::new("wsl:Ubuntu", "Empty").unwrap();
         let (specs, _) = probe_specs(&ctx).unwrap();
         let mut runner = FakeRunner::new(
             specs

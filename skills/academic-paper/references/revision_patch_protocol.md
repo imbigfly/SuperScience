@@ -1,7 +1,7 @@
 # Revision Patch Protocol (#390)
 
 **Spec:** `docs/design/2026-06-10-390-diff-patch-revision-mode-spec.md` (mechanism §3, coverage claim §4, escalation §3.6).
-**Toolchain:** Slice A (#423) — `scripts/_block_parser.py`, `scripts/ars_anchorize_draft.py`, `scripts/ars_apply_revision_patch.py`, schemas under `shared/contracts/patch/`.
+**Toolchain:** Slice A (#423) — `scripts/_block_parser.py`, `scripts/ars_anchorize_draft.py`, `scripts/ars_apply_revision_patch.py`, schemas under `../academic-shared/contracts/patch/`.
 **Audience:** the pipeline orchestrator (Mode A) and any user running revision rounds phase-by-phase across sessions (Mode B). The commands below are the same in both modes — Mode A wraps them, Mode B types them.
 
 **What this buys, stated honestly:** under patch apply, a block no operation names cannot be silently distorted, because no generation pass runs over it — that is a property of the apply script, not of the model. It does NOT make the edits themselves better, and structural rewrites are not patch-protected (they escalate, §3.6). Every summary of this feature must survive that sentence.
@@ -20,7 +20,7 @@
 | Integrity correction list | issuing integrity gate | `integrity-correction-list/1.0`; correction descriptions and exact `proposed_targets` only — a proposal, never write authority |
 | Integrity author input | author, from the exact proposed patch shown in-session | `integrity-correction-authorization-input/1.0`; explicit event receipts, one decision per issue, authorized targets/operations, and the author-approved `revision_patch_sha256` |
 | Integrity authorization | `scripts/revision_roadmap.py build-integrity-authorization` | `integrity-correction-authorization/1.0`; a deterministic sidecar that copies the author-approved patch hash and adds exact base/list/round bindings |
-| Patch document | `draft_writer_agent` (revision invocation) | current `patch_format_version: 1.1`, schema `shared/contracts/patch/revision_patch.schema.json` |
+| Patch document | `draft_writer_agent` (revision invocation) | current `patch_format_version: 1.1`, schema `../academic-shared/contracts/patch/revision_patch.schema.json` |
 | Revised draft | `ars_apply_revision_patch.py` | `--output` MUST be a new file (versioned artifact; the base is never modified) |
 | Apply report | same run, sidecar | `<output>.apply-report.json`, format 1.3 — exact patch/pre/post bindings, replayed authorization witness, per-op claim/collateral declarations, structural and byte-preservation facts |
 | Revision-Evidence Bundle | orchestrator | `revision-evidence-bundle/1.0`, continuous chain from exact integrity PASS through every write/no-op round to final draft |
@@ -136,7 +136,7 @@ Revision-Evidence Bundle round.
 ## Current authorization rules (#670)
 
 - The current CLI rejects patch 1.0. Archived 1.0 schema/runtime live only
-  under `shared/contracts/patch/legacy/v1_0/` and `scripts/legacy/`.
+  under `../academic-shared/contracts/patch/legacy/v1_0/` and `scripts/legacy/`.
 - Every review op cites only `will_address` items and stays inside their exact
   authorized block/operation subsets.
 - Declined items authorize neither work nor claim movement. An overlapping
@@ -169,5 +169,5 @@ python scripts/revision_roadmap.py validate-bundle \
 
 `<!--block:-->` markers live in **working drafts only**, exactly like `<!--ref:-->` / `<!--anchor:-->`. Two authoritative rules govern them — this doc indexes them rather than re-owning the wording, so the rule cannot drift out of sync with the surfaces the #390 lint guards:
 
-- **Word counts exclude markers** — strip every `<!--...-->` before `len(body.split())`. Authoritative: `shared/references/word_count_conventions.md` § HTML-comment markers.
+- **Word counts exclude markers** — strip every `<!--...-->` before `len(body.split())`. Authoritative: `../academic-shared/references/word_count_conventions.md` § HTML-comment markers.
 - **Phase 7 strips markers from converted final outputs**, after the marker-dependent gates run on the working draft; working drafts and `phase6_*/` artifacts keep theirs (the anchor layer the next round's manifest needs). Authoritative: `formatter_agent.md` § ARS Marker Stripping.
