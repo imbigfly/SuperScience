@@ -1,7 +1,42 @@
 //! Tool execution environment: project root, approval, and UI event sink.
 
 use async_trait::async_trait;
+use serde_json::Value;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+/// A host-side bridge that lets a just-presented MCP App call tools on the
+/// same MCP Server that produced it (MCP Apps `serverTools`). The desktop host
+/// registers the handle when a `Presentation { kind: "mcp_app" }` flows to the
+/// UI, and `tools/call` requests from the app iframe are routed back through
+/// it. Headless hosts keep the default no-op and never build one.
+///
+/// The handle intentionally exposes no URL, command, or credential: MCP
+/// connection secrets stay on the host and are reused via the existing client.
+#[async_trait]
+pub trait McpAppServer: Send + Sync {
+    /// Host-readable connector identity for audit and approval UI.
+    fn connector_id(&self) -> &str;
+    /// Human app name for audit and approval UI.
+    fn app_name(&self) -> &str;
+    /// Whether the presenting connector requires approval (e.g. plugin MCP
+    /// tools are configured as "ask").
+    fn require_approval(&self) -> bool;
+    /// Snapshot of the MCP server's tool catalog (each entry carrying name,
+    /// title, description, inputSchema, `_meta`, annotations). Lets the host
+    /// validate an app request against the live connection without exposing
+    /// it to the iframe.
+    fn tools(&self) -> Vec<Value>;
+    /// An MCP App may call this tool: `_meta.ui.visibility` includes `"app"`
+    /// (unset defaults to `["model", "app"]`).
+    fn visible_to_app(&self, name: &str) -> bool;
+    /// Server `readOnlyHint` for a tool, honored by plan-mode and project-write
+    /// gates the same way agent calls honor it.
+    fn read_only(&self, name: &str) -> bool;
+    /// Call a tool on the same MCP server and return the full CallToolResult
+    /// object (`content`, `structuredContent`, `_meta`, `isError`).
+    async fn call_tool(&self, name: &str, arguments: &Value) -> Result<Value, String>;
+}
 
 /// A host-owned resource lease held for one complete tool call.
 ///
@@ -31,7 +66,7 @@ impl Drop for ToolResourceLease {
 
 /// Events a tool emits to the UI as it runs (tool-call card, diff preview,
 /// live stdout, result tick).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum ToolEvent {
     Call {
         name: String,
@@ -53,14 +88,48 @@ pub enum ToolEvent {
     },
     /// A host-renderable, non-model presentation such as an MCP App. The
     /// payload is forwarded to capable UIs but is deliberately excluded from
-    /// the language-model context.
+    /// the language-model context. `server` is an opaque host-side binding so
+    /// an MCP App can later call back into the MCP server that presented it;
+    /// it is never serialized to the wire.
     Presentation {
         kind: String,
-        payload: serde_json::Value,
+        payload: Value,
+        server: Option<Arc<dyn McpAppServer>>,
     },
     Result {
         ok: bool,
     },
+}
+
+impl std::fmt::Debug for ToolEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ToolEvent::Call { name, preview } => f
+                .debug_struct("Call")
+                .field("name", name)
+                .field("preview", preview)
+                .finish(),
+            ToolEvent::Diff { path, old, new } => f
+                .debug_struct("Diff")
+                .field("path", path)
+                .field("old", old)
+                .field("new", new)
+                .finish(),
+            ToolEvent::FileChanged { path } => {
+                f.debug_struct("FileChanged").field("path", path).finish()
+            }
+            ToolEvent::Stdout { chunk } => {
+                f.debug_struct("Stdout").field("chunk", chunk).finish()
+            }
+            ToolEvent::Presentation { kind, payload, .. } => f
+                .debug_struct("Presentation")
+                .field("kind", kind)
+                .field("payload", payload)
+                .field("server", &"<host bridge>")
+                .finish(),
+            ToolEvent::Result { ok } => f.debug_struct("Result").field("ok", ok).finish(),
+        }
+    }
 }
 
 /// Per-tool approval policy, applied by `Registry::run` before a tool executes.

@@ -93,6 +93,21 @@ fn resource_conflict_confirmation_has_dedicated_ui_payload_and_no_saved_grant() 
 }
 
 #[test]
+fn mcp_app_tool_confirm_payload_parses_and_keys_a_grant() {
+    let message = "Run tool 'figure_preview_exact' from MCP App 'Figure Library'?";
+    let (tool, preview) = super::parse_confirm_payload(message);
+    assert_eq!(tool, "figure_preview_exact");
+    assert_eq!(preview, "");
+    // Always-allow grants save against the tool name, same as agent calls.
+    let key = super::approval_grant_key(message).unwrap();
+    assert_eq!(key.kind, "tool");
+    assert_eq!(key.target, "figure_preview_exact");
+    // The classic agent message still parses identically.
+    let (tool, _) = super::parse_confirm_payload("Run tool 'python'?");
+    assert_eq!(tool, "python");
+}
+
+#[test]
 fn mcp_app_context_is_latest_only_and_session_scoped() {
     let first = super::normalize_mcp_app_context(
         "Motif for Claude Science",

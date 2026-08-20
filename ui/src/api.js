@@ -2016,6 +2016,9 @@ function createMcpAppInstance(instanceId, payloadJson) {
     if (mcpAppInstances.get(instanceId) === instance) {
       mcpAppInstances.delete(instanceId);
       void clearModelContext();
+      // Revoke the host-side serverTools bridge so a later request from a
+      // stale iframe fails with a stale-instance error (best-effort).
+      void invoke("close_mcp_app", { instanceId });
     }
   };
   const requestTeardown = (reason) => {
@@ -2044,6 +2047,10 @@ function createMcpAppInstance(instanceId, payloadJson) {
           hostCapabilities: {
             sandbox: { csp: payload?.resource?._meta?.ui?.csp || payload?.resource?._meta?.csp || {} },
             updateModelContext: { text: {} },
+            // MCP Apps `serverTools`: the host re-uses the MCP server that
+            // presented this app for `tools/call`. `listChanged` stays false —
+            // Wisp does not push `ui/notifications/tools/list_changed` yet.
+            serverTools: {},
           },
           hostInfo: { name: "wisp-science", version: wispAppVersion },
           hostContext: hostContext(),
@@ -2059,6 +2066,49 @@ function createMcpAppInstance(instanceId, payloadJson) {
     }
     if (message.method === "ping" && message.id != null) {
       post({ jsonrpc: "2.0", id: message.id, result: {} });
+      return;
+    }
+    if (message.method === "tools/list" && message.id != null) {
+      void invoke_strict("list_mcp_app_tools", { instanceId }).then(
+        (result) => post({ jsonrpc: "2.0", id: message.id, result }),
+        (error) => post({
+          jsonrpc: "2.0",
+          id: message.id,
+          error: {
+            code: -32603,
+            message: (error instanceof Error ? error.message : String(error)).slice(0, 512),
+          },
+        }),
+      );
+      return;
+    }
+    if (message.method === "tools/call" && message.id != null) {
+      const params = message.params || {};
+      const name = params.name;
+      if (typeof name !== "string" || !name) {
+        post({
+          jsonrpc: "2.0",
+          id: message.id,
+          error: { code: -32602, message: "tools/call requires a valid 'name' string" },
+        });
+        return;
+      }
+      const args = params.arguments
+        && typeof params.arguments === "object"
+        && !Array.isArray(params.arguments)
+        ? params.arguments
+        : {};
+      void invoke_strict("call_mcp_app_tool", { instanceId, name, arguments: args }).then(
+        (result) => post({ jsonrpc: "2.0", id: message.id, result }),
+        (error) => post({
+          jsonrpc: "2.0",
+          id: message.id,
+          error: {
+            code: -32603,
+            message: (error instanceof Error ? error.message : String(error)).slice(0, 512),
+          },
+        }),
+      );
       return;
     }
     if (message.method === "ui/update-model-context" && message.id != null) {

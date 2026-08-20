@@ -21,8 +21,8 @@ pub mod tool;
 pub mod write;
 
 pub use env::{
-    Approval, ConfirmDecision, ImageData, ToolControl, ToolEnv, ToolEvent, ToolResourceLease,
-    ToolResult,
+    Approval, ConfirmDecision, ImageData, McpAppServer, ToolControl, ToolEnv, ToolEvent,
+    ToolResourceLease, ToolResult,
 };
 pub use tool::Tool;
 
