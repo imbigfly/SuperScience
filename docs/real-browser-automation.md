@@ -1,3 +1,5 @@
+> **Runtime note (0.3.0):** see [browser-runtime-architecture.md](browser-runtime-architecture.md) and [browser-runtime-acceptance.md](browser-runtime-acceptance.md). The extension is Protocol v2. Shared Chrome stays on `ws://127.0.0.1:18765`; workspace Chrome uses a dedicated profile and `18766`. Reload the unpacked extension after upgrading.
+
 # Real-browser automation
 
 > **Acknowledgement:** this feature is inspired by GenericAgent's
