@@ -275,7 +275,7 @@ pub(super) async fn set_settings(
     )
     .await?;
     let locale = match settings.locale.trim() {
-        "zh" | "zh-CN" | "zh-TW" => "zh",
+        tag if superscience_paths::is_zh_locale(tag) => "zh",
         other if !other.is_empty() => other,
         _ => "zh",
     };
@@ -284,12 +284,11 @@ pub(super) async fn set_settings(
         .set_setting("locale", locale)
         .await
         .map_err(|e| format!("{e}"))?;
+    super::apply_locale_window_titles(&app, locale);
     #[cfg(target_os = "macos")]
     super::install_macos_app_menu(&app, locale)?;
     #[cfg(target_os = "windows")]
     desktop_lifecycle::apply_windows_tray_locale(&app, locale)?;
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let _ = app;
     state
         .store
         .set_setting("sync_backend", &settings.sync_backend)

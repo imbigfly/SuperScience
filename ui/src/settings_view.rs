@@ -1,17 +1,20 @@
 use crate::agent_workflows::{workflow_studio as workflow_studio_view, AgentPanelState};
 use crate::app_support::{
-    allow_drop, build_conn_json, close_details_ancestor, compose_icon, conn_form_from_row,
-    context_capability_summary, drag_session_id, focus_element_soon, format_relative_time,
-    apply_base_url_suggestions, endpoint_has_stored_key, import_custom_css_from_input,
-    join_tags, js_error_text, model_form_entry, new_acp_form, new_model_form,
-    profile_to_form, provider_entries_are_pristine, quick_action_label, reviewer_backend_key,
-    reviewer_backend_label,
-    reviewer_missing_acp_profile_id, set_reviewer_backend, settings_section_label,
-    settings_subpage_label, skill_matches_filter, start_session_drag, CRED_GROUPS,
+    allow_drop, apply_base_url_suggestions, build_conn_json, close_details_ancestor, compose_icon,
+    conn_form_from_row, context_capability_summary, drag_session_id, endpoint_has_stored_key,
+    focus_element_soon, format_relative_time, import_custom_css_from_input, join_tags,
+    js_error_text, model_form_entry, new_acp_form, new_model_form, profiles_to_edit_form,
+    select_form_row, sync_form_from_selected,
+    provider_entries_are_pristine, quick_action_label, reviewer_backend_key,
+    reviewer_backend_label, reviewer_missing_acp_profile_id, set_reviewer_backend,
+    settings_nav_group, settings_section_label, settings_subpage_label, skill_matches_filter,
+    start_session_drag, CRED_GROUPS,
 };
 use crate::bindings::{invoke, invoke_checked, is_mac, is_windows};
 use crate::dto::*;
-use crate::i18n::{localize_backend, set_document_lang, t, tf, Locale};
+use crate::i18n::{
+    brand_visible_copy, localize_backend, set_document_lang, t, tf, Locale, BRAND_GITHUB_REPO,
+};
 use crate::text::{
     dom_value, endpoint_host, event_target_checked, event_target_input, event_target_value,
     format_bytes, join_api_url,
@@ -609,11 +612,22 @@ fn apply_catalog_limits(
     let Some(current) = model_form.get() else {
         return;
     };
-    let (provider, api_url, model) = (
-        current.provider,
-        join_api_url(&current.api_url, &current.endpoint_suffix),
-        current.model,
-    );
+    let selected = crate::app_support::selected_entry(&current);
+    let (provider, suffix, model, row_id) = match selected {
+        Some(entry) => (
+            entry.provider.clone(),
+            entry.endpoint_suffix.clone(),
+            entry.model.clone(),
+            entry.row_id,
+        ),
+        None => (
+            current.provider,
+            current.endpoint_suffix,
+            current.model,
+            current.selected_row_id,
+        ),
+    };
+    let api_url = join_api_url(&current.api_url, &suffix);
     if model.trim().is_empty()
         || is_image_generation_model(&model)
         || is_video_generation_model(&model)
@@ -633,17 +647,25 @@ fn apply_catalog_limits(
             .and_then(|v| serde_wasm_bindgen::from_value::<Option<CatalogEntryDto>>(v).ok())
             .flatten();
         // Don't clobber edits made while the lookup was in flight.
-        if model_form
-            .get()
-            .map_or(true, |f| !f.model.trim().eq_ignore_ascii_case(model.trim()))
-        {
+        let still_current = model_form.get().is_some_and(|form| {
+            crate::app_support::selected_entry(&form)
+                .map(|entry| {
+                    entry.row_id == row_id
+                        && entry.model.trim().eq_ignore_ascii_case(model.trim())
+                })
+                .unwrap_or(false)
+        });
+        if !still_current {
             return;
         }
         if let Some(dto) = dto {
             model_form.update(|o| {
                 if let Some(o) = o {
-                    o.max_tokens = dto.max_tokens;
-                    o.context_window = dto.context_window;
+                    if let Some(entry) = o.entries.iter_mut().find(|entry| entry.row_id == row_id) {
+                        entry.max_tokens = dto.max_tokens;
+                        entry.context_window = dto.context_window;
+                    }
+                    crate::app_support::sync_form_from_selected(o);
                 }
             });
             catalog_limits.set(Some(dto));
@@ -796,6 +818,605 @@ pub(super) struct SettingsViewState {
     pub(super) runtime_interpreter_form: RwSignal<Option<RuntimeInterpreterForm>>,
     pub(super) probing_context_id: RwSignal<Option<String>>,
     pub(super) delete_confirm: RwSignal<Option<DeleteConfirm>>,
+}
+
+fn selected_entry_advanced_fields(
+    model_form: RwSignal<Option<ModelForm>>,
+    locale: RwSignal<Locale>,
+    model_catalog_limits: RwSignal<Option<CatalogEntryDto>>,
+    row_id: u64,
+) -> impl IntoView {
+    view! {
+        <div class="provider-model-advanced settings-form-grid" data-testid="provider-model-advanced">
+            {move || {
+                let image = model_form.get().and_then(|f| {
+                    f.entries.into_iter().find(|e| e.row_id == row_id)
+                }).is_some_and(|e| is_image_generation_model(&e.model));
+                let video = !image && model_form.get().and_then(|f| {
+                    f.entries.into_iter().find(|e| e.row_id == row_id)
+                }).is_some_and(|e| is_video_generation_model(&e.model));
+                if video {
+                    view! {
+                        <label>{move || t(locale.get(), "settings.video_duration")}
+                            <input type="number" min="1" max="15" step="1" data-testid="video-duration"
+                                on:input=move|ev| model_form.update(|o| if let Some(o)=o {
+                                    if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                        e.video_duration_secs = Some(dom_value(&ev).parse::<u32>().unwrap_or(5).clamp(1, 15));
+                                    }
+                                    sync_form_from_selected(o);
+                                })
+                                prop:value=move || model_form.get()
+                                    .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                    .and_then(|e| e.video_duration_secs)
+                                    .map(|d| d.to_string())
+                                    .unwrap_or_else(|| "5".into()) />
+                        </label>
+                        <label>{move || t(locale.get(), "settings.video_aspect_ratio")}
+                            <select data-testid="video-aspect-ratio"
+                                on:change=move|ev| model_form.update(|o| if let Some(o)=o {
+                                    if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                        e.video_aspect_ratio = Some(dom_value(&ev));
+                                    }
+                                    sync_form_from_selected(o);
+                                })>
+                                {VIDEO_ASPECT_RATIOS.iter().map(|value| {
+                                    let selected = model_form.get().and_then(|f| {
+                                        f.entries.into_iter().find(|e| e.row_id == row_id)
+                                    }).is_some_and(|e| {
+                                        e.video_aspect_ratio.as_deref() == Some(*value)
+                                            || (e.video_aspect_ratio.is_none() && *value == "16:9")
+                                    });
+                                    view! { <option value=*value selected=selected>{*value}</option> }
+                                }).collect_view()}
+                            </select>
+                        </label>
+                        <label>{move || t(locale.get(), "settings.video_resolution")}
+                            <select data-testid="video-resolution"
+                                on:change=move|ev| model_form.update(|o| if let Some(o)=o {
+                                    if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                        e.video_resolution = Some(dom_value(&ev));
+                                    }
+                                    sync_form_from_selected(o);
+                                })>
+                                {VIDEO_RESOLUTIONS.iter().map(|value| {
+                                    let selected = model_form.get().and_then(|f| {
+                                        f.entries.into_iter().find(|e| e.row_id == row_id)
+                                    }).is_some_and(|e| {
+                                        e.video_resolution.as_deref() == Some(*value)
+                                            || (e.video_resolution.is_none() && *value == "720p")
+                                    });
+                                    view! { <option value=*value selected=selected>{*value}</option> }
+                                }).collect_view()}
+                            </select>
+                        </label>
+                        <span class="hint span-2">{move || t(locale.get(), "settings.video_defaults_hint")}</span>
+                    }.into_view()
+                } else if image {
+                    view! {
+                        {move || {
+                            let grok = model_form.get().and_then(|f| {
+                                f.entries.into_iter().find(|e| e.row_id == row_id)
+                            }).is_some_and(|e| is_grok_imagine_model(&e.model));
+                            if grok {
+                                view! {
+                                    <label>{move || t(locale.get(), "settings.image_aspect_ratio")}
+                                        <select data-testid="image-aspect-ratio"
+                                            on:change=move|ev| model_form.update(|o| if let Some(o)=o {
+                                                if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                                    e.image_aspect_ratio = dom_value(&ev);
+                                                }
+                                                sync_form_from_selected(o);
+                                            })>
+                                            {GROK_IMAGE_ASPECT_RATIOS.iter().map(|value| {
+                                                let selected = model_form.get().and_then(|f| {
+                                                    f.entries.into_iter().find(|e| e.row_id == row_id)
+                                                }).is_some_and(|e| {
+                                                    e.image_aspect_ratio == *value
+                                                        || (e.image_aspect_ratio.is_empty() && *value == "auto")
+                                                });
+                                                view! { <option value=*value selected=selected>{*value}</option> }
+                                            }).collect_view()}
+                                        </select>
+                                    </label>
+                                    <label>{move || t(locale.get(), "settings.image_resolution")}
+                                        <select data-testid="image-resolution"
+                                            on:change=move|ev| model_form.update(|o| if let Some(o)=o {
+                                                if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                                    e.image_resolution = dom_value(&ev);
+                                                }
+                                                sync_form_from_selected(o);
+                                            })>
+                                            {GROK_IMAGE_RESOLUTIONS.iter().map(|value| {
+                                                let selected = model_form.get().and_then(|f| {
+                                                    f.entries.into_iter().find(|e| e.row_id == row_id)
+                                                }).is_some_and(|e| {
+                                                    e.image_resolution == *value
+                                                        || (e.image_resolution.is_empty() && *value == "1k")
+                                                });
+                                                view! { <option value=*value selected=selected>{*value}</option> }
+                                            }).collect_view()}
+                                        </select>
+                                    </label>
+                                    <label>{move || t(locale.get(), "settings.image_quality")}
+                                        <select data-testid="image-quality"
+                                            on:change=move|ev| model_form.update(|o| if let Some(o)=o {
+                                                if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                                    e.image_quality = dom_value(&ev);
+                                                }
+                                                sync_form_from_selected(o);
+                                            })>
+                                            {GROK_IMAGE_QUALITIES.iter().map(|value| {
+                                                let selected = model_form.get().and_then(|f| {
+                                                    f.entries.into_iter().find(|e| e.row_id == row_id)
+                                                }).is_some_and(|e| {
+                                                    e.image_quality == *value
+                                                        || (e.image_quality.is_empty() && *value == "medium")
+                                                });
+                                                view! { <option value=*value selected=selected>{*value}</option> }
+                                            }).collect_view()}
+                                        </select>
+                                    </label>
+                                }.into_view()
+                            } else {
+                                view! {
+                                    <label>{move || t(locale.get(), "settings.image_size")}
+                                        <select data-testid="image-size"
+                                            on:change=move|ev| model_form.update(|o| if let Some(o)=o {
+                                                if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                                    e.image_size = dom_value(&ev);
+                                                }
+                                                sync_form_from_selected(o);
+                                            })>
+                                            {OPENAI_IMAGE_SIZES.iter().map(|value| {
+                                                let selected = model_form.get().and_then(|f| {
+                                                    f.entries.into_iter().find(|e| e.row_id == row_id)
+                                                }).is_some_and(|e| {
+                                                    e.image_size == *value
+                                                        || (e.image_size.is_empty() && *value == "auto")
+                                                });
+                                                view! { <option value=*value selected=selected>{*value}</option> }
+                                            }).collect_view()}
+                                        </select>
+                                    </label>
+                                    <label>{move || t(locale.get(), "settings.image_quality")}
+                                        <select data-testid="image-quality"
+                                            on:change=move|ev| model_form.update(|o| if let Some(o)=o {
+                                                if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                                    e.image_quality = dom_value(&ev);
+                                                }
+                                                sync_form_from_selected(o);
+                                            })>
+                                            {OPENAI_IMAGE_QUALITIES.iter().map(|value| {
+                                                let selected = model_form.get().and_then(|f| {
+                                                    f.entries.into_iter().find(|e| e.row_id == row_id)
+                                                }).is_some_and(|e| {
+                                                    e.image_quality == *value
+                                                        || (e.image_quality.is_empty() && *value == "auto")
+                                                });
+                                                view! { <option value=*value selected=selected>{*value}</option> }
+                                            }).collect_view()}
+                                        </select>
+                                    </label>
+                                }.into_view()
+                            }
+                        }}
+                        <span class="hint span-2">{move || t(locale.get(), "settings.image_defaults_hint")}</span>
+                        <label class="settings-check span-2">
+                            <input type="checkbox" data-testid="use-for-image-generation"
+                                prop:checked=move || model_form.get()
+                                    .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                    .map(|e| e.use_for_image_generation)
+                                    .unwrap_or(false)
+                                on:change=move|ev| model_form.update(|o| if let Some(o)=o {
+                                    if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                        e.use_for_image_generation = event_target_checked(&ev);
+                                    }
+                                    sync_form_from_selected(o);
+                                }) />
+                            <span>{move || t(locale.get(), "settings.use_for_image_generation")}</span>
+                        </label>
+                        <span class="hint span-2">{move || t(locale.get(), "settings.image_generation_hint")}</span>
+                    }.into_view()
+                } else {
+                    view! {
+                        <label>{move || t(locale.get(), "settings.max_tokens")}
+                            <input type="number" min="16" step="1"
+                                attr:max=move || model_catalog_limits.get().map(|d| d.max_tokens.to_string())
+                                on:input=move|ev| model_form.update(|o| if let Some(o)=o {
+                                    if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                        e.max_tokens = dom_value(&ev).parse().unwrap_or(0);
+                                    }
+                                    sync_form_from_selected(o);
+                                })
+                                prop:value=move || model_form.get()
+                                    .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                    .map(|e| if e.max_tokens == 0 { 8192 } else { e.max_tokens }.to_string())
+                                    .unwrap_or_else(|| "8192".into()) />
+                        </label>
+                        <label>{move || t(locale.get(), "settings.context_window")}
+                            <input type="number" min="4096" step="1024"
+                                attr:max=move || model_catalog_limits.get().map(|d| d.context_window.to_string())
+                                on:input=move|ev| model_form.update(|o| if let Some(o)=o {
+                                    if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                        e.context_window = dom_value(&ev).parse().unwrap_or(0);
+                                    }
+                                    sync_form_from_selected(o);
+                                })
+                                prop:value=move || model_form.get()
+                                    .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                    .map(|e| if e.context_window == 0 { 128000 } else { e.context_window }.to_string())
+                                    .unwrap_or_else(|| "128000".into()) />
+                        </label>
+                        {move || model_catalog_limits.get().map(|d| view! {
+                            <span class="hint" data-testid="model-catalog-limits-hint">
+                                {tf(locale.get(), "settings.catalog_limits_hint", &[
+                                    ("context", &d.context_window.to_string()),
+                                    ("output", &d.max_tokens.to_string()),
+                                ])}
+                            </span>
+                        })}
+                        <label>{move || t(locale.get(), "settings.reasoning_effort")}
+                            {move || {
+                                let entry = model_form.get().and_then(|f| {
+                                    f.entries.into_iter().find(|e| e.row_id == row_id)
+                                });
+                                let current = entry.as_ref().map(|e| e.reasoning_effort.clone()).unwrap_or_default();
+                                let provider = entry.as_ref().map(|e| e.provider.clone()).unwrap_or_default();
+                                let model = entry.as_ref().map(|e| e.model.clone()).unwrap_or_default();
+                                let mut values: Vec<String> = known_effort_values(&provider, &model)
+                                    .unwrap_or(ALL_EFFORT_VALUES)
+                                    .iter()
+                                    .map(|v| v.to_string())
+                                    .collect();
+                                if !current.is_empty() && !values.iter().any(|v| v == &current) {
+                                    values.push(current.clone());
+                                }
+                                let loc = locale.get();
+                                view! {
+                                    <select
+                                        on:change=move|ev| model_form.update(|o| if let Some(o)=o {
+                                            if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                                let v = dom_value(&ev);
+                                                e.reasoning_effort = if v == "default" { String::new() } else { v };
+                                            }
+                                            sync_form_from_selected(o);
+                                        })
+                                        >
+                                        <option value="default" selected=current.is_empty()>
+                                            {t(loc, "settings.reasoning_effort.default")}
+                                        </option>
+                                        {values.into_iter().map(|v| {
+                                            let sel = v == current;
+                                            view! { <option value=v.clone() selected=sel>{v}</option> }
+                                        }).collect_view()}
+                                    </select>
+                                }
+                            }}
+                        </label>
+                        <span class="hint effort-hint span-2">{move || {
+                            let entry = model_form.get().and_then(|f| {
+                                f.entries.into_iter().find(|e| e.row_id == row_id)
+                            });
+                            let provider = entry.as_ref().map(|e| e.provider.clone()).unwrap_or_default();
+                            let model = entry.as_ref().map(|e| e.model.clone()).unwrap_or_default();
+                            let loc = locale.get();
+                            match known_effort_values(&provider, &model) {
+                                Some([]) => t(loc, "settings.reasoning_effort.unsupported_hint").to_string(),
+                                Some(list) => tf(loc, "settings.reasoning_effort.known_hint", &[("list", &list.join(" / "))]),
+                                None => t(loc, "settings.reasoning_effort.unknown_hint").to_string(),
+                            }
+                        }}</span>
+                    }.into_view()
+                }
+            }}
+        </div>
+    }
+}
+
+fn provider_model_entries_editor(
+    model_form: RwSignal<Option<ModelForm>>,
+    locale: RwSignal<Locale>,
+    model_catalog_limits: RwSignal<Option<CatalogEntryDto>>,
+    min_entries: usize,
+) -> impl IntoView {
+    view! {
+        <div class="provider-models" data-testid="provider-models">
+            <div class="provider-models-head">
+                <strong>{move || t(locale.get(), "models.entries")}</strong>
+                <span class="hint">{move || t(locale.get(), "models.entries_hint")}</span>
+            </div>
+            <For
+                each=move || model_form.get().map(|f| f.entries).unwrap_or_default()
+                key=|entry| entry.row_id
+                let:entry
+            >
+                {
+                    let row_id = entry.row_id;
+                    view! {
+                        <div class="provider-model-row" data-testid="provider-model-row"
+                            class:selected=move || model_form.get().is_some_and(|f| f.selected_row_id == row_id)
+                            on:focusin=move |_| {
+                                model_form.update(|o| if let Some(o)=o {
+                                    select_form_row(o, row_id);
+                                });
+                                apply_catalog_limits(model_form, model_catalog_limits);
+                            }>
+                            <div class="provider-model-row-head">
+                                <label class="provider-model-protocol">{move || t(locale.get(), "settings.provider")}
+                                    <select data-testid="provider-model-protocol"
+                                        on:change=move |ev| {
+                                            let value = dom_value(&ev);
+                                            model_form.update(|o| if let Some(o)=o {
+                                                if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                                    e.provider = settings_provider_value(&value).into();
+                                                }
+                                                select_form_row(o, row_id);
+                                            });
+                                            apply_catalog_limits(model_form, model_catalog_limits);
+                                        }>
+                                        <option value="openai"
+                                            prop:selected=move || model_form.get()
+                                                .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                                .is_some_and(|e| settings_provider_value(&e.provider) == "openai")>
+                                            {move || t(locale.get(), "settings.provider.openai")}
+                                        </option>
+                                        <option value="openai_responses"
+                                            prop:selected=move || model_form.get()
+                                                .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                                .is_some_and(|e| settings_provider_value(&e.provider) == "openai_responses")>
+                                            {move || t(locale.get(), "settings.provider.openai_responses")}
+                                        </option>
+                                        <option value="anthropic"
+                                            prop:selected=move || model_form.get()
+                                                .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                                .is_some_and(|e| settings_provider_value(&e.provider) == "anthropic")>
+                                            {move || t(locale.get(), "settings.provider.anthropic")}
+                                        </option>
+                                    </select>
+                                </label>
+                                <label class="provider-model-id">{move || t(locale.get(), "settings.model")}
+                                    <input data-testid="provider-model-id"
+                                        prop:value=move || model_form.get()
+                                            .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                            .map(|e| e.model)
+                                            .unwrap_or_default()
+                                        placeholder=move || t(locale.get(), "settings.model_ph")
+                                        on:input=move |ev| {
+                                            let value = event_target_input(&ev).value();
+                                            model_form.update(|o| if let Some(o)=o {
+                                                if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                                    e.model = value;
+                                                    if is_image_generation_model(&e.model) {
+                                                        e.supports_vision = false;
+                                                        e.use_for_vision = false;
+                                                        e.use_for_image_generation = true;
+                                                        e.use_for_video_generation = false;
+                                                    } else if is_video_generation_model(&e.model) {
+                                                        e.supports_vision = false;
+                                                        e.use_for_vision = false;
+                                                        e.use_for_image_generation = false;
+                                                        e.use_for_video_generation = true;
+                                                    }
+                                                }
+                                                select_form_row(o, row_id);
+                                            });
+                                            apply_catalog_limits(model_form, model_catalog_limits);
+                                        } /></label>
+                                <label class="provider-model-label">{move || t(locale.get(), "settings.label")}
+                                    <input data-testid="provider-model-label"
+                                        prop:value=move || model_form.get()
+                                            .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                            .map(|e| e.label)
+                                            .unwrap_or_default()
+                                        placeholder=move || t(locale.get(), "settings.label_ph")
+                                        on:input=move |ev| {
+                                            let value = event_target_input(&ev).value();
+                                            model_form.update(|o| if let Some(o)=o {
+                                                if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                                    e.label = value;
+                                                }
+                                            });
+                                        } /></label>
+                                <label class="provider-model-endpoint">{move || t(locale.get(), "settings.endpoint_suffix")}
+                                    <input data-testid="provider-endpoint-suffix"
+                                        prop:value=move || model_form.get()
+                                            .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                            .map(|e| e.endpoint_suffix)
+                                            .unwrap_or_default()
+                                        placeholder=move || t(locale.get(), "settings.endpoint_suffix_ph")
+                                        on:input=move |ev| {
+                                            let value = event_target_input(&ev).value();
+                                            model_form.update(|o| if let Some(o)=o {
+                                                if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                                    e.endpoint_suffix = value;
+                                                }
+                                            });
+                                        } /></label>
+                                <button type="button" class="settings-list-remove" data-testid="provider-remove-model"
+                                    title=move || t(locale.get(), "models.remove_entry")
+                                    disabled=move || model_form.get().is_some_and(|f| {
+                                        let locked = f.entries.iter().any(|e| {
+                                            e.row_id == row_id && e.profile_id.as_deref() == Some(TCTOKEN_MODEL_ID)
+                                        });
+                                        locked || (min_entries > 0 && f.entries.len() <= min_entries)
+                                    })
+                                    on:click=move |_| {
+                                        model_form.update(|o| if let Some(o)=o {
+                                            if min_entries == 0 || o.entries.len() > min_entries {
+                                                o.entries.retain(|e| {
+                                                    e.row_id != row_id
+                                                        || e.profile_id.as_deref() == Some(TCTOKEN_MODEL_ID)
+                                                });
+                                                if !o.entries.iter().any(|e| e.row_id == o.selected_row_id) {
+                                                    if let Some(first) = o.entries.first() {
+                                                        select_form_row(o, first.row_id);
+                                                    }
+                                                }
+                                            }
+                                        });
+                                    }>{compose_icon("close")}</button>
+                            </div>
+                            <div class="provider-model-roles">
+                                {move || {
+                                    let image = model_form.get()
+                                        .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                        .is_some_and(|e| e.is_image_model());
+                                    let video = !image && model_form.get()
+                                        .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                        .is_some_and(|e| e.is_video_model());
+                                    if video {
+                                        view! {
+                                <label class="settings-check">
+                                    <input type="checkbox" data-testid="provider-use-for-video"
+                                        prop:checked=move || model_form.get()
+                                            .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                            .map(|e| e.use_for_video_generation)
+                                            .unwrap_or(false)
+                                        on:change=move |ev| {
+                                            let checked = event_target_checked(&ev);
+                                            model_form.update(|o| if let Some(o)=o {
+                                                if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                                    e.use_for_video_generation = checked;
+                                                    if checked {
+                                                        e.supports_vision = false;
+                                                        e.use_for_vision = false;
+                                                        e.use_for_image_generation = false;
+                                                    }
+                                                }
+                                            });
+                                        } />
+                                    <span>{move || t(locale.get(), "settings.use_for_video_generation")}</span>
+                                </label>
+                                        }.into_view()
+                                    } else if image {
+                                        view! {
+                                <label class="settings-check">
+                                    <input type="checkbox" data-testid="provider-use-for-image"
+                                        prop:checked=move || model_form.get()
+                                            .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                            .map(|e| e.use_for_image_generation)
+                                            .unwrap_or(false)
+                                        on:change=move |ev| {
+                                            let checked = event_target_checked(&ev);
+                                            model_form.update(|o| if let Some(o)=o {
+                                                if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                                    e.use_for_image_generation = checked;
+                                                    if checked {
+                                                        e.supports_vision = false;
+                                                        e.use_for_vision = false;
+                                                    }
+                                                }
+                                            });
+                                        } />
+                                    <span>{move || t(locale.get(), "settings.use_for_image_generation")}</span>
+                                </label>
+                                        }.into_view()
+                                    } else {
+                                        view! {
+                                <label class="settings-check">
+                                    <input type="checkbox"
+                                        prop:checked=move || model_form.get()
+                                            .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                            .map(|e| e.supports_vision)
+                                            .unwrap_or(false)
+                                        on:change=move |ev| {
+                                            let checked = event_target_checked(&ev);
+                                            model_form.update(|o| if let Some(o)=o {
+                                                if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                                    e.supports_vision = checked;
+                                                    if !checked {
+                                                        e.use_for_vision = false;
+                                                    }
+                                                }
+                                            });
+                                        } />
+                                    <span>{move || t(locale.get(), "settings.supports_vision")}</span>
+                                </label>
+                                <label class="settings-check">
+                                    <input type="checkbox"
+                                        prop:checked=move || model_form.get()
+                                            .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                            .map(|e| e.use_for_vision)
+                                            .unwrap_or(false)
+                                        on:change=move |ev| {
+                                            let checked = event_target_checked(&ev);
+                                            model_form.update(|o| if let Some(o)=o {
+                                                if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                                    e.use_for_vision = checked;
+                                                    if checked {
+                                                        e.supports_vision = true;
+                                                    }
+                                                }
+                                            });
+                                        } />
+                                    <span>{move || t(locale.get(), "settings.use_for_vision")}</span>
+                                </label>
+                                <label class="settings-check">
+                                    <input type="checkbox" data-testid="provider-use-for-image"
+                                        prop:checked=move || model_form.get()
+                                            .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                            .map(|e| e.use_for_image_generation)
+                                            .unwrap_or(false)
+                                        on:change=move |ev| {
+                                            let checked = event_target_checked(&ev);
+                                            model_form.update(|o| if let Some(o)=o {
+                                                if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                                    e.use_for_image_generation = checked;
+                                                    if checked {
+                                                        e.supports_vision = false;
+                                                        e.use_for_vision = false;
+                                                    }
+                                                }
+                                            });
+                                        } />
+                                    <span>{move || t(locale.get(), "settings.use_for_image_generation")}</span>
+                                </label>
+                                <label class="settings-check">
+                                    <input type="checkbox" data-testid="provider-use-for-video"
+                                        prop:checked=move || model_form.get()
+                                            .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                            .map(|e| e.use_for_video_generation)
+                                            .unwrap_or(false)
+                                        on:change=move |ev| {
+                                            let checked = event_target_checked(&ev);
+                                            model_form.update(|o| if let Some(o)=o {
+                                                if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                                    e.use_for_video_generation = checked;
+                                                    if checked {
+                                                        e.supports_vision = false;
+                                                        e.use_for_vision = false;
+                                                        e.use_for_image_generation = false;
+                                                    }
+                                                }
+                                            });
+                                        } />
+                                    <span>{move || t(locale.get(), "settings.use_for_video_generation")}</span>
+                                </label>
+                                        }.into_view()
+                                    }
+                                }}
+                            </div>
+                            {move || model_form.get().is_some_and(|f| f.selected_row_id == row_id).then(|| {
+                                selected_entry_advanced_fields(model_form, locale, model_catalog_limits, row_id)
+                            })}
+                        </div>
+                    }
+                }
+            </For>
+            <button type="button" class="settings-add-btn" data-testid="provider-add-model"
+                on:click=move |_| {
+                    model_form.update(|o| if let Some(o)=o {
+                        let entry = model_form_entry("openai", "", "", false);
+                        let row_id = entry.row_id;
+                        o.entries.push(entry);
+                        select_form_row(o, row_id);
+                    });
+                }>
+                {compose_icon("plus")}
+                {move || t(locale.get(), "models.add_entry")}
+            </button>
+        </div>
+    }
 }
 
 #[component]
@@ -1206,9 +1827,7 @@ pub(super) fn SettingsView(
         } else {
             "project-sync.md"
         };
-        crate::bindings::open_external_url(format!(
-            "https://github.com/xuzhougeng/wisp-science/blob/main/docs/{page}"
-        ));
+        crate::bindings::open_external_url(format!("{BRAND_GITHUB_REPO}/blob/main/docs/{page}"));
     };
     let join_project = move |_| {
         let code = join_code.get();
@@ -1295,8 +1914,14 @@ pub(super) fn SettingsView(
                     <span>{move || t(locale.get(), "settings.back_to_app")}</span>
                 </button>
                 <div class="settings-nav-title">{move || t(locale.get(), "settings.title")}</div>
-                <div class="settings-nav-group">
-                    <span class="settings-nav-label">{move || t(locale.get(), "settings.nav.workspace")}</span>
+                <div class="settings-nav-group"
+                    class:active=move || settings_nav_group(&settings_section.get()) == "workspace"
+                    data-testid="settings-nav-group-workspace">
+                    <div class="settings-nav-heading" data-testid="settings-nav-heading">
+                        {compose_icon("folder")}
+                        <span class="settings-nav-label">{move || t(locale.get(), "settings.nav.workspace")}</span>
+                    </div>
+                    <div class="settings-nav-items">
                     <button class:active=move || settings_section.get()=="general"
                         on:click=move |_| go_settings_section.call("general".into())>
                         {move || t(locale.get(), "settings.nav.general")}</button>
@@ -1318,9 +1943,16 @@ pub(super) fn SettingsView(
                     <button class:active=move || settings_section.get()=="usage"
                         on:click=move |_| go_settings_section.call("usage".into())>
                         {move || t(locale.get(), "settings.nav.usage")}</button>
+                    </div>
                 </div>
-                <div class="settings-nav-group">
-                    <span class="settings-nav-label">{move || t(locale.get(), "settings.nav.capabilities")}</span>
+                <div class="settings-nav-group"
+                    class:active=move || settings_nav_group(&settings_section.get()) == "capabilities"
+                    data-testid="settings-nav-group-capabilities">
+                    <div class="settings-nav-heading" data-testid="settings-nav-heading">
+                        {compose_icon("grid")}
+                        <span class="settings-nav-label">{move || t(locale.get(), "settings.nav.capabilities")}</span>
+                    </div>
+                    <div class="settings-nav-items">
                     <button class:active=move || settings_section.get()=="models"
                         on:click=move |_| go_settings_section.call("models".into())>
                         {move || t(locale.get(), "settings.nav.models")}</button>
@@ -1354,6 +1986,7 @@ pub(super) fn SettingsView(
                     <button class:active=move || settings_section.get()=="channels"
                         on:click=move |_| go_settings_section.call("channels".into())>
                         {move || t(locale.get(), "settings.nav.channels")}</button>
+                    </div>
                 </div>
             </div>
             <div class="settings-content">
@@ -1567,7 +2200,7 @@ pub(super) fn SettingsView(
                                 class:fail=move || !ok>{text}</div>
                         })}
                         <div class="row settings-footer">
-                                <span class="settings-version">{concat!("wisp-science v", env!("CARGO_PKG_VERSION"))}</span>
+                                <span class="settings-version">{move || brand_visible_copy(locale.get(), concat!("wisp-science v", env!("CARGO_PKG_VERSION")))}</span>
                                 <button type="button" disabled=move || settings_busy.get() on:click=move |ev| check_updates.call(ev)>{move || t(locale.get(), "settings.check_updates")}</button>
                             <button type="button" disabled=move || settings_busy.get() on:click=move |_| show_settings.set(false)>{move || t(locale.get(), "settings.cancel")}</button>
                                 <button type="button" class="primary" disabled=move || settings_busy.get() on:click=move |ev| save_settings.call(ev)>{move || t(locale.get(), "settings.save")}</button>
@@ -2400,7 +3033,7 @@ pub(super) fn SettingsView(
                                                         dark_palette.get() == value
                                                     } else {
                                                         light_palette.get() == value
-                                                    }>{name}</option>
+                                                    }>{brand_visible_copy(locale.get(), name)}</option>
                                             }).collect_view()}
                                         </select>
                                     </div>
@@ -2573,377 +3206,9 @@ pub(super) fn SettingsView(
                             </div>
                         }.into_view()
                     } else if model_form_open.get() {
-                        if model_form_is_edit.get() {
                         view! {
-                            <div class="settings-pane settings-pane-subpage">
-                                <div class="conn-form model-form">
-                                    <div class="settings-form-grid">
-                                        <label class="span-2">{move || t(locale.get(), "settings.api_url")}
-                                            <input aria-describedby="model-api-url-hint"
-                                                prop:value=move || model_form.get().map(|f| f.api_url.clone()).unwrap_or_default()
-                                                on:input=move |ev| model_form.update(|o| if let Some(o)=o { o.api_url = event_target_input(&ev).value(); }) /></label>
-                                        <span id="model-api-url-hint" class="hint span-2" data-testid="model-api-url-hint">
-                                            {move || t(locale.get(), "settings.tip")}
-                                        </span>
-                                        <label class="span-2">{move || t(locale.get(), "settings.api_key")}
-                                            <input type="password" id="model-form-api-key" prop:value=move || model_form_key.get()
-                                                placeholder=move || {
-                                                    let Some(id) = model_form.get().and_then(|f| f.id) else { return String::new(); };
-                                                    if models.get().iter().any(|m| m.id == id && m.has_api_key) {
-                                                        t(locale.get(), "settings.stored_key").to_string()
-                                                    } else {
-                                                        String::new()
-                                                    }
-                                                }
-                                                autocomplete="new-password"
-                                                on:input=move |ev| model_form_key.set(event_target_input(&ev).value()) /></label>
-                                        <label>{move || t(locale.get(), "settings.provider")}
-                                            <select data-testid="settings-provider"
-                                                on:change=move|ev| {
-                                                    let p = dom_value(&ev);
-                                                    model_form.update(|o| if let Some(o)=o {
-                                                        o.provider = settings_provider_value(&p).into();
-                                                    });
-                                                    apply_catalog_limits(model_form, model_catalog_limits);
-                                                }
-                                                >
-                                                <option value="openai"
-                                                    prop:selected=move || model_form.get().is_some_and(|f| settings_provider_value(&f.provider) == "openai")>
-                                                    {move || t(locale.get(), "settings.provider.openai")}
-                                                </option>
-                                                <option value="openai_responses"
-                                                    prop:selected=move || model_form.get().is_some_and(|f| settings_provider_value(&f.provider) == "openai_responses")>
-                                                    {move || t(locale.get(), "settings.provider.openai_responses")}
-                                                </option>
-                                                <option value="anthropic"
-                                                    prop:selected=move || model_form.get().is_some_and(|f| settings_provider_value(&f.provider) == "anthropic")>
-                                                    {move || t(locale.get(), "settings.provider.anthropic")}
-                                                </option>
-                                            </select>
-                                        </label>
-                                        <label>{move || t(locale.get(), "settings.model")}
-                                            <input prop:value=move || model_form.get().map(|f| f.model.clone()).unwrap_or_default()
-                                                placeholder=move || t(locale.get(), "settings.model_ph")
-                                                on:input=move |ev| {
-                                                    model_form.update(|o| if let Some(o)=o {
-                                                        o.model = event_target_input(&ev).value();
-                                                        if is_image_generation_model(&o.model) {
-                                                            o.supports_vision = false;
-                                                            o.use_for_vision = false;
-                                                            o.use_for_image_generation = true;
-                                                            o.use_for_video_generation = false;
-                                                        } else if is_video_generation_model(&o.model) {
-                                                            o.supports_vision = false;
-                                                            o.use_for_vision = false;
-                                                            o.use_for_image_generation = false;
-                                                            o.use_for_video_generation = true;
-                                                        }
-                                                    });
-                                                    apply_catalog_limits(model_form, model_catalog_limits);
-                                                } /></label>
-                                        <label>{move || t(locale.get(), "settings.endpoint_suffix")}
-                                            <input data-testid="model-endpoint-suffix"
-                                                prop:value=move || model_form.get().map(|f| f.endpoint_suffix.clone()).unwrap_or_default()
-                                                placeholder=move || t(locale.get(), "settings.endpoint_suffix_ph")
-                                                on:input=move |ev| model_form.update(|o| if let Some(o)=o {
-                                                    o.endpoint_suffix = event_target_input(&ev).value();
-                                                }) /></label>
-                                        <label>{move || t(locale.get(), "settings.label")}
-                                            <input prop:value=move || model_form.get().map(|f| f.label.clone()).unwrap_or_default()
-                                                placeholder=move || t(locale.get(), "settings.label_ph")
-                                                on:input=move |ev| model_form.update(|o| if let Some(o)=o { o.label = event_target_input(&ev).value(); }) /></label>
-                                        {move || {
-                                            let image = model_form.get().is_some_and(|f| is_image_generation_model(&f.model));
-                                            // A model id is never both image and video, but keep the
-                                            // branches mutually exclusive anyway.
-                                            let video = !image && model_form.get().is_some_and(|f| is_video_generation_model(&f.model));
-                                            if video {
-                                                view! {
-                                                    <label>{move || t(locale.get(), "settings.video_duration")}
-                                                        <input type="number" min="1" max="15" step="1" data-testid="video-duration"
-                                                            on:input=move|ev| model_form.update(|o| if let Some(o)=o {
-                                                                let secs = dom_value(&ev).parse::<u32>().unwrap_or(5).clamp(1, 15);
-                                                                o.video_duration_secs = Some(secs);
-                                                            })
-                                                            prop:value=move || model_form.get()
-                                                                .and_then(|f| f.video_duration_secs)
-                                                                .map(|d| d.to_string())
-                                                                .unwrap_or_else(|| "5".into()) />
-                                                    </label>
-                                                    <label>{move || t(locale.get(), "settings.video_aspect_ratio")}
-                                                        <select data-testid="video-aspect-ratio"
-                                                            on:change=move|ev| model_form.update(|o| if let Some(o)=o {
-                                                                o.video_aspect_ratio = Some(dom_value(&ev));
-                                                            })>
-                                                            {VIDEO_ASPECT_RATIOS.iter().map(|value| {
-                                                                let selected = model_form.get().is_some_and(|f| {
-                                                                    f.video_aspect_ratio.as_deref() == Some(*value)
-                                                                        || (f.video_aspect_ratio.is_none() && *value == "16:9")
-                                                                });
-                                                                view! { <option value=*value selected=selected>{*value}</option> }
-                                                            }).collect_view()}
-                                                        </select>
-                                                    </label>
-                                                    <label>{move || t(locale.get(), "settings.video_resolution")}
-                                                        <select data-testid="video-resolution"
-                                                            on:change=move|ev| model_form.update(|o| if let Some(o)=o {
-                                                                o.video_resolution = Some(dom_value(&ev));
-                                                            })>
-                                                            {VIDEO_RESOLUTIONS.iter().map(|value| {
-                                                                let selected = model_form.get().is_some_and(|f| {
-                                                                    f.video_resolution.as_deref() == Some(*value)
-                                                                        || (f.video_resolution.is_none() && *value == "720p")
-                                                                });
-                                                                view! { <option value=*value selected=selected>{*value}</option> }
-                                                            }).collect_view()}
-                                                        </select>
-                                                    </label>
-                                                    <span class="hint span-2">{move || t(locale.get(), "settings.video_defaults_hint")}</span>
-                                                    <label class="settings-check span-2">
-                                                        <input type="checkbox" data-testid="use-for-video-generation"
-                                                            prop:checked=move || model_form.get().map(|f| f.use_for_video_generation).unwrap_or(false)
-                                                            on:change=move|ev| model_form.update(|o| if let Some(o)=o {
-                                                                o.use_for_video_generation = event_target_checked(&ev);
-                                                                if o.use_for_video_generation {
-                                                                    o.use_for_image_generation = false;
-                                                                }
-                                                            }) />
-                                                        <span>{move || t(locale.get(), "settings.use_for_video_generation")}</span>
-                                                    </label>
-                                                    <span class="hint span-2">{move || t(locale.get(), "settings.video_generation_hint")}</span>
-                                                }.into_view()
-                                            } else if image {
-                                                view! {
-                                                    {move || {
-                                                        let grok = model_form.get().is_some_and(|f| is_grok_imagine_model(&f.model));
-                                                        if grok {
-                                                            view! {
-                                                                <label>{move || t(locale.get(), "settings.image_aspect_ratio")}
-                                                                    <select data-testid="image-aspect-ratio"
-                                                                        on:change=move|ev| model_form.update(|o| if let Some(o)=o {
-                                                                            o.image_aspect_ratio = dom_value(&ev);
-                                                                        })>
-                                                                        {GROK_IMAGE_ASPECT_RATIOS.iter().map(|value| {
-                                                                            let selected = model_form.get().is_some_and(|f| {
-                                                                                f.image_aspect_ratio == *value
-                                                                                    || (f.image_aspect_ratio.is_empty() && *value == "auto")
-                                                                            });
-                                                                            view! { <option value=*value selected=selected>{*value}</option> }
-                                                                        }).collect_view()}
-                                                                    </select>
-                                                                </label>
-                                                                <label>{move || t(locale.get(), "settings.image_resolution")}
-                                                                    <select data-testid="image-resolution"
-                                                                        on:change=move|ev| model_form.update(|o| if let Some(o)=o {
-                                                                            o.image_resolution = dom_value(&ev);
-                                                                        })>
-                                                                        {GROK_IMAGE_RESOLUTIONS.iter().map(|value| {
-                                                                            let selected = model_form.get().is_some_and(|f| {
-                                                                                f.image_resolution == *value
-                                                                                    || (f.image_resolution.is_empty() && *value == "1k")
-                                                                            });
-                                                                            view! { <option value=*value selected=selected>{*value}</option> }
-                                                                        }).collect_view()}
-                                                                    </select>
-                                                                </label>
-                                                                <label>{move || t(locale.get(), "settings.image_quality")}
-                                                                    <select data-testid="image-quality"
-                                                                        on:change=move|ev| model_form.update(|o| if let Some(o)=o {
-                                                                            o.image_quality = dom_value(&ev);
-                                                                        })>
-                                                                        {GROK_IMAGE_QUALITIES.iter().map(|value| {
-                                                                            let selected = model_form.get().is_some_and(|f| {
-                                                                                f.image_quality == *value
-                                                                                    || (f.image_quality.is_empty() && *value == "medium")
-                                                                            });
-                                                                            view! { <option value=*value selected=selected>{*value}</option> }
-                                                                        }).collect_view()}
-                                                                    </select>
-                                                                </label>
-                                                            }.into_view()
-                                                        } else {
-                                                            view! {
-                                                                <label>{move || t(locale.get(), "settings.image_size")}
-                                                                    <select data-testid="image-size"
-                                                                        on:change=move|ev| model_form.update(|o| if let Some(o)=o {
-                                                                            o.image_size = dom_value(&ev);
-                                                                        })>
-                                                                        {OPENAI_IMAGE_SIZES.iter().map(|value| {
-                                                                            let selected = model_form.get().is_some_and(|f| {
-                                                                                f.image_size == *value
-                                                                                    || (f.image_size.is_empty() && *value == "auto")
-                                                                            });
-                                                                            view! { <option value=*value selected=selected>{*value}</option> }
-                                                                        }).collect_view()}
-                                                                    </select>
-                                                                </label>
-                                                                <label>{move || t(locale.get(), "settings.image_quality")}
-                                                                    <select data-testid="image-quality"
-                                                                        on:change=move|ev| model_form.update(|o| if let Some(o)=o {
-                                                                            o.image_quality = dom_value(&ev);
-                                                                        })>
-                                                                        {OPENAI_IMAGE_QUALITIES.iter().map(|value| {
-                                                                            let selected = model_form.get().is_some_and(|f| {
-                                                                                f.image_quality == *value
-                                                                                    || (f.image_quality.is_empty() && *value == "auto")
-                                                                            });
-                                                                            view! { <option value=*value selected=selected>{*value}</option> }
-                                                                        }).collect_view()}
-                                                                    </select>
-                                                                </label>
-                                                            }.into_view()
-                                                        }
-                                                    }}
-                                                    <span class="hint span-2">{move || t(locale.get(), "settings.image_defaults_hint")}</span>
-                                                    <label class="settings-check span-2">
-                                                        <input type="checkbox" data-testid="use-for-image-generation"
-                                                            prop:checked=move || model_form.get().map(|f| f.use_for_image_generation).unwrap_or(false)
-                                                            on:change=move|ev| model_form.update(|o| if let Some(o)=o {
-                                                                o.use_for_image_generation = event_target_checked(&ev);
-                                                            }) />
-                                                        <span>{move || t(locale.get(), "settings.use_for_image_generation")}</span>
-                                                    </label>
-                                                    <span class="hint span-2">{move || t(locale.get(), "settings.image_generation_hint")}</span>
-                                                }.into_view()
-                                            } else {
-                                                view! {
-                                        <label>{move || t(locale.get(), "settings.max_tokens")}
-                                            <input type="number" min="16" step="1"
-                                                attr:max=move || model_catalog_limits.get().map(|d| d.max_tokens.to_string())
-                                                on:input=move|ev| model_form.update(|o| if let Some(o)=o {
-                                                    o.max_tokens = dom_value(&ev).parse().unwrap_or(0);
-                                                })
-                                                prop:value=move || model_form.get().map(|f| f.max_tokens.to_string()).unwrap_or_else(|| "8192".into()) />
-                                        </label>
-                                        <label>{move || t(locale.get(), "settings.context_window")}
-                                            <input type="number" min="4096" step="1024"
-                                                attr:max=move || model_catalog_limits.get().map(|d| d.context_window.to_string())
-                                                on:input=move|ev| model_form.update(|o| if let Some(o)=o {
-                                                    o.context_window = dom_value(&ev).parse().unwrap_or(0);
-                                                })
-                                                prop:value=move || model_form.get().map(|f| f.context_window.to_string()).unwrap_or_else(|| "128000".into()) />
-                                        </label>
-                                        {move || model_catalog_limits.get().map(|d| view! {
-                                            <span class="hint" data-testid="model-catalog-limits-hint">
-                                                {tf(locale.get(), "settings.catalog_limits_hint", &[
-                                                    ("context", &d.context_window.to_string()),
-                                                    ("output", &d.max_tokens.to_string()),
-                                                ])}
-                                            </span>
-                                        })}
-                                        <label>{move || t(locale.get(), "settings.reasoning_effort")}
-                                            {move || {
-                                                let form = model_form.get();
-                                                let current = form.as_ref().map(|f| f.reasoning_effort.clone()).unwrap_or_default();
-                                                let provider = form.as_ref().map(|f| f.provider.clone()).unwrap_or_default();
-                                                let model = form.as_ref().map(|f| f.model.clone()).unwrap_or_default();
-                                                let mut values: Vec<String> = known_effort_values(&provider, &model)
-                                                    .unwrap_or(ALL_EFFORT_VALUES)
-                                                    .iter()
-                                                    .map(|v| v.to_string())
-                                                    .collect();
-                                                // Keep a saved value visible even when the curated
-                                                // list for this model no longer includes it.
-                                                if !current.is_empty() && !values.iter().any(|v| v == &current) {
-                                                    values.push(current.clone());
-                                                }
-                                                let loc = locale.get();
-                                                view! {
-                                                    <select
-                                                        on:change=move|ev| model_form.update(|o| if let Some(o)=o {
-                                                            let v = dom_value(&ev);
-                                                            o.reasoning_effort = if v == "default" { String::new() } else { v };
-                                                        })
-                                                        >
-                                                        <option value="default" selected=current.is_empty()>
-                                                            {t(loc, "settings.reasoning_effort.default")}
-                                                        </option>
-                                                        {values.into_iter().map(|v| {
-                                                            let sel = v == current;
-                                                            view! { <option value=v.clone() selected=sel>{v}</option> }
-                                                        }).collect_view()}
-                                                    </select>
-                                                }
-                                            }}
-                                        </label>
-                                        // Hint lives OUTSIDE the <label> on purpose: its text mentions
-                                        // "model", and nesting it would fold that into the <select>'s
-                                        // accessible name, so getByLabel("Model") would match it (#e2e).
-                                        <span class="hint effort-hint span-2">{move || {
-                                            let form = model_form.get();
-                                            let provider = form.as_ref().map(|f| f.provider.clone()).unwrap_or_default();
-                                            let model = form.as_ref().map(|f| f.model.clone()).unwrap_or_default();
-                                            let loc = locale.get();
-                                            match known_effort_values(&provider, &model) {
-                                                Some([]) => t(loc, "settings.reasoning_effort.unsupported_hint").to_string(),
-                                                Some(list) => tf(loc, "settings.reasoning_effort.known_hint", &[("list", &list.join(" / "))]),
-                                                None => t(loc, "settings.reasoning_effort.unknown_hint").to_string(),
-                                            }
-                                        }}</span>
-                                        <div class="span-2 settings-form-grid">
-                                            <label class="settings-check">
-                                                <input type="checkbox"
-                                                    prop:checked=move || model_form.get().map(|f| f.supports_vision).unwrap_or(false)
-                                                    on:change=move|ev| model_form.update(|o| if let Some(o)=o {
-                                                        o.supports_vision = event_target_checked(&ev);
-                                                        if !o.supports_vision {
-                                                            o.use_for_vision = false;
-                                                        }
-                                                    }) />
-                                                <span>{move || t(locale.get(), "settings.supports_vision")}</span>
-                                            </label>
-                                            <label class="settings-check">
-                                                <input type="checkbox"
-                                                    prop:checked=move || model_form.get().map(|f| f.use_for_vision).unwrap_or(false)
-                                                    on:change=move|ev| model_form.update(|o| if let Some(o)=o {
-                                                        o.use_for_vision = event_target_checked(&ev);
-                                                        if o.use_for_vision {
-                                                            o.supports_vision = true;
-                                                        }
-                                                    }) />
-                                                <span>{move || t(locale.get(), "settings.use_for_vision")}</span>
-                                            </label>
-                                            <span class="hint span-2">{move || t(locale.get(), "settings.vision_hint")}</span>
-                                            <label class="settings-check span-2">
-                                                <input type="checkbox" data-testid="use-for-image-generation"
-                                                    prop:checked=move || model_form.get().map(|f| f.use_for_image_generation).unwrap_or(false)
-                                                    on:change=move|ev| model_form.update(|o| if let Some(o)=o {
-                                                        o.use_for_image_generation = event_target_checked(&ev);
-                                                    }) />
-                                                <span>{move || t(locale.get(), "settings.use_for_image_generation")}</span>
-                                            </label>
-                                            <span class="hint span-2">{move || t(locale.get(), "settings.image_generation_hint")}</span>
-                                            <label class="settings-check span-2">
-                                                <input type="checkbox" data-testid="use-for-video-generation"
-                                                    prop:checked=move || model_form.get().map(|f| f.use_for_video_generation).unwrap_or(false)
-                                                    on:change=move|ev| model_form.update(|o| if let Some(o)=o {
-                                                        o.use_for_video_generation = event_target_checked(&ev);
-                                                        if o.use_for_video_generation {
-                                                            o.use_for_image_generation = false;
-                                                        }
-                                                    }) />
-                                                <span>{move || t(locale.get(), "settings.use_for_video_generation")}</span>
-                                            </label>
-                                            <span class="hint span-2">{move || t(locale.get(), "settings.video_generation_hint")}</span>
-                                        </div>
-                                                }.into_view()
-                                            }
-                                        }}
-                                    </div>
-                                    {move || model_form_msg.get().map(|(ok, text)| view! {
-                                        <div class="settings-status" class:ok=ok class:fail=move || !ok>{text}</div>
-                                    })}
-                                    <div class="row settings-footer">
-                                            <button type="button" disabled=move || settings_busy.get() on:click=move |ev| validate_model_form.call(ev)>{move || t(locale.get(), "settings.validate")}</button>
-                                        <button type="button" disabled=move || settings_busy.get() on:click=move |_| close_settings_subpage.call(())>{move || t(locale.get(), "settings.cancel")}</button>
-                                            <button type="button" class="primary" disabled=move || settings_busy.get() on:click=move |ev| save_model_form.call(ev)>{move || t(locale.get(), "settings.save")}</button>
-                                    </div>
-                                </div>
-                            </div>
-                        }.into_view()
-                        } else {
-                        view! {
-                            <div class="settings-pane settings-pane-subpage" data-testid="provider-add-form">
+                            <div class="settings-pane settings-pane-subpage"
+                                data-testid=move || if model_form_is_edit.get() { "model-edit-form" } else { "provider-add-form" }>
                                 <div class="conn-form model-form">
                                     <p class="hint" data-testid="provider-byok-hint">{move || t(locale.get(), "models.byok_hint")}</p>
                                     <div class="settings-form-grid">
@@ -2953,7 +3218,7 @@ pub(super) fn SettingsView(
                                                 on:input=move |ev| {
                                                     let url = event_target_input(&ev).value();
                                                     model_form.update(|o| if let Some(o)=o {
-                                                        if provider_entries_are_pristine(o) {
+                                                        if o.id.is_none() && provider_entries_are_pristine(o) {
                                                             apply_base_url_suggestions(o, &url);
                                                         } else {
                                                             o.api_url = url;
@@ -2967,282 +3232,25 @@ pub(super) fn SettingsView(
                                             <input type="password" id="model-form-api-key" data-testid="provider-api-key"
                                                 prop:value=move || model_form_key.get()
                                                 placeholder=move || {
-                                                    let url = model_form.get().map(|f| f.api_url).unwrap_or_default();
-                                                    if endpoint_has_stored_key(&models.get(), &url) {
-                                                        tf(locale.get(), "models.reuse_key", &[("host", &endpoint_host(&url))])
-                                                    } else {
+                                                    let form = model_form.get();
+                                                    let url = form.as_ref().map(|f| f.api_url.clone()).unwrap_or_default();
+                                                    let editing = form.as_ref().is_some_and(|f| f.id.is_some());
+                                                    let stored = endpoint_has_stored_key(&models.get(), &url)
+                                                        || form.as_ref().and_then(|f| f.id.as_ref()).is_some_and(|id| {
+                                                            models.get().iter().any(|m| &m.id == id && m.has_api_key)
+                                                        });
+                                                    if !stored {
                                                         String::new()
+                                                    } else if editing {
+                                                        t(locale.get(), "settings.stored_key").to_string()
+                                                    } else {
+                                                        tf(locale.get(), "models.reuse_key", &[("host", &endpoint_host(&url))])
                                                     }
                                                 }
                                                 autocomplete="new-password"
                                                 on:input=move |ev| model_form_key.set(event_target_input(&ev).value()) /></label>
                                     </div>
-                                    <div class="provider-models" data-testid="provider-models">
-                                        <div class="provider-models-head">
-                                            <strong>{move || t(locale.get(), "models.entries")}</strong>
-                                            <span class="hint">{move || t(locale.get(), "models.entries_hint")}</span>
-                                        </div>
-                                        <For
-                                            each=move || model_form.get().map(|f| f.entries).unwrap_or_default()
-                                            key=|entry| entry.row_id
-                                            let:entry
-                                        >
-                                            {
-                                                let row_id = entry.row_id;
-                                                view! {
-                                                    <div class="provider-model-row" data-testid="provider-model-row">
-                                                        <div class="provider-model-row-head">
-                                                            <label class="provider-model-protocol">{move || t(locale.get(), "settings.provider")}
-                                                                <select data-testid="provider-model-protocol"
-                                                                    on:change=move |ev| {
-                                                                        let value = dom_value(&ev);
-                                                                        model_form.update(|o| if let Some(o)=o {
-                                                                            if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
-                                                                                e.provider = settings_provider_value(&value).into();
-                                                                            }
-                                                                        });
-                                                                    }>
-                                                                    <option value="openai"
-                                                                        prop:selected=move || model_form.get()
-                                                                            .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
-                                                                            .is_some_and(|e| settings_provider_value(&e.provider) == "openai")>
-                                                                        {move || t(locale.get(), "settings.provider.openai")}
-                                                                    </option>
-                                                                    <option value="openai_responses"
-                                                                        prop:selected=move || model_form.get()
-                                                                            .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
-                                                                            .is_some_and(|e| settings_provider_value(&e.provider) == "openai_responses")>
-                                                                        {move || t(locale.get(), "settings.provider.openai_responses")}
-                                                                    </option>
-                                                                    <option value="anthropic"
-                                                                        prop:selected=move || model_form.get()
-                                                                            .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
-                                                                            .is_some_and(|e| settings_provider_value(&e.provider) == "anthropic")>
-                                                                        {move || t(locale.get(), "settings.provider.anthropic")}
-                                                                    </option>
-                                                                </select>
-                                                            </label>
-                                                            <label class="provider-model-id">{move || t(locale.get(), "settings.model")}
-                                                                <input data-testid="provider-model-id"
-                                                                    prop:value=move || model_form.get()
-                                                                        .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
-                                                                        .map(|e| e.model)
-                                                                        .unwrap_or_default()
-                                                                    placeholder=move || t(locale.get(), "settings.model_ph")
-                                                                    on:input=move |ev| {
-                                                                        let value = event_target_input(&ev).value();
-                                                                        model_form.update(|o| if let Some(o)=o {
-                                                                            if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
-                                                                                e.model = value;
-                                                                                if is_image_generation_model(&e.model) {
-                                                                                    e.supports_vision = false;
-                                                                                    e.use_for_vision = false;
-                                                                                    e.use_for_image_generation = true;
-                                                                                    e.use_for_video_generation = false;
-                                                                                } else if is_video_generation_model(&e.model) {
-                                                                                    e.supports_vision = false;
-                                                                                    e.use_for_vision = false;
-                                                                                    e.use_for_image_generation = false;
-                                                                                    e.use_for_video_generation = true;
-                                                                                }
-                                                                            }
-                                                                        });
-                                                                    } /></label>
-                                                            <label class="provider-model-label">{move || t(locale.get(), "settings.label")}
-                                                                <input data-testid="provider-model-label"
-                                                                    prop:value=move || model_form.get()
-                                                                        .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
-                                                                        .map(|e| e.label)
-                                                                        .unwrap_or_default()
-                                                                    placeholder=move || t(locale.get(), "settings.label_ph")
-                                                                    on:input=move |ev| {
-                                                                        let value = event_target_input(&ev).value();
-                                                                        model_form.update(|o| if let Some(o)=o {
-                                                                            if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
-                                                                                e.label = value;
-                                                                            }
-                                                                        });
-                                                                    } /></label>
-                                                            <label class="provider-model-endpoint">{move || t(locale.get(), "settings.endpoint_suffix")}
-                                                                <input data-testid="provider-endpoint-suffix"
-                                                                    prop:value=move || model_form.get()
-                                                                        .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
-                                                                        .map(|e| e.endpoint_suffix)
-                                                                        .unwrap_or_default()
-                                                                    placeholder=move || t(locale.get(), "settings.endpoint_suffix_ph")
-                                                                    on:input=move |ev| {
-                                                                        let value = event_target_input(&ev).value();
-                                                                        model_form.update(|o| if let Some(o)=o {
-                                                                            if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
-                                                                                e.endpoint_suffix = value;
-                                                                            }
-                                                                        });
-                                                                    } /></label>
-                                                            <button type="button" class="settings-list-remove" data-testid="provider-remove-model"
-                                                                title=move || t(locale.get(), "models.remove_entry")
-                                                                disabled=move || model_form.get().is_some_and(|f| f.entries.len() < 2)
-                                                                on:click=move |_| {
-                                                                    model_form.update(|o| if let Some(o)=o {
-                                                                        if o.entries.len() > 1 {
-                                                                            o.entries.retain(|e| e.row_id != row_id);
-                                                                        }
-                                                                    });
-                                                                }>{compose_icon("close")}</button>
-                                                        </div>
-                                                        <div class="provider-model-roles">
-                                                            {move || {
-                                                                let image = model_form.get()
-                                                                    .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
-                                                                    .is_some_and(|e| e.is_image_model());
-                                                                let video = !image && model_form.get()
-                                                                    .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
-                                                                    .is_some_and(|e| e.is_video_model());
-                                                                if video {
-                                                                    view! {
-                                                            <label class="settings-check">
-                                                                <input type="checkbox" data-testid="provider-use-for-video"
-                                                                    prop:checked=move || model_form.get()
-                                                                        .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
-                                                                        .map(|e| e.use_for_video_generation)
-                                                                        .unwrap_or(false)
-                                                                    on:change=move |ev| {
-                                                                        let checked = event_target_checked(&ev);
-                                                                        model_form.update(|o| if let Some(o)=o {
-                                                                            if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
-                                                                                e.use_for_video_generation = checked;
-                                                                                if checked {
-                                                                                    e.supports_vision = false;
-                                                                                    e.use_for_vision = false;
-                                                                                    e.use_for_image_generation = false;
-                                                                                }
-                                                                            }
-                                                                        });
-                                                                    } />
-                                                                <span>{move || t(locale.get(), "settings.use_for_video_generation")}</span>
-                                                            </label>
-                                                                    }.into_view()
-                                                                } else if image {
-                                                                    view! {
-                                                            <label class="settings-check">
-                                                                <input type="checkbox" data-testid="provider-use-for-image"
-                                                                    prop:checked=move || model_form.get()
-                                                                        .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
-                                                                        .map(|e| e.use_for_image_generation)
-                                                                        .unwrap_or(false)
-                                                                    on:change=move |ev| {
-                                                                        let checked = event_target_checked(&ev);
-                                                                        model_form.update(|o| if let Some(o)=o {
-                                                                            if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
-                                                                                e.use_for_image_generation = checked;
-                                                                                if checked {
-                                                                                    e.supports_vision = false;
-                                                                                    e.use_for_vision = false;
-                                                                                }
-                                                                            }
-                                                                        });
-                                                                    } />
-                                                                <span>{move || t(locale.get(), "settings.use_for_image_generation")}</span>
-                                                            </label>
-                                                                    }.into_view()
-                                                                } else {
-                                                                    view! {
-                                                            <label class="settings-check">
-                                                                <input type="checkbox"
-                                                                    prop:checked=move || model_form.get()
-                                                                        .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
-                                                                        .map(|e| e.supports_vision)
-                                                                        .unwrap_or(false)
-                                                                    on:change=move |ev| {
-                                                                        let checked = event_target_checked(&ev);
-                                                                        model_form.update(|o| if let Some(o)=o {
-                                                                            if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
-                                                                                e.supports_vision = checked;
-                                                                                if !checked {
-                                                                                    e.use_for_vision = false;
-                                                                                }
-                                                                            }
-                                                                        });
-                                                                    } />
-                                                                <span>{move || t(locale.get(), "settings.supports_vision")}</span>
-                                                            </label>
-                                                            <label class="settings-check">
-                                                                <input type="checkbox"
-                                                                    prop:checked=move || model_form.get()
-                                                                        .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
-                                                                        .map(|e| e.use_for_vision)
-                                                                        .unwrap_or(false)
-                                                                    on:change=move |ev| {
-                                                                        let checked = event_target_checked(&ev);
-                                                                        model_form.update(|o| if let Some(o)=o {
-                                                                            if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
-                                                                                e.use_for_vision = checked;
-                                                                                if checked {
-                                                                                    e.supports_vision = true;
-                                                                                }
-                                                                            }
-                                                                        });
-                                                                    } />
-                                                                <span>{move || t(locale.get(), "settings.use_for_vision")}</span>
-                                                            </label>
-                                                            <label class="settings-check">
-                                                                <input type="checkbox" data-testid="provider-use-for-image"
-                                                                    prop:checked=move || model_form.get()
-                                                                        .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
-                                                                        .map(|e| e.use_for_image_generation)
-                                                                        .unwrap_or(false)
-                                                                    on:change=move |ev| {
-                                                                        let checked = event_target_checked(&ev);
-                                                                        model_form.update(|o| if let Some(o)=o {
-                                                                            if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
-                                                                                e.use_for_image_generation = checked;
-                                                                                if checked {
-                                                                                    e.supports_vision = false;
-                                                                                    e.use_for_vision = false;
-                                                                                }
-                                                                            }
-                                                                        });
-                                                                    } />
-                                                                <span>{move || t(locale.get(), "settings.use_for_image_generation")}</span>
-                                                            </label>
-                                                            <label class="settings-check">
-                                                                <input type="checkbox" data-testid="provider-use-for-video"
-                                                                    prop:checked=move || model_form.get()
-                                                                        .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
-                                                                        .map(|e| e.use_for_video_generation)
-                                                                        .unwrap_or(false)
-                                                                    on:change=move |ev| {
-                                                                        let checked = event_target_checked(&ev);
-                                                                        model_form.update(|o| if let Some(o)=o {
-                                                                            if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
-                                                                                e.use_for_video_generation = checked;
-                                                                                if checked {
-                                                                                    e.supports_vision = false;
-                                                                                    e.use_for_vision = false;
-                                                                                    e.use_for_image_generation = false;
-                                                                                }
-                                                                            }
-                                                                        });
-                                                                    } />
-                                                                <span>{move || t(locale.get(), "settings.use_for_video_generation")}</span>
-                                                            </label>
-                                                                    }.into_view()
-                                                                }
-                                                            }}
-                                                        </div>
-                                                    </div>
-                                                }
-                                            }
-                                        </For>
-                                        <button type="button" class="settings-add-btn" data-testid="provider-add-model"
-                                            on:click=move |_| {
-                                                model_form.update(|o| if let Some(o)=o {
-                                                    o.entries.push(model_form_entry("openai", "", "", false));
-                                                });
-                                            }>
-                                            {compose_icon("plus")}
-                                            {move || t(locale.get(), "models.add_entry")}
-                                        </button>
-                                    </div>
+                                    {provider_model_entries_editor(model_form, locale, model_catalog_limits, 1)}
                                     {move || model_form_msg.get().map(|(ok, text)| view! {
                                         <div class="settings-status" class:ok=ok class:fail=move || !ok>{text}</div>
                                     })}
@@ -3254,7 +3262,6 @@ pub(super) fn SettingsView(
                                 </div>
                             </div>
                         }.into_view()
-                        }
                     } else {
                         view! {
                         <div class="settings-pane settings-pane-list model-settings-pane">
@@ -3525,7 +3532,7 @@ pub(super) fn SettingsView(
                                                             });
                                                         }
                                                         on:click=move |_| {
-                                                            let form = profile_to_form(&edit);
+                                                            let form = profiles_to_edit_form(&edit, &models.get());
                                                             show_acp_agents.set(false);
                                                             model_form.set(Some(form));
                                                             apply_catalog_limits(model_form, model_catalog_limits);
@@ -5608,6 +5615,9 @@ pub(super) fn SettingsView(
                         </div>
                     </div>
                 }.into_view())}
+                {move || (settings_section.get() == "channels").then(|| view! {
+                    <crate::channels_view::ChannelsPane locale=locale open=channels_open/>
+                }.into_view())}
                 {move || (settings_section.get() == "channels" && channels_open.get().is_none()).then(|| view! {
                     <div class="settings-pane">
                         <div class="settings-form-grid">
@@ -5684,9 +5694,6 @@ pub(super) fn SettingsView(
                             <button type="button" class="primary" disabled=move || settings_busy.get() on:click=move |ev| save_settings.call(ev)>{move || t(locale.get(), "settings.save")}</button>
                         </div>
                     </div>
-                }.into_view())}
-                {move || (settings_section.get() == "channels").then(|| view! {
-                    <crate::channels_view::ChannelsPane locale=locale open=channels_open/>
                 }.into_view())}
                 {move || (settings_section.get() == "permissions").then(|| view! {
                     <div class="settings-pane settings-pane-list">

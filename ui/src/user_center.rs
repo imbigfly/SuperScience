@@ -4,6 +4,7 @@ use crate::app_support::{compose_icon, js_error_text, show_toast};
 use crate::bindings::{invoke, invoke_checked, open_external_url};
 use crate::i18n::{localize_backend, t, tf, Locale};
 use crate::text::{event_target_checked, event_target_value};
+use crate::window_capture_escape;
 use leptos::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -504,6 +505,14 @@ pub(crate) fn UserCenterOverlay(
             show_toast(&t(locale.get_untracked(), "user_center.logout_ok"));
         });
     };
+
+    window_capture_escape(move || {
+        if !show.get_untracked() {
+            return false;
+        }
+        show.set(false);
+        true
+    });
 
     move || {
         show.get().then(|| view! {

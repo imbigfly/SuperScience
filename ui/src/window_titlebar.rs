@@ -1,7 +1,7 @@
 //! Windows integrated title bar: brand, File/Edit/View/Help menus, window controls.
 
 use crate::bindings::{arm_caption_drag, open_external_url, window_control};
-use crate::i18n::{t, Locale};
+use crate::i18n::{brand_product_name, t, Locale, BRAND_GITHUB_REPO};
 use leptos::{ev, window_event_listener, *};
 use wasm_bindgen::JsCast;
 
@@ -72,8 +72,6 @@ const HOME_VIEW_ITEMS: &[MenuItem] = &[
 const HELP_ITEMS: &[MenuItem] = &[
     ("check-updates", "settings.check_updates", ""),
     ("", "", ""),
-    ("docs", "menu.docs", ""),
-    ("star-us", "menu.star_us", ""),
     ("issues", "menu.issues", ""),
 ];
 
@@ -92,13 +90,7 @@ pub(super) fn WindowTitlebar(
             open.set(None);
             match action {
                 "quit" => spawn_local(async { window_control("close").await }),
-                "docs" => {
-                    open_external_url("https://github.com/imbigfly/SuperScience#readme".into())
-                }
-                "star-us" => open_external_url("https://github.com/imbigfly/SuperScience".into()),
-                "issues" => {
-                    open_external_url("https://github.com/imbigfly/SuperScience/issues".into())
-                }
+                "issues" => open_external_url(format!("{BRAND_GITHUB_REPO}/issues")),
                 other => on_action.call(other),
             }
         })
@@ -130,7 +122,7 @@ pub(super) fn WindowTitlebar(
             <div class="window-brand" data-testid="window-snap-drag"
                 on:mousedown=begin_window_move>
                 <span class="window-brand-icon"></span>
-                <span>"天成科研助手"</span>
+                <span>{move || brand_product_name(locale.get())}</span>
                 <span class="window-brand-version">{concat!("v", env!("CARGO_PKG_VERSION"))}</span>
             </div>
             <nav class="window-menu" aria-label="Application menu">

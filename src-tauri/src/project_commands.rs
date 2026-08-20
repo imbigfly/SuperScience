@@ -326,8 +326,9 @@ pub(super) async fn spawn_project_window(
     // even before the window's frontend calls open_project.
     set_active_project(state, &label, id).await?;
     let url = tauri::WebviewUrl::App(project_window_url(id, session).into());
+    let locale = crate::load_locale(&state.store).await;
     let mut builder = tauri::WebviewWindowBuilder::new(app, &label, url)
-        .title("wisp science")
+        .title(superscience_paths::product_display_name(&locale))
         .inner_size(1100.0, 760.0)
         .resizable(true)
         .on_navigation(crate::guard_webview_navigation);

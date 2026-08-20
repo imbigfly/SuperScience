@@ -3,9 +3,11 @@ mod agent_workflows;
 mod app_overlays;
 mod bindings;
 mod capabilities_home;
+mod capability_launch;
 mod channels_view;
 mod chat_render;
 mod context_menu;
+mod demo_actions;
 mod dto;
 mod i18n;
 mod library;
@@ -44,8 +46,9 @@ use bindings::{
 use context_menu::{ContextMenuPortal, CtxMenu};
 use dto::*;
 use i18n::{
-    empty_subtitle, empty_title, localize_backend, send_failed, set_document_lang, t, tab_count,
-    tf, Locale, EMPTY_SUBTITLE_COUNT, EMPTY_TITLE_COUNT,
+    brand_visible_copy, empty_subtitle, empty_title, localize_backend, send_failed,
+    set_document_lang, t, tab_count, tf, Locale, BRAND_GITHUB_REPO, EMPTY_SUBTITLE_COUNT,
+    EMPTY_TITLE_COUNT,
 };
 use leptos::{ev, window_event_listener, *};
 use library::{refresh_library, refresh_session_library, HighlightsPane, LibraryScreen};
@@ -70,8 +73,6 @@ use session_modals::{
 use settings_view::{known_effort_values, ALL_EFFORT_VALUES};
 use settings_view::{DeleteConfirm, SettingsView, SettingsViewState};
 use sidebar::{Sidebar, SidebarState};
-use user_center::{refresh_tctoken_session, UserCenterOverlay, TctokenSession};
-use capabilities_home::{CapabilityAction, CapabilityPanel};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -81,13 +82,14 @@ use text::{
     opens_in_system_browser, parent_path, provider_defaults, runtime_language,
     user_message_presentation, DEEPSEEK_FLASH_MODEL, DEEPSEEK_PRO_MODEL,
 };
+use user_center::{refresh_tctoken_session, TctokenSession, UserCenterOverlay};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use window_titlebar::WindowTitlebar;
 
 /// Stable substring of the backend's missing-key error (`src-tauri` `send_message`),
 /// used to turn that failure into an actionable "open Settings" prompt.
-const NO_API_KEY_MARK: &str = "No API key set";
+pub(crate) const NO_API_KEY_MARK: &str = "No API key set";
 const HOME_SEARCH_PROJECT_LIMIT: usize = 6;
 const HOME_SEARCH_ARTIFACT_LIMIT: usize = 8;
 const HOME_SEARCH_SESSION_LIMIT: usize = 6;
@@ -2442,18 +2444,18 @@ fn App() -> impl IntoView {
                 // attempt after a successful scan must not claim the answer has
                 // no live results (#921).
                 if is_browser_retrieval_tool(&name) {
-                    let notice =
-                        if active_cb.get_untracked().as_deref() == Some(frame_id.as_str()) {
-                            items_cb.with_untracked(|rows| {
-                                browser_offline_notice_from_items(&frame_id, rows)
-                            })
-                        } else {
-                            transcripts_cb.with_untracked(|cache| {
-                                cache.get(&frame_id).and_then(|rows| {
-                                    browser_offline_notice_from_items(&frame_id, rows)
-                                })
-                            })
-                        };
+                    let notice = if active_cb.get_untracked().as_deref() == Some(frame_id.as_str())
+                    {
+                        items_cb.with_untracked(|rows| {
+                            browser_offline_notice_from_items(&frame_id, rows)
+                        })
+                    } else {
+                        transcripts_cb.with_untracked(|cache| {
+                            cache
+                                .get(&frame_id)
+                                .and_then(|rows| browser_offline_notice_from_items(&frame_id, rows))
+                        })
+                    };
                     set_browser_offline_notice(browser_offline_cb, &frame_id, notice);
                 }
                 refresh_transcript_projections(&frame_id);
@@ -4120,7 +4122,10 @@ fn App() -> impl IntoView {
                 return;
             };
             if active_acp_agent_id.get().is_some() {
-                status.set("ACP protocol v1 cannot replay a Wisp transcript.".into());
+                status.set(brand_visible_copy(
+                    locale.get(),
+                    "ACP protocol v1 cannot replay a Wisp transcript.",
+                ));
                 return;
             }
             let model = session_model_label(&models.get(), &session_model_ids.get(), Some(&id));
@@ -4510,9 +4515,7 @@ fn App() -> impl IntoView {
                         msg.set(Some((true, text.clone())));
                         status_msg.set(text.clone());
                         if matches!(modal.get_untracked(), Some(UpdateCheckModal::Checking)) {
-                            modal.set(Some(UpdateCheckModal::Failed {
-                                message: text,
-                            }));
+                            modal.set(Some(UpdateCheckModal::Failed { message: text }));
                         }
                     }
                 },
@@ -4521,9 +4524,7 @@ fn App() -> impl IntoView {
                     msg.set(Some((false, text.clone())));
                     status_msg.set(text.clone());
                     if matches!(modal.get_untracked(), Some(UpdateCheckModal::Checking)) {
-                        modal.set(Some(UpdateCheckModal::Failed {
-                            message: text,
-                        }));
+                        modal.set(Some(UpdateCheckModal::Failed { message: text }));
                     }
                 }
             }
@@ -7380,40 +7381,48 @@ fn App() -> impl IntoView {
                 }
                 return;
             }
-            if let Some(context_menu::DemoAction::CopyToProject(id)) =
-                context_menu::demo_action(&action, &payload)
-            {
-                let title = demos
-                    .get()
-                    .into_iter()
-                    .find(|demo| demo.id == id)
-                    .map(|demo| demo.title)
-                    .unwrap_or_else(|| id.clone());
-                session_transfer_error.set(None);
-                session_transfer.set(Some(SessionTransfer {
-                    id,
-                    title,
-                    mode: SessionTransferMode::Copy,
-                    target_project_id: String::new(),
-                    from_demo: true,
-                }));
-                spawn_local(async move {
-                    let value = invoke("list_projects", JsValue::UNDEFINED).await;
-                    if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ProjectSummary>>(value) {
-                        let default_target = list
-                            .first()
-                            .map(|project| project.id.clone())
-                            .unwrap_or_default();
-                        proj_list.set(list);
-                        session_transfer.update(|transfer| {
-                            if let Some(transfer) = transfer {
-                                if transfer.target_project_id.is_empty() {
-                                    transfer.target_project_id = default_target;
-                                }
+            if let Some(act) = context_menu::demo_action(&action, &payload) {
+                match act {
+                    context_menu::DemoAction::CopyToProject(id) => {
+                        let title = demos
+                            .get()
+                            .into_iter()
+                            .find(|demo| demo.id == id)
+                            .map(|demo| demo.title)
+                            .unwrap_or_else(|| id.clone());
+                        session_transfer_error.set(None);
+                        session_transfer.set(Some(SessionTransfer {
+                            id,
+                            title,
+                            mode: SessionTransferMode::Copy,
+                            target_project_id: String::new(),
+                            from_demo: true,
+                        }));
+                        spawn_local(async move {
+                            let value = invoke("list_projects", JsValue::UNDEFINED).await;
+                            if let Ok(list) =
+                                serde_wasm_bindgen::from_value::<Vec<ProjectSummary>>(value)
+                            {
+                                let default_target = list
+                                    .first()
+                                    .map(|project| project.id.clone())
+                                    .unwrap_or_default();
+                                proj_list.set(list);
+                                session_transfer.update(|transfer| {
+                                    if let Some(transfer) = transfer {
+                                        if transfer.target_project_id.is_empty() {
+                                            transfer.target_project_id = default_target;
+                                        }
+                                    }
+                                });
                             }
                         });
                     }
-                });
+                    context_menu::DemoAction::Delete(id) => {
+                        ui_confirm.set(Some(UiConfirm::DeleteUserDemo(id)));
+                    }
+                    context_menu::DemoAction::ExportToSeed { .. } => {}
+                }
                 return;
             }
             if let Some(act) = context_menu::session_action(&action, &payload) {
@@ -7536,6 +7545,9 @@ fn App() -> impl IntoView {
                     }
                     context_menu::SessionAction::DeleteBranch(id) => {
                         ui_confirm.set(Some(UiConfirm::DeleteSessions(vec![id])));
+                    }
+                    context_menu::SessionAction::SaveAsDemo { id, title } => {
+                        demo_actions::save_session_as_demo(id, title, locale, demos);
                     }
                 }
             }
@@ -8344,6 +8356,38 @@ fn App() -> impl IntoView {
             open_project_transition.call((id, None));
         })
     };
+
+    let on_capability_action = capability_launch::install(capability_launch::CapabilityLaunchCtx {
+        locale,
+        busy,
+        show_projects,
+        show_capabilities,
+        demo_mode,
+        items,
+        running,
+        status,
+        active_session,
+        session_specialist,
+        attachments,
+        composer_references,
+        sel_artifact,
+        right_tab,
+        show_right,
+        open_right_tabs,
+        models,
+        needs_api_key,
+        transcripts,
+        show_research_graph,
+        research_graph,
+        publication_binding_source,
+        show_publication_workspace,
+        project_open_error,
+        demos,
+        refresh_session_history: Callback::new(move |_| refresh_session_history()),
+        open_settings: Callback::new(move |section| open_settings_fn(section)),
+        open_project: open_project_transition,
+    });
+
     // Dedicated project window (#52): enter through the same serialized,
     // target-validated transition instead of maintaining a second startup path.
     // `&session=` (#423) drops the window straight into the requested session.
@@ -8945,11 +8989,7 @@ fn App() -> impl IntoView {
             "export-current-project" => export_current_project.call(()),
             "skills" => manage_skills.call(()),
             "check-updates" => run_update_check(),
-            "docs" => open_external_url("https://github.com/xuzhougeng/wisp-science#readme".into()),
-            "star-us" => open_external_url("https://github.com/xuzhougeng/wisp-science".into()),
-            "issues" => {
-                open_external_url("https://github.com/xuzhougeng/wisp-science/issues".into())
-            }
+            "issues" => open_external_url(format!("{BRAND_GITHUB_REPO}/issues")),
             "toggle-sidebar" => show_sidebar.update(|show| *show = !*show),
             "artifacts" => {
                 ensure_right_tab(RightTab::Artifacts, show_right, open_right_tabs, right_tab)
@@ -9001,13 +9041,7 @@ fn App() -> impl IntoView {
             };
             match action.as_str() {
                 "check-updates" => run_update_check(),
-                "docs" => {
-                    open_external_url("https://github.com/xuzhougeng/wisp-science#readme".into())
-                }
-                "star-us" => open_external_url("https://github.com/xuzhougeng/wisp-science".into()),
-                "issues" => {
-                    open_external_url("https://github.com/xuzhougeng/wisp-science/issues".into())
-                }
+                "issues" => open_external_url(format!("{BRAND_GITHUB_REPO}/issues")),
                 other => {
                     if let Some(action) = match other {
                         "new" => Some("new"),
@@ -9274,8 +9308,11 @@ fn App() -> impl IntoView {
             open_project_session=palette_open_session
             open_scratch=open_scratch
             open_settings=Callback::new(move |section: Option<String>| open_settings_fn(section))
+            open_user_center=Callback::new(move |_| show_user_center.set(true))
+            tctoken_session=tctoken_session
             open_library=Callback::new(move |_| show_library.set(true))
             open_project_export=open_project_export
+            on_capability_action=on_capability_action
         />
         <SessionImportModal
             locale=locale
@@ -9365,6 +9402,9 @@ fn App() -> impl IntoView {
             })
             new_folder=Callback::new(new_folder)
             open_files=Callback::new(open_files)
+            open_specialists=Callback::new(move |_| {
+                open_settings_fn(Some("specialists".into()));
+            })
             open_research_graph=Callback::new(move |_| {
                 show_research_graph.set(true);
                 refresh_research_graph(research_graph);
@@ -9375,12 +9415,13 @@ fn App() -> impl IntoView {
             })
             open_library=Callback::new(move |_| show_library.set(true))
             load_demo=Callback::new(load_demo)
-            open_demo_actions=Callback::new(move |(ev, id, title): (web_sys::MouseEvent, String, String)| {
+            open_demo_actions=Callback::new(move |(ev, id, title, user_saved): (web_sys::MouseEvent, String, String, bool)| {
                 ctx_menu.set(Some(context_menu::demo_menu(
                     ev.client_x() as f64,
                     ev.client_y() as f64,
                     &id,
                     &title,
+                    user_saved,
                     locale.get(),
                 )));
             })
@@ -10590,6 +10631,7 @@ fn App() -> impl IntoView {
                                                     <StreamingAssistantMessage
                                                         items=items
                                                         source_item=i
+                                                        artifacts=arts.clone()
                                                         on_artifact=on_artifact_select
                                                         on_file=on_file_link
                                                     />
@@ -14275,6 +14317,7 @@ fn App() -> impl IntoView {
                 ),
                 UiConfirm::ReloadProjectRules(_) => t(locale.get(), "session.reload_rules_hint").to_string(),
                 UiConfirm::SaveAgentContext => t(locale.get(), "proj_settings.agent_context_confirm").to_string(),
+                UiConfirm::DeleteUserDemo(_) => t(locale.get(), "demo.delete_confirm").to_string(),
             };
             let action_key = match &action {
                 UiConfirm::EnableFullPermission => "full_permission.confirm_action",
@@ -14285,6 +14328,7 @@ fn App() -> impl IntoView {
                 UiConfirm::DeleteFileEntry { is_dir: false, .. } => "files.delete_file",
                 UiConfirm::ReloadProjectRules(_) => "session.reload_rules_action",
                 UiConfirm::SaveAgentContext => "proj_settings.agent_context_confirm_action",
+                UiConfirm::DeleteUserDemo(_) => "ctx.delete_user_demo",
             };
             view! {
             <div class="overlay">
@@ -14441,6 +14485,9 @@ fn App() -> impl IntoView {
                                 }
                                 UiConfirm::SaveAgentContext => {
                                     commit_proj_settings();
+                                }
+                                UiConfirm::DeleteUserDemo(id) => {
+                                    demo_actions::delete_user_demo(id, locale, demos);
                                 }
                             }
                         }>{move || t(locale.get(), action_key)}</button>

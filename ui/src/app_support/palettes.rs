@@ -154,6 +154,7 @@ pub(crate) fn CommandPalette(
     on_open_artifact: Callback<(String, String, String)>,
     on_command: Callback<&'static str>,
     on_new_session: Callback<()>,
+    on_open_scratch: Callback<()>,
     on_project_settings: Callback<()>,
     on_manage_skills: Callback<()>,
     on_attach: Callback<ComposerReferenceChip>,
@@ -253,8 +254,8 @@ pub(crate) fn CommandPalette(
                 .map(CommandPaletteItem::Session),
         );
         out.push(CommandPaletteItem::Command("new"));
+        out.push(CommandPaletteItem::Command("scratch"));
         out.push(CommandPaletteItem::Command("check-updates"));
-        out.push(CommandPaletteItem::Command("star-us"));
         if current.is_some() {
             out.push(CommandPaletteItem::Command("settings"));
             out.push(CommandPaletteItem::Command("skills"));
@@ -279,8 +280,8 @@ pub(crate) fn CommandPalette(
                 on_open_session.call((s.project_id, s.id, new_window))
             }
             CommandPaletteItem::Command("new") => on_new_session.call(()),
+            CommandPaletteItem::Command("scratch") => on_open_scratch.call(()),
             CommandPaletteItem::Command("check-updates") => on_command.call("check-updates"),
-            CommandPaletteItem::Command("star-us") => on_command.call("star-us"),
             CommandPaletteItem::Command("settings") => on_project_settings.call(()),
             CommandPaletteItem::Command("skills") => on_manage_skills.call(()),
             CommandPaletteItem::Command(_) => {}
@@ -357,8 +358,8 @@ pub(crate) fn CommandPalette(
                                 CommandPaletteItem::Artifact(a) => ("doc", a.name, a.project_name.unwrap_or_default()),
                                 CommandPaletteItem::Session(s) => ("bubble", s.title, s.project_name),
                                 CommandPaletteItem::Command("new") => ("plus", t(locale.get(), "command.new_session").to_string(), t(locale.get(), "command.category")),
+                                CommandPaletteItem::Command("scratch") => ("bubble", t(locale.get(), "command.scratch").to_string(), t(locale.get(), "command.category")),
                                 CommandPaletteItem::Command("check-updates") => ("gear", t(locale.get(), "command.check_updates").to_string(), t(locale.get(), "command.category")),
-                                CommandPaletteItem::Command("star-us") => ("star", t(locale.get(), "command.star_us").to_string(), t(locale.get(), "command.category")),
                                 CommandPaletteItem::Command("settings") => ("gear", t(locale.get(), "proj_settings.title").to_string(), t(locale.get(), "command.category")),
                                 CommandPaletteItem::Command("skills") => ("grid", t(locale.get(), "settings.nav.skills").to_string(), t(locale.get(), "command.category")),
                                 CommandPaletteItem::Command(_) => ("doc", String::new(), String::new()),
@@ -680,15 +681,6 @@ pub(crate) fn ActionPalette(
                 appearance,
                 "",
                 "font code decrease smaller 字体 代码 缩小",
-                false,
-            ),
-            (
-                "docs",
-                "doc",
-                "menu.docs",
-                help.clone(),
-                "",
-                "documentation readme help 文档 帮助",
                 false,
             ),
             (

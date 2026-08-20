@@ -11,6 +11,8 @@ use superscience_llm::{Message, ProviderConfig};
 use superscience_skills::{SkillIndex, SkillSource};
 use superscience_store::{LibraryStore, Store};
 #[cfg(target_os = "macos")]
+use tauri::image::Image;
+#[cfg(target_os = "macos")]
 use tauri::menu::{
     AboutMetadata, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder,
 };
@@ -2704,12 +2706,19 @@ fn resolve_workspace(env: Option<String>, stored: Option<String>, default: PathB
     default
 }
 
-async fn load_locale(store: &Store) -> String {
+pub(crate) async fn load_locale(store: &Store) -> String {
     let raw = store.get_setting("locale").await.ok().flatten();
     match raw.as_deref().map(str::trim) {
-        Some("zh") | Some("zh-CN") | Some("zh-TW") => "zh".into(),
+        Some(tag) if superscience_paths::is_zh_locale(tag) => "zh".into(),
         Some(other) if !other.is_empty() => other.to_string(),
         _ => "zh".into(),
+    }
+}
+
+pub(crate) fn apply_locale_window_titles(app: &AppHandle, locale_tag: &str) {
+    let title = superscience_paths::product_display_name(locale_tag);
+    for window in app.webview_windows().values() {
+        let _ = window.set_title(title);
     }
 }
 
@@ -2726,9 +2735,10 @@ enum AppMenuLocale {
 #[cfg(target_os = "macos")]
 impl AppMenuLocale {
     fn from_tag(tag: &str) -> Self {
-        match tag.trim() {
-            "zh" | "zh-CN" | "zh-TW" => Self::Zh,
-            _ => Self::En,
+        if superscience_paths::is_zh_locale(tag) {
+            Self::Zh
+        } else {
+            Self::En
         }
     }
 }
@@ -2769,9 +2779,14 @@ struct MacMenuLabels {
     theme_light: &'static str,
     theme_dark: &'static str,
     theme_system: &'static str,
-    docs: &'static str,
-    star_us: &'static str,
     issues: &'static str,
+    services: &'static str,
+    hide_others: &'static str,
+    show_all: &'static str,
+    minimize: &'static str,
+    zoom: &'static str,
+    fullscreen: &'static str,
+    close_window: &'static str,
 }
 
 #[cfg(target_os = "macos")]
@@ -2812,9 +2827,14 @@ fn mac_menu_labels(locale: AppMenuLocale) -> MacMenuLabels {
             theme_light: "浅色",
             theme_dark: "深色",
             theme_system: "跟随系统",
-            docs: "文档",
-            star_us: "点个 Star",
             issues: "反馈问题",
+            services: "服务",
+            hide_others: "隐藏其他",
+            show_all: "全部显示",
+            minimize: "最小化",
+            zoom: "缩放",
+            fullscreen: "进入全屏幕",
+            close_window: "关闭",
         },
         AppMenuLocale::En => MacMenuLabels {
             app_settings: "Settings…",
@@ -2851,9 +2871,14 @@ fn mac_menu_labels(locale: AppMenuLocale) -> MacMenuLabels {
             theme_light: "Light",
             theme_dark: "Dark",
             theme_system: "System",
-            docs: "Documentation",
-            star_us: "Star us",
             issues: "Report an Issue",
+            services: "Services",
+            hide_others: "Hide Others",
+            show_all: "Show All",
+            minimize: "Minimize",
+            zoom: "Zoom",
+            fullscreen: "Enter Full Screen",
+            close_window: "Close",
         },
     }
 }
@@ -2899,8 +2924,6 @@ fn mac_menu_action(id: &str) -> Option<&'static str> {
         "action.theme-dark" => Some("theme-dark"),
         "action.theme-system" => Some("theme-system"),
         "action.check-updates" => Some("check-updates"),
-        "action.docs" => Some("docs"),
-        "action.star-us" => Some("star-us"),
         "action.issues" => Some("issues"),
         _ => None,
     }
@@ -2916,17 +2939,54 @@ fn wire_macos_menu_events(window: &tauri::WebviewWindow) {
 }
 
 #[cfg(target_os = "macos")]
+fn mac_about_item_title(locale: AppMenuLocale, product: &str) -> String {
+    match locale {
+        AppMenuLocale::Zh => format!("关于{product}"),
+        AppMenuLocale::En => format!("About {product}"),
+    }
+}
+
+fn mac_hide_item_title(locale: AppMenuLocale, product: &str) -> String {
+    match locale {
+        AppMenuLocale::Zh => format!("隐藏{product}"),
+        AppMenuLocale::En => format!("Hide {product}"),
+    }
+}
+
+fn mac_quit_item_title(locale: AppMenuLocale, product: &str) -> String {
+    match locale {
+        AppMenuLocale::Zh => format!("退出{product}"),
+        AppMenuLocale::En => format!("Quit {product}"),
+    }
+}
+
+fn about_app_icon() -> Option<Image<'static>> {
+    let bytes = include_bytes!("../icons/128x128.png");
+    let img = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let (width, height) = img.dimensions();
+    Some(Image::new_owned(img.into_raw(), width, height))
+}
+
 fn install_macos_app_menu(app: &AppHandle, locale_tag: &str) -> Result<(), String> {
-    let labels = mac_menu_labels(AppMenuLocale::from_tag(locale_tag));
+    let locale = AppMenuLocale::from_tag(locale_tag);
+    let labels = mac_menu_labels(locale);
+    let product = superscience_paths::product_display_name(locale_tag);
+    let about_title = mac_about_item_title(locale, product);
+    let hide_title = mac_hide_item_title(locale, product);
+    let quit_title = mac_quit_item_title(locale, product);
     let about = AboutMetadata {
-        name: Some(superscience_paths::PRODUCT_NAME.into()),
+        name: Some(product.into()),
         version: Some(env!("CARGO_PKG_VERSION").into()),
+        credits: Some(superscience_paths::product_slogan(locale_tag).into()),
+        icon: about_app_icon(),
         ..Default::default()
     };
 
-    let app_menu = SubmenuBuilder::new(app, app.package_info().name.clone())
+    apply_locale_window_titles(app, locale_tag);
+
+    let app_menu = SubmenuBuilder::new(app, product)
         .item(
-            &PredefinedMenuItem::about(app, None, Some(about.clone()))
+            &PredefinedMenuItem::about(app, Some(&about_title), Some(about))
                 .map_err(|error| error.to_string())?,
         )
         .separator()
@@ -2944,12 +3004,22 @@ fn install_macos_app_menu(app: &AppHandle, locale_tag: &str) -> Result<(), Strin
             .map_err(|error| error.to_string())?,
         )
         .separator()
-        .item(&PredefinedMenuItem::services(app, None).map_err(|error| error.to_string())?)
+        .item(
+            &PredefinedMenuItem::services(app, Some(labels.services))
+                .map_err(|error| error.to_string())?,
+        )
         .separator()
-        .item(&PredefinedMenuItem::hide(app, None).map_err(|error| error.to_string())?)
-        .item(&PredefinedMenuItem::hide_others(app, None).map_err(|error| error.to_string())?)
+        .item(&PredefinedMenuItem::hide(app, Some(&hide_title)).map_err(|error| error.to_string())?)
+        .item(
+            &PredefinedMenuItem::hide_others(app, Some(labels.hide_others))
+                .map_err(|error| error.to_string())?,
+        )
+        .item(
+            &PredefinedMenuItem::show_all(app, Some(labels.show_all))
+                .map_err(|error| error.to_string())?,
+        )
         .separator()
-        .item(&PredefinedMenuItem::quit(app, None).map_err(|error| error.to_string())?)
+        .item(&PredefinedMenuItem::quit(app, Some(&quit_title)).map_err(|error| error.to_string())?)
         .build()
         .map_err(|error| error.to_string())?;
 
@@ -2976,7 +3046,10 @@ fn install_macos_app_menu(app: &AppHandle, locale_tag: &str) -> Result<(), Strin
             .map_err(|error| error.to_string())?,
         )
         .separator()
-        .item(&PredefinedMenuItem::close_window(app, None).map_err(|error| error.to_string())?)
+        .item(
+            &PredefinedMenuItem::close_window(app, Some(labels.close_window))
+                .map_err(|error| error.to_string())?,
+        )
         .build()
         .map_err(|error| error.to_string())?;
 
@@ -3092,11 +3165,23 @@ fn install_macos_app_menu(app: &AppHandle, locale_tag: &str) -> Result<(), Strin
         .map_err(|error| error.to_string())?;
 
     let window_menu = SubmenuBuilder::new(app, labels.window)
-        .item(&PredefinedMenuItem::minimize(app, None).map_err(|error| error.to_string())?)
-        .item(&PredefinedMenuItem::maximize(app, None).map_err(|error| error.to_string())?)
-        .item(&PredefinedMenuItem::fullscreen(app, None).map_err(|error| error.to_string())?)
+        .item(
+            &PredefinedMenuItem::minimize(app, Some(labels.minimize))
+                .map_err(|error| error.to_string())?,
+        )
+        .item(
+            &PredefinedMenuItem::maximize(app, Some(labels.zoom))
+                .map_err(|error| error.to_string())?,
+        )
+        .item(
+            &PredefinedMenuItem::fullscreen(app, Some(labels.fullscreen))
+                .map_err(|error| error.to_string())?,
+        )
         .separator()
-        .item(&PredefinedMenuItem::close_window(app, None).map_err(|error| error.to_string())?)
+        .item(
+            &PredefinedMenuItem::close_window(app, Some(labels.close_window))
+                .map_err(|error| error.to_string())?,
+        )
         .build()
         .map_err(|error| error.to_string())?;
 
@@ -3106,14 +3191,6 @@ fn install_macos_app_menu(app: &AppHandle, locale_tag: &str) -> Result<(), Strin
                 .map_err(|error| error.to_string())?,
         )
         .separator()
-        .item(
-            &build_menu_item(app, "action.docs", labels.docs, None)
-                .map_err(|error| error.to_string())?,
-        )
-        .item(
-            &build_menu_item(app, "action.star-us", labels.star_us, None)
-                .map_err(|error| error.to_string())?,
-        )
         .item(
             &build_menu_item(app, "action.issues", labels.issues, None)
                 .map_err(|error| error.to_string())?,
@@ -6017,8 +6094,8 @@ pub fn run() {
                     vec![],
                 ),
             ));
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
             let locale = tauri::async_runtime::block_on(load_locale(&store));
+            apply_locale_window_titles(app.handle(), &locale);
             #[cfg(target_os = "macos")]
             {
                 install_macos_app_menu(app.handle(), &locale).expect("install macOS app menu");

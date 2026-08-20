@@ -7,6 +7,68 @@
 use super::*;
 use crate::bindings::invoke_timeout;
 
+async fn save_sibling_entries(
+    api_url: &str,
+    key_arg: Option<&String>,
+    extras: &[ModelFormEntry],
+    listed: &[ModelProfile],
+) -> Result<(), String> {
+    for entry in extras {
+        let provider = provider_value(&entry.provider).to_string();
+        let endpoint_suffix = entry.endpoint_suffix.trim().to_string();
+        let effective_api_url = join_api_url(api_url, &endpoint_suffix);
+        let existing = entry
+            .profile_id
+            .as_ref()
+            .and_then(|id| listed.iter().find(|profile| &profile.id == id));
+        let model_changed = existing
+            .map(|profile| profile.model.trim() != entry.model.trim())
+            .unwrap_or(true);
+        let (max_tokens, context_window) = if let (Some(_), false) = (existing, model_changed) {
+            (entry.max_tokens.max(16), entry.context_window.max(4_096))
+        } else {
+            catalog_limits_or_default(&provider, &effective_api_url, entry.model.trim()).await
+        };
+        let image = entry.is_image_model();
+        let video = entry.is_video_model();
+        let media = image || video;
+        let profile = serde_json::json!({
+            "id": entry.profile_id.clone().unwrap_or_default(),
+            "label": entry.label.trim(),
+            "provider": provider,
+            "api_url": api_url,
+            "endpoint_suffix": endpoint_suffix,
+            "model": entry.model.trim(),
+            "max_tokens": max_tokens,
+            "context_window": context_window,
+            "reasoning_effort": entry.reasoning_effort,
+            "supports_vision": entry.supports_vision && !media,
+            "use_for_vision": entry.use_for_vision && !media,
+            "use_for_image_generation": image,
+            "image_size": entry.image_size,
+            "image_quality": entry.image_quality,
+            "image_aspect_ratio": entry.image_aspect_ratio,
+            "image_resolution": entry.image_resolution,
+            "use_for_video_generation": video,
+            "video_duration_secs": entry.video_duration_secs,
+            "video_aspect_ratio": entry.video_aspect_ratio,
+            "video_resolution": entry.video_resolution,
+        });
+        let arg = to_value(&serde_json::json!({
+            "profile": profile,
+            "key": key_arg,
+            "useForVision": entry.use_for_vision && !media,
+            "useForImageGeneration": image,
+            "useForVideoGeneration": video,
+        }))
+        .unwrap();
+        invoke_checked("save_model", arg)
+            .await
+            .map_err(|err| js_error_text(err))?;
+    }
+    Ok(())
+}
+
 async fn catalog_limits_or_default(provider: &str, api_url: &str, model: &str) -> (u64, u64) {
     let args = to_value(&serde_json::json!({
         "provider": provider,
@@ -166,6 +228,8 @@ impl ModelSettingsState {
         }
         let loc = locale.get();
         let key = model_form_key.get();
+        let mut form = form;
+        sync_form_from_selected(&mut form);
         let has_key = form
             .id
             .as_ref()
@@ -176,7 +240,8 @@ impl ModelSettingsState {
                     .find(|m| &m.id == id)
                     .map(|m| m.has_api_key)
             })
-            .unwrap_or(false);
+            .unwrap_or(false)
+            || endpoint_has_stored_key(&models.get(), &form.api_url);
         let cfg = model_form_to_settings(&form, has_key && key.is_empty());
         if let Some(err_key) = settings_required_error_key(&cfg, &key) {
             let err = t(loc, err_key);
@@ -203,58 +268,85 @@ impl ModelSettingsState {
                 }
             }
         }
+        let entries: Vec<ModelFormEntry> = form
+            .entries
+            .iter()
+            .filter(|entry| !entry.model.trim().is_empty())
+            .cloned()
+            .collect();
+        if entries.is_empty() {
+            let err = t(loc, "err.model_required");
+            model_form_msg.set(Some((
+                false,
+                tf(loc, "status.save_failed", &[("msg", &err)]),
+            )));
+            return;
+        }
         settings_busy.set(true);
         model_form_msg.set(Some((true, t(loc, "status.saving_settings").into())));
-        let provider = provider_value(&form.provider);
-        let profile = serde_json::json!({
-            "id": form.id.clone().unwrap_or_default(),
-            "label": form.label.trim(),
-            "provider": provider,
-            "api_url": form.api_url.trim(),
-            "endpoint_suffix": form.endpoint_suffix.trim(),
-            "model": form.model.trim(),
-            "max_tokens": form.max_tokens,
-            "context_window": form.context_window,
-            "reasoning_effort": form.reasoning_effort.trim(),
-            "supports_vision": form.supports_vision,
-            "use_for_vision": form.use_for_vision,
-            "use_for_image_generation": form.use_for_image_generation,
-            "image_size": form.image_size.trim(),
-            "image_quality": form.image_quality.trim(),
-            "image_aspect_ratio": form.image_aspect_ratio.trim(),
-            "image_resolution": form.image_resolution.trim(),
-            "use_for_video_generation": form.use_for_video_generation,
-            "video_duration_secs": form.video_duration_secs,
-            "video_aspect_ratio": form.video_aspect_ratio,
-            "video_resolution": form.video_resolution,
-        });
         let key_arg = if key.is_empty() { None } else { Some(key) };
+        let main_id = form.id.clone().unwrap_or_default();
+        let group_url = models
+            .get()
+            .iter()
+            .find(|profile| profile.id == main_id)
+            .map(|profile| profile.api_url.clone())
+            .unwrap_or_else(|| form.api_url.clone());
+        let listed = models.get();
+        let keep: std::collections::HashSet<String> = entries
+            .iter()
+            .filter_map(|entry| entry.profile_id.clone())
+            .collect();
+        let to_delete: Vec<String> = listed
+            .iter()
+            .filter(|profile| {
+                !profile.is_builtin()
+                    && same_endpoint(&profile.api_url, &group_url)
+                    && !keep.contains(&profile.id)
+            })
+            .map(|profile| profile.id.clone())
+            .collect();
+        let api_url = form.api_url.trim().to_string();
         spawn_local(async move {
-            let arg = to_value(&serde_json::json!({
-                "profile": profile,
-                "key": key_arg,
-                "useForVision": form.use_for_vision,
-                "useForImageGeneration": form.use_for_image_generation,
-                "useForVideoGeneration": form.use_for_video_generation,
-            }))
-            .unwrap();
-            match invoke_checked("save_model", arg).await {
-                Ok(v) => {
-                    if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ModelProfile>>(v) {
-                        models.set(list);
+            if let Err(err) =
+                save_sibling_entries(&api_url, key_arg.as_ref(), &entries, &listed).await
+            {
+                model_form_msg.set(Some((false, localize_backend(loc, &err))));
+                settings_busy.set(false);
+                return;
+            }
+            for id in to_delete {
+                match invoke_checked(
+                    "remove_model",
+                    to_value(&serde_json::json!({ "id": id })).unwrap(),
+                )
+                .await
+                {
+                    Ok(value) => {
+                        if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ModelProfile>>(value)
+                        {
+                            models.set(list);
+                        }
                     }
-                    let v = invoke("get_settings", JsValue::UNDEFINED).await;
-                    if let Ok(cfg) = serde_wasm_bindgen::from_value::<Settings>(v) {
-                        settings.set(normalized_settings(cfg));
+                    Err(err) => {
+                        model_form_msg.set(Some((false, localize_backend(loc, &js_error_text(err)))));
+                        settings_busy.set(false);
+                        return;
                     }
-                    model_form.set(None);
-                    model_form_key.set(String::new());
-                    model_form_msg.set(Some((true, t(loc, "status.settings_saved").into())));
-                }
-                Err(err) => {
-                    model_form_msg.set(Some((false, localize_backend(loc, &js_error_text(err)))));
                 }
             }
+            if let Ok(value) = invoke_checked("list_models", JsValue::UNDEFINED).await {
+                if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ModelProfile>>(value) {
+                    models.set(list);
+                }
+            }
+            let v = invoke("get_settings", JsValue::UNDEFINED).await;
+            if let Ok(cfg) = serde_wasm_bindgen::from_value::<Settings>(v) {
+                settings.set(normalized_settings(cfg));
+            }
+            model_form.set(None);
+            model_form_key.set(String::new());
+            model_form_msg.set(Some((true, t(loc, "status.settings_saved").into())));
             settings_busy.set(false);
         });
     }
@@ -348,12 +440,9 @@ impl ModelSettingsState {
                 let provider = provider_value(&entry.provider).to_string();
                 let endpoint_suffix = entry.endpoint_suffix.trim().to_string();
                 let effective_api_url = join_api_url(&api_url, &endpoint_suffix);
-                let (max_tokens, context_window) = catalog_limits_or_default(
-                    &provider,
-                    &effective_api_url,
-                    entry.model.trim(),
-                )
-                .await;
+                let (max_tokens, context_window) =
+                    catalog_limits_or_default(&provider, &effective_api_url, entry.model.trim())
+                        .await;
                 let image = entry.is_image_model();
                 let video = entry.is_video_model();
                 let media = image || video;
@@ -435,40 +524,50 @@ impl ModelSettingsState {
         let loc = locale.get();
         let key = model_form_key.get();
         let listed = models.get();
-        let (form, has_key, profile_id) = if form.id.is_none() {
-            let Some(entry) = form
-                .entries
-                .iter()
-                .find(|entry| !entry.model.trim().is_empty())
-            else {
-                let err = t(loc, "err.model_required");
-                model_form_msg.set(Some((
-                    false,
-                    tf(loc, "status.validation_failed", &[("msg", &err)]),
-                )));
-                return;
-            };
-            let mut probe = form.clone();
-            probe.provider = entry.provider.clone();
-            probe.endpoint_suffix = entry.endpoint_suffix.clone();
-            probe.model = entry.model.clone();
-            probe.label = entry.label.clone();
-            probe.supports_vision = entry.supports_vision;
-            probe.use_for_vision = entry.use_for_vision;
-            probe.use_for_image_generation = entry.use_for_image_generation;
-            probe.use_for_video_generation = entry.use_for_video_generation;
-            let has_key = endpoint_has_stored_key(&listed, &form.api_url);
-            let profile_id = sibling_profile_id(&listed, &form.api_url).map(str::to_string);
-            (probe, has_key, profile_id)
-        } else {
-            let has_key = listed
+        let Some(entry) = selected_entry(&form)
+            .filter(|entry| !entry.model.trim().is_empty())
+            .cloned()
+            .or_else(|| {
+                form.entries
+                    .iter()
+                    .find(|entry| !entry.model.trim().is_empty())
+                    .cloned()
+            })
+        else {
+            let err = t(loc, "err.model_required");
+            model_form_msg.set(Some((
+                false,
+                tf(loc, "status.validation_failed", &[("msg", &err)]),
+            )));
+            return;
+        };
+        let mut probe = form.clone();
+        sync_form_from_selected(&mut probe);
+        probe.provider = entry.provider.clone();
+        probe.endpoint_suffix = entry.endpoint_suffix.clone();
+        probe.model = entry.model.clone();
+        probe.label = entry.label.clone();
+        probe.supports_vision = entry.supports_vision;
+        probe.use_for_vision = entry.use_for_vision;
+        probe.use_for_image_generation = entry.use_for_image_generation;
+        probe.use_for_video_generation = entry.use_for_video_generation;
+        let has_key = endpoint_has_stored_key(&listed, &form.api_url)
+            || listed
                 .iter()
                 .find(|m| Some(m.id.as_str()) == form.id.as_deref())
                 .map(|m| m.has_api_key)
                 .unwrap_or(false);
-            let profile_id = form.id.clone();
-            (form, has_key, profile_id)
-        };
+        let profile_id = entry
+            .profile_id
+            .clone()
+            .or_else(|| {
+                if form.id.is_none() {
+                    sibling_profile_id(&listed, &form.api_url).map(str::to_string)
+                } else {
+                    form.id.clone()
+                }
+            });
+        let form = probe;
         let cfg = model_form_to_settings(&form, has_key);
         if let Some(err_key) = settings_required_error_key(&cfg, &key) {
             let err = t(loc, err_key);

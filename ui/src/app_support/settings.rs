@@ -156,6 +156,50 @@ mod provider_form_tests {
             "https://api.openai.com/v1"
         ));
     }
+
+    #[test]
+    fn edit_form_loads_sibling_models_on_the_same_endpoint() {
+        let clicked = ModelProfile {
+            id: "flash".into(),
+            label: "flash".into(),
+            model: "deepseek-v4-flash".into(),
+            ..profile("https://api.deepseek.com", true)
+        };
+        let sibling = ModelProfile {
+            id: "pro".into(),
+            label: "pro".into(),
+            model: "deepseek-v4-pro".into(),
+            ..profile("https://api.deepseek.com/v1", true)
+        };
+        let other = ModelProfile {
+            id: "opus".into(),
+            label: "opus".into(),
+            model: "opus-4.8".into(),
+            ..profile("https://api.anthropic.com", true)
+        };
+        let form = super::profiles_to_edit_form(&clicked, &[clicked.clone(), sibling, other]);
+        assert_eq!(form.id.as_deref(), Some("flash"));
+        assert_eq!(form.model, "deepseek-v4-flash");
+        let extras: Vec<_> = form
+            .entries
+            .iter()
+            .map(|entry| (entry.profile_id.as_deref(), entry.model.as_str()))
+            .collect();
+        assert_eq!(
+            extras,
+            [
+                (Some("flash"), "deepseek-v4-flash"),
+                (Some("pro"), "deepseek-v4-pro"),
+            ]
+        );
+        assert_eq!(
+            form.entries
+                .iter()
+                .find(|entry| entry.row_id == form.selected_row_id)
+                .map(|entry| entry.model.as_str()),
+            Some("deepseek-v4-flash")
+        );
+    }
 }
 
 pub(crate) fn settings_required_error_key(cfg: &Settings, key: &str) -> Option<&'static str> {
@@ -780,6 +824,101 @@ pub(crate) fn profile_to_form(m: &ModelProfile) -> ModelForm {
         video_aspect_ratio: m.video_aspect_ratio.clone(),
         video_resolution: m.video_resolution.clone(),
         entries: Vec::new(),
+        selected_row_id: 0,
+    }
+}
+
+pub(crate) fn profile_to_entry(m: &ModelProfile) -> ModelFormEntry {
+    ModelFormEntry {
+        row_id: next_model_row_id(),
+        profile_id: Some(m.id.clone()),
+        provider: provider_value(&m.provider).into(),
+        endpoint_suffix: m.endpoint_suffix.clone(),
+        label: m.label.clone(),
+        model: m.model.clone(),
+        supports_vision: m.supports_vision,
+        use_for_vision: m.use_for_vision,
+        use_for_image_generation: m.use_for_image_generation,
+        use_for_video_generation: m.use_for_video_generation,
+        max_tokens: if m.max_tokens >= 16 {
+            m.max_tokens
+        } else {
+            8192
+        },
+        context_window: if m.context_window >= 4_096 {
+            m.context_window
+        } else {
+            128_000
+        },
+        reasoning_effort: m.reasoning_effort.clone(),
+        image_size: m.image_size.clone(),
+        image_quality: m.image_quality.clone(),
+        image_aspect_ratio: m.image_aspect_ratio.clone(),
+        image_resolution: m.image_resolution.clone(),
+        video_duration_secs: m.video_duration_secs,
+        video_aspect_ratio: m.video_aspect_ratio.clone(),
+        video_resolution: m.video_resolution.clone(),
+    }
+}
+
+/// Edit one saved profile together with every other model that already
+/// shares its Base URL, so the form can add / update / remove siblings.
+pub(crate) fn profiles_to_edit_form(clicked: &ModelProfile, all: &[ModelProfile]) -> ModelForm {
+    let clicked_entry = profile_to_entry(clicked);
+    let selected_row_id = clicked_entry.row_id;
+    let mut siblings: Vec<ModelFormEntry> = all
+        .iter()
+        .filter(|profile| {
+            profile.id != clicked.id && same_endpoint(&profile.api_url, &clicked.api_url)
+        })
+        .map(profile_to_entry)
+        .collect();
+    siblings.sort_by(|left, right| left.model.cmp(&right.model));
+    let mut entries = Vec::with_capacity(siblings.len() + 1);
+    entries.push(clicked_entry);
+    entries.append(&mut siblings);
+    let mut form = profile_to_form(clicked);
+    form.entries = entries;
+    form.selected_row_id = selected_row_id;
+    form
+}
+
+pub(crate) fn selected_entry(form: &ModelForm) -> Option<&ModelFormEntry> {
+    form.entries
+        .iter()
+        .find(|entry| entry.row_id == form.selected_row_id)
+        .or_else(|| form.entries.first())
+}
+
+pub(crate) fn sync_form_from_selected(form: &mut ModelForm) {
+    let Some(entry) = selected_entry(form).cloned() else {
+        return;
+    };
+    form.selected_row_id = entry.row_id;
+    form.provider = entry.provider;
+    form.endpoint_suffix = entry.endpoint_suffix;
+    form.label = entry.label;
+    form.model = entry.model;
+    form.supports_vision = entry.supports_vision;
+    form.use_for_vision = entry.use_for_vision;
+    form.use_for_image_generation = entry.use_for_image_generation;
+    form.use_for_video_generation = entry.use_for_video_generation;
+    form.max_tokens = entry.max_tokens;
+    form.context_window = entry.context_window;
+    form.reasoning_effort = entry.reasoning_effort;
+    form.image_size = entry.image_size;
+    form.image_quality = entry.image_quality;
+    form.image_aspect_ratio = entry.image_aspect_ratio;
+    form.image_resolution = entry.image_resolution;
+    form.video_duration_secs = entry.video_duration_secs;
+    form.video_aspect_ratio = entry.video_aspect_ratio;
+    form.video_resolution = entry.video_resolution;
+}
+
+pub(crate) fn select_form_row(form: &mut ModelForm, row_id: u64) {
+    if form.entries.iter().any(|entry| entry.row_id == row_id) {
+        form.selected_row_id = row_id;
+        sync_form_from_selected(form);
     }
 }
 
@@ -813,18 +952,16 @@ pub(crate) fn model_form_entry(
         use_for_vision: false,
         use_for_image_generation: image,
         use_for_video_generation: video,
+        ..ModelFormEntry::default()
     }
 }
 
 pub(crate) fn suggested_base_url_models(api_url: &str) -> Vec<ModelFormEntry> {
     let host = normalize_endpoint(api_url).to_ascii_lowercase();
     match host.as_str() {
-        host if host.contains("api.anthropic.com") => vec![model_form_entry(
-            "anthropic",
-            "claude-sonnet-5",
-            "",
-            false,
-        )],
+        host if host.contains("api.anthropic.com") => {
+            vec![model_form_entry("anthropic", "claude-sonnet-5", "", false)]
+        }
         host if host.contains("api.openai.com") => vec![
             model_form_entry("openai_responses", "gpt-5.5", "", false),
             model_form_entry("openai_responses", "gpt-image-2", "", true),
@@ -890,6 +1027,8 @@ pub(crate) fn provider_entries_are_pristine(form: &ModelForm) -> bool {
 pub(crate) fn apply_base_url_suggestions(form: &mut ModelForm, api_url: &str) {
     form.api_url = api_url.into();
     form.entries = suggested_base_url_models(&form.api_url);
+    form.selected_row_id = form.entries.first().map(|entry| entry.row_id).unwrap_or(0);
+    sync_form_from_selected(form);
 }
 
 pub(crate) fn endpoint_has_stored_key(models: &[ModelProfile], api_url: &str) -> bool {
@@ -898,10 +1037,7 @@ pub(crate) fn endpoint_has_stored_key(models: &[ModelProfile], api_url: &str) ->
         .any(|profile| profile.has_api_key && same_endpoint(&profile.api_url, api_url))
 }
 
-pub(crate) fn sibling_profile_id<'a>(
-    models: &'a [ModelProfile],
-    api_url: &str,
-) -> Option<&'a str> {
+pub(crate) fn sibling_profile_id<'a>(models: &'a [ModelProfile], api_url: &str) -> Option<&'a str> {
     models
         .iter()
         .find(|profile| profile.has_api_key && same_endpoint(&profile.api_url, api_url))
@@ -910,14 +1046,19 @@ pub(crate) fn sibling_profile_id<'a>(
 
 pub(crate) fn new_model_form() -> ModelForm {
     let (api_url, _) = provider_defaults("openai");
-    ModelForm {
+    let entries = suggested_base_url_models(api_url);
+    let selected_row_id = entries.first().map(|entry| entry.row_id).unwrap_or(0);
+    let mut form = ModelForm {
         provider: "openai".into(),
         api_url: api_url.into(),
         max_tokens: 8192,
         context_window: 128_000,
-        entries: suggested_base_url_models(api_url),
+        entries,
+        selected_row_id,
         ..Default::default()
-    }
+    };
+    sync_form_from_selected(&mut form);
+    form
 }
 
 pub(crate) fn new_acp_form() -> AcpAgentProfile {
@@ -940,6 +1081,27 @@ pub(crate) fn model_form_to_settings(form: &ModelForm, has_api_key: bool) -> Set
     cfg.reasoning_effort = form.reasoning_effort.clone();
     cfg.supports_vision = form.supports_vision;
     cfg
+}
+
+pub(crate) fn settings_nav_group(section: &str) -> &'static str {
+    match section {
+        "models" | "quick-actions" | "workflows" | "specialists" | "memory" | "skills"
+        | "plugins" | "browser" | "connections" | "channels" => "capabilities",
+        _ => "workspace",
+    }
+}
+
+#[cfg(test)]
+mod settings_nav_group_tests {
+    use super::settings_nav_group;
+
+    #[test]
+    fn classifies_workspace_and_capability_sections() {
+        assert_eq!(settings_nav_group("general"), "workspace");
+        assert_eq!(settings_nav_group("usage"), "workspace");
+        assert_eq!(settings_nav_group("models"), "capabilities");
+        assert_eq!(settings_nav_group("channels"), "capabilities");
+    }
 }
 
 pub(crate) fn settings_section_label(loc: Locale, section: &str) -> String {

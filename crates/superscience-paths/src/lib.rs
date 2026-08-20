@@ -35,7 +35,36 @@ pub const WINDOWS_LOG_FILE: &str = "superscience.log";
 pub const WINDOWS_PREVIOUS_LOG_FILE: &str = "superscience.previous.log";
 /// User-visible English product name (settings version, share titles, About).
 pub const PRODUCT_NAME: &str = "SuperScience";
+/// User-visible Chinese product name.
+pub const PRODUCT_NAME_ZH: &str = "天成科研助手";
 pub const PRODUCT_GITHUB: &str = "https://github.com/imbigfly/SuperScience";
+pub const PRODUCT_SLOGAN_EN: &str =
+    "A simple local research agent that turns clinical data into high-impact papers";
+pub const PRODUCT_SLOGAN_ZH: &str = "简单好用的本地科研Agent，让临床数据变成高影响因子论文";
+
+pub fn is_zh_locale(tag: &str) -> bool {
+    let tag = tag.trim();
+    tag.eq_ignore_ascii_case("zh")
+        || tag.get(..3).is_some_and(|prefix| {
+            prefix.eq_ignore_ascii_case("zh-") || prefix.eq_ignore_ascii_case("zh_")
+        })
+}
+
+pub fn product_display_name(locale: &str) -> &'static str {
+    if is_zh_locale(locale) {
+        PRODUCT_NAME_ZH
+    } else {
+        PRODUCT_NAME
+    }
+}
+
+pub fn product_slogan(locale: &str) -> &'static str {
+    if is_zh_locale(locale) {
+        PRODUCT_SLOGAN_ZH
+    } else {
+        PRODUCT_SLOGAN_EN
+    }
+}
 
 /// `<root>/.superscience`
 pub fn project_dir(root: &Path) -> PathBuf {
@@ -234,5 +263,17 @@ mod tests {
     fn product_or_wisp_is_none_when_unset() {
         assert!(env_product_or_wisp("WISP_UNSET_BRAND_PROBE_9f3a").is_none());
         assert!(!env_flag_product_or_wisp("WISP_UNSET_BRAND_PROBE_9f3a"));
+    }
+
+    #[test]
+    fn product_copy_follows_locale_tag() {
+        assert!(is_zh_locale("zh"));
+        assert!(is_zh_locale("zh-CN"));
+        assert!(is_zh_locale("zh_Hans"));
+        assert!(!is_zh_locale("en"));
+        assert_eq!(product_display_name("zh"), PRODUCT_NAME_ZH);
+        assert_eq!(product_display_name("en"), PRODUCT_NAME);
+        assert_eq!(product_slogan("zh"), PRODUCT_SLOGAN_ZH);
+        assert_eq!(product_slogan("en"), PRODUCT_SLOGAN_EN);
     }
 }

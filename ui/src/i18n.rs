@@ -1,7 +1,7 @@
 use leptos::*;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Locale {
     En,
@@ -48,21 +48,33 @@ pub fn t(locale: Locale, key: &str) -> String {
     brand_visible_copy(locale, lookup(locale, key).unwrap_or(key))
 }
 
+/// User-facing GitHub repo. Menu / docs / issue links should use this, not upstream.
+pub const BRAND_GITHUB_REPO: &str = superscience_paths::PRODUCT_GITHUB;
+
 /// Rewrite upstream product names at the display layer so `lookup` tables can
 /// stay mergeable with `xuzhougeng/wisp-science`.
-fn brand_visible_copy(locale: Locale, text: &str) -> String {
-    if !text.contains("Wisp") {
+pub fn brand_visible_copy(locale: Locale, text: &str) -> String {
+    if !text.contains("Wisp") && !text.contains("wisp-science") {
         return text.to_string();
     }
     match locale {
         Locale::En => text
             .replace("Wisp Science", "SuperScience")
             .replace("Wisp's", "SuperScience's")
+            .replace("wisp-science", "SuperScience")
             .replace("Wisp", "SuperScience"),
         Locale::Zh => text
             .replace("Wisp Science", "天成科研助手")
             .replace("Wisp's", "天成科研助手的")
+            .replace("wisp-science", "天成科研助手")
             .replace("Wisp", "天成科研助手"),
+    }
+}
+
+pub fn brand_product_name(locale: Locale) -> &'static str {
+    match locale {
+        Locale::En => superscience_paths::PRODUCT_NAME,
+        Locale::Zh => superscience_paths::PRODUCT_NAME_ZH,
     }
 }
 
@@ -194,6 +206,8 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "sidebar.untitled") => Some("Untitled session"),
         (Locale::En, "sidebar.capabilities") => Some("Capabilities"),
         (Locale::En, "sidebar.settings") => Some("Settings"),
+        (Locale::En, "sidebar.login") => Some("Sign in"),
+        (Locale::En, "sidebar.user_center") => Some("My Center"),
         (Locale::En, "sidebar.collapse") => Some("Collapse"),
         (Locale::En, "sidebar.show") => Some("Show sidebar"),
         (Locale::En, "sidebar.back_projects") => Some("Back to projects"),
@@ -2856,6 +2870,7 @@ Do not leave generated files in the project root.",
         (Locale::En, "projects.open_failed") => Some("Could not open the project: {msg}"),
         (Locale::En, "projects.star_hint") => Some("If Wisp is helpful to your work, please"),
         (Locale::En, "projects.star_link") => Some("give us a star on GitHub ★"),
+        (Locale::En, "projects.slogan") => Some(superscience_paths::PRODUCT_SLOGAN_EN),
 
         (Locale::En, "proj_menu.settings") => Some("Project settings"),
         (Locale::En, "proj_settings.title") => Some("Project Settings"),
@@ -2989,6 +3004,8 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "sidebar.untitled") => Some("未命名会话"),
         (Locale::Zh, "sidebar.capabilities") => Some("能力"),
         (Locale::Zh, "sidebar.settings") => Some("设置"),
+        (Locale::Zh, "sidebar.login") => Some("登录"),
+        (Locale::Zh, "sidebar.user_center") => Some("我的中心"),
         (Locale::Zh, "sidebar.collapse") => Some("收起"),
         (Locale::Zh, "sidebar.show") => Some("显示侧栏"),
         (Locale::Zh, "sidebar.back_projects") => Some("返回项目"),
@@ -5647,6 +5664,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "projects.open_failed") => Some("无法打开项目：{msg}"),
         (Locale::Zh, "projects.star_hint") => Some("如果 Wisp 对你的工作有帮助，欢迎到"),
         (Locale::Zh, "projects.star_link") => Some("GitHub 点个 Star ★"),
+        (Locale::Zh, "projects.slogan") => Some(superscience_paths::PRODUCT_SLOGAN_ZH),
 
         (Locale::Zh, "proj_menu.settings") => Some("项目设置"),
         (Locale::Zh, "proj_settings.title") => Some("项目设置"),
@@ -5981,10 +5999,13 @@ pub fn localize_backend(locale: Locale, msg: &str) -> String {
             }
             msg.to_string()
         }
-        _ => match api_error_hint(locale, msg) {
-            Some(hint) => format!("{msg} — {hint}"),
-            None => msg.to_string(),
-        },
+        _ => {
+            let branded = brand_visible_copy(locale, msg);
+            match api_error_hint(locale, msg) {
+                Some(hint) => format!("{branded} — {hint}"),
+                None => branded,
+            }
+        }
     }
 }
 
@@ -6309,6 +6330,20 @@ mod queue_label_tests {
             t(Locale::En, "onboard.welcome.title"),
             "Welcome to 天成科研助手"
         );
+        assert_eq!(
+            brand_visible_copy(Locale::Zh, "wisp-science v1.5.0"),
+            "天成科研助手 v1.5.0"
+        );
+        assert_eq!(
+            brand_visible_copy(Locale::En, "wisp-science v1.5.0"),
+            "SuperScience v1.5.0"
+        );
+        assert_eq!(
+            brand_visible_copy(Locale::En, "Wisp Charcoal"),
+            "SuperScience Charcoal"
+        );
+        assert_eq!(brand_product_name(Locale::Zh), superscience_paths::PRODUCT_NAME_ZH);
+        assert_eq!(brand_product_name(Locale::En), superscience_paths::PRODUCT_NAME);
     }
 
     #[test]
@@ -6317,6 +6352,18 @@ mod queue_label_tests {
         assert_eq!(t(Locale::En, "user_center.login"), "Sign in");
         assert_eq!(t(Locale::Zh, "user_center.title"), "我的中心");
         assert_ne!(t(Locale::Zh, "user_center.login"), "user_center.login");
+        assert_eq!(t(Locale::Zh, "sidebar.login"), "登录");
+        assert_eq!(t(Locale::En, "sidebar.login"), "Sign in");
+        assert_eq!(t(Locale::Zh, "sidebar.user_center"), "我的中心");
+        assert_eq!(
+            t(Locale::Zh, "projects.slogan"),
+            superscience_paths::PRODUCT_SLOGAN_ZH
+        );
+        assert_eq!(
+            t(Locale::En, "projects.slogan"),
+            superscience_paths::PRODUCT_SLOGAN_EN
+        );
+        assert_eq!(brand_product_name(Locale::Zh), superscience_paths::PRODUCT_NAME_ZH);
     }
 
     #[test]

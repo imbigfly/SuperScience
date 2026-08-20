@@ -105,7 +105,7 @@ impl Default for VideoGenerationOptions {
     }
 }
 
-pub const TCTOKEN_MODEL_ID: &str = superscience_dto::TCTOKEN_MODEL_ID;
+pub const TCTOKEN_MODEL_ID: &str = "tctoken";
 const TCTOKEN_API_URL: &str = "https://www.tctoken.cn/v1";
 
 const PROFILES_KEY: &str = "model_profiles";

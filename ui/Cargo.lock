@@ -1337,6 +1337,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "superscience-paths"
+version = "1.5.0"
+
+[[package]]
 name = "superscience-ui"
 version = "1.5.0"
 dependencies = [
@@ -1349,6 +1353,7 @@ dependencies = [
  "serde-wasm-bindgen",
  "serde_json",
  "superscience-dto",
+ "superscience-paths",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",

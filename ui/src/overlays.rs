@@ -6,7 +6,7 @@ use crate::app_support::{
 };
 use crate::bindings::{invoke_checked, open_external_url, render_share_png, snapshot_share_theme};
 use crate::dto::*;
-use crate::i18n::{localize_backend, t, tf, Locale};
+use crate::i18n::{brand_product_name, localize_backend, t, tf, Locale};
 use crate::text::{dom_value, event_target_value, file_kind, format_bytes};
 use leptos::*;
 use serde_wasm_bindgen::to_value;
@@ -322,17 +322,17 @@ pub(super) fn ShareOverlay(
                     text: redact_text(&message.text, &redact),
                 })
                 .collect();
-            let html =
-                share_html_document("wisp-science", &stamp, &footer, &rows, &live_share_theme());
+            let title = brand_product_name(loc);
+            let html = share_html_document(title, &stamp, &footer, &rows, &live_share_theme());
             let args = to_value(&serde_json::json!({
                 "html": html,
-                "defaultName": format!("wisp-share-{stamp}.html"),
+                "defaultName": format!("superscience-share-{stamp}.html"),
             }))
             .unwrap();
             (String::new(), Some(args))
         } else {
             let payload = share_png_payload(
-                "wisp-science",
+                brand_product_name(loc),
                 &stamp,
                 &footer,
                 &share_png_rows(loc, &selected, &redact),
@@ -351,7 +351,7 @@ pub(super) fn ShareOverlay(
                             .unwrap_or_default();
                         let args = to_value(&serde_json::json!({
                             "pngBase64": png,
-                            "defaultName": format!("wisp-share-{stamp}.png"),
+                            "defaultName": format!("superscience-share-{stamp}.png"),
                         }))
                         .unwrap();
                         invoke_checked("save_share_image", args).await

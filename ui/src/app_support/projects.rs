@@ -11,6 +11,8 @@ pub(crate) fn ProjectsScreen(
     on_open_session: Callback<(String, String)>,
     on_open_artifact: Callback<(String, String, String)>,
     on_open_settings: Callback<()>,
+    on_open_user_center: Callback<()>,
+    tctoken_session: RwSignal<crate::user_center::TctokenSession>,
     on_open_library: Callback<()>,
     on_open_demo: Callback<()>,
     on_open_scratch: Callback<()>,
@@ -566,8 +568,13 @@ pub(crate) fn ProjectsScreen(
         }>
             <div class="projects-head">
                 <div class="projects-brand">
-                    <span class="projects-brand-mark" aria-hidden="true"></span>
-                    <div class="projects-title">"天成科研助手"</div>
+                    <div class="projects-brand-row">
+                        <img class="projects-brand-mark" src="logo.png" alt="" width="32" height="32" />
+                        <div class="projects-title">{move || brand_product_name(locale.get())}</div>
+                    </div>
+                    <p class="projects-slogan" data-testid="projects-slogan">
+                        {move || t(locale.get(), "projects.slogan")}
+                    </p>
                 </div>
                 <div class="projects-actions">
                     <button type="button" class="projects-icon-btn"
@@ -602,6 +609,21 @@ pub(crate) fn ProjectsScreen(
                         creating.set(true);
                     }>
                         <span class="new-plus">"+"</span>{move || t(locale.get(), "projects.new")}
+                    </button>
+                    <button type="button" class="btn-ghost projects-login" data-testid="projects-login"
+                        title=move || if tctoken_session.get().logged_in {
+                            t(locale.get(), "sidebar.user_center")
+                        } else {
+                            t(locale.get(), "sidebar.login")
+                        }
+                        on:click=move |_| on_open_user_center.call(())>
+                        {compose_icon("user")}
+                        <span>{move || {
+                            tctoken_session
+                                .get()
+                                .display_label()
+                                .unwrap_or_else(|| t(locale.get(), "sidebar.login").into())
+                        }}</span>
                     </button>
                 </div>
             </div>
@@ -1229,13 +1251,6 @@ pub(crate) fn ProjectsScreen(
                         }
                     }).collect_view()}
                 </div>
-            </div>
-            <div class="projects-footer">
-                <span>{move || t(locale.get(), "projects.star_hint")}</span>
-                <button type="button" class="projects-star-link"
-                    on:click=move |_| open_external_url("https://github.com/imbigfly/SuperScience".into())>
-                    {move || t(locale.get(), "projects.star_link")}
-                </button>
             </div>
             {move || sync_notice.get().map(|(ok, text)| view! {
                 <div class="projects-sync-notice" class:ok=move || ok>{text}</div>

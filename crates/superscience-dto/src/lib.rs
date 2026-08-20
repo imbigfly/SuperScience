@@ -2903,6 +2903,8 @@ pub struct ConnForm {
 #[derive(Clone, Default)]
 pub struct ModelFormEntry {
     pub row_id: u64,
+    /// Set when this row is an already-saved profile (edit-provider form).
+    pub profile_id: Option<String>,
     pub provider: String,
     pub endpoint_suffix: String,
     pub label: String,
@@ -2911,6 +2913,16 @@ pub struct ModelFormEntry {
     pub use_for_vision: bool,
     pub use_for_image_generation: bool,
     pub use_for_video_generation: bool,
+    pub max_tokens: u64,
+    pub context_window: u64,
+    pub reasoning_effort: String,
+    pub image_size: String,
+    pub image_quality: String,
+    pub image_aspect_ratio: String,
+    pub image_resolution: String,
+    pub video_duration_secs: Option<u32>,
+    pub video_aspect_ratio: Option<String>,
+    pub video_resolution: Option<String>,
 }
 
 impl ModelFormEntry {
@@ -3069,9 +3081,12 @@ pub struct ModelForm {
     pub video_duration_secs: Option<u32>,
     pub video_aspect_ratio: Option<String>,
     pub video_resolution: Option<String>,
-    /// Used only when adding a provider (`id` is `None`): one row per model
-    /// that should be created with the shared API URL and key.
+    /// One row per model that shares this form's API URL and key.
+    /// Used when adding a provider (`id` is `None`) and when editing one
+    /// (`id` is `Some`).
     pub entries: Vec<ModelFormEntry>,
+    /// Row whose advanced fields (tokens, effort, image/video) are expanded.
+    pub selected_row_id: u64,
 }
 
 /// `model_catalog_lookup` projection of one baked catalog entry.

@@ -172,7 +172,7 @@ fn ensure_pet_window(app: &AppHandle) -> Result<(), String> {
     }
     let url = WebviewUrl::App("index.html?pet=desktop".into());
     let mut builder = WebviewWindowBuilder::new(app, PET_WINDOW_LABEL, url)
-        .title("Wisp pet")
+        .title("天成科研助手")
         .inner_size(f64::from(PET_WINDOW_WIDTH), f64::from(PET_WINDOW_HEIGHT))
         .resizable(false)
         .maximizable(false)

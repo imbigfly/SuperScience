@@ -3,6 +3,7 @@ use crate::bindings::invoke;
 use crate::capabilities_home::CapabilityAction;
 use crate::dto::*;
 use crate::i18n::Locale;
+use crate::user_center::TctokenSession;
 use leptos::*;
 use std::collections::HashSet;
 use wasm_bindgen::JsValue;
@@ -36,6 +37,8 @@ pub(super) fn ProjectLanding(
     open_project_session: Callback<(String, String)>,
     open_scratch: Callback<()>,
     open_settings: Callback<Option<String>>,
+    open_user_center: Callback<()>,
+    tctoken_session: RwSignal<TctokenSession>,
     open_library: Callback<()>,
     open_project_export: Callback<(String, String)>,
     on_capability_action: Callback<CapabilityAction>,
@@ -91,6 +94,8 @@ pub(super) fn ProjectLanding(
                     on_open_session=open_project_session
                     on_open_artifact=on_open_artifact
                     on_open_settings=on_open_settings
+                    on_open_user_center=open_user_center
+                    tctoken_session=tctoken_session
                     on_open_library=open_library
                     on_open_demo=on_open_demo
                     on_open_scratch=open_scratch

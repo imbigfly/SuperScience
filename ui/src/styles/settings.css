@@ -66,14 +66,46 @@ body:has(.settings-page) .projects-screen { display: none; }
   display: flex;
   flex-direction: column;
   gap: 4px;
+  padding: 8px 4px 6px;
+  border-radius: var(--radius-sm);
+}
+.settings-nav-group + .settings-nav-group {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.settings-nav-group.active {
+  background: color-mix(in srgb, var(--clay-soft) 55%, transparent);
+}
+.settings-nav-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px 6px;
+  color: var(--text);
+}
+.settings-nav-heading svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  color: var(--clay-strong);
 }
 .settings-nav-label {
-  padding: 0 14px 4px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: .04em;
-  text-transform: uppercase;
-  color: var(--text-faint);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: inherit;
+}
+.settings-nav-items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-left: 16px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
+.settings-nav-group.active .settings-nav-items {
+  border-left-color: color-mix(in srgb, var(--clay-strong) 42%, var(--border));
 }
 .settings-nav button {
   text-align: left;
@@ -1655,13 +1687,13 @@ button.workflow-graph-port.output.active {
 .plugin-details .plugin-detail-grid dd { margin: 0; color: var(--text-muted); word-break: break-word; }
 .specialists-pane .conn-group-label { margin-top: 8px; }
 .specialists-pane .specialist-card-grid + .conn-group-label { margin-top: 22px; }
-.specialist-card-grid, .model-card-grid {
+.specialist-card-grid, .model-card-grid, .channel-card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: 16px;
   width: 100%;
 }
-.specialist-card, .model-card {
+.specialist-card, .model-card, .channel-card {
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -1674,12 +1706,12 @@ button.workflow-graph-port.output.active {
   cursor: pointer;
   transition: border-color .15s ease, box-shadow .15s ease;
 }
-.specialist-card:hover, .model-card:hover {
+.specialist-card:hover, .model-card:hover, .channel-card:hover {
   border-color: color-mix(in srgb, var(--clay) 35%, var(--border));
   box-shadow: 0 10px 24px color-mix(in srgb, var(--clay) 10%, transparent);
 }
 .model-card.active { border-color: var(--clay); box-shadow: 0 0 0 1px color-mix(in srgb, var(--clay) 35%, transparent); }
-.specialist-card-head, .model-card-head {
+.specialist-card-head, .model-card-head, .channel-card-head {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 12px;
@@ -1700,13 +1732,13 @@ button.workflow-graph-port.output.active {
   color: var(--clay-strong, var(--clay));
 }
 .specialist-card-avatar svg { width: 22px; height: 22px; }
-.specialist-card-meta, .model-card-meta {
+.specialist-card-meta, .model-card-meta, .channel-card-meta {
   display: flex;
   flex-direction: column;
   gap: 3px;
   min-width: 0;
 }
-.specialist-card-title, .model-card-title {
+.specialist-card-title, .model-card-title, .channel-card-title {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
@@ -1715,7 +1747,7 @@ button.workflow-graph-port.output.active {
   font-weight: 650;
   color: var(--text);
 }
-.specialist-card-handle, .model-card-sub, .model-card-url {
+.specialist-card-handle, .model-card-sub, .model-card-url, .channel-card-sub {
   color: var(--text-faint);
   font-size: 12.5px;
   font-weight: 500;
@@ -1736,7 +1768,7 @@ button.workflow-graph-port.output.active {
   background: currentColor;
   box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 18%, transparent);
 }
-.specialist-card-actions, .model-card-actions {
+.specialist-card-actions, .model-card-actions, .channel-card-actions {
   display: flex;
   gap: 4px;
   align-items: center;
@@ -2501,6 +2533,15 @@ button.workflow-graph-port.output.active {
   padding: 10px 12px;
   background: var(--bg-input);
 }
+.provider-model-row.selected {
+  border-color: color-mix(in srgb, var(--clay) 55%, var(--border));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--clay) 28%, transparent);
+}
+.provider-model-advanced {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
 .provider-model-row-head {
   display: grid;
   grid-template-columns: minmax(140px, .85fr) minmax(0, 1.15fr) minmax(0, 1fr) auto;
@@ -2542,8 +2583,23 @@ button.workflow-graph-port.output.active {
   line-height: 1.45;
 }
 
-/* Remote Access — list rows reuse the shared settings-list styles; per-access
-   setup surfaces (IM QR flows and StickS3 transport) live here. */
+/* Remote Access — access methods share the specialist/model card grid;
+   per-access setup surfaces (IM QR flows and StickS3 transport) live here. */
+.channel-card { padding-bottom: 16px; }
+.channel-card-icon {
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-sunken) 80%, var(--border));
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+.channel-card-icon svg { width: 22px; height: 22px; }
+.channel-card-chevron { display: grid; place-items: center; color: var(--text-faint); }
+.channel-card-chevron svg { width: 16px; height: 16px; }
+.channels-pane { display: grid; gap: 14px; align-content: start; }
 .channels-command-list { display: inline-flex; flex-wrap: wrap; gap: 6px; margin-left: 6px; vertical-align: middle; }
 .channels-command-list code {
   padding: 1px 7px;
@@ -3102,8 +3158,33 @@ button.workflow-graph-port.output.active {
     overflow-y: hidden;
   }
   .settings-app-back { width: auto; white-space: nowrap; }
-  .settings-nav-title, .settings-nav-label { display: none; }
-  .settings-nav-group { flex-direction: row; }
+  .settings-nav-title { display: none; }
+  .settings-nav-group {
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    margin-top: 0;
+    padding: 0;
+    border-top: none;
+    background: transparent;
+  }
+  .settings-nav-group + .settings-nav-group {
+    margin-left: 8px;
+    padding-left: 10px;
+    padding-top: 0;
+    border-top: none;
+    border-left: 1px solid var(--border);
+  }
+  .settings-nav-heading {
+    padding: 0 4px 0 0;
+    white-space: nowrap;
+  }
+  .settings-nav-items {
+    flex-direction: row;
+    margin-left: 0;
+    padding-left: 0;
+    border-left: none;
+  }
   .settings-nav button { white-space: nowrap; }
   .settings-form-grid { grid-template-columns: 1fr; }
   .provider-model-row-head { grid-template-columns: 1fr; }

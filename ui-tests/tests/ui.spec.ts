@@ -10,7 +10,7 @@ const officeFixtures = {
 const motifAppHtmlPath = process.env.WISP_MOTIF_APP_HTML;
 
 function providerSelect(page: Page) {
-  return page.getByTestId("settings-provider");
+  return page.locator(".provider-model-row.selected").getByTestId("provider-model-protocol");
 }
 
 function globalSettingsButton(page: Page) {
@@ -830,6 +830,26 @@ test("Memory settings edit and delete notes in the browsed project", async ({ pa
   });
   await expect(page.getByText("other-2026-07-02.md", { exact: true })).toHaveCount(0);
   await expect(page.getByText("No notes yet.")).toBeVisible();
+});
+
+test("settings nav highlights Workspace and Capabilities as parent groups", async ({ page }) => {
+  await enterApp(page);
+  await globalSettingsButton(page).click();
+
+  const nav = page.locator(".settings-nav");
+  const workspace = nav.getByTestId("settings-nav-group-workspace");
+  const capabilities = nav.getByTestId("settings-nav-group-capabilities");
+
+  await expect(workspace.getByTestId("settings-nav-heading")).toHaveText("Workspace");
+  await expect(capabilities.getByTestId("settings-nav-heading")).toHaveText("Capabilities");
+  await expect(workspace).toHaveClass(/active/);
+  await expect(capabilities).not.toHaveClass(/active/);
+  await expect(workspace.locator(".settings-nav-items button").first()).toBeVisible();
+
+  await nav.getByRole("button", { name: "Models", exact: true }).click();
+  await expect(capabilities).toHaveClass(/active/);
+  await expect(workspace).not.toHaveClass(/active/);
+  await expect(nav.locator("button.active")).toHaveText("Models");
 });
 
 test("Memory project picker consumes Escape before leaving Settings", async ({ page }) => {
@@ -8328,13 +8348,39 @@ test("settings can validate current API config", async ({ page }) => {
   await expect(page.locator(".settings-status")).toHaveText("Validated openai with deepseek-v4-pro");
 });
 
+test("edit model can add another model on the same API", async ({ page }) => {
+  await enterApp(page);
+  await openModelsSettings(page);
+  await expect(page.getByTestId("model-edit-form")).toBeVisible();
+  await expect(page.getByTestId("provider-add-model")).toBeVisible();
+  await expect(page.getByTestId("provider-model-row")).toHaveCount(1);
+  await expect(page.getByTestId("provider-model-row").first().getByLabel("Model ID")).toHaveValue("deepseek-v4-pro");
+
+  await page.getByTestId("provider-add-model").click();
+  await expect(page.getByTestId("provider-model-row")).toHaveCount(2);
+  await page.getByTestId("provider-model-row").nth(1).getByTestId("provider-model-id").fill("deepseek-v4-flash");
+  await page.getByTestId("provider-model-row").nth(1).getByTestId("provider-model-label").fill("flash");
+  await page.getByRole("button", { name: "Save" }).click();
+
+  await expect.poll(() => page.evaluate(() => ((window as any).__skillInvokeLog ?? [])
+    .filter((c: any) => c.cmd === "save_model")
+    .map((c: any) => {
+      const args = c.args instanceof Map ? Object.fromEntries(c.args) : c.args;
+      const profile = args.profile instanceof Map ? Object.fromEntries(args.profile) : args.profile;
+      return { id: profile.id ?? "", model: profile.model };
+    }))).toEqual([
+    { id: "default", model: "deepseek-v4-pro" },
+    { id: "", model: "deepseek-v4-flash" },
+  ]);
+});
+
 test("editing a saved model validates with that model profile id", async ({ page }) => {
   await enterApp(page);
   await globalSettingsButton(page).click();
   await page.getByRole("button", { name: "Models" }).click();
   await page.locator(".model-card", { hasText: "opus-4.8" }).click();
   await expect(providerSelect(page)).toBeVisible();
-  await expect(page.getByLabel("Model ID")).toHaveValue("opus-4.8");
+  await expect(page.getByTestId("provider-model-row").first().getByLabel("Model ID")).toHaveValue("opus-4.8");
 
   await page.getByRole("button", { name: "Valid" }).click();
   await expect(page.locator(".settings-status")).toContainText("Validated openai with deepseek-v4-pro");
@@ -9571,7 +9617,7 @@ test("home search opens artifacts, sessions, and settings", async ({ page }) => 
   await search.fill("update");
   await expect(page.locator(".project-search-row", { hasText: "Check for updates" })).toBeVisible();
   await search.fill("star");
-  await expect(page.locator(".project-search-row", { hasText: "Star us on GitHub" })).toBeVisible();
+  await expect(page.locator(".project-search-row", { hasText: "Star us on GitHub" })).toHaveCount(0);
   await search.fill("file");
   await expect(page.locator(".project-search-row", { hasText: "nif3.treefile" })).toBeVisible();
   await search.press("Enter");
@@ -10230,11 +10276,40 @@ test("projects landing stays centered on wide windows", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator(".projects-head")).toBeVisible();
   await expect(page.locator(".projects-brand-mark")).toBeVisible();
+  await expect(page.locator(".projects-brand-mark")).toHaveAttribute("src", /logo\.png$/);
+  await expect.poll(async () => page.locator(".projects-brand-mark").evaluate((el) => {
+    const style = getComputedStyle(el);
+    return style.backgroundColor === "rgba(0, 0, 0, 0)" || style.backgroundColor === "transparent";
+  })).toBe(true);
   await expect(page.locator(".projects-title")).toHaveText("天成科研助手");
+  await expect(page.getByTestId("projects-slogan")).toHaveText(
+    /简单好用的本地科研Agent|local research agent/,
+  );
+  await expect(page.locator(".projects-footer")).toHaveCount(0);
   await expect.poll(async () => page.locator(".projects-head").evaluate((el) => {
     const rect = el.getBoundingClientRect();
     return Math.round(rect.width);
   })).toBeLessThanOrEqual(1200);
+});
+
+test("projects landing logo and login open the same user center", async ({ page }) => {
+  await page.goto("/");
+  const logo = page.locator(".projects-brand-mark");
+  await expect(logo).toBeVisible();
+  await expect(logo).toHaveAttribute("src", /logo\.png$/);
+  await expect.poll(async () => logo.evaluate((el) => {
+    const img = el as HTMLImageElement;
+    return img.naturalWidth > 0 && img.complete;
+  })).toBe(true);
+
+  const login = page.getByTestId("projects-login");
+  await expect(login).toBeVisible();
+  await expect(login).toContainText(/登录|Sign in/);
+  await login.click();
+  await expect(page.getByTestId("user-center-dialog")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("user-center-dialog")).toHaveCount(0);
+  await expect(page.locator(".projects-screen")).toBeVisible();
 });
 
 test("empty session shows the branded chat empty state", async ({ page }) => {
@@ -10351,12 +10426,14 @@ test("Windows uses the integrated title bar without covering the project landing
   await expect(page.locator(".copy-toast")).toContainText("Session imported (3 messages)");
 
   await page.getByRole("button", { name: "Help" }).click();
-  await page.getByRole("menuitem", { name: "Documentation" }).click();
+  await expect(page.getByRole("menuitem", { name: "Documentation" })).toHaveCount(0);
+  await expect(page.getByRole("menuitem", { name: "Star us" })).toHaveCount(0);
+  await page.getByRole("menuitem", { name: "Report an issue" }).click();
   await expect.poll(async () => page.evaluate(() =>
     ((window as any).__skillInvokeLog ?? [])
       .filter((c: any) => c.cmd === "open_external_url")
       .map((c: any) => (c.args instanceof Map ? c.args.get("url") : c.args?.url))
-  )).toContain("https://github.com/imbigfly/SuperScience#readme");
+  )).toContain("https://github.com/imbigfly/SuperScience/issues");
 
   await context.close();
 });
@@ -12296,13 +12373,20 @@ test("remote access settings: Feishu, WeChat, and StickS3 setup", async ({ page 
   await enterApp(page);
   await openSettingsSection(page, "Remote Access");
 
-  // List page: routing note plus one row per bot, toggles disabled until bound.
+  // List page: routing note plus one card per bot, toggles disabled until bound.
   await expect(page.getByTestId("channel-routing-help")).toBeVisible();
   await expect(page.getByTestId("channel-routing-help").getByText("/project", { exact: true })).toBeVisible();
   await expect(page.getByTestId("channel-routing-help").getByText("/session", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("channel-card-grid")).toBeVisible();
   await expect(page.getByTestId("feishu-channel-row")).toBeVisible();
   await expect(page.getByTestId("weixin-channel-row")).toBeVisible();
   await expect(page.getByTestId("sticks3-channel-row")).toBeVisible();
+  const cards = page.getByTestId("channel-card-grid");
+  const sync = page.locator(".settings-sync-block");
+  await expect(sync).toBeVisible();
+  const cardBox = await cards.boundingBox();
+  const syncBox = await sync.boundingBox();
+  expect(cardBox?.y ?? 0).toBeLessThan(syncBox?.y ?? 0);
   await expect(page.getByTestId("feishu-enabled")).toBeDisabled();
   await expect(page.getByTestId("weixin-enabled")).toBeDisabled();
   await expect(page.getByTestId("sticks3-enabled")).toBeDisabled();

@@ -380,6 +380,23 @@ fn mac_menu_locale_uses_saved_zh_labels() {
     assert_eq!(labels.copy, "复制");
     assert_eq!(labels.paste, "粘贴");
     assert_eq!(labels.select_all, "全选");
+    assert_eq!(labels.services, "服务");
+    assert_eq!(labels.hide_others, "隐藏其他");
+    assert_eq!(labels.show_all, "全部显示");
+    assert_eq!(labels.minimize, "最小化");
+    assert_eq!(labels.close_window, "关闭");
+    assert_eq!(
+        super::mac_about_item_title(super::AppMenuLocale::Zh, "天成科研助手"),
+        "关于天成科研助手"
+    );
+    assert_eq!(
+        super::mac_hide_item_title(super::AppMenuLocale::Zh, "天成科研助手"),
+        "隐藏天成科研助手"
+    );
+    assert_eq!(
+        super::mac_quit_item_title(super::AppMenuLocale::Zh, "天成科研助手"),
+        "退出天成科研助手"
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -392,6 +409,15 @@ fn mac_menu_locale_includes_english_edit_labels() {
     assert_eq!(labels.copy, "Copy");
     assert_eq!(labels.paste, "Paste");
     assert_eq!(labels.select_all, "Select All");
+    assert_eq!(labels.services, "Services");
+    assert_eq!(
+        super::mac_about_item_title(super::AppMenuLocale::En, "SuperScience"),
+        "About SuperScience"
+    );
+    assert_eq!(
+        super::AppMenuLocale::from_tag("zh-Hans"),
+        super::AppMenuLocale::Zh
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -401,9 +427,19 @@ fn mac_menu_action_maps_update_and_settings_ids() {
         super::mac_menu_action("action.check-updates"),
         Some("check-updates")
     );
-    assert_eq!(super::mac_menu_action("action.star-us"), Some("star-us"));
+    assert_eq!(super::mac_menu_action("action.issues"), Some("issues"));
+    assert_eq!(super::mac_menu_action("action.docs"), None);
+    assert_eq!(super::mac_menu_action("action.star-us"), None);
     assert_eq!(super::mac_menu_action("action.settings"), Some("settings"));
     assert_eq!(super::mac_menu_action("action.unknown"), None);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn about_app_icon_loads_bundled_png() {
+    let icon = super::about_app_icon().expect("bundled about icon");
+    assert!(icon.width() >= 32);
+    assert!(icon.height() >= 32);
 }
 
 #[test]
@@ -1802,6 +1838,22 @@ fn project_window_url_carries_the_target_session() {
     assert_eq!(
         super::project_commands::project_window_url("abc", Some("s1")),
         "index.html?project=abc&session=s1"
+    );
+}
+
+#[test]
+fn project_window_title_uses_product_name() {
+    assert_eq!(
+        superscience_paths::product_display_name("zh"),
+        superscience_paths::PRODUCT_NAME_ZH
+    );
+    assert_eq!(
+        superscience_paths::product_display_name("en"),
+        superscience_paths::PRODUCT_NAME
+    );
+    assert_ne!(
+        superscience_paths::product_display_name("zh"),
+        "wisp science"
     );
 }
 

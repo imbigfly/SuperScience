@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 superscience-dto = { path = "../crates/superscience-dto" }
+superscience-paths = { path = "../crates/superscience-paths" }
 leptos = { version = "0.6", features = ["csr", "serde"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
