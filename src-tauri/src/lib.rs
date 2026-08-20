@@ -2252,6 +2252,10 @@ struct TauriOutput {
     /// and persisted as an `execution_log` row by a background drain task.
     /// `None` disables it.
     prov: Option<tokio::sync::mpsc::UnboundedSender<wisp_core::ProvenanceRecord>>,
+    /// Root frame id of this conversation tree; producing-tool windows of the
+    /// same scope are not foreign to each other when disambiguating
+    /// concurrent workspace writes (#911).
+    provenance_scope: String,
 }
 
 impl TauriOutput {
@@ -2637,6 +2641,9 @@ impl Output for TauriOutput {
         if let Some(tx) = &self.prov {
             let _ = tx.send(rec.clone());
         }
+    }
+    fn provenance_scope(&self) -> Option<String> {
+        Some(self.provenance_scope.clone())
     }
     fn preflight_local_execution(&self, source: &str) -> Result<(), String> {
         match &self.exploration_isolation {

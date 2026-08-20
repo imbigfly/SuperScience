@@ -92,14 +92,28 @@ pub fn snapshot(root: &Path) -> BTreeMap<PathBuf, SystemTime> {
 /// against the same workspace root, so the pre/post mtime diff alone would
 /// credit every overlapping call with every file another session wrote (#911).
 /// Each producing call registers a window here and, on completion, learns
-/// which other windows overlapped it.
+/// which other windows overlapped it. Windows carry an opaque conversation
+/// scope: windows of the same scope (one conversation and its subagents) are
+/// not foreign to each other, so a parent turn and its parallel subagents do
+/// not suppress each other's attribution.
 #[derive(Default)]
 struct RootWindows {
     next_id: u64,
-    /// window id → start time of every producing call still in flight.
-    active: HashMap<u64, SystemTime>,
+    /// window id → every producing call still in flight.
+    active: HashMap<u64, ActiveWindow>,
     /// Windows that already ended but may still overlap an active window.
-    ended: Vec<(SystemTime, SystemTime)>,
+    ended: Vec<EndedWindow>,
+}
+
+struct ActiveWindow {
+    started: SystemTime,
+    scope: Option<String>,
+}
+
+struct EndedWindow {
+    started: SystemTime,
+    ended: SystemTime,
+    scope: Option<String>,
 }
 
 static WINDOWS: OnceLock<Mutex<HashMap<String, RootWindows>>> = OnceLock::new();
@@ -115,70 +129,120 @@ pub struct ProducingWindow {
     root_key: String,
     id: u64,
     started: SystemTime,
+    scope: Option<String>,
     closed: bool,
 }
 
+/// A closed producing window: its own span plus the spans of every foreign
+/// (different-scope) window that overlapped it.
+pub struct FinishedWindow {
+    pub started: SystemTime,
+    pub ended: SystemTime,
+    pub foreign: Vec<(SystemTime, SystemTime)>,
+}
+
 /// Register a producing tool call against `root` before its pre-snapshot.
-pub fn begin_window(root: &Path) -> ProducingWindow {
+/// `scope` identifies the conversation tree this call belongs to (a root frame
+/// id); calls without a scope treat every other window as foreign.
+pub fn begin_window(root: &Path, scope: Option<&str>) -> ProducingWindow {
     let root_key = path_identity(root);
     let started = SystemTime::now();
+    let scope = scope.map(str::to_owned);
     let mut map = windows()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let entry = map.entry(root_key.clone()).or_default();
     let id = entry.next_id;
     entry.next_id += 1;
-    entry.active.insert(id, started);
+    entry.active.insert(
+        id,
+        ActiveWindow {
+            started,
+            scope: scope.clone(),
+        },
+    );
     ProducingWindow {
         root_key,
         id,
         started,
+        scope,
         closed: false,
     }
 }
 
 impl ProducingWindow {
-    /// Close this window after the post-snapshot and return the span of every
-    /// other producing window (still active or already ended) that overlapped
-    /// it. Still-active windows are clamped to now, which covers every mtime
-    /// this call can have observed.
-    pub fn finish(mut self) -> Vec<(SystemTime, SystemTime)> {
+    /// Close this window after the post-snapshot and return its span together
+    /// with the span of every foreign producing window (still active or
+    /// already ended) that overlapped it. Still-active windows are clamped to
+    /// now, which covers every mtime this call can have observed.
+    pub fn finish(mut self) -> FinishedWindow {
         self.close()
     }
 
-    fn close(&mut self) -> Vec<(SystemTime, SystemTime)> {
+    fn is_foreign(&self, other: Option<&str>) -> bool {
+        match (self.scope.as_deref(), other) {
+            (Some(mine), Some(theirs)) => mine != theirs,
+            _ => true,
+        }
+    }
+
+    fn close(&mut self) -> FinishedWindow {
+        let ended_at = SystemTime::now();
         if self.closed {
-            return Vec::new();
+            return FinishedWindow {
+                started: self.started,
+                ended: ended_at,
+                foreign: Vec::new(),
+            };
         }
         self.closed = true;
-        let ended_at = SystemTime::now();
         let mut map = windows()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(entry) = map.get_mut(&self.root_key) else {
-            return Vec::new();
+            return FinishedWindow {
+                started: self.started,
+                ended: ended_at,
+                foreign: Vec::new(),
+            };
         };
         entry.active.remove(&self.id);
-        let mut overlapping: Vec<(SystemTime, SystemTime)> = entry
+        let mut foreign: Vec<(SystemTime, SystemTime)> = entry
             .active
             .values()
-            .map(|start| (*start, ended_at))
+            .filter(|window| self.is_foreign(window.scope.as_deref()))
+            .map(|window| (window.started, ended_at))
             .collect();
-        overlapping.extend(
+        foreign.extend(
             entry
                 .ended
                 .iter()
-                .filter(|(_, end)| *end >= self.started)
-                .copied(),
+                .filter(|window| {
+                    window.ended >= self.started && self.is_foreign(window.scope.as_deref())
+                })
+                .map(|window| (window.started, window.ended)),
         );
         if entry.active.is_empty() {
             map.remove(&self.root_key);
         } else {
-            entry.ended.push((self.started, ended_at));
-            let oldest_active = entry.active.values().min().copied().unwrap_or(ended_at);
-            entry.ended.retain(|(_, end)| *end >= oldest_active);
+            entry.ended.push(EndedWindow {
+                started: self.started,
+                ended: ended_at,
+                scope: self.scope.clone(),
+            });
+            let oldest_active = entry
+                .active
+                .values()
+                .map(|window| window.started)
+                .min()
+                .unwrap_or(ended_at);
+            entry.ended.retain(|window| window.ended >= oldest_active);
         }
-        overlapping
+        FinishedWindow {
+            started: self.started,
+            ended: ended_at,
+            foreign,
+        }
     }
 }
 
@@ -193,20 +257,31 @@ impl Drop for ProducingWindow {
 /// the interval check.
 const OVERLAP_MTIME_SLACK: Duration = Duration::from_secs(2);
 
-/// Drop written paths whose authorship is ambiguous because another producing
-/// tool call overlapped this one. A path is kept only when this call's source
-/// names it, or when the file's mtime falls when no other call was in flight.
+/// Drop written paths whose authorship is ambiguous because a foreign
+/// producing tool call overlapped this one. A path is kept only when this
+/// call's source names it, or when the file's mtime falls inside this call's
+/// own window and outside every foreign one. Requiring the own window rejects
+/// backdated timestamps (e.g. tar extraction preserving old mtimes), which
+/// would otherwise be credited to an unrelated bystander call (#911).
 /// Wrong attribution is worse than missing attribution.
 pub fn retain_unambiguous_writes(
     written: &mut Vec<String>,
     after: &BTreeMap<PathBuf, SystemTime>,
     root: &Path,
     source: &str,
-    overlapping: &[(SystemTime, SystemTime)],
+    window: &FinishedWindow,
 ) {
-    if overlapping.is_empty() {
+    if window.foreign.is_empty() {
         return;
     }
+    let own_start = window
+        .started
+        .checked_sub(OVERLAP_MTIME_SLACK)
+        .unwrap_or(UNIX_EPOCH);
+    let own_end = window
+        .ended
+        .checked_add(OVERLAP_MTIME_SLACK)
+        .unwrap_or(window.ended);
     written.retain(|relative| {
         let path = root.join(relative);
         if source_mentions_path(source, root, &path) {
@@ -215,7 +290,10 @@ pub fn retain_unambiguous_writes(
         let Some(mtime) = after.get(&path) else {
             return false;
         };
-        overlapping.iter().all(|(start, end)| {
+        if *mtime < own_start || *mtime > own_end {
+            return false;
+        }
+        window.foreign.iter().all(|(start, end)| {
             let start = start.checked_sub(OVERLAP_MTIME_SLACK).unwrap_or(UNIX_EPOCH);
             let end = end.checked_add(OVERLAP_MTIME_SLACK).unwrap_or(*end);
             *mtime < start || *mtime > end
@@ -323,21 +401,75 @@ pub fn is_text_path(path: &Path) -> bool {
     )
 }
 
+/// Fold backslashes into forward slashes and collapse runs of slashes, so an
+/// escaped Windows separator in program text (`out\\b.txt` → `out//b.txt`)
+/// still lines up with the normalized relative path (`out/b.txt`).
+fn normalize_path_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut previous_was_slash = false;
+    for ch in text.chars() {
+        let ch = if ch == '\\' { '/' } else { ch };
+        if ch == '/' && previous_was_slash {
+            continue;
+        }
+        previous_was_slash = ch == '/';
+        out.push(ch);
+    }
+    #[cfg(windows)]
+    {
+        out.to_ascii_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        out
+    }
+}
+
+fn is_path_char(ch: char) -> bool {
+    ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/')
+}
+
+/// Whole-token occurrence of a normalized path inside normalized program
+/// text. Boundary characters on both sides must not be path characters, so
+/// `results.csv` is not "named" by a source that only writes
+/// `final_results.csv` (#911). An explicit `./` prefix still counts.
+fn mentions_path_token(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let mut from = 0;
+    while let Some(found) = haystack[from..].find(needle) {
+        let start = from + found;
+        let end = start + needle.len();
+        let prefix = &haystack[..start];
+        let before_ok = match prefix.chars().next_back() {
+            None => true,
+            Some('/') => {
+                prefix.ends_with("./")
+                    && prefix[..prefix.len() - 2]
+                        .chars()
+                        .next_back()
+                        .is_none_or(|ch| !is_path_char(ch))
+            }
+            Some(ch) => !is_path_char(ch),
+        };
+        let after_ok = haystack[end..]
+            .chars()
+            .next()
+            .is_none_or(|ch| !is_path_char(ch));
+        if before_ok && after_ok {
+            return true;
+        }
+        from = end;
+    }
+    false
+}
+
 fn source_mentions_path(source: &str, root: &Path, path: &Path) -> bool {
-    let source = source.replace('\\', "/");
-    let absolute = path.to_string_lossy().replace('\\', "/");
-    let relative = path
-        .strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/");
-    #[cfg(windows)]
-    let source = source.to_ascii_lowercase();
-    #[cfg(windows)]
-    let absolute = absolute.to_ascii_lowercase();
-    #[cfg(windows)]
-    let relative = relative.to_ascii_lowercase();
-    source.contains(&absolute) || source.contains(&relative)
+    let source = normalize_path_text(source);
+    let absolute = normalize_path_text(&path.to_string_lossy());
+    let relative = normalize_path_text(&path.strip_prefix(root).unwrap_or(path).to_string_lossy());
+    mentions_path_token(&source, &absolute) || mentions_path_token(&source, &relative)
 }
 
 /// Capture only bounded text files explicitly named by a producing tool.
@@ -568,10 +700,14 @@ pub fn diff(
     }
     written.sort();
     let wset: std::collections::HashSet<&String> = written.iter().collect();
+    let normalized_source = normalize_path_text(source);
     let mut read = Vec::new();
     for p in before.keys() {
         let r = rel(p);
-        if !r.is_empty() && !wset.contains(&r) && source.contains(&r) {
+        if !r.is_empty()
+            && !wset.contains(&r)
+            && mentions_path_token(&normalized_source, &normalize_path_text(&r))
+        {
             read.push(r);
         }
     }
@@ -693,15 +829,15 @@ mod tests {
     #[test]
     fn overlapping_producing_windows_see_each_other() {
         let root = unique_tmp("windows_overlap");
-        let first = begin_window(&root);
-        let second = begin_window(&root);
+        let first = begin_window(&root, Some("session-a"));
+        let second = begin_window(&root, Some("session-b"));
 
-        assert_eq!(second.finish().len(), 1);
+        assert_eq!(second.finish().foreign.len(), 1);
         // The ended second window still overlapped the first one.
-        assert_eq!(first.finish().len(), 1);
+        assert_eq!(first.finish().foreign.len(), 1);
 
         // With everything closed, a later window starts clean.
-        assert!(begin_window(&root).finish().is_empty());
+        assert!(begin_window(&root, None).finish().foreign.is_empty());
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -709,10 +845,10 @@ mod tests {
     fn windows_on_different_roots_never_overlap() {
         let root_a = unique_tmp("windows_root_a");
         let root_b = unique_tmp("windows_root_b");
-        let a = begin_window(&root_a);
-        let b = begin_window(&root_b);
-        assert!(a.finish().is_empty());
-        assert!(b.finish().is_empty());
+        let a = begin_window(&root_a, None);
+        let b = begin_window(&root_b, None);
+        assert!(a.finish().foreign.is_empty());
+        assert!(b.finish().foreign.is_empty());
         std::fs::remove_dir_all(&root_a).ok();
         std::fs::remove_dir_all(&root_b).ok();
     }
@@ -720,12 +856,38 @@ mod tests {
     #[test]
     fn dropping_a_window_without_finish_deregisters_it() {
         let root = unique_tmp("windows_drop");
-        let abandoned = begin_window(&root);
-        let survivor = begin_window(&root);
+        let abandoned = begin_window(&root, None);
+        let survivor = begin_window(&root, None);
         drop(abandoned);
-        assert_eq!(survivor.finish().len(), 1);
-        assert!(begin_window(&root).finish().is_empty());
+        assert_eq!(survivor.finish().foreign.len(), 1);
+        assert!(begin_window(&root, None).finish().foreign.is_empty());
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// One conversation's parallel subagents share a scope, so their mutual
+    /// overlap must not suppress each other's attribution (#911 case 5).
+    /// Scopeless windows keep the safe default: everyone is foreign.
+    #[test]
+    fn same_scope_windows_are_not_foreign() {
+        let root = unique_tmp("windows_scope");
+        let parent = begin_window(&root, Some("conversation-1"));
+        let sibling = begin_window(&root, Some("conversation-1"));
+        let stranger = begin_window(&root, Some("conversation-2"));
+        let scopeless = begin_window(&root, None);
+
+        assert_eq!(sibling.finish().foreign.len(), 2);
+        assert_eq!(parent.finish().foreign.len(), 2);
+        assert_eq!(stranger.finish().foreign.len(), 3);
+        assert_eq!(scopeless.finish().foreign.len(), 3);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn window_over(mtime: SystemTime, foreign: Vec<(SystemTime, SystemTime)>) -> FinishedWindow {
+        FinishedWindow {
+            started: mtime - Duration::from_secs(1),
+            ended: mtime + Duration::from_secs(1),
+            foreign,
+        }
     }
 
     #[test]
@@ -737,34 +899,144 @@ mod tests {
         let after = snapshot(&tmp);
         let mtime = after[&tmp.join("foreign.png")];
 
-        // No overlap: everything survives.
+        // No foreign overlap: everything survives.
         let mut written = vec![
             "foreign.png".to_string(),
             "named.txt".to_string(),
             "old_plot.png".to_string(),
         ];
-        retain_unambiguous_writes(&mut written, &after, &tmp, "open('named.txt','w')", &[]);
+        retain_unambiguous_writes(
+            &mut written,
+            &after,
+            &tmp,
+            "open('named.txt','w')",
+            &window_over(mtime, Vec::new()),
+        );
         assert_eq!(written.len(), 3);
 
-        // Another call was in flight when these files changed: only the
-        // source-named file and the file changed outside every foreign
-        // window survive.
-        let inside = vec![(
-            mtime - Duration::from_secs(1),
-            mtime + Duration::from_secs(1),
-        )];
+        // A foreign call was in flight when these files changed: only the
+        // source-named file survives.
+        let inside = window_over(
+            mtime,
+            vec![(
+                mtime - Duration::from_secs(1),
+                mtime + Duration::from_secs(1),
+            )],
+        );
         let mut written = vec!["foreign.png".to_string(), "named.txt".to_string()];
         retain_unambiguous_writes(&mut written, &after, &tmp, "open('named.txt','w')", &inside);
         assert_eq!(written, vec!["named.txt".to_string()]);
 
-        let outside = vec![(
-            mtime + Duration::from_secs(60),
-            mtime + Duration::from_secs(120),
-        )];
+        // A change inside this call's own window but outside every foreign
+        // window stays attributed.
+        let outside = window_over(
+            mtime,
+            vec![(
+                mtime + Duration::from_secs(60),
+                mtime + Duration::from_secs(120),
+            )],
+        );
         let mut written = vec!["old_plot.png".to_string()];
         retain_unambiguous_writes(&mut written, &after, &tmp, "print('hi')", &outside);
         assert_eq!(written, vec!["old_plot.png".to_string()]);
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// #911 case 3: files extracted with backdated mtimes fall outside every
+    /// window, so a bystander call whose diff picked them up must not claim
+    /// them — the mtime cannot prove this call wrote them.
+    #[test]
+    fn backdated_mtimes_are_not_credited_during_overlap() {
+        let tmp = unique_tmp("overlap_backdated");
+        std::fs::write(tmp.join("old_fig.png"), b"extracted").unwrap();
+        let mut after = snapshot(&tmp);
+        let now = SystemTime::now();
+        let day_ago = now - Duration::from_secs(86_400);
+        after.insert(tmp.join("old_fig.png"), day_ago);
+
+        let window = window_over(
+            now,
+            vec![(now - Duration::from_secs(30), now + Duration::from_secs(30))],
+        );
+        let mut written = vec!["old_fig.png".to_string()];
+        retain_unambiguous_writes(&mut written, &after, &tmp, "time.sleep(60)", &window);
+        assert!(
+            written.is_empty(),
+            "a backdated mtime proves nothing about this call"
+        );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// #911 case 2: a Windows path escaped in program text
+    /// (`open("out\\b_named.txt", ...)`) still counts as naming the file.
+    #[test]
+    fn escaped_backslash_paths_count_as_named() {
+        let tmp = unique_tmp("overlap_backslash");
+        std::fs::create_dir_all(tmp.join("out")).unwrap();
+        std::fs::write(tmp.join("out/b_named.txt"), b"backslash").unwrap();
+        let after = snapshot(&tmp);
+        let mtime = after[&tmp.join("out/b_named.txt")];
+
+        let window = window_over(mtime, vec![(mtime, mtime + Duration::from_secs(60))]);
+        let mut written = vec!["out/b_named.txt".to_string()];
+        retain_unambiguous_writes(
+            &mut written,
+            &after,
+            &tmp,
+            r#"open("out\\b_named.txt", "w").write("backslash")"#,
+            &window,
+        );
+        assert_eq!(written, vec!["out/b_named.txt".to_string()]);
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// #911 case 4: naming `final_results.csv` must not also claim
+    /// `results.csv` written by a concurrent foreign call.
+    #[test]
+    fn substring_of_a_named_path_is_not_named() {
+        let tmp = unique_tmp("overlap_substring");
+        std::fs::write(tmp.join("final_results.csv"), b"A").unwrap();
+        std::fs::write(tmp.join("results.csv"), b"B").unwrap();
+        let after = snapshot(&tmp);
+        let mtime = after[&tmp.join("results.csv")];
+
+        let window = window_over(
+            mtime,
+            vec![(
+                mtime - Duration::from_secs(1),
+                mtime + Duration::from_secs(1),
+            )],
+        );
+        let mut written = vec!["final_results.csv".to_string(), "results.csv".to_string()];
+        retain_unambiguous_writes(
+            &mut written,
+            &after,
+            &tmp,
+            "open('final_results.csv','w').write('A')",
+            &window,
+        );
+        assert_eq!(written, vec!["final_results.csv".to_string()]);
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn path_token_matching_respects_boundaries() {
+        assert!(mentions_path_token("open('results.csv')", "results.csv"));
+        assert!(mentions_path_token("save ./results.csv now", "results.csv"));
+        assert!(mentions_path_token("open(\"out/b.txt\")", "out/b.txt"));
+        assert!(!mentions_path_token(
+            "open('final_results.csv')",
+            "results.csv"
+        ));
+        assert!(!mentions_path_token("results.csv.bak", "results.csv"));
+        assert!(!mentions_path_token("myout/b.txt", "out/b.txt"));
+        assert!(!mentions_path_token("nested/out/b.txt", "out/b.txt"));
+        assert!(!mentions_path_token("anything", ""));
+        // Escaped separators normalize to the same token.
+        assert!(mentions_path_token(
+            &normalize_path_text(r#"open("out\\b.txt")"#),
+            &normalize_path_text("out/b.txt")
+        ));
     }
 
     #[test]

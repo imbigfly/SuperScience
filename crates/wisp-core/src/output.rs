@@ -109,6 +109,13 @@ pub trait Output: Send + Sync {
     /// Fired once per producing tool call that wrote ≥1 file, with the code,
     /// result text, and diffed inputs/outputs. Default: no-op (CLI ignores it).
     fn provenance(&self, _rec: &crate::provenance::ProvenanceRecord) {}
+    /// Opaque identity of the conversation tree this loop belongs to (a root
+    /// frame id). Producing-tool windows of the same scope — one conversation
+    /// and its subagents — are not foreign to each other when disambiguating
+    /// concurrent writes (#911). Default `None`: every other window is foreign.
+    fn provenance_scope(&self) -> Option<String> {
+        None
+    }
     /// Hard host-owned boundary checked before free-form source reaches a
     /// local shell or language runtime.
     fn preflight_local_execution(&self, _source: &str) -> Result<(), String> {

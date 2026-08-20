@@ -491,7 +491,10 @@ async fn agent_loop_inner(
             let source = provenance::source_of(&name, &args);
             // Registered before the pre-snapshot so concurrent sessions of the
             // same workspace can tell which of each other's writes are theirs.
-            let window = root.as_deref().map(provenance::begin_window);
+            let scope = output.provenance_scope();
+            let window = root
+                .as_deref()
+                .map(|root| provenance::begin_window(root, scope.as_deref()));
             let before = if let Some(root) = root.clone() {
                 tokio::task::spawn_blocking(move || provenance::snapshot(&root))
                     .await
@@ -519,15 +522,17 @@ async fn agent_loop_inner(
                 let after = tokio::task::spawn_blocking(move || provenance::snapshot(&root2))
                     .await
                     .unwrap_or_default();
-                let overlapping = window.map(provenance::ProducingWindow::finish);
+                let finished = window.map(provenance::ProducingWindow::finish);
                 let (mut written, mut read) = provenance::diff(&before, &after, root, &source);
-                provenance::retain_unambiguous_writes(
-                    &mut written,
-                    &after,
-                    root,
-                    &source,
-                    overlapping.as_deref().unwrap_or_default(),
-                );
+                if let Some(finished) = &finished {
+                    provenance::retain_unambiguous_writes(
+                        &mut written,
+                        &after,
+                        root,
+                        &source,
+                        finished,
+                    );
+                }
                 provenance::augment_written_paths(
                     &name,
                     root,

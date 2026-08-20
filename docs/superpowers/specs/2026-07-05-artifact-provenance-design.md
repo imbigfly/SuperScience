@@ -100,6 +100,30 @@ when no other call was in flight. Wrong attribution is worse than missing
 attribution: unnamed writes that land during a genuine overlap are dropped
 rather than guessed.
 
+**Amendment 2 (2026-08, issue #911 follow-up).** The first amendment left four
+attribution gaps, closed as follows:
+
+- Windows carry a *conversation scope* (the root frame id, via
+  `Output::provenance_scope`). A parent turn and its parallel subagents share
+  one scope and are not foreign to each other, so subagent fan-out no longer
+  erases the conversation's Generated cards (case 5).
+- "Source names the path" is a whole-token match after separator
+  normalization: escaped Windows separators (`out\\b.txt`) line up with the
+  relative path (case 2), and a source that names `final_results.csv` no
+  longer also claims `results.csv` via substring match (case 4). The same
+  matcher drives `files_read` detection.
+- During a foreign overlap, an unnamed write is kept only when its mtime also
+  falls inside *this call's own* window. Backdated timestamps (tar extraction
+  preserving old mtimes) prove nothing and are dropped instead of being
+  credited to a sleeping bystander (case 3).
+
+Known remaining gap: a file whose name is computed at runtime
+(`"fig_" + str(1) + ".png"`) and written during a genuine cross-conversation
+overlap is attributed to nobody — the mtime-only design cannot prove its
+author. Closing it needs interpreter-level write tracking (e.g. a
+`sys.addaudithook` in the per-conversation REPL worker reporting exact paths),
+which is a separate change.
+
 ### 3.2 Environment snapshot — lazy, per session
 
 Environment capture stays **out of the hot wisp-core path**. `TauriOutput::provenance`
