@@ -38,6 +38,7 @@ export function attach_chat_scroll(scrollerId, contentId) {
   let restoreGeneration = 0;
   let hidden = false;
   let pointerDown = false;
+  let jumping = false;
   const setFollow = (value) => {
     follow = value;
     scroller.style.overflowAnchor = value ? "none" : "auto";
@@ -63,6 +64,13 @@ export function attach_chat_scroll(scrollerId, contentId) {
     programmaticTop = Math.min(readingTop, max);
     scroller.scrollTop = programmaticTop;
   };
+  const parkHere = () => {
+    setFollow(false);
+    readingTop = scroller.scrollTop;
+    programmaticTop = scroller.scrollTop;
+    lastHeight = content.scrollHeight;
+    syncPill();
+  };
 
   // Jump-to-latest pill: visible when the view is scrolled away from the
   // bottom. Class toggle on a static element — no reactive rebuild involved.
@@ -73,6 +81,10 @@ export function attach_chat_scroll(scrollerId, contentId) {
   };
 
   const syncFollow = () => {
+    if (jumping) {
+      parkHere();
+      return;
+    }
     const userGesture = pointerDown || performance.now() - lastUserScroll < 500;
     if (atBottom(scroller)) {
       // A rebuild can shrink the thread to the viewport so scrollTop=0 is
@@ -191,10 +203,13 @@ export function attach_chat_scroll(scrollerId, contentId) {
   hooks.set(scrollerId, {
     ro,
     onGrowth,
-    unfollow: () => {
+    unfollow: parkHere,
+    jumpTo: (el) => {
+      jumping = true;
       setFollow(false);
-      readingTop = scroller.scrollTop;
-      lastHeight = content.scrollHeight;
+      el.scrollIntoView({ block: "start" });
+      parkHere();
+      jumping = false;
     },
     snap: () => {
       const requested = performance.now();
@@ -349,7 +364,11 @@ export function jump_chat_scroll(scrollerId, selector) {
     requestAnimationFrame(() => {
       const target = document.querySelector(selector);
       if (!target) return;
-      hooks.get(scrollerId)?.unfollow();
+      const hook = hooks.get(scrollerId);
+      if (hook) {
+        hook.jumpTo(target);
+        return;
+      }
       target.scrollIntoView({ block: "start" });
     });
   });
