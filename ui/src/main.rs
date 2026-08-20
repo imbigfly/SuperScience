@@ -34,7 +34,7 @@ use app_overlays::{
 use bindings::{
     attach_chat_autoscroll, cancel_saved_marks_apply, clear_selection, close_mcp_app,
     force_chat_bottom, invoke, invoke_checked, is_mac, is_windows, jump_chat_to_item,
-    jump_chat_to_last_user, jump_chat_to_user, listen, listen_current_window,
+    jump_chat_to_user, listen, listen_current_window,
     listen_native_file_drop, native_drop_in_composer, open_external_url, pasted_image_count,
     preserve_chat_prepend_position, preview_selection, restore_chat_session_scroll,
     schedule_chat_follow, set_saved_marks, CHAT_SCROLLER_ID, CHAT_THREAD_ID,
@@ -2362,6 +2362,9 @@ fn App() -> impl IntoView {
                     );
                 });
                 refresh_transcript_projections(&frame_id);
+                if active_cb.get_untracked().as_deref() == Some(frame_id.as_str()) {
+                    schedule_chat_follow();
+                }
             }
             AgentEvent::ToolResult {
                 frame_id,
@@ -2450,6 +2453,9 @@ fn App() -> impl IntoView {
                     set_browser_offline_notice(browser_offline_cb, &frame_id, notice);
                 }
                 refresh_transcript_projections(&frame_id);
+                if active_cb.get_untracked().as_deref() == Some(frame_id.as_str()) {
+                    schedule_chat_follow();
+                }
             }
             AgentEvent::ToolPresentation {
                 frame_id,
@@ -10794,8 +10800,10 @@ fn App() -> impl IntoView {
             </div>
             // Static element; scroll.js toggles `.visible` — no reactive rebuild.
             <button type="button" id="chat-jump-pill" class="chat-jump-pill"
-                on:click=move |_| jump_chat_to_last_user()>
-                {move || t(locale.get(), "chat.jump_last_user")}
+                aria-label=move || t(locale.get(), "chat.jump_bottom")
+                on:click=move |_| force_chat_bottom()>
+                {compose_icon("chevron-down")}
+                {move || t(locale.get(), "chat.jump_bottom")}
             </button>
             {move || {
                 let rows = conversation_outline.get();
