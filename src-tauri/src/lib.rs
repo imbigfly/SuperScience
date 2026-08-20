@@ -2383,7 +2383,7 @@ async fn call_mcp_app_tool(
         if !granted {
             let decision = request_mcp_app_tool_confirmation(
                 &app,
-                state,
+                &state,
                 &frame_id,
                 &project_id,
                 message,
@@ -2496,7 +2496,7 @@ async fn list_mcp_app_tools(
 async fn close_mcp_app(
     state: State<'_, AppState>,
     instance_id: String,
-) -> bool {
+) -> Result<bool, String> {
     let removed = state.close_mcp_app_bridge(&instance_id);
     if removed {
         if let Ok(frame_id) = mcp_app_frame_id(&instance_id) {
@@ -2505,7 +2505,7 @@ async fn close_mcp_app(
             }
         }
     }
-    removed
+    Ok(removed)
 }
 
 /// Ensure `dir` exists and is usable; fall back to `app_data/workspace` if not.
