@@ -9299,6 +9299,29 @@ test("chat stays pinned to the bottom while streaming a long reply (#61)", async
     .toBeLessThan(8);
 });
 
+test("chat stays at the latest message after tool results rebuild the thread (#927)", async ({ page }) => {
+  await page.goto("/?mockLongPages=8");
+  await page.locator(".proj-card-main").first().click();
+  const scroller = page.locator("#chat-scroller");
+  await expect(page.getByText(/Window page 0 row 19/)).toBeVisible();
+  await expect.poll(() => scroller.evaluate((element) =>
+    element.scrollHeight - element.clientHeight - element.scrollTop,
+  )).toBeLessThan(8);
+
+  await composer(page).fill("TOOLSCROLLTEST");
+  await page.getByRole("button", { name: "Send" }).click();
+  // A click on the live transcript used to mark a user-scroll gesture, so the
+  // next tool-result collapse parked the view at the top.
+  await scroller.evaluate((element) => {
+    element.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    element.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+  });
+  await expect(page.getByText("Tools finished at the tail.")).toBeVisible({ timeout: 15_000 });
+  await expect.poll(() => scroller.evaluate((element) =>
+    element.scrollHeight - element.clientHeight - element.scrollTop,
+  )).toBeLessThan(8);
+});
+
 test("streaming assistant keeps formatted Markdown with a lightweight live tail", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("MARKDOWNSTREAM");
@@ -9658,6 +9681,86 @@ test("switching conversations restores each reading position (#849)", async ({ p
     .toBeGreaterThan(readingTop - 40);
   await expect.poll(() => scroller.evaluate((element) => element.scrollTop))
     .toBeLessThan(readingTop + 40);
+});
+
+test("a thread rebuild clamp does not park a followed view at the top (#927)", async ({ page }) => {
+  await page.goto("/?mockLongPages=8");
+  await page.locator(".proj-card-main").first().click();
+  const scroller = page.locator("#chat-scroller");
+  await expect(page.getByText(/Window page 0 row 19/)).toBeVisible();
+  await expect.poll(() => scroller.evaluate((element) =>
+    element.scrollHeight - element.clientHeight - element.scrollTop,
+  )).toBeLessThan(8);
+
+  await scroller.evaluate((element) => {
+    element.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    const thread = document.getElementById("chat-thread");
+    if (!thread) return;
+    const children = Array.from(thread.children) as HTMLElement[];
+    for (const child of children) child.style.display = "none";
+    thread.getBoundingClientRect();
+    for (const child of children) child.style.display = "";
+    element.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+  });
+  await page.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+  );
+  await expect.poll(() => scroller.evaluate((element) =>
+    element.scrollHeight - element.clientHeight - element.scrollTop,
+  )).toBeLessThan(8);
+});
+
+test("jump pill returns a scrolled-up view to the latest message", async ({ page }) => {
+  await page.goto("/?mockLongPages=8");
+  await page.locator(".proj-card-main").first().click();
+  const scroller = page.locator("#chat-scroller");
+  await expect(page.getByText(/Window page 0 row 19/)).toBeVisible();
+  await expect.poll(() => scroller.evaluate((element) =>
+    element.scrollHeight - element.clientHeight - element.scrollTop,
+  )).toBeLessThan(8);
+
+  await scroller.evaluate((element) => {
+    element.dispatchEvent(new WheelEvent("wheel", { deltaY: -80, bubbles: true }));
+    element.scrollTop = 0;
+  });
+  const pill = page.locator("#chat-jump-pill");
+  await expect(pill).toBeVisible();
+  await expect(pill).toContainText("Back to latest");
+  await pill.click();
+  await expect.poll(() => scroller.evaluate((element) =>
+    element.scrollHeight - element.clientHeight - element.scrollTop,
+  )).toBeLessThan(8);
+  await expect(pill).not.toHaveClass(/visible/);
+});
+
+test("a thread rebuild keeps a scrolled-up reading position (#927)", async ({ page }) => {
+  await page.goto("/?mockLongPages=8");
+  await page.locator(".proj-card-main").first().click();
+  const scroller = page.locator("#chat-scroller");
+  await expect(page.getByText(/Window page 0 row 19/)).toBeVisible();
+  await scroller.evaluate((element) => {
+    element.dispatchEvent(new WheelEvent("wheel", { deltaY: -80, bubbles: true }));
+    element.scrollTop = Math.max(120, element.scrollHeight / 3);
+  });
+  const readingTop = await scroller.evaluate((element) => element.scrollTop);
+  expect(readingTop).toBeGreaterThan(40);
+  await scroller.evaluate(() => new Promise((resolve) => setTimeout(resolve, 600)));
+
+  await scroller.evaluate((element) => {
+    const thread = document.getElementById("chat-thread");
+    if (!thread) return;
+    const children = Array.from(thread.children) as HTMLElement[];
+    for (const child of children) child.style.display = "none";
+    thread.getBoundingClientRect();
+    for (const child of children) child.style.display = "";
+  });
+  await page.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+  );
+  await expect.poll(() => scroller.evaluate((element) => element.scrollTop))
+    .toBeGreaterThan(readingTop - 40);
+  await expect.poll(() => scroller.evaluate((element) => element.scrollTop))
+    .toBeLessThan(readingTop + 80);
 });
 
 test("conversation outline loads and jumps to an older user question", async ({ page }) => {

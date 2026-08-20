@@ -4824,6 +4824,32 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 }, 30);
               });
             }
+            // Long-conversation tool returns (#927): large tool bodies remount
+            // the live step row and briefly collapse the thread. Follow-bottom
+            // must survive those rebuilds. Checked before SCROLLTEST because
+            // that name is a substring of this one.
+            if (String(arg("message") ?? "").includes("TOOLSCROLLTEST")) {
+              const bulky = (n: number) => Array.from(
+                { length: 40 },
+                (_, i) => `tool result block ${n} line ${i} ${"x".repeat(80)}`,
+              ).join("\n");
+              return new Promise<string>((resolve) => {
+                setTimeout(() => {
+                  emit("agent", { kind: "Text", frame_id: fid, delta: "I’ll inspect the files next.\n" });
+                  emit("agent", { kind: "ToolCall", frame_id: fid, name: "read", preview: "matrix.tsv" });
+                }, 20);
+                setTimeout(() => {
+                  emit("agent", { kind: "ToolResult", frame_id: fid, name: "read", ok: true, content: bulky(1) });
+                  emit("agent", { kind: "ToolCall", frame_id: fid, name: "python", preview: "df.describe()" });
+                }, 80);
+                setTimeout(() => {
+                  emit("agent", { kind: "ToolResult", frame_id: fid, name: "python", ok: true, content: bulky(2) });
+                  emit("agent", { kind: "Text", frame_id: fid, delta: "Tools finished at the tail." });
+                  emit("agent", { kind: "Done", frame_id: fid });
+                  resolve(fid);
+                }, 200);
+              });
+            }
             // Long-stream path (#61 regression test): drip many text deltas so the
             // thread re-renders repeatedly and grows well past the viewport.
             if (String(arg("message") ?? "").includes("SCROLLTEST")) {
