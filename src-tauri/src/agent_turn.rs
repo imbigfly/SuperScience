@@ -1043,6 +1043,8 @@ pub(crate) async fn send_message_inner(
         (handle, tx)
     };
 
+    let provenance_scope =
+        crate::native_delegation::conversation_scope(&state.store, &frame_id).await;
     let output = TauriOutput {
         app: app.clone(),
         frame_id: frame_id.clone(),
@@ -1067,6 +1069,7 @@ pub(crate) async fn send_message_inner(
         live_events: Some(live_event_tx),
         message_seq: std::sync::atomic::AtomicI64::new(start_seq),
         prov: Some(prov_tx),
+        provenance_scope,
     };
 
     let turn_start = agent.ctx.messages.len();

@@ -84,6 +84,10 @@ struct NativeOutput {
     allowed_tools: HashSet<String>,
     messages: tokio::sync::mpsc::UnboundedSender<Message>,
     provenance: tokio::sync::mpsc::UnboundedSender<wisp_core::ProvenanceRecord>,
+    /// Root frame id of the conversation tree that spawned this subagent, so
+    /// sibling subagents and their parent are not foreign to each other when
+    /// disambiguating concurrent workspace writes (#911).
+    provenance_scope: String,
 }
 
 impl Output for NativeOutput {
@@ -111,11 +115,29 @@ impl Output for NativeOutput {
         let _ = self.provenance.send(record.clone());
     }
 
+    fn provenance_scope(&self) -> Option<String> {
+        Some(self.provenance_scope.clone())
+    }
+
     fn preflight_shell(&self, _cmd: &str) -> Result<(), String> {
         Err("direct shell is not available to Native delegated Agents".into())
     }
 }
 
+/// Provenance scope of a conversation tree: its root frame id. A parent turn,
+/// its delegated subagents, and a taken-over child frame all resolve to the
+/// same scope, so their producing-tool windows are not foreign to each other
+/// when disambiguating concurrent workspace writes (#911).
+pub(crate) async fn conversation_scope(store: &Store, frame_id: &str) -> String {
+    store
+        .root_frame_id(frame_id)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| frame_id.to_string())
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_native_agent(
     provider: &dyn Provider,
     vision_provider: Option<&dyn Provider>,
@@ -129,6 +151,7 @@ pub(crate) async fn run_native_agent(
     prompt: String,
     cancel: &AtomicBool,
 ) -> anyhow::Result<NativeAgentRun> {
+    let provenance_scope = conversation_scope(store, child_frame_id).await;
     let (message_tx, mut message_rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
     let message_store = store.clone();
     let message_project_id = project_id.to_string();
@@ -196,6 +219,7 @@ pub(crate) async fn run_native_agent(
         allowed_tools: tools.approval_names(),
         messages: message_tx,
         provenance: provenance_tx,
+        provenance_scope,
     };
     let usage = Arc::new(UsageTracker::default());
     let vision_provider = vision_provider.map(|inner| BudgetedProvider {
@@ -509,6 +533,22 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn conversation_scope_resolves_to_the_root_frame() {
+        let (store, base, _workspace) = fixture().await;
+        store
+            .create_child_frame("grandchild", "child", "project", "Sub", "m")
+            .await
+            .unwrap();
+
+        assert_eq!(conversation_scope(&store, "child").await, "child");
+        assert_eq!(conversation_scope(&store, "grandchild").await, "child");
+        // Unknown frames fall back to themselves (still a stable scope).
+        assert_eq!(conversation_scope(&store, "missing").await, "missing");
+        drop(store);
+        std::fs::remove_dir_all(base).ok();
     }
 
     #[tokio::test]
