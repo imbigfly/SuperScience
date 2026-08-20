@@ -1262,7 +1262,8 @@ test("ACP turn maps config, overlapping tools, plan, usage, and exact permission
   });
   await expect(permission).toHaveCount(0);
   const contextTrigger = page.getByTestId("context-usage-trigger");
-  await expect(contextTrigger).toHaveText("");
+  await expect(contextTrigger).toHaveText("15%");
+  await expect(contextTrigger).toHaveAttribute("data-tone", "ok");
   await expect.poll(() => contextTrigger.evaluate((el) =>
     getComputedStyle(el).getPropertyValue("--context-gauge-angle").trim())).toBe("-76.5deg");
   await expect(page.locator(".topbar .hint")).toHaveCount(0);
@@ -2565,7 +2566,9 @@ test("context usage moves out of the topbar and opens a categorized detail panel
   await page.getByRole("button", { name: "Send", exact: true }).click();
 
   const trigger = page.getByTestId("context-usage-trigger");
-  await expect(trigger).toHaveText("");
+  await expect(trigger).toHaveText("62%");
+  await expect(trigger).toHaveAttribute("data-tone", "ok");
+  await expect(trigger).toHaveAttribute("title", /79\.9K \/ 128K tokens/);
   await expect.poll(() => trigger.evaluate((el) =>
     getComputedStyle(el).getPropertyValue("--context-gauge-angle").trim())).toBe("-34.2deg");
   await expect.poll(() => trigger.locator("svg path").first().evaluate((el) =>
@@ -2655,7 +2658,8 @@ test("legacy native usage totals fall back to Conversation, not Agent-managed", 
   await page.getByRole("button", { name: "Send", exact: true }).click();
 
   const trigger = page.getByTestId("context-usage-trigger");
-  await expect(trigger).toHaveText("");
+  await expect(trigger).toHaveText("20%");
+  await expect(trigger).toHaveAttribute("data-tone", "ok");
   await expect.poll(() => trigger.evaluate((el) =>
     getComputedStyle(el).getPropertyValue("--context-gauge-angle").trim())).toBe("-72.0deg");
   await trigger.click();
@@ -2688,8 +2692,27 @@ test("context usage limit follows the session's current model", async ({ page })
   await expect(page.locator(".model-picker-label")).toHaveText("opus-4.8");
   await expect.poll(() => trigger.evaluate((el) =>
     getComputedStyle(el).getPropertyValue("--context-gauge-angle").trim())).toBe("-54.0deg");
+  await expect(trigger).toHaveText("40%");
   await trigger.click();
   await expect(page.getByTestId("context-usage-panel")).toContainText("~79.9K / 200K Tokens");
+});
+
+test("context usage trigger colors the live percent at warn and danger thresholds (#931)", async ({ page }) => {
+  await enterApp(page);
+
+  await page.locator("#composer-input").fill("CONTEXTUSAGEWARN");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  const trigger = page.getByTestId("context-usage-trigger");
+  await expect(trigger).toHaveText("72%");
+  await expect(trigger).toHaveAttribute("data-tone", "warn");
+  await expect(trigger).toHaveClass(/is-warn/);
+
+  await newSessionButton(page).click();
+  await page.locator("#composer-input").fill("CONTEXTUSAGEDANGER");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(trigger).toHaveText("91%");
+  await expect(trigger).toHaveAttribute("data-tone", "danger");
+  await expect(trigger).toHaveClass(/is-danger/);
 });
 
 test("context usage keeps the running agent window until a model switch boundary", async ({ page }) => {
