@@ -4,7 +4,7 @@ use crate::app_support::{
     conn_form_from_row, context_capability_summary, drag_session_id, endpoint_has_stored_key,
     focus_element_soon, format_relative_time, import_custom_css_from_input, join_tags,
     js_error_text, model_form_entry, new_acp_form, new_model_form, profiles_to_edit_form,
-    select_form_row, sync_form_from_selected,
+    provider_mark_letter, select_form_row, sync_form_from_selected,
     provider_entries_are_pristine, quick_action_label, reviewer_backend_key,
     reviewer_backend_label, reviewer_missing_acp_profile_id, set_reviewer_backend,
     settings_nav_group, settings_section_label, settings_subpage_label, skill_matches_filter,
@@ -826,15 +826,43 @@ fn selected_entry_advanced_fields(
     model_catalog_limits: RwSignal<Option<CatalogEntryDto>>,
     row_id: u64,
 ) -> impl IntoView {
+    // Only remount chat/image/video panes when the model *kind* changes.
+    // Reading the whole form here remounts the inputs on every keystroke.
+    let row_kind = create_memo(move |_| {
+        let model = model_form.with(|f| {
+            f.as_ref()
+                .and_then(|f| f.entries.iter().find(|e| e.row_id == row_id))
+                .map(|e| e.model.clone())
+                .unwrap_or_default()
+        });
+        if is_image_generation_model(&model) {
+            "image"
+        } else if is_video_generation_model(&model) {
+            "video"
+        } else {
+            "chat"
+        }
+    });
+    let grok_image = create_memo(move |_| {
+        model_form.with(|f| {
+            f.as_ref()
+                .and_then(|f| f.entries.iter().find(|e| e.row_id == row_id))
+                .is_some_and(|e| is_grok_imagine_model(&e.model))
+        })
+    });
+    let effort_state = create_memo(move |_| {
+        model_form.with(|f| {
+            f.as_ref()
+                .and_then(|f| f.entries.iter().find(|e| e.row_id == row_id))
+                .map(|e| (e.provider.clone(), e.model.clone(), e.reasoning_effort.clone()))
+                .unwrap_or_default()
+        })
+    });
     view! {
         <div class="provider-model-advanced settings-form-grid" data-testid="provider-model-advanced">
             {move || {
-                let image = model_form.get().and_then(|f| {
-                    f.entries.into_iter().find(|e| e.row_id == row_id)
-                }).is_some_and(|e| is_image_generation_model(&e.model));
-                let video = !image && model_form.get().and_then(|f| {
-                    f.entries.into_iter().find(|e| e.row_id == row_id)
-                }).is_some_and(|e| is_video_generation_model(&e.model));
+                let image = row_kind.get() == "image";
+                let video = row_kind.get() == "video";
                 if video {
                     view! {
                         <label>{move || t(locale.get(), "settings.video_duration")}
@@ -894,9 +922,7 @@ fn selected_entry_advanced_fields(
                 } else if image {
                     view! {
                         {move || {
-                            let grok = model_form.get().and_then(|f| {
-                                f.entries.into_iter().find(|e| e.row_id == row_id)
-                            }).is_some_and(|e| is_grok_imagine_model(&e.model));
+                            let grok = grok_image.get();
                             if grok {
                                 view! {
                                     <label>{move || t(locale.get(), "settings.image_aspect_ratio")}
@@ -1057,12 +1083,7 @@ fn selected_entry_advanced_fields(
                         })}
                         <label>{move || t(locale.get(), "settings.reasoning_effort")}
                             {move || {
-                                let entry = model_form.get().and_then(|f| {
-                                    f.entries.into_iter().find(|e| e.row_id == row_id)
-                                });
-                                let current = entry.as_ref().map(|e| e.reasoning_effort.clone()).unwrap_or_default();
-                                let provider = entry.as_ref().map(|e| e.provider.clone()).unwrap_or_default();
-                                let model = entry.as_ref().map(|e| e.model.clone()).unwrap_or_default();
+                                let (provider, model, current) = effort_state.get();
                                 let mut values: Vec<String> = known_effort_values(&provider, &model)
                                     .unwrap_or(ALL_EFFORT_VALUES)
                                     .iter()
@@ -1119,14 +1140,27 @@ fn provider_model_entries_editor(
     model_catalog_limits: RwSignal<Option<CatalogEntryDto>>,
     min_entries: usize,
 ) -> impl IntoView {
+    let search = create_rw_signal(String::new());
     view! {
         <div class="provider-models" data-testid="provider-models">
-            <div class="provider-models-head">
-                <strong>{move || t(locale.get(), "models.entries")}</strong>
-                <span class="hint">{move || t(locale.get(), "models.entries_hint")}</span>
-            </div>
+            <label class="provider-models-search">
+                {compose_icon("search")}
+                <input type="search" data-testid="provider-model-search"
+                    placeholder=move || t(locale.get(), "models.search")
+                    prop:value=move || search.get()
+                    on:input=move |ev| search.set(event_target_input(&ev).value()) />
+            </label>
             <For
-                each=move || model_form.get().map(|f| f.entries).unwrap_or_default()
+                each=move || {
+                    let query = search.get().trim().to_ascii_lowercase();
+                    model_form.get().map(|f| {
+                        f.entries.into_iter().filter(|entry| {
+                            query.is_empty()
+                                || entry.model.to_ascii_lowercase().contains(&query)
+                                || entry.label.to_ascii_lowercase().contains(&query)
+                        }).collect::<Vec<_>>()
+                    }).unwrap_or_default()
+                }
                 key=|entry| entry.row_id
                 let:entry
             >
@@ -1137,10 +1171,59 @@ fn provider_model_entries_editor(
                             class:selected=move || model_form.get().is_some_and(|f| f.selected_row_id == row_id)
                             on:focusin=move |_| {
                                 model_form.update(|o| if let Some(o)=o {
-                                    select_form_row(o, row_id);
+                                    if o.selected_row_id != row_id {
+                                        select_form_row(o, row_id);
+                                    }
                                 });
-                                apply_catalog_limits(model_form, model_catalog_limits);
                             }>
+                            <div class="provider-model-summary">
+                                <div class="provider-model-summary-text">
+                                    <strong>{move || model_form.get()
+                                        .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                        .map(|e| e.model)
+                                        .filter(|m| !m.is_empty())
+                                        .unwrap_or_else(|| "—".into())}</strong>
+                                    <span>{move || model_form.get()
+                                        .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                        .map(|e| if e.label.is_empty() { e.model } else { e.label })
+                                        .unwrap_or_default()}</span>
+                                </div>
+                                <div class="provider-model-summary-tags">
+                                    <span class="provider-model-badge muted">
+                                        {compose_icon("circle-alert")}
+                                        {move || t(locale.get(), "models.undetected")}
+                                    </span>
+                                    <span class="provider-model-badge user">
+                                        {compose_icon("user")}
+                                        {move || t(locale.get(), "models.user_added")}
+                                    </span>
+                                </div>
+                                <div class="provider-model-summary-actions">
+                                    <button type="button" class="provider-model-icon"
+                                        title=move || t(locale.get(), "settings.validate")
+                                        on:click=move |ev| {
+                                            ev.stop_propagation();
+                                            model_form.update(|o| if let Some(o)=o { select_form_row(o, row_id); });
+                                        }>{compose_icon("flask")}</button>
+                                    <button type="button" class="provider-model-icon"
+                                        title=move || t(locale.get(), "settings.endpoint_suffix")
+                                        on:click=move |ev| {
+                                            ev.stop_propagation();
+                                            model_form.update(|o| if let Some(o)=o { select_form_row(o, row_id); });
+                                        }>{compose_icon("link")}</button>
+                                    <button type="button" class="provider-model-icon"
+                                        title=move || t(locale.get(), "models.advanced")
+                                        on:click=move |ev| {
+                                            ev.stop_propagation();
+                                            model_form.update(|o| if let Some(o)=o {
+                                                if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                                    e.advanced_open = !e.advanced_open;
+                                                }
+                                                select_form_row(o, row_id);
+                                            });
+                                        }>{compose_icon("gear")}</button>
+                                </div>
+                            </div>
                             <div class="provider-model-row-head">
                                 <label class="provider-model-protocol">{move || t(locale.get(), "settings.provider")}
                                     <select data-testid="provider-model-protocol"
@@ -1396,25 +1479,55 @@ fn provider_model_entries_editor(
                                     }
                                 }}
                             </div>
-                            {move || model_form.get().is_some_and(|f| f.selected_row_id == row_id).then(|| {
-                                selected_entry_advanced_fields(model_form, locale, model_catalog_limits, row_id)
-                            })}
+                            <button type="button" class="provider-model-advanced-toggle"
+                                data-testid="provider-model-advanced-toggle"
+                                aria-expanded=move || model_form.get()
+                                    .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                    .is_some_and(|e| e.advanced_open)
+                                    .to_string()
+                                on:click=move |ev| {
+                                    ev.stop_propagation();
+                                    model_form.update(|o| if let Some(o)=o {
+                                        if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                            e.advanced_open = !e.advanced_open;
+                                        }
+                                        if o.selected_row_id != row_id {
+                                            select_form_row(o, row_id);
+                                        }
+                                    });
+                                }>
+                                {move || {
+                                    let open = model_form.get()
+                                        .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                        .is_some_and(|e| e.advanced_open);
+                                    if open { compose_icon("chevron-down") } else { compose_icon("chevron-right") }
+                                }}
+                                {move || t(locale.get(), "models.advanced")}
+                            </button>
+                            <div class="provider-model-advanced-wrap"
+                                class:open=move || model_form.get()
+                                    .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                    .is_some_and(|e| e.advanced_open)>
+                                {selected_entry_advanced_fields(model_form, locale, model_catalog_limits, row_id)}
+                            </div>
                         </div>
                     }
                 }
             </For>
-            <button type="button" class="settings-add-btn" data-testid="provider-add-model"
-                on:click=move |_| {
-                    model_form.update(|o| if let Some(o)=o {
-                        let entry = model_form_entry("openai", "", "", false);
-                        let row_id = entry.row_id;
-                        o.entries.push(entry);
-                        select_form_row(o, row_id);
-                    });
-                }>
-                {compose_icon("plus")}
-                {move || t(locale.get(), "models.add_entry")}
-            </button>
+            <div class="provider-model-add-box">
+                <button type="button" class="settings-add-btn provider-add-model-btn" data-testid="provider-add-model"
+                    on:click=move |_| {
+                        model_form.update(|o| if let Some(o)=o {
+                            let entry = model_form_entry("openai", "", "", false);
+                            let row_id = entry.row_id;
+                            o.entries.push(entry);
+                            select_form_row(o, row_id);
+                        });
+                    }>
+                    {compose_icon("plus")}
+                    {move || t(locale.get(), "models.add_entry")}
+                </button>
+            </div>
         </div>
     }
 }
@@ -3209,7 +3322,7 @@ pub(super) fn SettingsView(
                         view! {
                             <div class="settings-pane settings-pane-subpage"
                                 data-testid=move || if model_form_is_edit.get() { "model-edit-form" } else { "provider-add-form" }>
-                                <div class="conn-form model-form">
+                                <div class="conn-form model-form provider-form-sheet">
                                     <p class="hint" data-testid="provider-byok-hint">{move || t(locale.get(), "models.byok_hint")}</p>
                                     <div class="settings-form-grid">
                                         <label class="span-2">{move || t(locale.get(), "settings.api_url")}
@@ -3468,6 +3581,9 @@ pub(super) fn SettingsView(
                                                 let del_id = m.id.clone();
                                                 let del_label = m.label.clone();
                                                 let edit = m.clone();
+                                                let edit_key = edit.clone();
+                                                let edit_models_btn = edit.clone();
+                                                let edit_settings_btn = edit.clone();
                                                 let is_active = m.active;
                                                 let is_chat_model = m.is_chat_model();
                                                 let builtin = m.is_builtin();
@@ -3480,8 +3596,9 @@ pub(super) fn SettingsView(
                                                 let enter_id = m.id.clone();
                                                 let drop_id = m.id.clone();
                                                 let over_cls = m.id.clone();
+                                                let mark = provider_mark_letter(&m.label, &m.api_url);
                                                 view! {
-                                                    <article class="model-card"
+                                                    <article class="model-card provider-access-card"
                                                         class:active=is_active
                                                         class:builtin=builtin
                                                         class:dragging=move || drag_model.get().as_deref() == Some(drag_cls.as_str())
@@ -3539,7 +3656,10 @@ pub(super) fn SettingsView(
                                                             model_form_key.set(String::new());
                                                             model_form_msg.set(None);
                                                         }>
-                                                        <header class="model-card-head">
+                                                        <header class="model-card-head provider-access-head">
+                                                            <div class="provider-access-mark" attr:data-letter=mark.clone()>
+                                                                {mark}
+                                                            </div>
                                                             <div class="model-card-meta">
                                                                 <strong class="model-card-title">
                                                                     {m.label.clone()}
@@ -3553,36 +3673,97 @@ pub(super) fn SettingsView(
                                                                 {show_sub.then(|| view! {
                                                                     <span class="model-card-sub">{m.model.clone()}</span>
                                                                 })}
-                                                                <span class="model-card-url">{m.api_url.clone()}</span>
                                                             </div>
-                                                            <div class="model-card-actions">
-                                                                {(can_delete && !is_active).then(|| { let id = del_id.clone(); view! {
-                                                                    <button class="model-card-action" type="button" title=move || t(locale.get(), "models.remove")
-                                                                        on:click=move |ev| {
-                                                                            ev.stop_propagation();
-                                                                            delete_confirm.set(Some(DeleteConfirm::Model {
-                                                                                id: id.clone(),
-                                                                                label: del_label.clone(),
-                                                                            }));
-                                                                        }>{compose_icon("close")}</button>
-                                                                }})}
-                                                                {(!is_active && is_chat_model).then(|| { let id = pick_id.clone(); view! {
-                                                                    <button class="model-card-use" type="button"
-                                                                        on:click=move |ev| {
-                                                                            ev.stop_propagation();
-                                                                            let id = id.clone();
-                                                                            spawn_local(async move {
-                                                                                let arg = to_value(&serde_json::json!({ "id": id })).unwrap();
-                                                                                if let Ok(v) = invoke_checked("set_active_model", arg).await {
-                                                                                    if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ModelProfile>>(v) {
-                                                                                        models.set(list);
-                                                                                    }
-                                                                                }
-                                                                            });
-                                                                        }>{move || t(locale.get(), "models.use")}</button>
-                                                                }})}
+                                                            <div class="provider-access-tags">
+                                                                {if builtin {
+                                                                    view! { <span class="provider-access-tag">{move || t(locale.get(), "specialists.builtin")}</span> }.into_view()
+                                                                } else {
+                                                                    view! { <span class="provider-access-tag custom">{move || t(locale.get(), "models.tag.custom")}</span> }.into_view()
+                                                                }}
+                                                                {m.has_api_key.then(|| view! {
+                                                                    <span class="provider-access-live">
+                                                                        <i></i>
+                                                                        {move || t(locale.get(), "models.status.live")}
+                                                                    </span>
+                                                                })}
                                                             </div>
                                                         </header>
+                                                        <div class="provider-access-fields">
+                                                            <div class="provider-access-field">
+                                                                <span class="provider-access-k">{move || t(locale.get(), "models.field.endpoint")}</span>
+                                                                <div class="provider-access-v">{m.api_url.clone()}</div>
+                                                            </div>
+                                                            <div class="provider-access-field">
+                                                                <span class="provider-access-k">{move || t(locale.get(), "models.field.api_key_short")}</span>
+                                                                <div class="provider-access-v provider-access-key">
+                                                                    <span>{move || t(locale.get(), "models.masked_key")}</span>
+                                                                    <button type="button" class="provider-access-modify"
+                                                                        on:click=move |ev| {
+                                                                            ev.stop_propagation();
+                                                                            let form = profiles_to_edit_form(&edit_key, &models.get());
+                                                                            show_acp_agents.set(false);
+                                                                            model_form.set(Some(form));
+                                                                            apply_catalog_limits(model_form, model_catalog_limits);
+                                                                            model_form_key.set(String::new());
+                                                                            model_form_msg.set(None);
+                                                                            focus_element_soon("model-form-api-key");
+                                                                        }>{move || t(locale.get(), "models.modify_key")}</button>
+                                                                </div>
+                                                            </div>
+                                                            <div class="provider-access-field">
+                                                                <span class="provider-access-k">{move || t(locale.get(), "models.field.models")}</span>
+                                                                <div class="provider-access-v">{tf(locale.get(), "models.count", &[("n", "1")])}</div>
+                                                            </div>
+                                                        </div>
+                                                        <div class="model-card-actions">
+                                                            {(!is_active && is_chat_model).then(|| { let id = pick_id.clone(); view! {
+                                                                <button class="model-card-use" type="button"
+                                                                    on:click=move |ev| {
+                                                                        ev.stop_propagation();
+                                                                        let id = id.clone();
+                                                                        spawn_local(async move {
+                                                                            let arg = to_value(&serde_json::json!({ "id": id })).unwrap();
+                                                                            if let Ok(v) = invoke_checked("set_active_model", arg).await {
+                                                                                if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ModelProfile>>(v) {
+                                                                                    models.set(list);
+                                                                                }
+                                                                            }
+                                                                        });
+                                                                    }>{move || t(locale.get(), "models.use")}</button>
+                                                            }})}
+                                                        </div>
+                                                        <footer class="provider-access-foot">
+                                                            <button type="button" class="provider-access-btn"
+                                                                on:click=move |ev| {
+                                                                    ev.stop_propagation();
+                                                                    let form = profiles_to_edit_form(&edit_models_btn, &models.get());
+                                                                    show_acp_agents.set(false);
+                                                                    model_form.set(Some(form));
+                                                                    apply_catalog_limits(model_form, model_catalog_limits);
+                                                                    model_form_key.set(String::new());
+                                                                    model_form_msg.set(None);
+                                                                }>{move || t(locale.get(), "models.card.models")}</button>
+                                                            <button type="button" class="provider-access-btn muted"
+                                                                on:click=move |ev| {
+                                                                    ev.stop_propagation();
+                                                                    let form = profiles_to_edit_form(&edit_settings_btn, &models.get());
+                                                                    show_acp_agents.set(false);
+                                                                    model_form.set(Some(form));
+                                                                    apply_catalog_limits(model_form, model_catalog_limits);
+                                                                    model_form_key.set(String::new());
+                                                                    model_form_msg.set(None);
+                                                                }>{move || t(locale.get(), "models.card.settings")}</button>
+                                                            {(can_delete && !is_active).then(|| { let id = del_id.clone(); view! {
+                                                                <button class="provider-access-btn danger" type="button" title=move || t(locale.get(), "models.remove")
+                                                                    on:click=move |ev| {
+                                                                        ev.stop_propagation();
+                                                                        delete_confirm.set(Some(DeleteConfirm::Model {
+                                                                            id: id.clone(),
+                                                                            label: del_label.clone(),
+                                                                        }));
+                                                                    }>{move || t(locale.get(), "models.card.delete")}</button>
+                                                            }})}
+                                                        </footer>
                                                         <footer class="model-card-caps">
                                                             {m.use_for_vision.then(|| view! { <span class="settings-cap-badge" title="vision">"vision"</span> })}
                                                             {m.use_for_image_generation.then(|| view! {

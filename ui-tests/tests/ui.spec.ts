@@ -39,6 +39,16 @@ async function openModelsSettings(page: Page) {
   await expect(providerSelect(page)).toBeVisible();
 }
 
+async function expandModelAdvanced(page: Page, row?: Locator) {
+  const host = row ?? page.locator(".provider-model-row.selected");
+  const toggle = host.getByTestId("provider-model-advanced-toggle");
+  await expect(toggle).toBeVisible();
+  if ((await toggle.getAttribute("aria-expanded")) !== "true") {
+    await toggle.click();
+  }
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+}
+
 async function openSettingsSection(page: Page, name: string) {
   await globalSettingsButton(page).click();
   await page.getByRole("button", { name, exact: true }).click();
@@ -7934,6 +7944,7 @@ test("vision assignment keeps model fields and stored key placeholder untouched"
   await providerSelect(page).selectOption("openai_responses");
   await page.getByLabel("Base URL").fill("https://api.openai-proxy.org/v1");
   await page.getByLabel("Model").fill("gpt-5.6-luna");
+  await expandModelAdvanced(page);
   await effort.selectOption("medium");
   await expect(key).toHaveValue("");
   await expect(key).toHaveAttribute("placeholder", "(stored — leave blank to keep)");
@@ -7979,6 +7990,7 @@ test("vision assignment keeps model fields and stored key placeholder untouched"
 test("model settings rejects max output tokens above the known ceiling", async ({ page }) => {
   await enterApp(page);
   await openModelsSettings(page);
+  await expandModelAdvanced(page);
 
   // deepseek-v4-pro is in the baked catalog (384K output ceiling).
   const maxTokens = page.getByLabel("Max output tokens");
@@ -8169,6 +8181,7 @@ test("gpt-image-2 can be assigned for generation but not selected for chat", asy
   await providerSelect(page).selectOption("openai_responses");
   await page.getByLabel("Base URL").fill("https://api.openai.com/v1");
   await page.getByLabel("Model").fill("gpt-image-2");
+  await expandModelAdvanced(page);
   await expect(page.getByLabel("Max output tokens")).toHaveCount(0);
   await expect(page.getByLabel("Supports image input")).toHaveCount(0);
   await expect(page.getByTestId("image-size")).toBeVisible();
@@ -8214,6 +8227,7 @@ test("grok-imagine-image-2.0 can be assigned for generation but not selected for
   await providerSelect(page).selectOption("openai");
   await page.getByLabel("Base URL").fill("https://api.x.ai");
   await page.getByLabel("Model").fill("grok-imagine-image-2.0");
+  await expandModelAdvanced(page);
   await expect(page.getByLabel("Max output tokens")).toHaveCount(0);
   await expect(page.getByLabel("Supports image input")).toHaveCount(0);
   await expect(page.getByTestId("image-aspect-ratio")).toBeVisible();
@@ -8263,6 +8277,7 @@ test("grok-imagine-video can be assigned for generation but not selected for cha
   await providerSelect(page).selectOption("openai");
   await page.getByLabel("Base URL").fill("https://api.x.ai");
   await page.getByLabel("Model").fill("grok-imagine-video");
+  await expandModelAdvanced(page);
   await expect(page.getByLabel("Max output tokens")).toHaveCount(0);
   await expect(page.getByLabel("Supports image input")).toHaveCount(0);
   await expect(page.getByTestId("video-duration")).toBeVisible();
@@ -8372,6 +8387,24 @@ test("edit model can add another model on the same API", async ({ page }) => {
     { id: "default", model: "deepseek-v4-pro" },
     { id: "", model: "deepseek-v4-flash" },
   ]);
+});
+
+test("model advanced fields stay collapsed until opened and remain editable", async ({ page }) => {
+  await enterApp(page);
+  await openModelsSettings(page);
+
+  const row = page.locator(".provider-model-row.selected");
+  const toggle = row.getByTestId("provider-model-advanced-toggle");
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(row.getByLabel("Max output tokens")).not.toBeVisible();
+  await expect(row.getByLabel("Reasoning effort")).not.toBeVisible();
+
+  await expandModelAdvanced(page);
+  const tokens = row.getByLabel("Max output tokens");
+  await expect(tokens).toBeVisible();
+  await tokens.fill("128000");
+  await expect(tokens).toHaveValue("128000");
+  await expect(tokens).toBeFocused();
 });
 
 test("editing a saved model validates with that model profile id", async ({ page }) => {

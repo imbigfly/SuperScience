@@ -1,7 +1,5 @@
 <div align="center">
 
-<img src="docs/assets/logo.svg" alt="天成科研助手 Science logo" width="128" />
-
 # 天成科研助手 Science
 
 **开源、本地优先的 AI 科研工作台。**
@@ -20,8 +18,6 @@ WISP — *Workspace for Intelligent Scientific Practice*
 <a href="https://www.tctoken.cn/downloads/"><img src="https://img.shields.io/badge/Linux-supported-FCC624" alt="支持 Linux"></a>
 
 [English](README.md) · [简体中文](README_zh.md) · [网站](https://xuzhougeng.github.io/天成科研助手/) · [下载](https://www.tctoken.cn/downloads/)
-
-<img src="docs/assets/app-home.png" alt="天成科研助手 Science 桌面应用正在运行内置的 RNA-seq 分析演示" width="100%" />
 
 </div>
 

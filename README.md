@@ -1,7 +1,5 @@
 <div align="center">
 
-<img src="docs/assets/logo.svg" alt="SuperScience Science logo" width="128" />
-
 # SuperScience Science
 
 **The open-source, local-first AI research workbench.**
@@ -19,8 +17,6 @@ WISP — *Workspace for Intelligent Scientific Practice*
 <a href="https://www.tctoken.cn/downloads/"><img src="https://img.shields.io/badge/Linux-supported-FCC624" alt="Linux supported"></a>
 
 [English](README.md) · [简体中文](README_zh.md) · [Website](https://xuzhougeng.github.io/SuperScience/) · [Downloads](https://www.tctoken.cn/downloads/)
-
-<img src="docs/assets/app-home.png" alt="SuperScience Science desktop app running a bundled RNA-seq analysis demo" width="100%" />
 
 </div>
 

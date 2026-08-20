@@ -2923,6 +2923,8 @@ pub struct ModelFormEntry {
     pub video_duration_secs: Option<u32>,
     pub video_aspect_ratio: Option<String>,
     pub video_resolution: Option<String>,
+    /// Token / effort / media defaults stay collapsed until the user opens them.
+    pub advanced_open: bool,
 }
 
 impl ModelFormEntry {

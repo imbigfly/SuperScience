@@ -1,6 +1,6 @@
 # 天成科研助手基础配置教程
 
-本教程面向第一次使用天成科研助手的用户，覆盖模型、服务器、浏览器、Skill、MCP、ACP、凭据、插件、飞书/微信、项目迁移、记忆、命令行和效率工具。界面截图来自 macOS 版；Windows 版菜单位置基本一致，快捷键中的 `Cmd` 请换成 `Ctrl`。
+本教程面向第一次使用天成科研助手的用户，覆盖模型、服务器、浏览器、Skill、MCP、ACP、凭据、插件、飞书/微信、项目迁移、记忆、命令行和效率工具。Windows 版菜单位置与 macOS 基本一致，快捷键中的 `Cmd` 请换成 `Ctrl`。
 
 > 建议顺序：先配置模型，再按需要配置服务器、浏览器、Skill/MCP、ACP 和远程接入。API Key、App Secret、OAuth Token 等敏感信息应只填写在天成科研助手的凭据字段中，不要写进提示词、项目文件或截图。
 >
@@ -28,7 +28,6 @@
 
 打开任意项目，进入 **设置 → 模型**。这里的 **Models** 是天成科研助手内置 Agent 使用的 HTTP API 模型；外部 Codex、Claude Code 等进程应配置到旁边的 **ACP Agents**，不要把 ACP 启动命令填进 HTTP 模型表单。
 
-![模型配置列表](assets/basic-configuration/01-models-overview.png)
 
 ### 快速配置
 
@@ -47,7 +46,6 @@
 7. **图片能力**：视觉模型勾选“支持图片输入”；如需作为全局图片观察模型，再勾选“用于图片分析”。图片生成目前使用单独的模型角色。
 8. **API 密钥**：密钥保存在操作系统密钥环中，不写入项目 SQLite。
 
-![添加 HTTP 模型](assets/basic-configuration/02-add-http-model.png)
 
 点击 **验证**，成功后再 **保存**。回到会话，在发送按钮左侧的模型选择器中选择该模型。已有消息的会话切换模型时会要求确认；默认模型只影响新会话。
 
@@ -79,7 +77,6 @@
 4. **密钥文件**：只填写本机私钥路径，例如 `~/.ssh/id_ed25519`。天成科研助手不会把私钥内容复制进 SQLite。
 5. **给 Agent 的说明**：可记录调度器、分区、module、conda 等使用约定。
 
-![添加 SSH 主机](assets/basic-configuration/12-add-ssh-host.png)
 
 先点击 **测试连接**，通过后再添加。回到环境列表后执行 **探测环境**，让天成科研助手记录操作系统、CPU 架构、GPU、Python、R 和 SLURM 等能力；如远端解释器不在默认 PATH，再使用 **配置运行时解释器**。
 
@@ -109,7 +106,6 @@
 
 扩展未连接时，天成科研助手会在对话中给出醒目提示：本次回答不包含联网检索结果。涉及“最新/实时”或具体网页的请求时，Agent 应暂停并引导你打开浏览器、连上扩展，而不是直接用模型已有知识作答。连接后可点 **连接后重试**。
 
-![Chrome 加载未打包扩展](assets/basic-configuration/18-browser-extension.png)
 
 扩展会在天成科研助手运行时连接 `ws://127.0.0.1:18765`。天成科研助手与其他兼容工具可能使用同一个默认端口，因此同一时间只运行一个浏览器桥接服务。
 
@@ -162,7 +158,6 @@
 - `/upload`：打开文件上传对话框。
 - `/share`：打开「分享为长图」：勾选消息、打码关键词，选择导出 PNG 长图或 HTML 网页。导出 PNG 时可设置图片宽度。导出沿用当前对话样式（所见即所得），不会另做一套气泡皮肤。顶栏铃铛左侧的分享按钮、输入框左侧 `+` 菜单的「分享」是同一个入口。会话还没有可分享的消息时，顶栏按钮会禁用。
 
-![在输入框中手动选择 Skill](assets/basic-configuration/17-manual-skill.png)
 
 选中的 Skill 会附加到下一条消息。它只约束这一轮，不会永久改写项目配置。普通天成科研助手会话和 ACP 会话都支持 `/` 引用；`/compact`、`/fork`、`/rewind` 只在普通会话中出现，因为 ACP 会话的上下文与历史由外部 Agent 管理。
 
@@ -190,13 +185,11 @@
 
 打开 **编辑 → 导入 Codex 会话**，或按 `Cmd/Ctrl+P` 搜索同名命令。默认扫描本机的 `~/.codex/sessions`。
 
-![导入 Codex 会话](assets/basic-configuration/13-import-codex.png)
 
 ### 导入 Claude Code
 
 打开 **编辑 → 导入 Claude Code 会话**。默认扫描本机的 `~/.claude/projects`。
 
-![导入 Claude Code 会话](assets/basic-configuration/14-import-claude-code.png)
 
 两种导入器的操作相同：
 
@@ -218,7 +211,6 @@
 - **添加 SKILL.md 或 ZIP**：ZIP 可以直接包含 `SKILL.md`，也可以只包一层 Skill 目录。
 - **添加文件夹**：选择包含 `SKILL.md` 的完整 Skill 文件夹。
 
-![导入 Skill](assets/basic-configuration/09-skills-import.png)
 
 “添加技能”安装或更新的是全局 Skill。只属于当前项目的 Skill 可放入：
 
@@ -239,7 +231,6 @@ project → global → 额外路径 → bundled → plugin 的优先级解析；
 
 进入 **设置 → 连接 → 添加连接**，将类型设为 **本地命令**，填写名称、可执行命令和参数，再点击 **测试**。
 
-![添加本地 MCP 连接](assets/basic-configuration/10-add-mcp-connection.png)
 
 命令应指向可执行文件，不要把整段 shell 管道塞进字段。环境变量形式的 API Key 应先放入 **设置 → 凭据**；新启动的本地 MCP 进程会继承这些值。
 
@@ -276,7 +267,6 @@ npx -y @agentclientprotocol/claude-agent-acp --version
 
 进入 **设置 → 模型 → ACP Agents**，点击 **添加 ACP Agent**。
 
-![ACP Agent 列表](assets/basic-configuration/03-acp-agents.png)
 
 表单字段：
 
@@ -284,7 +274,6 @@ npx -y @agentclientprotocol/claude-agent-acp --version
 - **Command**：只填可执行文件，例如 `npx`；Windows 通常使用 `npx.cmd` 或绝对路径。
 - **Arguments**：每个参数单独一行。
 
-![添加 ACP Agent](assets/basic-configuration/04-add-acp-agent.png)
 
 Codex ACP 示例：
 
@@ -316,7 +305,6 @@ Arguments:
 
 进入 **设置 → 凭据**。内置服务和自定义凭据都保存在操作系统钥匙串/凭据库中，不写入项目 SQLite。
 
-![凭据管理](assets/basic-configuration/05-credentials.png)
 
 ### 内置凭据
 
@@ -343,7 +331,6 @@ OpenAlex、InfiniSynapse、SCIMaster、NCBI 等条目带有用途说明和官方
 
 安装只校验和解压，不会执行 `npm install`、`postinstall` 或 shell 脚本。安装完成后，展开 **详情**，检查它提供的 Skill、MCP 命令、校验状态和运行环境。
 
-![插件提供的 Skill 和 MCP 服务](assets/basic-configuration/11-plugin-mcp-details.png)
 
 启用插件后，点击 **在新会话中使用**。插件的 MCP 进程会在新 Agent 会话构建时启动；插件 Skill 会显示在技能页，但启停和删除仍由插件卡片管理。
 
@@ -359,7 +346,6 @@ OpenAlex、InfiniSynapse、SCIMaster、NCBI 等条目带有用途说明和官方
 
 进入 **设置 → 远程接入**。飞书、微信和设备桥默认关闭，彼此使用独立凭据和安全边界。
 
-![远程接入总览](assets/basic-configuration/06-remote-access.png)
 
 ### 飞书 / Lark
 
@@ -374,7 +360,6 @@ OpenAlex、InfiniSynapse、SCIMaster、NCBI 等条目带有用途说明和官方
 5. 开通消息收发和获取机器人信息所需权限。
 6. 保存后返回远程接入页并启用机器人。
 
-![飞书机器人配置](assets/basic-configuration/07-feishu-setup.png)
 
 App Secret 只保存在操作系统凭据库中。私聊消息直接处理；群聊中需要 @ 机器人。若 CardKit 权限不足，天成科研助手会退化为普通文本回复。
 
@@ -382,7 +367,6 @@ App Secret 只保存在操作系统凭据库中。私聊消息直接处理；群
 
 打开微信机器人（iLink），点击 **扫码绑定**，用要作为 owner 的微信账号确认。
 
-![微信 iLink 配置](assets/basic-configuration/08-wechat-setup.png)
 
 当前只处理 owner 的一对一消息，群消息会被忽略。Token 保存在系统凭据库中；服务器返回会话过期时，通道会自动停用，需要重新扫码。
 
@@ -408,7 +392,6 @@ App Secret 只保存在操作系统凭据库中。私聊消息直接处理；群
 - 打开项目，选择 **文件 → 导出当前项目**。
 - 回到项目页，点击项目卡片右侧的下载箭头。
 
-![项目卡片上的导出按钮](assets/basic-configuration/16-project-export.png)
 
 天成科研助手会生成 `superscience-project-<name>.zip`，并在完成清单校验后才发布最终文件。进度窗口仍在运行时，不要复制临时或尚为空的 ZIP。
 
@@ -416,7 +399,6 @@ App Secret 只保存在操作系统凭据库中。私聊消息直接处理；群
 
 在项目页点击顶部 **导入项目**，选择导出的 ZIP，再选择一个新的本地父目录。天成科研助手会创建项目目录并校验清单；进度会显示在右下角，导入期间仍可继续使用其他项目，完成后可从项目页打开新项目。
 
-![项目页的导入入口](assets/basic-configuration/15-project-import.png)
 
 项目包包含工作区普通文件，以及项目拥有的会话、产物、Run、计划、溯源和研究图谱记录。以下机器本地状态不会导出：
 

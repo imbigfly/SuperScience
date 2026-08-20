@@ -199,6 +199,17 @@ mod provider_form_tests {
                 .map(|entry| entry.model.as_str()),
             Some("deepseek-v4-flash")
         );
+        assert!(form.entries.iter().all(|entry| !entry.advanced_open));
+    }
+
+    #[test]
+    fn provider_mark_letter_uses_label_then_host() {
+        assert_eq!(super::provider_mark_letter("天成TOKEN", ""), "天");
+        assert_eq!(
+            super::provider_mark_letter("", "https://api.deepseek.com/v1"),
+            "A"
+        );
+        assert_eq!(super::provider_mark_letter("opus-4.8", ""), "O");
     }
 }
 
@@ -858,6 +869,7 @@ pub(crate) fn profile_to_entry(m: &ModelProfile) -> ModelFormEntry {
         video_duration_secs: m.video_duration_secs,
         video_aspect_ratio: m.video_aspect_ratio.clone(),
         video_resolution: m.video_resolution.clone(),
+        advanced_open: false,
     }
 }
 
@@ -932,6 +944,20 @@ fn next_model_row_id() -> u64 {
         next.set(id + 1);
         id
     })
+}
+
+pub(crate) fn provider_mark_letter(label: &str, url: &str) -> String {
+    let host = crate::text::endpoint_host(url);
+    let source = if !label.trim().is_empty() {
+        label.trim()
+    } else {
+        host.as_str()
+    };
+    source
+        .chars()
+        .find(|c| c.is_alphanumeric())
+        .map(|c| c.to_uppercase().collect::<String>())
+        .unwrap_or_else(|| "M".into())
 }
 
 pub(crate) fn model_form_entry(
@@ -1263,9 +1289,14 @@ pub(crate) fn settings_subpage_label(
             .or_else(|| {
                 model_form.map(|f| {
                     if f.id.is_some() {
-                        t(loc, "models.edit").into()
+                        let name = if f.label.trim().is_empty() {
+                            f.model.clone()
+                        } else {
+                            f.label.clone()
+                        };
+                        tf(loc, "models.edit_provider_title", &[("name", &name)])
                     } else {
-                        t(loc, "models.add").into()
+                        t(loc, "models.add_provider_title").into()
                     }
                 })
             }),
