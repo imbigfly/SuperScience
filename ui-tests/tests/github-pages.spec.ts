@@ -60,7 +60,7 @@ test("GitHub Pages homepage aligns with v1.5.0 and ships a language switch", () 
   expect(index).toContain("trusted-logos/washu.png");
   expect(index).toContain("trusted-logos/slu.png");
   expect(index).toContain("trusted-logos/sjtu.svg");
-  expect(index).not.toContain("trusted-logos/meduniwien.svg");
+  expect(index).toContain("trusted-logos/meduniwien.svg");
   expect(i18nJs).toContain(`${skillCount} bundled`);
   expect(i18nJs).toContain(`${skillCount} 个内置`);
   expect(i18nJs).toContain(`${skillCount} bundled SKILL`);
