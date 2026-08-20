@@ -511,6 +511,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   ];
   let sessionSpecialists: Record<string, string> = {};
   let mockBrowserUrlFilters = { block: [] as { host: string; reason?: string }[], prefer: [] as { host: string; reason?: string }[] };
+  let mockBrowserAutoLaunch = true;
   let mockQuickActions = [{
     id: "literature_research",
     name: "Research literature",
@@ -2514,6 +2515,11 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             };
           case "get_browser_url_filters":
             return mockBrowserUrlFilters;
+          case "get_browser_auto_launch":
+            return mockBrowserAutoLaunch;
+          case "set_browser_auto_launch":
+            mockBrowserAutoLaunch = Boolean(arg("enabled"));
+            return mockBrowserAutoLaunch;
           case "set_browser_url_filters": {
             const next = plain(arg("filters") ?? {});
             mockBrowserUrlFilters = {

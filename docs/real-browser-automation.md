@@ -37,6 +37,12 @@ instead of answering from memory. After Chrome is open and the popup shows
 **Connected to Wisp**, use **Retry after connecting** to run the same
 request again.
 
+**Settings → Browser → Open browser automatically** is on by default. When a
+browser tool needs the real session and Chrome/Chromium/Edge is not running,
+Wisp starts that installed browser with the existing user profile so the
+unpacked extension can reconnect. Turn the setting off to keep Wisp from
+launching a browser.
+
 The banner describes the answer on screen, not the session. It is derived from
 the browser tool results of the latest turn only, and a single successful
 `web_scan`, `web_open_tab`, `web_execute_js`, or `web_screenshot` clears it: the

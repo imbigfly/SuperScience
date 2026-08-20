@@ -907,6 +907,7 @@ pub(super) fn SettingsView(
     let browser_block_reason = create_rw_signal(String::new());
     let browser_prefer_host = create_rw_signal(String::new());
     let browser_prefer_reason = create_rw_signal(String::new());
+    let browser_auto_launch = create_rw_signal(true);
     create_effect(move |_| {
         if show_settings.get() && settings_section.get() == "browser" {
             spawn_local(async move {
@@ -916,6 +917,13 @@ pub(super) fn SettingsView(
                     if let Ok(filters) = serde_wasm_bindgen::from_value::<BrowserUrlFilters>(value)
                     {
                         browser_filters.set(filters);
+                    }
+                }
+                if let Ok(value) =
+                    invoke_checked("get_browser_auto_launch", JsValue::UNDEFINED).await
+                {
+                    if let Ok(enabled) = serde_wasm_bindgen::from_value::<bool>(value) {
+                        browser_auto_launch.set(enabled);
                     }
                 }
             });
@@ -936,6 +944,21 @@ pub(super) fn SettingsView(
                         )));
                     }
                 }
+                Err(err) => browser_filters_msg.set(Some((false, js_error_text(err)))),
+            }
+            browser_filters_busy.set(false);
+        });
+    });
+    let save_browser_auto_launch = Callback::new(move |enabled: bool| {
+        browser_auto_launch.set(enabled);
+        browser_filters_busy.set(true);
+        spawn_local(async move {
+            let arg = to_value(&serde_json::json!({ "enabled": enabled })).unwrap();
+            match invoke_checked("set_browser_auto_launch", arg).await {
+                Ok(_) => browser_filters_msg.set(Some((
+                    true,
+                    t(locale.get_untracked(), "browser.auto_launch_saved").into(),
+                ))),
                 Err(err) => browser_filters_msg.set(Some((false, js_error_text(err)))),
             }
             browser_filters_busy.set(false);
@@ -4960,6 +4983,18 @@ pub(super) fn SettingsView(
                 }.into_view())}
                 {move || (settings_section.get() == "browser").then(|| view! {
                     <div class="settings-pane settings-pane-list browser-filter-pane" data-testid="browser-url-filters">
+                        <div class="appearance-config-row">
+                            <div>
+                                <strong>{move || t(locale.get(), "browser.auto_launch")}</strong>
+                                <span>{move || t(locale.get(), "browser.auto_launch_hint")}</span>
+                            </div>
+                            <label class="toggle">
+                                <input type="checkbox" data-testid="browser-auto-launch"
+                                    prop:checked=move || browser_auto_launch.get()
+                                    on:change=move |ev| save_browser_auto_launch.call(event_target_checked(&ev)) />
+                                <span class="toggle-track" aria-hidden="true"></span>
+                            </label>
+                        </div>
                         <p class="settings-note">{move || t(locale.get(), "browser.filters.hint")}</p>
                         {move || browser_filters_msg.get().map(|(ok, text)| view! {
                             <div class="settings-status" class:ok=ok class:fail=move || !ok>{text}</div>

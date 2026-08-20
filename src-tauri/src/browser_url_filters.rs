@@ -12,6 +12,7 @@ use url::Url;
 use wisp_store::Store;
 
 pub const SETTING_KEY: &str = "browser_url_filters";
+pub const AUTO_LAUNCH_KEY: &str = "browser_auto_launch";
 const MAX_RULES: usize = 200;
 const MAX_REASON_CHARS: usize = 240;
 
@@ -104,6 +105,43 @@ pub async fn set_browser_url_filters(
     filters: BrowserUrlFilters,
 ) -> Result<BrowserUrlFilters, String> {
     save(&state.store, filters).await
+}
+
+pub fn parse_auto_launch(raw: Option<&str>) -> bool {
+    match raw.map(str::trim) {
+        None | Some("") => true,
+        Some("false") | Some("0") | Some("off") => false,
+        Some(_) => true,
+    }
+}
+
+pub async fn auto_launch_enabled(store: &Store) -> bool {
+    parse_auto_launch(
+        store
+            .get_setting(AUTO_LAUNCH_KEY)
+            .await
+            .ok()
+            .flatten()
+            .as_deref(),
+    )
+}
+
+#[tauri::command]
+pub async fn get_browser_auto_launch(state: State<'_, crate::AppState>) -> Result<bool, String> {
+    Ok(auto_launch_enabled(&state.store).await)
+}
+
+#[tauri::command]
+pub async fn set_browser_auto_launch(
+    state: State<'_, crate::AppState>,
+    enabled: bool,
+) -> Result<bool, String> {
+    state
+        .store
+        .set_setting(AUTO_LAUNCH_KEY, if enabled { "true" } else { "false" })
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(enabled)
 }
 
 fn normalize_filters(filters: BrowserUrlFilters) -> BrowserUrlFilters {
@@ -370,6 +408,31 @@ mod tests {
         assert_eq!(saved.block[0].host, "blocked.test");
         assert_eq!(saved.block[0].reason, "duplicate");
         assert_eq!(load(&store).await, saved);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn auto_launch_defaults_on_and_treats_false_as_off() {
+        assert!(parse_auto_launch(None));
+        assert!(parse_auto_launch(Some("")));
+        assert!(parse_auto_launch(Some("true")));
+        assert!(!parse_auto_launch(Some("false")));
+        assert!(!parse_auto_launch(Some("0")));
+        assert!(!parse_auto_launch(Some("off")));
+    }
+
+    #[tokio::test]
+    async fn auto_launch_setting_round_trips() {
+        let tmp = std::env::temp_dir().join(format!(
+            "wisp_browser_auto_launch_{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let store = Store::open(&tmp).await.unwrap();
+        assert!(auto_launch_enabled(&store).await);
+        store.set_setting(AUTO_LAUNCH_KEY, "false").await.unwrap();
+        assert!(!auto_launch_enabled(&store).await);
+        store.set_setting(AUTO_LAUNCH_KEY, "true").await.unwrap();
+        assert!(auto_launch_enabled(&store).await);
         let _ = std::fs::remove_file(&tmp);
     }
 }

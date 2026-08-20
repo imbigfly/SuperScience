@@ -6,11 +6,13 @@ fold_cue: "instead_of=guessing-selectors use=web_scan first — it returns a uni
 
 # Browser Use — act inside the user's real Chrome
 
-Wisp does **not** launch an automation browser. It talks to a small
-extension inside the user's own Chrome/Chromium, so every action runs in
-their real profile — existing cookies, logins, extensions, and normal
-fingerprint all apply. That is the whole point: you can operate pages the
-user is already signed into.
+Wisp does **not** launch an automation browser or a temporary profile. It
+talks to a small extension inside the user's own Chrome/Chromium, so every
+action runs in their real profile — existing cookies, logins, extensions,
+and normal fingerprint all apply. If Settings → Browser has **Open browser
+automatically** enabled (the default) and the extension is disconnected,
+Wisp may start that installed Chrome/Chromium/Edge so the extension can
+reconnect. That is still the user's profile, not Playwright or Selenium.
 
 Every `web_scan` and `web_execute_js` call needs the user's approval by
 design. Do not treat that as a bug to route around.

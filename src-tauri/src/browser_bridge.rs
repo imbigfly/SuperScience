@@ -15,7 +15,8 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,6 +40,7 @@ const BROWSER_DISCONNECTED_MARKER: &str = "WISP_BROWSER_DISCONNECTED";
 const DISCONNECTED_ASSISTANT_INSTRUCTION: &str = "Live web retrieval is unavailable. Do not answer live, latest, current, or URL-specific questions from prior knowledge. Tell the user this turn contains no live web retrieval, relay the install steps, and wait until status is connected. Only continue from memory if they explicitly ask for a knowledge-only answer.";
 const DEFAULT_TIMEOUT_MS: u64 = 15_000;
 const MAX_TIMEOUT_MS: u64 = 60_000;
+const AUTO_LAUNCH_WAIT: Duration = Duration::from_secs(15);
 const MAX_SCRIPT_BYTES: usize = 64 * 1024;
 const MAX_RESULT_CHARS: usize = 200_000;
 /// Base64 payload ceiling for one screenshot, matching the shared image path's
@@ -74,6 +76,10 @@ pub struct BrowserBridge {
     state: Mutex<BridgeState>,
     next_connection_id: AtomicU64,
     extension_dir: PathBuf,
+    store: Option<Store>,
+    /// Production `start()` only. Tests must not spawn a real browser.
+    can_launch: bool,
+    launch_lock: Mutex<()>,
 }
 
 #[derive(Clone, Debug)]
@@ -96,11 +102,21 @@ impl BrowserBridge {
             state: Mutex::new(BridgeState::default()),
             next_connection_id: AtomicU64::new(1),
             extension_dir,
+            store: None,
+            can_launch: false,
+            launch_lock: Mutex::new(()),
         }
     }
 
-    pub async fn start(extension_dir: PathBuf) -> Arc<Self> {
-        let bridge = Arc::new(Self::new(extension_dir));
+    pub async fn start(extension_dir: PathBuf, store: Store) -> Arc<Self> {
+        let bridge = Arc::new(Self {
+            state: Mutex::new(BridgeState::default()),
+            next_connection_id: AtomicU64::new(1),
+            extension_dir,
+            store: Some(store),
+            can_launch: true,
+            launch_lock: Mutex::new(()),
+        });
         match TcpListener::bind(BRIDGE_ADDR).await {
             Ok(listener) => {
                 let task_bridge = bridge.clone();
@@ -116,6 +132,10 @@ impl BrowserBridge {
     }
 
     async fn setup_info(&self) -> Value {
+        let auto_launch = match &self.store {
+            Some(store) => browser_url_filters::auto_launch_enabled(store).await,
+            None => false,
+        };
         let state = self.state.lock().await;
         let extension_path = self.verified_extension_path();
         let extension_ready = extension_path.is_some();
@@ -185,6 +205,7 @@ impl BrowserBridge {
                 },
                 "effect": "Downloads save to the browser's configured default download directory without opening a native location prompt. Authorized filesystem tools may process the saved file afterward."
             },
+            "auto_launch_browser": auto_launch,
             "error": state.startup_error
         })
     }
@@ -317,6 +338,7 @@ impl BrowserBridge {
     ) -> Result<BrowserExecution, String> {
         let id = Uuid::new_v4().to_string();
         let (response_tx, response_rx) = oneshot::channel();
+        self.ensure_extension().await;
         let tab_id = {
             let mut state = self.state.lock().await;
             if let Some(error) = &state.startup_error {
@@ -359,6 +381,7 @@ impl BrowserBridge {
     /// new tab). Unlike `execute`, this never requires an HTTP(S) tab to exist,
     /// so it can bootstrap browsing from an empty profile.
     async fn send_command(&self, code: String, timeout: Duration) -> Result<BridgeReply, String> {
+        self.ensure_extension().await;
         let id = Uuid::new_v4().to_string();
         let (response_tx, response_rx) = oneshot::channel();
         {
@@ -399,6 +422,7 @@ impl BrowserBridge {
     }
 
     async fn tabs(&self) -> Result<Vec<BrowserTab>, String> {
+        self.ensure_extension().await;
         let state = self.state.lock().await;
         if let Some(error) = &state.startup_error {
             return Err(self.unavailable_message(error));
@@ -407,6 +431,47 @@ impl BrowserBridge {
             return Err(self.unavailable_message("browser extension is not connected"));
         }
         Ok(state.tabs.values().cloned().collect())
+    }
+
+    async fn client_connected(&self) -> bool {
+        self.state.lock().await.client.is_some()
+    }
+
+    /// If the extension is down and auto-launch is on, start the user's
+    /// Chrome/Chromium/Edge so the already-installed unpacked extension can
+    /// reconnect. Never used from tests (`can_launch` is false on `new()`).
+    async fn ensure_extension(&self) {
+        if self.client_connected().await {
+            return;
+        }
+        if !self.can_launch {
+            return;
+        }
+        if self.state.lock().await.startup_error.is_some() {
+            return;
+        }
+        let enabled = match &self.store {
+            Some(store) => browser_url_filters::auto_launch_enabled(store).await,
+            None => false,
+        };
+        if !enabled {
+            return;
+        }
+        let _guard = self.launch_lock.lock().await;
+        if self.client_connected().await {
+            return;
+        }
+        if let Err(error) = spawn_user_browser() {
+            tracing::warn!(target: "wisp", "browser auto-launch failed: {error}");
+            return;
+        }
+        let deadline = tokio::time::Instant::now() + AUTO_LAUNCH_WAIT;
+        while tokio::time::Instant::now() < deadline {
+            if self.client_connected().await {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
     }
 
     fn unavailable_message(&self, reason: &str) -> String {
@@ -427,6 +492,128 @@ impl BrowserBridge {
         (dir.join("manifest.json").is_file() && dir.join("wait_tab.js").is_file())
             .then(|| dir.display().to_string())
     }
+}
+
+/// Start the user's existing Chrome/Chromium/Edge so the unpacked Wisp
+/// extension can reconnect. Does not use a temporary automation profile.
+fn spawn_user_browser() -> Result<(), String> {
+    let (program, args) = first_available_browser()
+        .ok_or_else(|| "no Chrome, Chromium, or Edge browser was found".to_string())?;
+    let mut command = std::process::Command::new(&program);
+    command
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x00000008 | 0x00000200);
+    }
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("failed to start {}: {error}", program.display()))
+}
+
+fn first_available_browser() -> Option<(PathBuf, Vec<String>)> {
+    browser_launch_candidates()
+        .into_iter()
+        .find(|(program, args)| launch_plan_available(program, args))
+}
+
+/// OS-specific launch plans. The first available program is used at runtime.
+fn browser_launch_candidates() -> Vec<(PathBuf, Vec<String>)> {
+    #[cfg(windows)]
+    {
+        let mut candidates = Vec::new();
+        for root in [
+            std::env::var_os("LOCALAPPDATA"),
+            std::env::var_os("PROGRAMFILES"),
+            std::env::var_os("PROGRAMFILES(X86)"),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let root = PathBuf::from(root);
+            candidates.push((
+                root.join("Google/Chrome/Application/chrome.exe"),
+                Vec::new(),
+            ));
+            candidates.push((
+                root.join("Microsoft/Edge/Application/msedge.exe"),
+                Vec::new(),
+            ));
+            candidates.push((
+                root.join("BraveSoftware/Brave-Browser/Application/brave.exe"),
+                Vec::new(),
+            ));
+        }
+        candidates.push((
+            PathBuf::from("cmd"),
+            vec!["/C".into(), "start".into(), String::new(), "chrome".into()],
+        ));
+        candidates
+    }
+    #[cfg(target_os = "macos")]
+    {
+        [
+            "Google Chrome",
+            "Microsoft Edge",
+            "Chromium",
+            "Brave Browser",
+        ]
+        .into_iter()
+        .map(|name| {
+            (
+                PathBuf::from("/usr/bin/open"),
+                vec!["-a".into(), name.into()],
+            )
+        })
+        .collect()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        [
+            "google-chrome-stable",
+            "google-chrome",
+            "chromium-browser",
+            "chromium",
+            "microsoft-edge-stable",
+            "microsoft-edge",
+            "brave-browser",
+        ]
+        .into_iter()
+        .map(|name| (PathBuf::from(name), Vec::new()))
+        .collect()
+    }
+}
+
+fn launch_plan_available(
+    program: &Path,
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))] args: &[String],
+) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        if program.ends_with("open") && args.first().map(String::as_str) == Some("-a") {
+            return args.get(1).is_some_and(|name| {
+                Path::new("/Applications")
+                    .join(format!("{name}.app"))
+                    .is_dir()
+            });
+        }
+    }
+    if program.components().count() > 1 {
+        return program.is_file();
+    }
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| {
+        let candidate = dir.join(program);
+        candidate.is_file()
+            || cfg!(windows) && dir.join(format!("{}.exe", program.display())).is_file()
+    })
 }
 
 fn allowed_extension_origin(origin: Option<&str>) -> bool {
@@ -693,6 +880,7 @@ impl Tool for BrowserSetupTool {
     }
 
     async fn run(&self, _args: &Value, _env: &dyn ToolEnv) -> ToolResult {
+        self.bridge.ensure_extension().await;
         let mut info = self.bridge.setup_info().await;
         let filters = browser_url_filters::load(&self.store).await;
         info["url_filters"] = json!({
@@ -1188,6 +1376,7 @@ mod tests {
         assert_eq!(info["extension_path"], expected_path.display().to_string());
         assert_eq!(info["extension_path_verified"], true);
         assert_eq!(info["install_scope"], "once_per_browser_profile");
+        assert_eq!(info["auto_launch_browser"], false);
         assert_eq!(
             info["download_automation"]["chrome_settings_url"],
             "chrome://settings/downloads"
@@ -1615,5 +1804,25 @@ mod tests {
         assert_eq!(info["live_retrieval"], true);
         assert!(info["code"].is_null());
         assert_eq!(info["extension_path_verified"], false);
+        assert_eq!(info["auto_launch_browser"], false);
+    }
+
+    #[test]
+    fn launch_candidates_name_a_real_chrome_family_browser() {
+        let candidates = browser_launch_candidates();
+        assert!(!candidates.is_empty());
+        let rendered: Vec<String> = candidates
+            .iter()
+            .map(|(program, args)| format!("{} {}", program.display(), args.join(" ")))
+            .collect();
+        let blob = rendered.join("\n").to_lowercase();
+        assert!(
+            blob.contains("chrome") || blob.contains("chromium") || blob.contains("msedge"),
+            "expected a Chrome-family launch plan, got {blob}"
+        );
+        #[cfg(windows)]
+        assert!(blob.contains("chrome.exe") || blob.contains("start"));
+        #[cfg(target_os = "macos")]
+        assert!(blob.contains("open") && blob.contains("google chrome"));
     }
 }

@@ -5996,6 +5996,7 @@ pub fn run() {
             let browser_bridge = startup.record("browser_bridge", || {
                 tauri::async_runtime::block_on(browser_bridge::BrowserBridge::start(
                     browser_extension_dir,
+                    store.clone(),
                 ))
             });
             let device_hub = Arc::new(device_hub::DeviceHub::default());
@@ -6309,6 +6310,8 @@ pub fn run() {
             approval_commands::set_session_full_permission,
             browser_url_filters::get_browser_url_filters,
             browser_url_filters::set_browser_url_filters,
+            browser_url_filters::get_browser_auto_launch,
+            browser_url_filters::set_browser_auto_launch,
             settings_commands::get_settings,
             settings_commands::set_settings,
             configure::get_appearance_prefs,

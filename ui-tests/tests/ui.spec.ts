@@ -9256,10 +9256,15 @@ test("browser URL filters persist block and prefer hosts", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Browser");
   await expect(page.getByTestId("browser-url-filters")).toBeVisible();
+  const autoLaunch = page.getByTestId("browser-auto-launch");
+  await expect(autoLaunch).toBeChecked();
+  await autoLaunch.locator("..").click();
+  await expect(autoLaunch).not.toBeChecked();
   await page.keyboard.press("Escape");
   await expect(page.locator(".settings-page")).toHaveCount(0);
 
   await openSettingsSection(page, "Browser");
+  await expect(page.getByTestId("browser-auto-launch")).not.toBeChecked();
   await page.getByTestId("browser-block-host").fill("hijacked.example");
   await page.getByTestId("browser-block-reason").fill("domain taken over");
   await page.getByTestId("browser-block-add").click();
