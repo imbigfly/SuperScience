@@ -1208,7 +1208,7 @@ fn list_execution_contexts_tool_schema() -> Value {
 fn run_in_context_tool_schema() -> Value {
     json!({
         "name": "wisp_run_in_context",
-        "description": "Submit a persisted background Wisp Run in an execution context (`local`, `ssh:<alias>`, or `wsl:<distro>`). For Python/R work, declare a safe preflight for interpreter, package, file, and syntax checks; it never installs packages or executes the requested command as a dry run. Set wait_for_completion=true for direct model-free waiting, or call wisp_monitor_run exactly once with the returned id. Never poll with wisp_get_run. Dangerous commands require approval and are rejected in this non-interactive bridge.",
+        "description": "Submit a persisted background Wisp Run in an execution context (`local`, `ssh:<alias>`, or `wsl:<distro>`). For Python/R work, declare a safe preflight for interpreter, package, file, and syntax checks; it never installs packages or executes the requested command as a dry run. Set wait_for_completion=true for direct model-free waiting, or call wisp_monitor_run with the returned id. If wisp_monitor_run returns wait_interrupted, the Run is still running: respond, then call it again with the same id. Do not resubmit. Never poll with wisp_get_run. Dangerous commands require approval and are rejected in this non-interactive bridge.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1216,7 +1216,7 @@ fn run_in_context_tool_schema() -> Value {
                 "command": { "type": "string", "description": "Command to execute in that context" },
                 "title": { "type": "string", "description": "Short run title" },
                 "timeout_secs": { "type": "integer", "description": "Job wall timeout in seconds: 1s..7d (default 4h) for local, WSL, and SSH" },
-                "wait_for_completion": { "type": "boolean", "description": "Suspend the tool until the Run is terminal without repeatedly calling wisp_get_run (default false)" },
+                "wait_for_completion": { "type": "boolean", "description": "Suspend the tool until the Run is terminal or mid-turn user guidance arrives, without repeatedly calling wisp_get_run (default false). If wait_interrupted, respond then call wisp_monitor_run to resume waiting." },
                 "preflight": {
                     "type": "object",
                     "description": "Safe declarative Python/R checks performed before Run submission",
@@ -1277,7 +1277,7 @@ fn run_in_context_tool_schema() -> Value {
 fn get_run_tool_schema() -> Value {
     json!({
         "name": "wisp_get_run",
-        "description": "Read one immediate Run status snapshot. Do not call repeatedly to wait; call wisp_monitor_run exactly once for live monitoring.",
+        "description": "Read one immediate Run status snapshot. Do not call repeatedly to wait; call wisp_monitor_run for live monitoring until completion or mid-turn guidance.",
         "inputSchema": {
             "type": "object",
             "properties": { "run_id": { "type": "string" } },
@@ -1290,7 +1290,7 @@ fn get_run_tool_schema() -> Value {
 fn monitor_run_tool_schema() -> Value {
     json!({
         "name": "wisp_monitor_run",
-        "description": "Monitor one existing long-running Run until it finishes. Call once instead of repeatedly calling wisp_get_run; Wisp waits without repeated model calls or token use.",
+        "description": "Monitor one existing long-running Run until it finishes or mid-turn user guidance arrives. Call this instead of repeatedly calling wisp_get_run; Wisp waits without repeated model calls or token use. If wait_interrupted is true, the Run is still running: respond, then call wisp_monitor_run again with the same id. Do not resubmit.",
         "inputSchema": {
             "type": "object",
             "properties": { "run_id": { "type": "string" } },

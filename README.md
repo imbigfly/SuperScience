@@ -10,7 +10,7 @@ WISP — *Workspace for Intelligent Scientific Practice*
 
 <a href="https://github.com/xuzhougeng/wisp-science/releases"><img src="https://img.shields.io/github/v/release/xuzhougeng/wisp-science" alt="Release"></a>
 <a href="https://github.com/xuzhougeng/wisp-science/releases"><img src="https://img.shields.io/github/downloads/xuzhougeng/wisp-science/total" alt="Downloads"></a>
-<a href="https://doi.org/10.5281/zenodo.21869520"><img src="https://zenodo.org/badge/1285857639.svg" alt="DOI"></a>
+<a href="https://doi.org/10.5281/zenodo.22009273"><img src="https://zenodo.org/badge/1285857639.svg" alt="DOI"></a>
 <a href="https://github.com/xuzhougeng/wisp-science/blob/main/LICENSE"><img src="https://img.shields.io/github/license/xuzhougeng/wisp-science" alt="License"></a>
 <a href="https://github.com/xuzhougeng/wisp-science/stargazers"><img src="https://img.shields.io/github/stars/xuzhougeng/wisp-science?style=social" alt="Stars"></a>
 <br>
@@ -41,8 +41,9 @@ you opt into Full Permission.
 
 **Compute from laptop to remote servers**
 
-Persistent Python and R kernels keep variables across cells, conversations, and
-restarts. Register local, WSL, and SSH hosts once; probe hardware; submit
+Persistent Python and R kernels keep variables across cells and turns; each
+conversation gets its own isolated kernel, so parallel sessions never share
+state. Register local, WSL, and SSH hosts once; probe hardware; submit
 long **Runs** with live logs. Keys live in the OS keyring, never in SQLite.
 
 **Built for science**
@@ -181,16 +182,16 @@ releases keep the license published with them.
 
 ## Citation
 
-[![DOI](https://zenodo.org/badge/1285857639.svg)](https://doi.org/10.5281/zenodo.21869520)
+[![DOI](https://zenodo.org/badge/1285857639.svg)](https://doi.org/10.5281/zenodo.22009273)
 
 ```bibtex
 @software{xu2026wisp,
   author    = {Xu, Zhou-Geng},
   title     = {Wisp Science: a local-first AI research workbench},
-  version   = {v1.2.0},
+  version   = {v1.5.0},
   year      = {2026},
   publisher = {Zenodo},
-  doi       = {10.5281/zenodo.21869520},
-  url       = {https://doi.org/10.5281/zenodo.21869520}
+  doi       = {10.5281/zenodo.22009273},
+  url       = {https://doi.org/10.5281/zenodo.22009273}
 }
 ```

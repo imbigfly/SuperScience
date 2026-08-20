@@ -1,7 +1,7 @@
 use crate::app_support::{
     compose_icon, js_error_text, parse_redact_keywords, redact_text, refresh_execution_contexts,
     refresh_runs, refresh_runtimes, share_html_document, share_png_payload, share_png_row,
-    show_toast, social_skill_prompt, ShareExportFormat, ShareHtmlRow, ShareHtmlTheme, ShareMessage,
+    share_png_width, show_toast, ShareExportFormat, ShareHtmlRow, ShareHtmlTheme, ShareMessage,
     ShareRole,
 };
 use crate::bindings::{invoke_checked, open_external_url, render_share_png, snapshot_share_theme};
@@ -253,21 +253,20 @@ fn share_png_rows(
         .collect()
 }
 
-/// `/share` preview dialog. Opening it shows the long-image picker. Social
-/// copy is handed to the `social-note` skill after the user picks a platform.
+/// `/share` preview dialog. Opening it shows the long-image picker with PNG
+/// and HTML export. Social copy via the `social-note` skill stays hidden.
 /// `draft` is root-owned (`None` = closed) so the app-level Escape stack can
 /// dismiss it in visual order.
 #[component]
 pub(super) fn ShareOverlay(
     locale: RwSignal<Locale>,
     draft: RwSignal<Option<Vec<ShareMessage>>>,
-    on_social_skill: Callback<String>,
 ) -> impl IntoView {
     let keywords = create_rw_signal(String::new());
+    let width = create_rw_signal(String::new());
     let busy = create_rw_signal(false);
     let error = create_rw_signal(None::<String>);
     let format = create_rw_signal(ShareExportFormat::Png);
-    let platform = create_rw_signal(None::<ShareSocialPlatform>);
     // Render from the open flag, not the editable draft, so checkbox toggles
     // and keyword input do not rebuild the dialog DOM and drop focus.
     let open = create_memo(move |_| draft.with(|value| value.is_some()));
@@ -275,10 +274,10 @@ pub(super) fn ShareOverlay(
         let now = open.get();
         if now && previous != Some(true) {
             keywords.set(String::new());
+            width.set(String::new());
             busy.set(false);
             error.set(None);
             format.set(ShareExportFormat::Png);
-            platform.set(None);
         }
         now
     });
@@ -298,22 +297,6 @@ pub(super) fn ShareOverlay(
             }
         });
     };
-    let write_social = move |_| {
-        let loc = locale.get_untracked();
-        let Some(chosen) = platform.get_untracked() else {
-            error.set(Some(t(loc, "share.need_platform")));
-            return;
-        };
-        let messages = draft.get_untracked().unwrap_or_default();
-        let (selected, redact) = selected_share_messages(&messages, &keywords.get_untracked());
-        if selected.is_empty() {
-            error.set(Some(t(loc, "share.none_selected")));
-            return;
-        }
-        let prompt = social_skill_prompt(&selected, &redact, chosen, loc == Locale::Zh);
-        draft.set(None);
-        on_social_skill.call(prompt);
-    };
     let export = move |_| {
         let loc = locale.get_untracked();
         let messages = draft.get_untracked().unwrap_or_default();
@@ -326,6 +309,7 @@ pub(super) fn ShareOverlay(
         error.set(None);
         let stamp = share_stamp();
         let footer = t(loc, "share.image_footer");
+        let png_width = share_png_width(&width.get_untracked());
         let html_format = format.get_untracked() == ShareExportFormat::Html;
         // Build the export payload up front (pure CPU); the spawned task only
         // awaits the optional canvas render and the native save call.
@@ -352,6 +336,7 @@ pub(super) fn ShareOverlay(
                 &stamp,
                 &footer,
                 &share_png_rows(loc, &selected, &redact),
+                png_width,
             );
             (payload, None)
         };
@@ -468,33 +453,18 @@ pub(super) fn ShareOverlay(
                                 {move || t(locale.get(), "share.format_html")}</button>
                         </div>
                     </div>
+                    {move || (format.get() == ShareExportFormat::Png).then(|| view! {
+                        <label class="share-redact" for="share-width-input">
+                            {move || t(locale.get(), "share.width_label")}
+                            <input id="share-width-input" data-testid="share-width-input"
+                                autocomplete="off" inputmode="numeric" placeholder="840"
+                                prop:value=move || width.get()
+                                on:input=move |ev| width.set(event_target_value(&ev)) />
+                        </label>
+                    })}
                     {move || error.get().map(|message| view! {
                         <div class="settings-status fail">{message}</div>
                     })}
-                    <div class="share-skill-row">
-                        <span class="share-format-label">{move || t(locale.get(), "share.platform_label")}</span>
-                        <div class="share-format-seg share-platform-seg" role="group"
-                            aria-label=move || t(locale.get(), "share.platform_label")>
-                            {ShareSocialPlatform::all().into_iter().map(move |item| {
-                                view! {
-                                    <button type="button"
-                                        data-testid=format!("share-platform-{}", item.as_str())
-                                        class:active=move || platform.get() == Some(item)
-                                        on:click=move |_| platform.set(Some(item))>
-                                        {t(locale.get(), item.label_key())}
-                                    </button>
-                                }
-                            }).collect_view()}
-                        </div>
-                        <button type="button" class="linklike" data-testid="share-social-skill"
-                            title=move || t(locale.get(), "share.skill_hint")
-                            disabled=move || {
-                                busy.get() || selected_count.get() == 0 || platform.get().is_none()
-                            }
-                            on:click=write_social>
-                            {move || t(locale.get(), "share.social_skill")}
-                        </button>
-                    </div>
                     <div class="row">
                         <button type="button" disabled=move || busy.get()
                             on:click=move |_| draft.set(None)>{move || t(locale.get(), "share.cancel")}</button>
@@ -657,6 +627,14 @@ pub(super) fn RuntimeInterpreterOverlay(
 /// the Leptos context so run cards anywhere can open it.
 #[derive(Clone, Copy)]
 pub(crate) struct RunReviewModal(pub(crate) RwSignal<Option<String>>);
+
+/// Run ids whose foreground-monitored success is awaiting a review prompt.
+/// Cards push candidates here while the turn is still running; the root
+/// drains the queue once the owning session goes idle, asks the backend
+/// whether each Run has an unresolved product decision, and only then opens
+/// the modal — never mid-work (#897).
+#[derive(Clone, Copy)]
+pub(crate) struct PendingRunReviews(pub(crate) RwSignal<Vec<String>>);
 
 fn run_review_subtitle_label(title: Option<&str>, run_id: &str) -> (String, bool) {
     if let Some(title) = title.map(str::trim).filter(|title| !title.is_empty()) {

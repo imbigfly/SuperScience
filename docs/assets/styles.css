@@ -105,7 +105,44 @@ code {
 
 .nav-cta {
   display: flex;
+  align-items: center;
   gap: 8px;
+}
+
+html[data-lang="en"]:not(.i18n-ready) [data-i18n],
+html[data-lang="en"]:not(.i18n-ready) [data-i18n-html] {
+  visibility: hidden;
+}
+
+.lang-switch {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-elev);
+  flex: none;
+}
+
+.lang-switch button {
+  appearance: none;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 6px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.lang-switch button[aria-pressed="true"] {
+  background: var(--text);
+  color: #fff;
 }
 
 .btn {
@@ -327,7 +364,7 @@ code {
   margin: 0;
   padding: 8px 18px;
   list-style: none;
-  animation: trusted-scroll 32s linear infinite;
+  animation: trusted-scroll 56s linear infinite;
 }
 
 .trusted-track li {
@@ -897,6 +934,10 @@ section { padding: 88px 0; }
     min-height: 44px;
     padding: 10px 16px;
     font-size: 14px;
+  }
+  .lang-switch button {
+    padding: 6px 8px;
+    font-size: 11px;
   }
   .btn-label-full { display: none; }
   .btn-label-short { display: inline; }

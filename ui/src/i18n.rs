@@ -410,7 +410,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "composer.cmd_skills_sub") => Some("Filter, tag, and enable skills"),
         (Locale::En, "composer.cmd_files_sub") => Some("Browse project files"),
         (Locale::En, "composer.cmd_upload_sub") => Some("Attach images, PDFs, data"),
-        (Locale::En, "composer.cmd_share_sub") => Some("Export a long image, or write social copy with the skill"),
+        (Locale::En, "composer.cmd_share_sub") => Some("Export selected messages as a long image or HTML page"),
         (Locale::En, "composer.cmd_share_empty") => Some("Nothing to share yet — the conversation is empty"),
         (Locale::En, "composer.cmd_fork_empty") => Some("Type the branch's first message after /fork"),
         (Locale::En, "composer.cmd_permission_usage") => Some("Usage: /permission full or /permission ask"),
@@ -426,6 +426,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "share.role_thinking") => Some("Thinking"),
         (Locale::En, "share.redact_label") => Some("Redact keywords"),
         (Locale::En, "share.redact_ph") => Some("Comma-separated words to replace with xxx"),
+        (Locale::En, "share.width_label") => Some("Image width (px)"),
         (Locale::En, "share.export") => Some("Export PNG"),
         (Locale::En, "share.export_html") => Some("Export HTML"),
         (Locale::En, "share.format_label") => Some("Format"),
@@ -478,7 +479,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "composer.reviewer.missing_acp") => Some("Missing ACP Agent"),
         (Locale::En, "composer.save_skill") => Some("Save as skill"),
         (Locale::En, "composer.save_skill_sub") => Some("Distill this session"),
-        (Locale::En, "composer.share_sub") => Some("Export a long image or write social copy"),
+        (Locale::En, "composer.share_sub") => Some("Export selected messages as a long image or HTML page"),
         (Locale::En, "review.title") => Some("Reviewer findings"),
         (Locale::En, "review.findings_n") => Some("{n} findings"),
         (Locale::En, "review.no_findings") => Some("No traceability problems found"),
@@ -1267,6 +1268,9 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "browser.filters.block_empty") => Some("No blocked hosts."),
         (Locale::En, "browser.filters.prefer_empty") => Some("No preferred hosts."),
         (Locale::En, "browser.filters.saved") => Some("Browser URL filters saved."),
+        (Locale::En, "browser.auto_launch") => Some("Open browser automatically"),
+        (Locale::En, "browser.auto_launch_hint") => Some("When a browser tool needs Chrome/Chromium and it isn't running, start it so the Wisp extension can reconnect. Uses your existing profile, not a temporary automation browser."),
+        (Locale::En, "browser.auto_launch_saved") => Some("Browser launch setting saved."),
         (Locale::En, "browser.offline.eyebrow") => Some("No live retrieval"),
         (Locale::En, "browser.offline.title") => Some("This answer has no live web results"),
         (Locale::En, "browser.offline.body") => Some("The browser extension is not connected. This reply is based only on the model's existing knowledge."),
@@ -1658,7 +1662,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "settings.resume_last_session") => Some("Resume the last conversation when opening a workspace"),
         (Locale::En, "settings.resume_last_session_hint") => Some("Enabled by default. Reopen the last conversation that has a user message, not a named unused draft or a blank session."),
         (Locale::En, "settings.proxy_url") => Some("Model API proxy"),
-        (Locale::En, "settings.proxy_url_hint") => Some("Empty follows the system proxy. Enter `none` to force a direct connection, or a proxy URL like http://127.0.0.1:7890 or socks5://127.0.0.1:1080. Applies to model API requests after saving."),
+        (Locale::En, "settings.proxy_url_hint") => Some("Empty follows the system proxy, including leftover HTTP_PROXY/HTTPS_PROXY. Enter `none` to force a direct connection, or a proxy URL like http://127.0.0.1:7890 or socks5://127.0.0.1:1080. Applies to model API requests after saving."),
         (Locale::En, "settings.send_shortcut") => Some("Send and newline shortcuts"),
         (Locale::En, "settings.send_shortcut.enter") => Some("Enter sends · Shift+Enter inserts a newline"),
         (Locale::En, "settings.send_shortcut.modifier_enter") => Some("{modifier}+Enter sends · Enter inserts a newline"),
@@ -1729,6 +1733,12 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "settings.image_aspect_ratio") => Some("Default aspect ratio"),
         (Locale::En, "settings.image_resolution") => Some("Default resolution"),
         (Locale::En, "settings.image_defaults_hint") => Some("These defaults are used when generate_image does not specify size or quality. The agent can still override them for a single request."),
+        (Locale::En, "settings.use_for_video_generation") => Some("Use for video generation"),
+        (Locale::En, "settings.video_generation_hint") => Some("Supports xAI grok-imagine-video models for MP4 output through the generate_video tool."),
+        (Locale::En, "settings.video_duration") => Some("Default duration (seconds)"),
+        (Locale::En, "settings.video_aspect_ratio") => Some("Default aspect ratio"),
+        (Locale::En, "settings.video_resolution") => Some("Default resolution"),
+        (Locale::En, "settings.video_defaults_hint") => Some("These defaults are used when generate_video does not specify duration, aspect ratio, or resolution. The agent can still override them for a single request."),
         (Locale::En, "settings.stored_key") => Some("(stored — leave blank to keep)"),
         (Locale::En, "settings.tip") => Some("Enter the shared API root. Put protocol-specific paths such as /anthropic or an explicit image endpoint in that model's optional suffix; Wisp then completes the protocol request path."),
         (Locale::En, "settings.check_updates") => Some("Check for updates"),
@@ -1820,6 +1830,17 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "context_usage.total_exact") => Some("{used} / {max} Tokens"),
         (Locale::En, "context_usage.total_used") => Some("{used} Tokens"),
         (Locale::En, "context_usage.open") => Some("Open context usage"),
+        (Locale::En, "context_usage.open_pct") => Some("Open context usage, {pct}%"),
+        (Locale::En, "context_usage.open_unknown") => Some("Open context usage, window unknown"),
+        (Locale::En, "context_usage.tooltip_estimated") => {
+            Some("~{used} / {max} tokens (current model context window)")
+        }
+        (Locale::En, "context_usage.tooltip_exact") => {
+            Some("{used} / {max} tokens (current model context window)")
+        }
+        (Locale::En, "context_usage.tooltip_unknown") => {
+            Some("Context window unknown for this model")
+        }
         (Locale::En, "context_usage.close") => Some("Close context usage"),
         (Locale::En, "context_usage.dock") => Some("Dock panel"),
         (Locale::En, "context_usage.resize") => Some("Resize panel"),
@@ -1870,7 +1891,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "chat.model_wait_4") => Some("The model is carefully selecting its next token…"),
         (Locale::En, "chat.step_lines") => Some("{n} lines"),
         (Locale::En, "chat.error") => Some("Error"),
-        (Locale::En, "chat.jump_last_user") => Some("⌃ Your last message"),
+        (Locale::En, "chat.jump_bottom") => Some("Back to latest"),
         (Locale::En, "chat.resume") => Some("Resume"),
         (Locale::En, "chat.context_auto_compacted") => Some("Context automatically compacted"),
         (Locale::En, "chat.auto_continued") => Some("Output limit reached; automatically continued ({count}/{limit})"),
@@ -1895,6 +1916,11 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "chat.image_generated") => Some("Generated image"),
         (Locale::En, "chat.image_failed") => Some("Image generation failed"),
         (Locale::En, "chat.image_preview_unavailable") => Some("Generated image preview unavailable"),
+        (Locale::En, "chat.video_generating") => Some("Generating video…"),
+        (Locale::En, "chat.video_loading") => Some("Loading generated video…"),
+        (Locale::En, "chat.video_generated") => Some("Generated video"),
+        (Locale::En, "chat.video_failed") => Some("Video generation failed"),
+        (Locale::En, "chat.video_preview_unavailable") => Some("Generated video preview unavailable"),
         (Locale::En, "err.hint.balance") => Some("The provider account is out of credit. Top up on the provider's billing page, then retry."),
         (Locale::En, "err.hint.auth") => Some("The API key was rejected. Check the API key in Settings → Models."),
         (Locale::En, "err.hint.context") => Some("The conversation exceeds the model's context limit. Send /compact to fold old turns, start a new session, or switch to a model with a larger context window."),
@@ -1902,7 +1928,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "err.hint.model_name") => Some("The provider does not recognize the configured model name. Check the model name in Settings → Models."),
         (Locale::En, "err.hint.rate") => Some("Rate limited by the provider. Wait a moment and retry."),
         (Locale::En, "err.hint.server") => Some("The provider is temporarily overloaded or down. Retry in a bit."),
-        (Locale::En, "err.hint.network") => Some("Could not reach the model API. Check your network, API URL, and Settings → Models → Model API proxy. If a local proxy app is closed, leftover HTTP_PROXY/HTTPS_PROXY can still intercept requests — set the field to `none` to connect directly."),
+        (Locale::En, "err.hint.network") => Some("Could not reach the model API. A leftover system proxy (HTTP_PROXY/HTTPS_PROXY) often intercepts requests after the proxy app has been closed. Open Settings → Models → Model API proxy and set it to `none` to connect directly, or enter a proxy that is still running."),
         (Locale::En, "err.hint.bad_request") => Some("The provider rejected the request. Common causes: the conversation is too long, or a message contains content this model does not support (e.g. images). Try /compact or another model."),
         (Locale::En, "err.hint.tool_pairing") => Some("A tool call is missing its result in the conversation history (often after an interrupted or timed-out tool). Click Resume again after updating, or send /compact to repair the history."),
         (Locale::En, "outline.title") => Some("Conversation outline"),
@@ -2743,7 +2769,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "composer.cmd_skills_sub") => Some("筛选、打标签和启停技能"),
         (Locale::Zh, "composer.cmd_files_sub") => Some("浏览项目文件"),
         (Locale::Zh, "composer.cmd_upload_sub") => Some("上传图片、PDF、数据"),
-        (Locale::Zh, "composer.cmd_share_sub") => Some("导出长图，或用技能写社媒文案"),
+        (Locale::Zh, "composer.cmd_share_sub") => Some("把勾选的消息导出为长图或 HTML"),
         (Locale::Zh, "composer.cmd_share_empty") => Some("暂时没有可分享的内容——对话还是空的"),
         (Locale::Zh, "composer.cmd_fork_empty") => Some("请在 /fork 后输入分支的第一条消息"),
         (Locale::Zh, "composer.cmd_permission_usage") => Some("用法：/permission full 或 /permission ask"),
@@ -2759,6 +2785,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "share.role_thinking") => Some("思考"),
         (Locale::Zh, "share.redact_label") => Some("关键词打码"),
         (Locale::Zh, "share.redact_ph") => Some("逗号分隔，这些词会被替换成 xxx"),
+        (Locale::Zh, "share.width_label") => Some("图片宽度（px）"),
         (Locale::Zh, "share.export") => Some("导出长图"),
         (Locale::Zh, "share.export_html") => Some("导出 HTML"),
         (Locale::Zh, "share.format_label") => Some("导出格式"),
@@ -2811,7 +2838,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "composer.reviewer.missing_acp") => Some("缺失的 ACP Agent"),
         (Locale::Zh, "composer.save_skill") => Some("保存为技能"),
         (Locale::Zh, "composer.save_skill_sub") => Some("提炼当前会话"),
-        (Locale::Zh, "composer.share_sub") => Some("导出长图，或用技能写社媒文案"),
+        (Locale::Zh, "composer.share_sub") => Some("把勾选的消息导出为长图或 HTML"),
         (Locale::Zh, "review.title") => Some("审查结果"),
         (Locale::Zh, "review.findings_n") => Some("{n} 个问题"),
         (Locale::Zh, "review.no_findings") => Some("未发现可追溯性问题"),
@@ -3600,6 +3627,9 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "browser.filters.block_empty") => Some("还没有禁用的域名。"),
         (Locale::Zh, "browser.filters.prefer_empty") => Some("还没有优先域名。"),
         (Locale::Zh, "browser.filters.saved") => Some("浏览器网址过滤已保存。"),
+        (Locale::Zh, "browser.auto_launch") => Some("自动打开浏览器"),
+        (Locale::Zh, "browser.auto_launch_hint") => Some("使用浏览器工具时，如果 Chrome/Chromium 没有在运行，就启动它，让已安装的 Wisp 扩展重新连上。使用你现有的用户资料，不会另开一套自动化浏览器。"),
+        (Locale::Zh, "browser.auto_launch_saved") => Some("浏览器启动设置已保存。"),
         (Locale::Zh, "browser.offline.eyebrow") => Some("未联网检索"),
         (Locale::Zh, "browser.offline.title") => Some("本次回答未包含任何联网检索结果"),
         (Locale::Zh, "browser.offline.body") => Some("浏览器扩展未连接。该回答仅基于模型已有知识，不是实时检索结果。"),
@@ -3991,7 +4021,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "settings.resume_last_session") => Some("打开工作区时继续上次对话"),
         (Locale::Zh, "settings.resume_last_session_hint") => Some("默认开启。打开工作区时恢复最近有过对话的会话，不会进入仅改了名、还没发过消息的草稿。"),
         (Locale::Zh, "settings.proxy_url") => Some("模型 API 代理"),
-        (Locale::Zh, "settings.proxy_url_hint") => Some("留空＝跟随系统代理；填 none＝强制直连（忽略系统代理）；或填代理地址，如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080。保存后对模型 API 请求生效。"),
+        (Locale::Zh, "settings.proxy_url_hint") => Some("留空＝跟随系统代理，也包括残留的 HTTP_PROXY/HTTPS_PROXY。填 none＝强制直连；或填代理地址，如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080。保存后对模型 API 请求生效。"),
         (Locale::Zh, "settings.send_shortcut") => Some("发送与换行快捷键"),
         (Locale::Zh, "settings.send_shortcut.enter") => Some("Enter 发送 · Shift+Enter 换行"),
         (Locale::Zh, "settings.send_shortcut.modifier_enter") => Some("{modifier}+Enter 发送 · Enter 换行"),
@@ -4059,6 +4089,12 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "settings.image_aspect_ratio") => Some("默认宽高比"),
         (Locale::Zh, "settings.image_resolution") => Some("默认分辨率"),
         (Locale::Zh, "settings.image_defaults_hint") => Some("当 generate_image 未指定尺寸或质量时使用这些默认值；单次请求仍可由模型覆盖。"),
+        (Locale::Zh, "settings.use_for_video_generation") => Some("用于视频生成"),
+        (Locale::Zh, "settings.video_generation_hint") => Some("支持 xAI grok-imagine-video 系列模型通过 generate_video 工具生成 MP4 视频。"),
+        (Locale::Zh, "settings.video_duration") => Some("默认时长（秒）"),
+        (Locale::Zh, "settings.video_aspect_ratio") => Some("默认宽高比"),
+        (Locale::Zh, "settings.video_resolution") => Some("默认分辨率"),
+        (Locale::Zh, "settings.video_defaults_hint") => Some("当 generate_video 未指定时长、宽高比或分辨率时使用这些默认值；单次请求仍可由模型覆盖。"),
         (Locale::Zh, "settings.stored_key") => Some("（已保存 — 留空则保持不变）"),
         (Locale::Zh, "settings.tip") => Some("请填写共享的 API 根地址。像 /anthropic 这样的协议入口或明确的生图接口，请填在对应模型的可选后缀中；Wisp 再按所选协议补全请求路径。"),
         (Locale::Zh, "settings.check_updates") => Some("检查更新"),
@@ -4150,6 +4186,15 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "context_usage.total_exact") => Some("{used} / {max} Tokens"),
         (Locale::Zh, "context_usage.total_used") => Some("{used} Tokens"),
         (Locale::Zh, "context_usage.open") => Some("查看上下文用量"),
+        (Locale::Zh, "context_usage.open_pct") => Some("查看上下文用量，已用 {pct}%"),
+        (Locale::Zh, "context_usage.open_unknown") => Some("查看上下文用量，窗口未知"),
+        (Locale::Zh, "context_usage.tooltip_estimated") => {
+            Some("约 {used} / {max} tokens（当前模型上下文窗口）")
+        }
+        (Locale::Zh, "context_usage.tooltip_exact") => {
+            Some("{used} / {max} tokens（当前模型上下文窗口）")
+        }
+        (Locale::Zh, "context_usage.tooltip_unknown") => Some("当前模型上下文窗口未知"),
         (Locale::Zh, "context_usage.close") => Some("关闭上下文用量"),
         (Locale::Zh, "context_usage.dock") => Some("停靠面板"),
         (Locale::Zh, "context_usage.resize") => Some("调整面板大小"),
@@ -4200,7 +4245,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "chat.model_wait_4") => Some("模型正在谨慎挑选下一个 token…"),
         (Locale::Zh, "chat.step_lines") => Some("{n} 行"),
         (Locale::Zh, "chat.error") => Some("错误"),
-        (Locale::Zh, "chat.jump_last_user") => Some("⌃ 你的上一条消息"),
+        (Locale::Zh, "chat.jump_bottom") => Some("回到底部"),
         (Locale::Zh, "chat.resume") => Some("继续执行"),
         (Locale::Zh, "chat.context_auto_compacted") => Some("上下文已自动压缩"),
         (Locale::Zh, "chat.auto_continued") => Some("输出达到上限，已自动继续（{count}/{limit}）"),
@@ -4225,6 +4270,11 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "chat.image_generated") => Some("图片已生成"),
         (Locale::Zh, "chat.image_failed") => Some("图片生成失败"),
         (Locale::Zh, "chat.image_preview_unavailable") => Some("无法预览生成的图片"),
+        (Locale::Zh, "chat.video_generating") => Some("正在生成视频…"),
+        (Locale::Zh, "chat.video_loading") => Some("正在加载生成的视频…"),
+        (Locale::Zh, "chat.video_generated") => Some("视频已生成"),
+        (Locale::Zh, "chat.video_failed") => Some("视频生成失败"),
+        (Locale::Zh, "chat.video_preview_unavailable") => Some("无法预览生成的视频"),
         (Locale::Zh, "err.hint.balance") => Some("服务商账户余额不足。请前往服务商官网充值后重试。"),
         (Locale::Zh, "err.hint.auth") => Some("API 密钥被拒绝。请在 设置 → 模型 中检查 API 密钥。"),
         (Locale::Zh, "err.hint.context") => Some("对话长度超出模型上下文上限。发送 /compact 压缩旧轮次，或新开会话，或换用上下文更大的模型。"),
@@ -4232,7 +4282,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "err.hint.model_name") => Some("服务商不识别所配置的模型名。请在 设置 → 模型 中核对模型名。"),
         (Locale::Zh, "err.hint.rate") => Some("请求过于频繁，被服务商限流。稍等片刻再重试。"),
         (Locale::Zh, "err.hint.server") => Some("服务商暂时过载或故障。请稍后重试。"),
-        (Locale::Zh, "err.hint.network") => Some("无法连接到模型 API。请检查网络、API 地址，以及 设置 → 模型 → 模型 API 代理。本机代理软件关闭后，残留的 HTTP_PROXY/HTTPS_PROXY 仍会拦截请求；将该项填为 `none` 可强制直连。"),
+        (Locale::Zh, "err.hint.network") => Some("无法连接到模型 API。常见原因是本机代理软件已关闭，但系统仍残留 HTTP_PROXY/HTTPS_PROXY。请打开 设置 → 模型 → 模型 API 代理：填 `none` 强制直连，或填入仍在运行的代理地址。"),
         (Locale::Zh, "err.hint.bad_request") => Some("请求被服务商拒绝。常见原因：对话过长，或消息包含该模型不支持的内容（如图片）。可尝试 /compact 或更换模型。"),
         (Locale::Zh, "err.hint.tool_pairing") => Some("对话历史里有一条工具调用缺少对应结果（常见于工具中断或超时后）。更新后请再点「继续执行」，或发送 /compact 修复历史。"),
         (Locale::Zh, "outline.title") => Some("对话目录"),
@@ -5104,7 +5154,16 @@ fn api_error_hint_key(msg: &str) -> Option<&'static str> {
     } else if m.contains("api: 5") || m.contains("overloaded") {
         "err.hint.server"
     } else if m.contains("http: ")
-        && (m.contains("connect") || m.contains("timed out") || m.contains("dns"))
+        && (m.contains("connect")
+            || m.contains("timed out")
+            || m.contains("deadline has elapsed")
+            || m.contains("dns")
+            || m.contains("refused")
+            || m.contains("via leftover")
+            || m.contains("via model api proxy")
+            || m.contains("socks")
+            || m.contains("tunnel")
+            || m.contains("unreachable"))
     {
         "err.hint.network"
     } else if m.contains("no tool output found for tool call")
@@ -5172,6 +5231,14 @@ mod api_error_hint_tests {
                 "http: error sending request: tcp connect error",
                 "err.hint.network",
             ),
+            (
+                "http: error sending request: Connection refused (os error 111) (via leftover HTTPS_PROXY=http://127.0.0.1:7890)",
+                "err.hint.network",
+            ),
+            (
+                "http: error sending request for url (https://api.example.com/v1/chat/completions): client error (Connect): tcp connect error: deadline has elapsed",
+                "err.hint.network",
+            ),
         ];
         for (msg, key) in cases {
             assert_eq!(hint_key(msg), Some(t(Locale::En, key)), "for: {msg}");
@@ -5220,10 +5287,16 @@ mod api_error_hint_tests {
     }
 
     #[test]
-    fn network_hint_points_at_models_proxy() {
-        assert!(t(Locale::En, "err.hint.network").contains("Settings → Models"));
-        assert!(t(Locale::Zh, "err.hint.network").contains("设置 → 模型"));
-        assert!(t(Locale::Zh, "err.hint.network").contains("模型 API 代理"));
+    fn leftover_proxy_connect_points_at_model_api_proxy() {
+        let msg = "http: error sending request: tcp connect error: Connection refused (os error 111) (via leftover HTTPS_PROXY=http://127.0.0.1:7890)";
+        assert_eq!(hint_key(msg), Some(t(Locale::En, "err.hint.network")));
+        let zh = localize_backend(Locale::Zh, msg);
+        assert!(zh.contains("设置 → 模型"), "{zh}");
+        assert!(zh.contains("模型 API 代理"), "{zh}");
+        assert!(zh.contains("none"), "{zh}");
+        let en = localize_backend(Locale::En, msg);
+        assert!(en.contains("Settings → Models"), "{en}");
+        assert!(en.contains("Model API proxy"), "{en}");
     }
 
     #[test]

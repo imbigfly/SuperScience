@@ -32,6 +32,9 @@ pub(crate) fn class_for(item: &ChatItem) -> &'static str {
         ChatItem::Tool { name, .. } if is_image_generation_tool(name) => {
             "tool-wrap image-generation-wrap"
         }
+        ChatItem::Tool { name, .. } if is_video_generation_tool(name) => {
+            "tool-wrap video-generation-wrap"
+        }
         ChatItem::Tool { .. } => "tool-wrap",
         ChatItem::FileChanged(_) => "artifact-write-marker",
         ChatItem::ApprovalPending { .. } => "tool-wrap approval-wrap-row",
@@ -61,6 +64,69 @@ pub(crate) fn context_percent(used: usize, max: usize) -> usize {
     } else {
         ((((used as u128) * 100 + (max as u128 / 2)) / max as u128) as usize).min(100)
     }
+}
+
+/// Default bands from #931: under 70% is idle, 70–90% is a warning, above
+/// 90% is danger. A missing window must not look like 0%.
+pub(crate) const CONTEXT_USAGE_WARN_PCT: usize = 70;
+pub(crate) const CONTEXT_USAGE_DANGER_PCT: usize = 90;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ContextUsageTone {
+    Unknown,
+    Ok,
+    Warn,
+    Danger,
+}
+
+impl ContextUsageTone {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Ok => "ok",
+            Self::Warn => "warn",
+            Self::Danger => "danger",
+        }
+    }
+}
+
+pub(crate) fn context_usage_tone(used: usize, max: usize) -> ContextUsageTone {
+    if max == 0 {
+        return ContextUsageTone::Unknown;
+    }
+    let pct = context_percent(used, max);
+    if pct > CONTEXT_USAGE_DANGER_PCT {
+        ContextUsageTone::Danger
+    } else if pct >= CONTEXT_USAGE_WARN_PCT {
+        ContextUsageTone::Warn
+    } else {
+        ContextUsageTone::Ok
+    }
+}
+
+pub(crate) fn context_usage_percent_label(used: usize, max: usize) -> String {
+    if max == 0 {
+        "—".into()
+    } else {
+        format!("{}%", context_percent(used, max))
+    }
+}
+
+pub(crate) fn context_usage_tooltip(snapshot: &ContextUsageSnapshot, locale: Locale) -> String {
+    if snapshot.max == 0 {
+        return t(locale, "context_usage.tooltip_unknown").into();
+    }
+    let used = fmt_context_tokens(snapshot.used);
+    let max = fmt_context_limit(snapshot.max);
+    tf(
+        locale,
+        if snapshot.estimated {
+            "context_usage.tooltip_estimated"
+        } else {
+            "context_usage.tooltip_exact"
+        },
+        &[("used", &used), ("max", &max)],
+    )
 }
 
 pub(crate) fn fmt_context_tokens(tokens: usize) -> String {
@@ -158,8 +224,9 @@ pub(crate) fn context_usage_detail_text(details: &ContextUsageDetails, color: &s
 #[cfg(test)]
 mod token_format_tests {
     use super::{
-        context_percent, context_usage_rows, fmt_context_limit, fmt_context_tokens, fmt_tokens,
-        renders_nothing,
+        context_percent, context_usage_percent_label, context_usage_rows, context_usage_tone,
+        context_usage_tooltip, fmt_context_limit, fmt_context_tokens, fmt_tokens, renders_nothing,
+        ContextUsageTone,
     };
     use crate::dto::{ContextUsage, ContextUsageSnapshot};
     use crate::i18n::Locale;
@@ -186,6 +253,40 @@ mod token_format_tests {
         assert_eq!(fmt_context_tokens(6_000), "6.0K");
         assert_eq!(fmt_context_tokens(79_900), "79.9K");
         assert_eq!(fmt_context_limit(300_000), "300K");
+    }
+
+    #[test]
+    fn context_usage_tone_uses_warn_and_danger_bands() {
+        assert_eq!(context_usage_tone(0, 0), ContextUsageTone::Unknown);
+        assert_eq!(context_usage_tone(69, 100), ContextUsageTone::Ok);
+        assert_eq!(context_usage_tone(70, 100), ContextUsageTone::Warn);
+        assert_eq!(context_usage_tone(90, 100), ContextUsageTone::Warn);
+        assert_eq!(context_usage_tone(91, 100), ContextUsageTone::Danger);
+        assert_eq!(context_usage_percent_label(0, 0), "—");
+        assert_eq!(context_usage_percent_label(79_900, 128_000), "62%");
+        let tooltip = context_usage_tooltip(
+            &ContextUsageSnapshot {
+                used: 79_900,
+                max: 128_000,
+                breakdown: None,
+                estimated: true,
+            },
+            Locale::En,
+        );
+        assert!(tooltip.contains("79.9K"));
+        assert!(tooltip.contains("128K"));
+        assert_eq!(
+            context_usage_tooltip(
+                &ContextUsageSnapshot {
+                    used: 1_200,
+                    max: 0,
+                    breakdown: None,
+                    estimated: false,
+                },
+                Locale::En,
+            ),
+            "Context window unknown for this model"
+        );
     }
 
     #[test]
@@ -1054,6 +1155,11 @@ pub(crate) fn RunMonitorCard(
     tool_ok: Option<bool>,
     tool_output: String,
     dismissed_runs: RwSignal<HashSet<String>>,
+    /// Only foreground `monitor_run` cards nominate their Run for the
+    /// results-review prompt. AutoRun cards cover exploratory command Runs,
+    /// which must never interrupt with a review modal (#897).
+    #[prop(optional)]
+    auto_review: bool,
 ) -> impl IntoView {
     let locale = use_locale();
     let fallback = serde_json::from_str::<RunRecord>(&tool_output).ok();
@@ -1110,11 +1216,18 @@ pub(crate) fn RunMonitorCard(
     // body every few seconds, which would snap a native `<details>` shut while
     // the user is reading it.
     let env_open = create_rw_signal(false);
-    // When a foreground-monitored SSH Run finishes successfully in this
-    // session, open the results-review modal once so the user can pick what to
-    // download and what to delete from the server.
+    // Manual entry point: the review button on the card opens the modal
+    // directly, for any card.
     let review_modal = use_context::<crate::overlays::RunReviewModal>().map(|modal| modal.0);
-    if let Some(review_modal) = review_modal {
+    // When a foreground-monitored SSH Run finishes successfully in this
+    // session, nominate it for the results-review prompt. The root drains the
+    // queue once the session goes idle and asks the backend whether the Run
+    // has an unresolved product decision before opening the modal, so work in
+    // progress is never interrupted and empty workspaces never prompt (#897).
+    let review_queue = auto_review
+        .then(|| use_context::<crate::overlays::PendingRunReviews>().map(|queue| queue.0))
+        .flatten();
+    if let Some(review_queue) = review_queue {
         let prompted = Rc::new(Cell::new(false));
         create_effect(move |previous: Option<Option<String>>| {
             let Some(run) = selected_run.get() else {
@@ -1132,7 +1245,11 @@ pub(crate) fn RunMonitorCard(
                 && !prompted.get()
             {
                 prompted.set(true);
-                review_modal.set(Some(run.id.clone()));
+                review_queue.update(|ids| {
+                    if !ids.contains(&run.id) {
+                        ids.push(run.id.clone());
+                    }
+                });
             }
             Some(status)
         });
@@ -1499,6 +1616,7 @@ pub(crate) fn render_item(
                 tool_ok=*ok
                 tool_output=output.clone()
                 dismissed_runs=dismissed_runs
+                auto_review=true
             />
         }.into_view(),
         ChatItem::Tool { name, ok, input, output, .. } if is_image_generation_tool(name) => view! {
@@ -1507,6 +1625,13 @@ pub(crate) fn render_item(
                 ok=*ok
                 output=output.clone()
                 on_file=on_file
+            />
+        }.into_view(),
+        ChatItem::Tool { name, ok, input, output, .. } if is_video_generation_tool(name) => view! {
+            <VideoGenerationCard
+                path=input.trim().to_string()
+                ok=*ok
+                output=output.clone()
             />
         }.into_view(),
         ChatItem::Reasoning(s) => {

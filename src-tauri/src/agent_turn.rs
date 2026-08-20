@@ -517,6 +517,11 @@ pub(crate) async fn send_message_inner(
             models::image_generation_config(&state.store).await,
             llm_proxy(),
         );
+        add_configured_video_generation_tool(
+            &mut agent,
+            models::video_generation_config(&state.store).await,
+            llm_proxy(),
+        );
         agent.add_tool(Box::new(browser_bridge::BrowserSetupTool::new(
             state.browser_bridge.clone(),
             state.store.clone(),
@@ -533,6 +538,18 @@ pub(crate) async fn send_message_inner(
             state.store.clone(),
         )));
         agent.add_tool(Box::new(browser_bridge::WebScreenshotTool::new(
+            state.browser_bridge.clone(),
+        )));
+        agent.add_tool(Box::new(browser_bridge::WebSaveAssetsTool::new(
+            state.browser_bridge.clone(),
+        )));
+        agent.add_tool(Box::new(browser_bridge::WebAgentSendTool::new(
+            state.browser_bridge.clone(),
+        )));
+        agent.add_tool(Box::new(browser_bridge::WebAgentWaitTool::new(
+            state.browser_bridge.clone(),
+        )));
+        agent.add_tool(Box::new(browser_bridge::WebAgentReadTool::new(
             state.browser_bridge.clone(),
         )));
         agent.add_tool(Box::new(run_context::RunInContextTool::new(
@@ -1175,7 +1192,11 @@ pub(crate) async fn send_message_inner(
             Ok(frame_id)
         }
         Err(e) => {
-            let message = format!("{e}");
+            let message = wisp_llm::annotate_transport_error(
+                &format!("{e}"),
+                llm_proxy().as_deref(),
+                &wisp_llm::ambient_proxy_env(),
+            );
             persist_and_emit_terminal_event(
                 state,
                 &app,

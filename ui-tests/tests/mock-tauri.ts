@@ -8,6 +8,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   class Channel {
     onmessage: ((message: any) => void) | null = null;
   }
+  const mp4Base64 = "AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAANdbW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAAHgAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAod0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAAHgAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAABAAAAAQAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAB4AAAEAAABAAAAAAH/bWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAAyAAAABgBVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABqm1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAWpzdGJsAAAAvnN0c2QAAAAAAAAAAQAAAK5hdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAABAAEABIAAAASAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGP//AAAANGF2Y0MBZAAK/+EAF2dkAAqs2V7ARAAAAwAEAAADAMg8SJZYAQAGaOvjyyLA/fj4AAAAABBwYXNwAAAAAQAAAAEAAAAUYnRydAAAAAAAAL7iAAC+4gAAABhzdHRzAAAAAAAAAAEAAAADAAACAAAAABRzdHNzAAAAAAAAAAEAAAABAAAAKGN0dHMAAAAAAAAAAwAAAAEAAAQAAAAAAQAABgAAAAABAAACAAAAABxzdHNjAAAAAAAAAAEAAAABAAAAAwAAAAEAAAAgc3RzegAAAAAAAAAAAAAAAwAAAsUAAAAMAAAADAAAABRzdGNvAAAAAAAAAAEAAAONAAAAYnVkdGEAAABabWV0YQAAAAAAAAAhaGRscgAAAAAAAAAAbWRpcmFwcGwAAAAAAAAAAAAAAAAtaWxzdAAAACWpdG9vAAAAHWRhdGEAAAABAAAAAExhdmY1OC43Ni4xMDAAAAAIZnJlZQAAAuVtZGF0AAACrgYF//+q3EXpvebZSLeWLNgg2SPu73gyNjQgLSBjb3JlIDE2MyByMzA2MCA1ZGI2YWE2IC0gSC4yNjQvTVBFRy00IEFWQyBjb2RlYyAtIENvcHlsZWZ0IDIwMDMtMjAyMSAtIGh0dHA6Ly93d3cudmlkZW9sYW4ub3JnL3gyNjQuaHRtbCAtIG9wdGlvbnM6IGNhYmFjPTEgcmVmPTMgZGVibG9jaz0xOjA6MCBhbmFseXNlPTB4MzoweDExMyBtZT1oZXggc3VibWU9NyBwc3k9MSBwc3lfcmQ9MS4wMDowLjAwIG1peGVkX3JlZj0xIG1lX3JhbmdlPTE2IGNocm9tYV9tZT0xIHRyZWxsaXM9MSA4eDhkY3Q9MSBjcW09MCBkZWFkem9uZT0yMSwxMSBmYXN0X3Bza2lwPTEgY2hyb21hX3FwX29mZnNldD0tMiB0aHJlYWRzPTEgbG9va2FoZWFkX3RocmVhZHM9MSBzbGljZWRfdGhyZWFkcz0wIG5yPTAgZGVjaW1hdGU9MSBpbnRlcmxhY2VkPTAgYmx1cmF5X2NvbXBhdD0wIGNvbnN0cmFpbmVkX2ludHJhPTAgYmZyYW1lcz0zIGJfcHlyYW1pZD0yIGJfYWRhcHQ9MSBiX2JpYXM9MCBkaXJlY3Q9MSB3ZWlnaHRiPTEgb3Blbl9nb3A9MCB3ZWlnaHRwPTIga2V5aW50PTI1MCBrZXlpbnRfbWluPTI1IHNjZW5lY3V0PTQwIGludHJhX3JlZnJlc2g9MCByY19sb29rYWhlYWQ9NDAgcmM9Y3JmIG1idHJlZT0xIGNyZj0yMy4wIHFjb21wPTAuNjAgcXBtaW49MCBxcG1heD02OSBxcHN0ZXA9NCBpcF9yYXRpbz0xLjQwIGFxPTE6MS4wMACAAAAAD2WIhAAz//727L4FNhTIwQAAAAhBmiJsQr/+wAAAAAgBnkF5Cv/EgQ==";
   const pdfBase64 = "JVBERi0xLjQKJVdpc3AKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUiA0IDAgUl0gL0NvdW50IDIgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA3IDAgUiA+PiA+PiAvQ29udGVudHMgNSAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA3IDAgUiA+PiA+PiAvQ29udGVudHMgNiAwIFIgPj4KZW5kb2JqCjUgMCBvYmoKPDwgL0xlbmd0aCA0OCA+PgpzdHJlYW0KQlQgL0YxIDI0IFRmIDcyIDcyMCBUZCAoUERGIHByZXZpZXcgd29ya3MpIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKNiAwIG9iago8PCAvTGVuZ3RoIDQ2ID4+CnN0cmVhbQpCVCAvRjEgMjQgVGYgNzIgNzIwIFRkIChTZWNvbmQgUERGIHBhZ2UpIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKNyAwIG9iago8PCAvVHlwZSAvRm9udCAvU3VidHlwZSAvVHlwZTEgL0Jhc2VGb250IC9IZWx2ZXRpY2EgPj4KZW5kb2JqCnhyZWYKMCA4CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAxNSAwMDAwIG4gCjAwMDAwMDAwNjQgMDAwMDAgbiAKMDAwMDAwMDEyNyAwMDAwMCBuIAowMDAwMDAwMjUzIDAwMDAwIG4gCjAwMDAwMDAzNzkgMDAwMDAgbiAKMDAwMDAwMDQ3NyAwMDAwMCBuIAowMDAwMDAwNTczIDAwMDAwIG4gCnRyYWlsZXIKPDwgL1NpemUgOCAvUm9vdCAxIDAgUiA+PgpzdGFydHhyZWYKNjQyCiUlRU9GCg==";
   // Real .docx (pandoc-built) with headings, a table, and OMML equations —
   // exercises the offline docx-preview render path (P3 / #274).
@@ -510,6 +511,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   ];
   let sessionSpecialists: Record<string, string> = {};
   let mockBrowserUrlFilters = { block: [] as { host: string; reason?: string }[], prefer: [] as { host: string; reason?: string }[] };
+  let mockBrowserAutoLaunch = true;
   let mockQuickActions = [{
     id: "literature_research",
     name: "Research literature",
@@ -720,6 +722,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       supports_vision: query.get("mockTextOnlyModel") !== "1",
       use_for_vision: query.get("mockTextOnlyModel") !== "1",
       use_for_image_generation: false,
+      use_for_video_generation: false,
     },
     {
       id: "opus",
@@ -735,6 +738,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       supports_vision: true,
       use_for_vision: false,
       use_for_image_generation: false,
+      use_for_video_generation: false,
     },
   ];
   const activeHttpModelId = () => mockModels.find((model) => model.active)?.id ?? mockModels[0]?.id ?? "";
@@ -1234,6 +1238,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       ],
     },
   };
+  const runReviewDismissed = new Set<string>();
   let defaultExecutionContext: string | null = null;
   let runtimeInfos: any[] = [
     {
@@ -1376,6 +1381,20 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     });
   }
   (window as any).__mockRuns = runs;
+  (window as any).__mockRunWorkspaceFiles = runWorkspaceFiles;
+  // Finish a pending MONITORRUN turn without changing the run's state: the
+  // test drives the run's status itself, then ends the turn to observe the
+  // deferred review prompt.
+  (window as any).__finishMonitorRun = () => {
+    if (!monitorRunFrameId) return;
+    const frameId = monitorRunFrameId;
+    const run = runs.find((item) => item.id === "run-local-002");
+    emit("agent", { kind: "ToolResult", frame_id: frameId, name: "monitor_run", ok: true, content: JSON.stringify(run) });
+    emit("agent", { kind: "Done", frame_id: frameId, stop_reason: "end_turn" });
+    resolveMonitorRun?.(frameId);
+    resolveMonitorRun = null;
+    monitorRunFrameId = null;
+  };
   const mockMethodSearchDetails = () => ({
     run: runs.find((item) => item.id === "method-search-001"),
     state: {
@@ -2496,6 +2515,11 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             };
           case "get_browser_url_filters":
             return mockBrowserUrlFilters;
+          case "get_browser_auto_launch":
+            return mockBrowserAutoLaunch;
+          case "set_browser_auto_launch":
+            mockBrowserAutoLaunch = Boolean(arg("enabled"));
+            return mockBrowserAutoLaunch;
           case "set_browser_url_filters": {
             const next = plain(arg("filters") ?? {});
             mockBrowserUrlFilters = {
@@ -3307,6 +3331,26 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             for (const p of paths) delete levels[p];
             return null;
           }
+          case "should_prompt_run_review": {
+            const runId = String(arg("runId") ?? "");
+            const run = runs.find((item) => item.id === runId);
+            if (!run) throw new Error("Run not found");
+            if (
+              run.kind !== "ssh_direct" ||
+              run.status !== "succeeded" ||
+              run.cleaned_at ||
+              runReviewDismissed.has(runId)
+            ) {
+              return false;
+            }
+            const specs = JSON.parse(String(run.output_specs_json ?? "[]"));
+            if (Array.isArray(specs) && specs.length > 0) return !run.harvested_at;
+            return ((runWorkspaceFiles[runId] ?? {})[""] ?? []).length > 0;
+          }
+          case "dismiss_run_review": {
+            runReviewDismissed.add(String(arg("runId") ?? ""));
+            return null;
+          }
           case "cleanup_run_workspace": {
             const run = runs.find((item) => item.id === String(arg("runId") ?? ""));
             if (!run) throw new Error("Run not found");
@@ -3403,6 +3447,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             const useForImageGeneration = Boolean(
               arg("useForImageGeneration") ?? profile.use_for_image_generation,
             );
+            const useForVideoGeneration = Boolean(
+              arg("useForVideoGeneration") ?? profile.use_for_video_generation,
+            );
             // Mirror the backend: an empty id creates a fresh profile.
             if (!profile.id) {
               let n = 1;
@@ -3416,12 +3463,16 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               ...profile,
               use_for_vision: useForVision,
               use_for_image_generation: useForImageGeneration,
+              use_for_video_generation: useForVideoGeneration,
             } : {
               ...m,
               use_for_vision: useForVision ? false : m.use_for_vision,
               use_for_image_generation: useForImageGeneration
                 ? false
                 : m.use_for_image_generation,
+              use_for_video_generation: useForVideoGeneration
+                ? false
+                : m.use_for_video_generation,
             });
             return mockModels;
           }
@@ -3921,6 +3972,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             if (path.toLowerCase().includes(".png")) {
               return { path, mime: "image/png", text: null, base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z0mAAAAAASUVORK5CYII=" };
             }
+            if (path.toLowerCase().endsWith(".mp4")) {
+              return { path, mime: "video/mp4", text: null, base64: mp4Base64 };
+            }
             if (path.toLowerCase().includes("figure_legend")) {
               return { path, mime: "text/markdown", text: "# Figure legend\n\nSee [the paper](https://example.com/paper) and [the plot](results/new.png).\n", base64: null };
             }
@@ -4145,6 +4199,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             }
             if (validatedModel === "grok-imagine-image-2.0") {
               return "Validated openai with grok-imagine-image-2.0";
+            }
+            if (validatedModel.startsWith("grok-imagine-video")) {
+              return `Validated openai with ${validatedModel}`;
             }
             return "Validated openai with deepseek-v4-pro";
           }
@@ -4598,6 +4655,10 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               return await new Promise<string>((resolve) => {
                 monitorRunFrameId = fid;
                 resolveMonitorRun = resolve;
+                // The monitored run belongs to the session that submitted it,
+                // like the real backend records frame_id at submission.
+                const monitored = runs.find((item) => item.id === "run-local-002");
+                if (monitored) monitored.frame_id = fid;
                 setTimeout(() => {
                   emit("agent", { kind: "User", frame_id: fid, text: msg });
                   emit("agent", { kind: "Reasoning", frame_id: fid, delta: "Attach the existing Run monitor." });
@@ -4635,6 +4696,42 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                     kind: "Text",
                     frame_id: fid,
                     delta: "The scientific figure is ready.",
+                  });
+                  emit("agent", { kind: "Done", frame_id: fid, stop_reason: "end_turn" });
+                  resolve(fid);
+                }, 1_350);
+              });
+            }
+            if (String(msg).includes("VIDEOGENPLACEHOLDER")) {
+              return await new Promise<string>((resolve) => {
+                setTimeout(() => {
+                  emit("agent", { kind: "User", frame_id: fid, text: msg });
+                  emit("agent", {
+                    kind: "Text",
+                    frame_id: fid,
+                    delta: "I’ll generate the demo clip now.",
+                  });
+                  emit("agent", {
+                    kind: "ToolCall",
+                    frame_id: fid,
+                    name: "generate_video",
+                    preview: "media/demo.mp4",
+                  });
+                }, 30);
+                setTimeout(() => {
+                  emit("agent", {
+                    kind: "ToolResult",
+                    frame_id: fid,
+                    name: "generate_video",
+                    ok: true,
+                    content: "Generated MP4 at media/demo.mp4.",
+                  });
+                }, 1_200);
+                setTimeout(() => {
+                  emit("agent", {
+                    kind: "Text",
+                    frame_id: fid,
+                    delta: "The demo clip is ready.",
                   });
                   emit("agent", { kind: "Done", frame_id: fid, stop_reason: "end_turn" });
                   resolve(fid);
@@ -4727,6 +4824,32 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 }, 30);
               });
             }
+            // Long-conversation tool returns (#927): large tool bodies remount
+            // the live step row and briefly collapse the thread. Follow-bottom
+            // must survive those rebuilds. Checked before SCROLLTEST because
+            // that name is a substring of this one.
+            if (String(arg("message") ?? "").includes("TOOLSCROLLTEST")) {
+              const bulky = (n: number) => Array.from(
+                { length: 40 },
+                (_, i) => `tool result block ${n} line ${i} ${"x".repeat(80)}`,
+              ).join("\n");
+              return new Promise<string>((resolve) => {
+                setTimeout(() => {
+                  emit("agent", { kind: "Text", frame_id: fid, delta: "I’ll inspect the files next.\n" });
+                  emit("agent", { kind: "ToolCall", frame_id: fid, name: "read", preview: "matrix.tsv" });
+                }, 20);
+                setTimeout(() => {
+                  emit("agent", { kind: "ToolResult", frame_id: fid, name: "read", ok: true, content: bulky(1) });
+                  emit("agent", { kind: "ToolCall", frame_id: fid, name: "python", preview: "df.describe()" });
+                }, 80);
+                setTimeout(() => {
+                  emit("agent", { kind: "ToolResult", frame_id: fid, name: "python", ok: true, content: bulky(2) });
+                  emit("agent", { kind: "Text", frame_id: fid, delta: "Tools finished at the tail." });
+                  emit("agent", { kind: "Done", frame_id: fid });
+                  resolve(fid);
+                }, 200);
+              });
+            }
             // Long-stream path (#61 regression test): drip many text deltas so the
             // thread re-renders repeatedly and grows well past the viewport.
             if (String(arg("message") ?? "").includes("SCROLLTEST")) {
@@ -4811,6 +4934,44 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                   resolve(fid);
                 }, 1_200);
               });
+            }
+            if (String(arg("message") ?? "").includes("CONTEXTUSAGEWARN")) {
+              setTimeout(() => {
+                emit("agent", { kind: "User", frame_id: fid, text: msg });
+                emit("agent", { kind: "Text", frame_id: fid, delta: "Context is getting full." });
+                emit("agent", {
+                  kind: "Usage",
+                  frame_id: fid,
+                  round: 1,
+                  input: 90_000,
+                  output: 1_520,
+                  reasoning: 0,
+                  cached: 0,
+                  ctx_tokens: 91_520,
+                  max_context: 128_000,
+                });
+                emit("agent", { kind: "Done", frame_id: fid });
+              }, 30);
+              return fid;
+            }
+            if (String(arg("message") ?? "").includes("CONTEXTUSAGEDANGER")) {
+              setTimeout(() => {
+                emit("agent", { kind: "User", frame_id: fid, text: msg });
+                emit("agent", { kind: "Text", frame_id: fid, delta: "Context is almost full." });
+                emit("agent", {
+                  kind: "Usage",
+                  frame_id: fid,
+                  round: 1,
+                  input: 114_000,
+                  output: 1_840,
+                  reasoning: 0,
+                  cached: 0,
+                  ctx_tokens: 115_840,
+                  max_context: 128_000,
+                });
+                emit("agent", { kind: "Done", frame_id: fid });
+              }, 30);
+              return fid;
             }
             if (String(arg("message") ?? "").includes("CONTEXTUSAGE")) {
               setTimeout(() => {

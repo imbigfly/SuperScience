@@ -198,6 +198,13 @@ pub trait ToolEnv: Send + Sync {
     fn is_cancelled(&self) -> bool {
         false
     }
+    /// Whether mid-turn user guidance is waiting to be injected at the next
+    /// agent-loop iteration. Long waits such as `monitor_run` poll this so they
+    /// can return a live snapshot instead of holding the turn until the Run
+    /// finishes. Default `false`; does not drain the queue.
+    fn guidance_pending(&self) -> bool {
+        false
+    }
     /// The raw cancel flag, when the env has one. Lets a tool that runs a
     /// nested agent loop (subagents) pass the SAME Stop flag through, so the
     /// user's Stop also interrupts the inner loop. Default `None`.

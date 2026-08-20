@@ -11,7 +11,7 @@ WISP — *Workspace for Intelligent Scientific Practice*
 
 <a href="https://github.com/xuzhougeng/wisp-science/releases"><img src="https://img.shields.io/github/v/release/xuzhougeng/wisp-science" alt="Release"></a>
 <a href="https://github.com/xuzhougeng/wisp-science/releases"><img src="https://img.shields.io/github/downloads/xuzhougeng/wisp-science/total" alt="下载量"></a>
-<a href="https://doi.org/10.5281/zenodo.21869520"><img src="https://zenodo.org/badge/1285857639.svg" alt="DOI"></a>
+<a href="https://doi.org/10.5281/zenodo.22009273"><img src="https://zenodo.org/badge/1285857639.svg" alt="DOI"></a>
 <a href="https://github.com/xuzhougeng/wisp-science/blob/main/LICENSE"><img src="https://img.shields.io/github/license/xuzhougeng/wisp-science" alt="许可证"></a>
 <a href="https://github.com/xuzhougeng/wisp-science/stargazers"><img src="https://img.shields.io/github/stars/xuzhougeng/wisp-science?style=social" alt="Stars"></a>
 <br>
@@ -40,7 +40,8 @@ Agent 读写项目文件、执行 shell，并按需加载 Skills（`SKILL.md`）
 
 **从笔记本到远程服务器**
 
-持久化 Python / R 内核，变量跨 cell、会话和重启保留。本地、WSL、SSH 主机注册
+持久化 Python / R 内核，变量在同一会话内跨 cell 与轮次保留；每个会话拥有独立
+内核，并行会话互不干扰。本地、WSL、SSH 主机注册
 一次即可探测硬件、提交带实时日志的长 **Run**。密钥只进系统密钥环，不进 SQLite。
 
 **为科研而生**
@@ -158,16 +159,16 @@ Windows 代码签名由 [SignPath.io](https://signpath.io) 提供，证书由
 
 ## 引用
 
-[![DOI](https://zenodo.org/badge/1285857639.svg)](https://doi.org/10.5281/zenodo.21869520)
+[![DOI](https://zenodo.org/badge/1285857639.svg)](https://doi.org/10.5281/zenodo.22009273)
 
 ```bibtex
 @software{xu2026wisp,
   author    = {Xu, Zhou-Geng},
   title     = {Wisp Science: a local-first AI research workbench},
-  version   = {v1.2.0},
+  version   = {v1.5.0},
   year      = {2026},
   publisher = {Zenodo},
-  doi       = {10.5281/zenodo.21869520},
-  url       = {https://doi.org/10.5281/zenodo.21869520}
+  doi       = {10.5281/zenodo.22009273},
+  url       = {https://doi.org/10.5281/zenodo.22009273}
 }
 ```

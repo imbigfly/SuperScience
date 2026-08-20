@@ -1266,7 +1266,8 @@ test("ACP turn maps config, overlapping tools, plan, usage, and exact permission
   });
   await expect(permission).toHaveCount(0);
   const contextTrigger = page.getByTestId("context-usage-trigger");
-  await expect(contextTrigger).toHaveText("");
+  await expect(contextTrigger).toHaveText("15%");
+  await expect(contextTrigger).toHaveAttribute("data-tone", "ok");
   await expect.poll(() => contextTrigger.evaluate((el) =>
     getComputedStyle(el).getPropertyValue("--context-gauge-angle").trim())).toBe("-76.5deg");
   await expect(page.locator(".topbar .hint")).toHaveCount(0);
@@ -2207,12 +2208,32 @@ test("/share exports selected, keyword-redacted messages as a PNG", async ({ pag
   expect(String(args.pngBase64).length).toBeGreaterThan(10000);
   await expect(overlay).toHaveCount(0);
 
+  // PNG width is the canvas width (IHDR bytes 16..20) at 2× scale: the
+  // default is 840 px, and the width field overrides it.
+  const pngWidth = (b64: string) =>
+    page.evaluate((raw) => {
+      const bytes = Uint8Array.from(atob(raw), (c) => c.charCodeAt(0));
+      return new DataView(bytes.buffer).getUint32(16, false);
+    }, b64);
+  expect(await pngWidth(String(args.pngBase64))).toBe(1680);
+  await composerInput.fill("/share");
+  await composerInput.press("Enter");
+  await expect(overlay).toBeVisible();
+  await overlay.getByTestId("share-width-input").fill("600");
+  await overlay.getByTestId("share-export").click();
+  await expect.poll(async () => {
+    const latest = await lastInvokeArgs(page, "save_share_image");
+    return latest ? pngWidth(String(latest.pngBase64)) : 0;
+  }).toBe(1200);
+  await expect(overlay).toHaveCount(0);
+
   // HTML format: same dialog exports a self-contained rendered document.
   await composerInput.fill("/share");
   await composerInput.press("Enter");
   await expect(overlay).toBeVisible();
   await overlay.getByTestId("share-format-html").click();
   await expect(overlay.getByTestId("share-export")).toHaveText("Export HTML");
+  await expect(overlay.getByTestId("share-width-input")).toHaveCount(0);
   await overlay.locator("#share-redact-input").fill("alice");
   await overlay.getByTestId("share-export").click();
   await expect.poll(() => lastInvokeArgs(page, "save_share_html")).toMatchObject({
@@ -2290,7 +2311,7 @@ test("/share exports selected, keyword-redacted messages as a PNG", async ({ pag
   await expect(composerInput).toBeVisible();
 });
 
-test("/share social copy attaches the social-note skill after a platform is chosen", async ({ page }) => {
+test("/share hides the social copy flow and keeps PNG plus HTML export", async ({ page }) => {
   await enterApp(page);
   const composerInput = composer(page);
   const overlay = page.getByTestId("share-overlay");
@@ -2304,26 +2325,16 @@ test("/share social copy attaches the social-note skill after a platform is chos
   await expect(overlay).toBeVisible();
   await expect(overlay.getByRole("heading", { name: "Share as image" })).toBeVisible();
   await expect(overlay.locator(".share-row")).toHaveCount(3);
-  await expect(overlay.getByTestId("share-social")).toHaveCount(0);
-  expect(await lastInvokeArgs(page, "generate_share_social_copy")).toBeNull();
-  await expect(overlay.getByTestId("share-social-skill")).toBeDisabled();
-  await expect(overlay.getByTestId("share-platform-xiaohongshu")).not.toHaveClass(/active/);
-  await expect(overlay.getByTestId("share-platform-wechat")).not.toHaveClass(/active/);
-
-  await overlay.locator("#share-redact-input").fill("alice");
-  await overlay.getByTestId("share-platform-wechat").click();
-  await expect(overlay.getByTestId("share-platform-wechat")).toHaveClass(/active/);
-  await overlay.getByTestId("share-social-skill").click();
-  await expect(overlay).toHaveCount(0);
-  await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
-    message: expect.stringMatching(/social-note/),
-    references: [{ kind: "skill", name: "social-note" }],
-  });
-  const sent = await lastInvokeArgs(page, "send_message");
-  expect(String(sent.message)).toContain("WeChat (wechat)");
-  expect(String(sent.message)).not.toMatch(/Xiaohongshu/i);
-  expect(String(sent.message)).toContain("xxx confirmed");
-  expect(String(sent.message)).toContain("[1] user");
+  // The platform picker and the skill-copy button stay hidden; HTML export
+  // is available again next to the long PNG.
+  await expect(overlay.getByTestId("share-social-skill")).toHaveCount(0);
+  await expect(overlay.getByTestId("share-platform-xiaohongshu")).toHaveCount(0);
+  await expect(overlay.getByTestId("share-platform-wechat")).toHaveCount(0);
+  await expect(overlay.getByTestId("share-format-png")).toBeVisible();
+  await expect(overlay.getByTestId("share-format-html")).toBeVisible();
+  await expect(overlay.getByTestId("share-export")).toHaveText("Export PNG");
+  await overlay.getByTestId("share-format-html").click();
+  await expect(overlay.getByTestId("share-export")).toHaveText("Export HTML");
 });
 
 test("composer / menu layers sections and gives each command its own icon", async ({ page }) => {
@@ -2559,7 +2570,9 @@ test("context usage moves out of the topbar and opens a categorized detail panel
   await page.getByRole("button", { name: "Send", exact: true }).click();
 
   const trigger = page.getByTestId("context-usage-trigger");
-  await expect(trigger).toHaveText("");
+  await expect(trigger).toHaveText("62%");
+  await expect(trigger).toHaveAttribute("data-tone", "ok");
+  await expect(trigger).toHaveAttribute("title", /79\.9K \/ 128K tokens/);
   await expect.poll(() => trigger.evaluate((el) =>
     getComputedStyle(el).getPropertyValue("--context-gauge-angle").trim())).toBe("-34.2deg");
   await expect.poll(() => trigger.locator("svg path").first().evaluate((el) =>
@@ -2649,7 +2662,8 @@ test("legacy native usage totals fall back to Conversation, not Agent-managed", 
   await page.getByRole("button", { name: "Send", exact: true }).click();
 
   const trigger = page.getByTestId("context-usage-trigger");
-  await expect(trigger).toHaveText("");
+  await expect(trigger).toHaveText("20%");
+  await expect(trigger).toHaveAttribute("data-tone", "ok");
   await expect.poll(() => trigger.evaluate((el) =>
     getComputedStyle(el).getPropertyValue("--context-gauge-angle").trim())).toBe("-72.0deg");
   await trigger.click();
@@ -2682,8 +2696,27 @@ test("context usage limit follows the session's current model", async ({ page })
   await expect(page.locator(".model-picker-label")).toHaveText("opus-4.8");
   await expect.poll(() => trigger.evaluate((el) =>
     getComputedStyle(el).getPropertyValue("--context-gauge-angle").trim())).toBe("-54.0deg");
+  await expect(trigger).toHaveText("40%");
   await trigger.click();
   await expect(page.getByTestId("context-usage-panel")).toContainText("~79.9K / 200K Tokens");
+});
+
+test("context usage trigger colors the live percent at warn and danger thresholds (#931)", async ({ page }) => {
+  await enterApp(page);
+
+  await page.locator("#composer-input").fill("CONTEXTUSAGEWARN");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  const trigger = page.getByTestId("context-usage-trigger");
+  await expect(trigger).toHaveText("72%");
+  await expect(trigger).toHaveAttribute("data-tone", "warn");
+  await expect(trigger).toHaveClass(/is-warn/);
+
+  await newSessionButton(page).click();
+  await page.locator("#composer-input").fill("CONTEXTUSAGEDANGER");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(trigger).toHaveText("91%");
+  await expect(trigger).toHaveAttribute("data-tone", "danger");
+  await expect(trigger).toHaveClass(/is-danger/);
 });
 
 test("context usage keeps the running agent window until a model switch boundary", async ({ page }) => {
@@ -6265,6 +6298,98 @@ test("monitor_run renders a live Run card from summary polls and on-demand detai
   await expect(card).toHaveCount(0);
 });
 
+test("review prompt waits for turn end and dismissal persists (#897)", async ({ page }) => {
+  await enterApp(page);
+  await page.evaluate(() => {
+    const run = (window as any).__mockRuns.find((item: any) => item.id === "run-local-002");
+    Object.assign(run, {
+      context_id: "ssh:gpu-server",
+      title: "Genome assembly",
+      kind: "ssh_direct",
+      status: "running",
+      created_at: Math.floor(Date.now() / 1000) - 300,
+      started_at: Math.floor(Date.now() / 1000) - 295,
+      remote_workdir: "~/.wisp-science/runs/run-local-002",
+      remote_handle_json: '{"kind":"ssh_direct"}',
+      progress_json: "{}",
+    });
+    (window as any).__mockRunWorkspaceFiles["run-local-002"] = {
+      "": [{ path: "assembly.fasta", kind: "file", size_bytes: 4096, file_count: null }],
+    };
+  });
+
+  await composer(page).fill("MONITORRUN");
+  await page.getByRole("button", { name: "Send" }).click();
+  const card = page.getByTestId("run-monitor-card");
+  await expect(card).toBeVisible();
+
+  // The run succeeds while the turn is still working: no interruption yet.
+  await page.evaluate(() => {
+    const run = (window as any).__mockRuns.find((item: any) => item.id === "run-local-002");
+    Object.assign(run, {
+      status: "succeeded",
+      ended_at: Math.floor(Date.now() / 1000),
+      exit_code: 0,
+    });
+  });
+  await expect(card).toContainText("Succeeded", { timeout: 7_000 });
+  const review = page.getByTestId("run-review-modal");
+  await expect(review).toHaveCount(0);
+
+  // Turn ends: the prompt opens for the unresolved server-side files.
+  await page.evaluate(() => (window as any).__finishMonitorRun());
+  await expect(review).toBeVisible({ timeout: 7_000 });
+  await expect(review).toContainText("assembly.fasta");
+
+  // Escape immediately: one press closes the prompt and persists the
+  // dismissal so this run never auto-prompts again.
+  await page.keyboard.press("Escape");
+  await expect(review).toHaveCount(0);
+  await expect.poll(() => lastInvokeArgs(page, "dismiss_run_review")).toMatchObject({
+    runId: "run-local-002",
+  });
+});
+
+test("unmonitored exploratory run success never auto-opens the review prompt (#897)", async ({ page }) => {
+  await page.goto("/");
+  await page.evaluate(() => {
+    const now = Math.floor(Date.now() / 1000);
+    const run = (window as any).__mockRuns.find((item: any) => item.id === "run-local-002");
+    Object.assign(run, {
+      frame_id: "s-complete",
+      context_id: "ssh:gpu-server",
+      title: "Quick check",
+      kind: "ssh_direct",
+      status: "running",
+      created_at: now - 30,
+      started_at: now - 29,
+      remote_workdir: "~/.wisp-science/runs/run-local-002",
+      remote_handle_json: '{"kind":"ssh_direct"}',
+    });
+    (window as any).__mockRunWorkspaceFiles["run-local-002"] = {
+      "": [{ path: "notes.txt", kind: "file", size_bytes: 128, file_count: null }],
+    };
+  });
+
+  await page.getByTestId("recent-session-card").nth(1).click();
+  const automatic = page.getByTestId("auto-run-monitor");
+  await expect(automatic).toBeVisible();
+
+  await page.evaluate(() => {
+    const run = (window as any).__mockRuns.find((item: any) => item.id === "run-local-002");
+    Object.assign(run, {
+      status: "succeeded",
+      ended_at: Math.floor(Date.now() / 1000),
+      exit_code: 0,
+    });
+  });
+  await expect(automatic).toContainText("Succeeded", { timeout: 7_000 });
+  // Exploratory command runs never nominate themselves for review, even with
+  // files present and the session idle: cleanup stays on the manual entry
+  // points and retention.
+  await expect(page.getByTestId("run-review-modal")).toHaveCount(0);
+});
+
 test("run monitor output stays pinned to the tail across poll rebuilds (#654)", async ({ page }) => {
   // Eight long logical lines wrap far past the 150px pre, so it scrolls.
   const longOutput = (tag: string) =>
@@ -6488,6 +6613,26 @@ test("image generation shows a placeholder and replaces it with the PNG", async 
   await expect(image).toBeVisible();
   await expect(image).toHaveAttribute("src", /^data:image\/png;base64,/);
   await expect(card.locator(".image-generation-spinner")).toHaveCount(0);
+});
+
+test("video generation shows a placeholder and replaces it with the MP4", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("VIDEOGENPLACEHOLDER");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const card = page.getByTestId("video-generation-card");
+  await expect(card).toHaveAttribute("data-status", "running");
+  await expect(card.locator(".video-generation-spinner")).toBeVisible();
+  await expect(card.locator("video")).toHaveCount(0);
+  await expect(card).toContainText("media/demo.mp4");
+  await expect(page.locator('.step-name:text-is("generate_video")')).toHaveCount(0);
+
+  await expect(card).toHaveAttribute("data-status", "completed", { timeout: 3_000 });
+  const video = card.locator("video");
+  await expect(video).toBeVisible();
+  await expect(video).toHaveAttribute("src", /^data:video\/mp4;base64,/);
+  await expect(video).toHaveAttribute("preload", "metadata");
+  await expect(card.locator(".video-generation-spinner")).toHaveCount(0);
 });
 
 test("SSH failures show that automatic retry was stopped", async ({ page }) => {
@@ -8116,6 +8261,55 @@ test("grok-imagine-image-2.0 can be assigned for generation but not selected for
   await expect(page.locator(".model-menu")).toContainText("deepseek-v4-pro");
 });
 
+test("grok-imagine-video can be assigned for generation but not selected for chat", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Models");
+  const opus = page.locator(".settings-list-row", { hasText: "opus-4.8" });
+  await opus.click();
+
+  await providerSelect(page).selectOption("openai");
+  await page.getByLabel("Base URL").fill("https://api.x.ai");
+  await page.getByLabel("Model").fill("grok-imagine-video");
+  await expect(page.getByLabel("Max output tokens")).toHaveCount(0);
+  await expect(page.getByLabel("Supports image input")).toHaveCount(0);
+  await expect(page.getByTestId("video-duration")).toBeVisible();
+  await expect(page.getByTestId("video-aspect-ratio")).toBeVisible();
+  await expect(page.getByTestId("video-resolution")).toBeVisible();
+  await expect(page.getByTestId("image-size")).toHaveCount(0);
+  await page.getByTestId("video-duration").fill("8");
+  await page.getByTestId("video-aspect-ratio").selectOption("9:16");
+  await page.getByTestId("video-resolution").selectOption("1080p");
+  await expect(page.getByTestId("use-for-video-generation")).toBeChecked();
+  await page.getByRole("button", { name: "Valid" }).click();
+  await expect(page.locator(".settings-status")).toHaveText(
+    "Validated openai with grok-imagine-video",
+  );
+  await page.getByRole("button", { name: "Save" }).click();
+
+  await expect.poll(() => lastInvokeArgs(page, "save_model")).toMatchObject({
+    useForVideoGeneration: true,
+    profile: {
+      id: "opus",
+      provider: "openai",
+      model: "grok-imagine-video",
+      use_for_video_generation: true,
+      video_duration_secs: 8,
+      video_aspect_ratio: "9:16",
+      video_resolution: "1080p",
+    },
+  });
+
+  const videoModel = page.locator(".settings-list-row", { hasText: "opus-4.8" });
+  await expect(videoModel).toContainText("grok-imagine-video");
+  await expect(videoModel).toContainText("video gen");
+  await expect(videoModel.getByRole("button", { name: "Use" })).toHaveCount(0);
+
+  await page.locator(".settings-head-close").click();
+  await page.locator(".model-picker-btn").click();
+  await expect(page.locator(".model-menu")).not.toContainText("grok-imagine-video");
+  await expect(page.locator(".model-menu")).toContainText("deepseek-v4-pro");
+});
+
 test("settings normalizes a blank stored provider to openai", async ({ page }) => {
   await enterApp(page);
   await openModelsSettings(page);
@@ -9089,10 +9283,15 @@ test("browser URL filters persist block and prefer hosts", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Browser");
   await expect(page.getByTestId("browser-url-filters")).toBeVisible();
+  const autoLaunch = page.getByTestId("browser-auto-launch");
+  await expect(autoLaunch).toBeChecked();
+  await autoLaunch.locator("..").click();
+  await expect(autoLaunch).not.toBeChecked();
   await page.keyboard.press("Escape");
   await expect(page.locator(".settings-page")).toHaveCount(0);
 
   await openSettingsSection(page, "Browser");
+  await expect(page.getByTestId("browser-auto-launch")).not.toBeChecked();
   await page.getByTestId("browser-block-host").fill("hijacked.example");
   await page.getByTestId("browser-block-reason").fill("domain taken over");
   await page.getByTestId("browser-block-add").click();
@@ -9125,6 +9324,29 @@ test("chat stays pinned to the bottom while streaming a long reply (#61)", async
       { timeout: 5000 },
     )
     .toBeLessThan(8);
+});
+
+test("chat stays at the latest message after tool results rebuild the thread (#927)", async ({ page }) => {
+  await page.goto("/?mockLongPages=8");
+  await page.locator(".proj-card-main").first().click();
+  const scroller = page.locator("#chat-scroller");
+  await expect(page.getByText(/Window page 0 row 19/)).toBeVisible();
+  await expect.poll(() => scroller.evaluate((element) =>
+    element.scrollHeight - element.clientHeight - element.scrollTop,
+  )).toBeLessThan(8);
+
+  await composer(page).fill("TOOLSCROLLTEST");
+  await page.getByRole("button", { name: "Send" }).click();
+  // A click on the live transcript used to mark a user-scroll gesture, so the
+  // next tool-result collapse parked the view at the top.
+  await scroller.evaluate((element) => {
+    element.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    element.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+  });
+  await expect(page.getByText("Tools finished at the tail.")).toBeVisible({ timeout: 15_000 });
+  await expect.poll(() => scroller.evaluate((element) =>
+    element.scrollHeight - element.clientHeight - element.scrollTop,
+  )).toBeLessThan(8);
 });
 
 test("streaming assistant keeps formatted Markdown with a lightweight live tail", async ({ page }) => {
@@ -9486,6 +9708,86 @@ test("switching conversations restores each reading position (#849)", async ({ p
     .toBeGreaterThan(readingTop - 40);
   await expect.poll(() => scroller.evaluate((element) => element.scrollTop))
     .toBeLessThan(readingTop + 40);
+});
+
+test("a thread rebuild clamp does not park a followed view at the top (#927)", async ({ page }) => {
+  await page.goto("/?mockLongPages=8");
+  await page.locator(".proj-card-main").first().click();
+  const scroller = page.locator("#chat-scroller");
+  await expect(page.getByText(/Window page 0 row 19/)).toBeVisible();
+  await expect.poll(() => scroller.evaluate((element) =>
+    element.scrollHeight - element.clientHeight - element.scrollTop,
+  )).toBeLessThan(8);
+
+  await scroller.evaluate((element) => {
+    element.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    const thread = document.getElementById("chat-thread");
+    if (!thread) return;
+    const children = Array.from(thread.children) as HTMLElement[];
+    for (const child of children) child.style.display = "none";
+    thread.getBoundingClientRect();
+    for (const child of children) child.style.display = "";
+    element.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+  });
+  await page.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+  );
+  await expect.poll(() => scroller.evaluate((element) =>
+    element.scrollHeight - element.clientHeight - element.scrollTop,
+  )).toBeLessThan(8);
+});
+
+test("jump pill returns a scrolled-up view to the latest message", async ({ page }) => {
+  await page.goto("/?mockLongPages=8");
+  await page.locator(".proj-card-main").first().click();
+  const scroller = page.locator("#chat-scroller");
+  await expect(page.getByText(/Window page 0 row 19/)).toBeVisible();
+  await expect.poll(() => scroller.evaluate((element) =>
+    element.scrollHeight - element.clientHeight - element.scrollTop,
+  )).toBeLessThan(8);
+
+  await scroller.evaluate((element) => {
+    element.dispatchEvent(new WheelEvent("wheel", { deltaY: -80, bubbles: true }));
+    element.scrollTop = 0;
+  });
+  const pill = page.locator("#chat-jump-pill");
+  await expect(pill).toBeVisible();
+  await expect(pill).toContainText("Back to latest");
+  await pill.click();
+  await expect.poll(() => scroller.evaluate((element) =>
+    element.scrollHeight - element.clientHeight - element.scrollTop,
+  )).toBeLessThan(8);
+  await expect(pill).not.toHaveClass(/visible/);
+});
+
+test("a thread rebuild keeps a scrolled-up reading position (#927)", async ({ page }) => {
+  await page.goto("/?mockLongPages=8");
+  await page.locator(".proj-card-main").first().click();
+  const scroller = page.locator("#chat-scroller");
+  await expect(page.getByText(/Window page 0 row 19/)).toBeVisible();
+  await scroller.evaluate((element) => {
+    element.dispatchEvent(new WheelEvent("wheel", { deltaY: -80, bubbles: true }));
+    element.scrollTop = Math.max(120, element.scrollHeight / 3);
+  });
+  const readingTop = await scroller.evaluate((element) => element.scrollTop);
+  expect(readingTop).toBeGreaterThan(40);
+  await scroller.evaluate(() => new Promise((resolve) => setTimeout(resolve, 600)));
+
+  await scroller.evaluate((element) => {
+    const thread = document.getElementById("chat-thread");
+    if (!thread) return;
+    const children = Array.from(thread.children) as HTMLElement[];
+    for (const child of children) child.style.display = "none";
+    thread.getBoundingClientRect();
+    for (const child of children) child.style.display = "";
+  });
+  await page.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+  );
+  await expect.poll(() => scroller.evaluate((element) => element.scrollTop))
+    .toBeGreaterThan(readingTop - 40);
+  await expect.poll(() => scroller.evaluate((element) => element.scrollTop))
+    .toBeLessThan(readingTop + 80);
 });
 
 test("conversation outline loads and jumps to an older user question", async ({ page }) => {
@@ -10866,6 +11168,25 @@ test("context-limit recovery can continue in a new session with the old one atta
   }).toMatchObject({
     references: [{ kind: "session", id: frameId }],
   });
+});
+
+test("a leftover proxy connect error points at Model API proxy", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("hello");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+  const frameId = String((await lastInvokeArgs(page, "send_message")).sessionId);
+
+  await emitTauriEvent(page, "agent", {
+    kind: "Error",
+    frame_id: frameId,
+    message: "http: error sending request: tcp connect error: Connection refused (os error 111) (via leftover HTTPS_PROXY=http://127.0.0.1:7890)",
+  });
+
+  const card = page.locator(".finding.err");
+  await expect(card).toBeVisible();
+  await expect(card.locator(".finding-body")).toContainText("Model API proxy");
+  await expect(card.locator(".finding-body")).toContainText("none");
 });
 
 test("pet stays off until the user explicitly configures its directory", async ({ page }) => {

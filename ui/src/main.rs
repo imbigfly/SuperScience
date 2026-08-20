@@ -34,7 +34,7 @@ use app_overlays::{
 use bindings::{
     attach_chat_autoscroll, cancel_saved_marks_apply, clear_selection, close_mcp_app,
     force_chat_bottom, invoke, invoke_checked, is_mac, is_windows, jump_chat_to_item,
-    jump_chat_to_last_user, jump_chat_to_user, listen, listen_current_window,
+    jump_chat_to_user, listen, listen_current_window,
     listen_native_file_drop, native_drop_in_composer, open_external_url, pasted_image_count,
     preserve_chat_prepend_position, preview_selection, restore_chat_session_scroll,
     schedule_chat_follow, set_saved_marks, CHAT_SCROLLER_ID, CHAT_THREAD_ID,
@@ -623,6 +623,24 @@ fn App() -> impl IntoView {
             })
         }
     });
+    let context_usage_flash = create_rw_signal(false);
+    {
+        let last_used = Rc::new(Cell::new(None::<usize>));
+        create_effect(move |_| {
+            let Some(snapshot) = active_context_usage.get() else {
+                last_used.set(None);
+                return;
+            };
+            let previous = last_used.replace(Some(snapshot.used));
+            if previous.is_some_and(|previous| snapshot.used < previous) {
+                context_usage_flash.set(true);
+                set_timeout(
+                    move || context_usage_flash.set(false),
+                    std::time::Duration::from_millis(700),
+                );
+            }
+        });
+    }
     create_effect(move |_| {
         let _ = active_session.get();
         context_usage_open.set(false);
@@ -2244,6 +2262,8 @@ fn App() -> impl IntoView {
             }
             AgentEvent::User { frame_id, text } => {
                 dismiss_follow_up_questions(follow_up_questions, follow_up_generation, &frame_id);
+                // The banner judges the answer on screen; a new turn has none yet.
+                set_browser_offline_notice(browser_offline_cb, &frame_id, None);
                 set_pet_activity(&frame_id, "running");
                 flush_now();
                 let outline_text = text.clone();
@@ -2360,6 +2380,9 @@ fn App() -> impl IntoView {
                     );
                 });
                 refresh_transcript_projections(&frame_id);
+                if active_cb.get_untracked().as_deref() == Some(frame_id.as_str()) {
+                    schedule_chat_follow();
+                }
             }
             AgentEvent::ToolResult {
                 frame_id,
@@ -2428,30 +2451,29 @@ fn App() -> impl IntoView {
                         promote_assistant_text(v, &content);
                     }
                 });
-                if browser_retrieval_blocked(&name, ok, &content) {
-                    let retry_text =
+                // The tool rows of the running turn are the whole verdict, so
+                // recompute from them instead of latching one event: a refused
+                // attempt after a successful scan must not claim the answer has
+                // no live results (#921).
+                if is_browser_retrieval_tool(&name) {
+                    let notice =
                         if active_cb.get_untracked().as_deref() == Some(frame_id.as_str()) {
-                            items_cb.with_untracked(|rows| last_user_composer_text(rows))
+                            items_cb.with_untracked(|rows| {
+                                browser_offline_notice_from_items(&frame_id, rows)
+                            })
                         } else {
                             transcripts_cb.with_untracked(|cache| {
-                                cache
-                                    .get(&frame_id)
-                                    .map(|rows| last_user_composer_text(rows))
-                                    .unwrap_or_default()
+                                cache.get(&frame_id).and_then(|rows| {
+                                    browser_offline_notice_from_items(&frame_id, rows)
+                                })
                             })
                         };
-                    browser_offline_cb.set(Some(BrowserOfflineNotice {
-                        frame_id: frame_id.clone(),
-                        retry_text,
-                    }));
-                } else if browser_retrieval_restored(&name, ok, &content) {
-                    browser_offline_cb.update(|notice| {
-                        if notice.as_ref().is_some_and(|row| row.frame_id == frame_id) {
-                            *notice = None;
-                        }
-                    });
+                    set_browser_offline_notice(browser_offline_cb, &frame_id, notice);
                 }
                 refresh_transcript_projections(&frame_id);
+                if active_cb.get_untracked().as_deref() == Some(frame_id.as_str()) {
+                    schedule_chat_follow();
+                }
             }
             AgentEvent::ToolPresentation {
                 frame_id,
@@ -2479,28 +2501,6 @@ fn App() -> impl IntoView {
                     && active_cb.get_untracked().as_deref() == Some(frame_id.as_str())
                 {
                     show_mcp_app.call((frame_id, presentation_id, payload, true));
-                } else if presentation_kind == BROWSER_DISCONNECTED_KIND {
-                    let retry_text =
-                        if active_cb.get_untracked().as_deref() == Some(frame_id.as_str()) {
-                            items_cb.with_untracked(|rows| last_user_composer_text(rows))
-                        } else {
-                            transcripts_cb.with_untracked(|cache| {
-                                cache
-                                    .get(&frame_id)
-                                    .map(|rows| last_user_composer_text(rows))
-                                    .unwrap_or_default()
-                            })
-                        };
-                    browser_offline_cb.set(Some(BrowserOfflineNotice {
-                        frame_id,
-                        retry_text,
-                    }));
-                } else if presentation_kind == BROWSER_CONNECTED_KIND {
-                    browser_offline_cb.update(|notice| {
-                        if notice.as_ref().is_some_and(|row| row.frame_id == frame_id) {
-                            *notice = None;
-                        }
-                    });
                 }
             }
             AgentEvent::Usage {
@@ -5188,19 +5188,14 @@ fn App() -> impl IntoView {
                 // unguarded set would clobber the newer view with stale rows (#53).
                 if active_session.get().as_deref() == Some(&id) {
                     items.set(chats.clone());
-                    // Tool rows are the last word. A leftover disconnected
-                    // presentation from earlier in the session must not cover a
-                    // later successful scan when the stream ends or the page
-                    // reloads (#887).
-                    if let Some(notice) = browser_offline_notice_from_items(&id, &chats) {
-                        browser_offline_notice.set(Some(notice));
-                    } else {
-                        browser_offline_notice.update(|notice| {
-                            if notice.as_ref().is_some_and(|row| row.frame_id == id) {
-                                *notice = None;
-                            }
-                        });
-                    }
+                    // The latest turn's tool rows are the whole verdict, so a
+                    // reload cannot revive an offline banner the turn's own
+                    // successful retrieval already answered (#887).
+                    set_browser_offline_notice(
+                        browser_offline_notice,
+                        &id,
+                        browser_offline_notice_from_items(&id, &chats),
+                    );
                     for presentation in presentations {
                         if presentation.presentation_kind == "mcp_app" {
                             show_mcp_app.call((
@@ -6200,10 +6195,12 @@ fn App() -> impl IntoView {
                         "supports_vision": false,
                         "use_for_vision": false,
                         "use_for_image_generation": false,
+                        "use_for_video_generation": false,
                     },
                     "key": Some(key.clone()),
                     "useForVision": false,
                     "useForImageGeneration": false,
+                    "useForVideoGeneration": false,
                 }))
                 .unwrap();
                 if let Ok(v) = invoke_checked("save_model", arg).await {
@@ -6582,6 +6579,64 @@ fn App() -> impl IntoView {
     let storage_prefs_form = create_rw_signal(None::<StoragePrefsForm>);
     let run_review_modal = create_rw_signal(None::<String>);
     provide_context(RunReviewModal(run_review_modal));
+    // Deferred results-review prompting (#897): monitored run cards nominate
+    // candidates here; this root effect waits until the owning session is
+    // idle, asks the backend whether each candidate has an unresolved product
+    // decision, and opens the modal for the newest one that does. Exploratory
+    // command runs never enter the queue, and dismissed or empty workspaces
+    // never prompt.
+    let pending_run_reviews = create_rw_signal(Vec::<String>::new());
+    provide_context(crate::overlays::PendingRunReviews(pending_run_reviews));
+    create_effect(move |_| {
+        if run_review_modal.get().is_some() {
+            return;
+        }
+        let running_now = running.get();
+        let ready: Vec<String> = pending_run_reviews.with(|ids| {
+            ids.iter()
+                .filter(|id| {
+                    run_records.with(|runs| {
+                        runs.iter()
+                            .find(|run| run.id == **id)
+                            .and_then(|run| run.frame_id.clone())
+                            .is_none_or(|frame| !running_now.contains(&frame))
+                    })
+                })
+                .cloned()
+                .collect()
+        });
+        if ready.is_empty() {
+            return;
+        }
+        pending_run_reviews.update(|ids| ids.retain(|id| !ready.contains(id)));
+        spawn_local(async move {
+            for id in ready.iter().rev() {
+                let args = to_value(&serde_json::json!({ "runId": id })).unwrap();
+                match invoke_checked("should_prompt_run_review", args).await {
+                    Ok(value) if value.as_bool() == Some(true) => {
+                        run_review_modal.set(Some(id.clone()));
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
+    });
+    // Closing the review modal (X, Escape, or after cleanup) persists the
+    // dismissal so this run never auto-prompts again; the manual entry points
+    // on run cards and the runs panel stay available.
+    create_effect(move |previous: Option<Option<String>>| {
+        let current = run_review_modal.get();
+        if let Some(Some(previous_id)) = previous {
+            if current.as_deref() != Some(previous_id.as_str()) {
+                spawn_local(async move {
+                    let args = to_value(&serde_json::json!({ "runId": previous_id })).unwrap();
+                    let _ = invoke_checked("dismiss_run_review", args).await;
+                });
+            }
+        }
+        current
+    });
     let runtime_environment = create_rw_signal(None::<RuntimeSlot>);
     let runtime_environment_pinned = create_rw_signal(false);
     let runtime_environment_position = create_rw_signal((16, 16));
@@ -10763,8 +10818,10 @@ fn App() -> impl IntoView {
             </div>
             // Static element; scroll.js toggles `.visible` — no reactive rebuild.
             <button type="button" id="chat-jump-pill" class="chat-jump-pill"
-                on:click=move |_| jump_chat_to_last_user()>
-                {move || t(locale.get(), "chat.jump_last_user")}
+                aria-label=move || t(locale.get(), "chat.jump_bottom")
+                on:click=move |_| force_chat_bottom()>
+                {compose_icon("chevron-down")}
+                {move || t(locale.get(), "chat.jump_bottom")}
             </button>
             {move || {
                 let rows = conversation_outline.get();
@@ -11961,12 +12018,32 @@ fn App() -> impl IntoView {
                             {move || active_context_usage.get().map(|snapshot| {
                                 let pct = context_percent(snapshot.used, snapshot.max);
                                 let gauge_angle = -90.0 + pct as f64 * 0.9;
+                                let tone = context_usage_tone(snapshot.used, snapshot.max);
+                                let percent_label = context_usage_percent_label(snapshot.used, snapshot.max);
+                                let tooltip = context_usage_tooltip(&snapshot, locale.get());
+                                let aria = if snapshot.max == 0 {
+                                    t(locale.get(), "context_usage.open_unknown")
+                                } else {
+                                    tf(
+                                        locale.get(),
+                                        "context_usage.open_pct",
+                                        &[("pct", &pct.to_string())],
+                                    )
+                                };
+                                let tone_warn = tone == ContextUsageTone::Warn;
+                                let tone_danger = tone == ContextUsageTone::Danger;
+                                let tone_unknown = tone == ContextUsageTone::Unknown;
                                 view! {
                                     <button type="button" class="context-usage-trigger"
+                                        class:is-warn=tone_warn
+                                        class:is-danger=tone_danger
+                                        class:is-unknown=tone_unknown
+                                        class:is-compacted=move || context_usage_flash.get()
                                         data-testid="context-usage-trigger"
+                                        data-tone=tone.as_str()
                                         style=format!("--context-gauge-angle:{gauge_angle:.1}deg")
-                                        title=move || t(locale.get(), "context_usage.open")
-                                        aria-label=move || t(locale.get(), "context_usage.open")
+                                        title=tooltip
+                                        aria-label=aria
                                         aria-expanded=move || context_usage_open.get().to_string()
                                         aria-controls="context-usage-panel"
                                         on:click=move |event| {
@@ -11991,6 +12068,7 @@ fn App() -> impl IntoView {
                                             }
                                         }>
                                         {compose_icon("gauge")}
+                                        <span class="context-usage-pct" data-testid="context-usage-percent">{percent_label}</span>
                                     </button>
                                 }
                             })}
@@ -14678,21 +14756,6 @@ fn App() -> impl IntoView {
         <ShareOverlay
             locale=locale
             draft=share_draft
-            on_social_skill=Callback::new(move |prompt: String| {
-                composer_references.update(|refs| {
-                    refs.retain(|item| {
-                        !matches!(
-                            item,
-                            ComposerReferenceChip::Skill { name } if name == SOCIAL_SHARE_SKILL
-                        )
-                    });
-                    refs.push(ComposerReferenceChip::Skill {
-                        name: SOCIAL_SHARE_SKILL.to_string(),
-                    });
-                });
-                input.set(prompt);
-                send.call(ComposerSendAction::Normal);
-            })
         />
         <CapabilitiesOverlay
             locale=locale show_capabilities=show_capabilities

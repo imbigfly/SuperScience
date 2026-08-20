@@ -614,7 +614,10 @@ fn apply_catalog_limits(
         join_api_url(&current.api_url, &current.endpoint_suffix),
         current.model,
     );
-    if model.trim().is_empty() || is_image_generation_model(&model) {
+    if model.trim().is_empty()
+        || is_image_generation_model(&model)
+        || is_video_generation_model(&model)
+    {
         return;
     }
     spawn_local(async move {
@@ -904,6 +907,7 @@ pub(super) fn SettingsView(
     let browser_block_reason = create_rw_signal(String::new());
     let browser_prefer_host = create_rw_signal(String::new());
     let browser_prefer_reason = create_rw_signal(String::new());
+    let browser_auto_launch = create_rw_signal(true);
     create_effect(move |_| {
         if show_settings.get() && settings_section.get() == "browser" {
             spawn_local(async move {
@@ -913,6 +917,13 @@ pub(super) fn SettingsView(
                     if let Ok(filters) = serde_wasm_bindgen::from_value::<BrowserUrlFilters>(value)
                     {
                         browser_filters.set(filters);
+                    }
+                }
+                if let Ok(value) =
+                    invoke_checked("get_browser_auto_launch", JsValue::UNDEFINED).await
+                {
+                    if let Ok(enabled) = serde_wasm_bindgen::from_value::<bool>(value) {
+                        browser_auto_launch.set(enabled);
                     }
                 }
             });
@@ -933,6 +944,21 @@ pub(super) fn SettingsView(
                         )));
                     }
                 }
+                Err(err) => browser_filters_msg.set(Some((false, js_error_text(err)))),
+            }
+            browser_filters_busy.set(false);
+        });
+    });
+    let save_browser_auto_launch = Callback::new(move |enabled: bool| {
+        browser_auto_launch.set(enabled);
+        browser_filters_busy.set(true);
+        spawn_local(async move {
+            let arg = to_value(&serde_json::json!({ "enabled": enabled })).unwrap();
+            match invoke_checked("set_browser_auto_launch", arg).await {
+                Ok(_) => browser_filters_msg.set(Some((
+                    true,
+                    t(locale.get_untracked(), "browser.auto_launch_saved").into(),
+                ))),
                 Err(err) => browser_filters_msg.set(Some((false, js_error_text(err)))),
             }
             browser_filters_busy.set(false);
@@ -2627,6 +2653,12 @@ pub(super) fn SettingsView(
                                                             o.supports_vision = false;
                                                             o.use_for_vision = false;
                                                             o.use_for_image_generation = true;
+                                                            o.use_for_video_generation = false;
+                                                        } else if is_video_generation_model(&o.model) {
+                                                            o.supports_vision = false;
+                                                            o.use_for_vision = false;
+                                                            o.use_for_image_generation = false;
+                                                            o.use_for_video_generation = true;
                                                         }
                                                     });
                                                     apply_catalog_limits(model_form, model_catalog_limits);
@@ -2644,7 +2676,65 @@ pub(super) fn SettingsView(
                                                 on:input=move |ev| model_form.update(|o| if let Some(o)=o { o.label = event_target_input(&ev).value(); }) /></label>
                                         {move || {
                                             let image = model_form.get().is_some_and(|f| is_image_generation_model(&f.model));
-                                            if image {
+                                            // A model id is never both image and video, but keep the
+                                            // branches mutually exclusive anyway.
+                                            let video = !image && model_form.get().is_some_and(|f| is_video_generation_model(&f.model));
+                                            if video {
+                                                view! {
+                                                    <label>{move || t(locale.get(), "settings.video_duration")}
+                                                        <input type="number" min="1" max="15" step="1" data-testid="video-duration"
+                                                            on:input=move|ev| model_form.update(|o| if let Some(o)=o {
+                                                                let secs = dom_value(&ev).parse::<u32>().unwrap_or(5).clamp(1, 15);
+                                                                o.video_duration_secs = Some(secs);
+                                                            })
+                                                            prop:value=move || model_form.get()
+                                                                .and_then(|f| f.video_duration_secs)
+                                                                .map(|d| d.to_string())
+                                                                .unwrap_or_else(|| "5".into()) />
+                                                    </label>
+                                                    <label>{move || t(locale.get(), "settings.video_aspect_ratio")}
+                                                        <select data-testid="video-aspect-ratio"
+                                                            on:change=move|ev| model_form.update(|o| if let Some(o)=o {
+                                                                o.video_aspect_ratio = Some(dom_value(&ev));
+                                                            })>
+                                                            {VIDEO_ASPECT_RATIOS.iter().map(|value| {
+                                                                let selected = model_form.get().is_some_and(|f| {
+                                                                    f.video_aspect_ratio.as_deref() == Some(*value)
+                                                                        || (f.video_aspect_ratio.is_none() && *value == "16:9")
+                                                                });
+                                                                view! { <option value=*value selected=selected>{*value}</option> }
+                                                            }).collect_view()}
+                                                        </select>
+                                                    </label>
+                                                    <label>{move || t(locale.get(), "settings.video_resolution")}
+                                                        <select data-testid="video-resolution"
+                                                            on:change=move|ev| model_form.update(|o| if let Some(o)=o {
+                                                                o.video_resolution = Some(dom_value(&ev));
+                                                            })>
+                                                            {VIDEO_RESOLUTIONS.iter().map(|value| {
+                                                                let selected = model_form.get().is_some_and(|f| {
+                                                                    f.video_resolution.as_deref() == Some(*value)
+                                                                        || (f.video_resolution.is_none() && *value == "720p")
+                                                                });
+                                                                view! { <option value=*value selected=selected>{*value}</option> }
+                                                            }).collect_view()}
+                                                        </select>
+                                                    </label>
+                                                    <span class="hint span-2">{move || t(locale.get(), "settings.video_defaults_hint")}</span>
+                                                    <label class="settings-check span-2">
+                                                        <input type="checkbox" data-testid="use-for-video-generation"
+                                                            prop:checked=move || model_form.get().map(|f| f.use_for_video_generation).unwrap_or(false)
+                                                            on:change=move|ev| model_form.update(|o| if let Some(o)=o {
+                                                                o.use_for_video_generation = event_target_checked(&ev);
+                                                                if o.use_for_video_generation {
+                                                                    o.use_for_image_generation = false;
+                                                                }
+                                                            }) />
+                                                        <span>{move || t(locale.get(), "settings.use_for_video_generation")}</span>
+                                                    </label>
+                                                    <span class="hint span-2">{move || t(locale.get(), "settings.video_generation_hint")}</span>
+                                                }.into_view()
+                                            } else if image {
                                                 view! {
                                                     {move || {
                                                         let grok = model_form.get().is_some_and(|f| is_grok_imagine_model(&f.model));
@@ -2845,6 +2935,18 @@ pub(super) fn SettingsView(
                                                 <span>{move || t(locale.get(), "settings.use_for_image_generation")}</span>
                                             </label>
                                             <span class="hint span-2">{move || t(locale.get(), "settings.image_generation_hint")}</span>
+                                            <label class="settings-check span-2">
+                                                <input type="checkbox" data-testid="use-for-video-generation"
+                                                    prop:checked=move || model_form.get().map(|f| f.use_for_video_generation).unwrap_or(false)
+                                                    on:change=move|ev| model_form.update(|o| if let Some(o)=o {
+                                                        o.use_for_video_generation = event_target_checked(&ev);
+                                                        if o.use_for_video_generation {
+                                                            o.use_for_image_generation = false;
+                                                        }
+                                                    }) />
+                                                <span>{move || t(locale.get(), "settings.use_for_video_generation")}</span>
+                                            </label>
+                                            <span class="hint span-2">{move || t(locale.get(), "settings.video_generation_hint")}</span>
                                         </div>
                                                 }.into_view()
                                             }
@@ -2958,6 +3060,12 @@ pub(super) fn SettingsView(
                                                                                     e.supports_vision = false;
                                                                                     e.use_for_vision = false;
                                                                                     e.use_for_image_generation = true;
+                                                                                    e.use_for_video_generation = false;
+                                                                                } else if is_video_generation_model(&e.model) {
+                                                                                    e.supports_vision = false;
+                                                                                    e.use_for_vision = false;
+                                                                                    e.use_for_image_generation = false;
+                                                                                    e.use_for_video_generation = true;
                                                                                 }
                                                                             }
                                                                         });
@@ -3008,7 +3116,34 @@ pub(super) fn SettingsView(
                                                                 let image = model_form.get()
                                                                     .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
                                                                     .is_some_and(|e| e.is_image_model());
-                                                                if image {
+                                                                let video = !image && model_form.get()
+                                                                    .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                                                    .is_some_and(|e| e.is_video_model());
+                                                                if video {
+                                                                    view! {
+                                                            <label class="settings-check">
+                                                                <input type="checkbox" data-testid="provider-use-for-video"
+                                                                    prop:checked=move || model_form.get()
+                                                                        .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                                                        .map(|e| e.use_for_video_generation)
+                                                                        .unwrap_or(false)
+                                                                    on:change=move |ev| {
+                                                                        let checked = event_target_checked(&ev);
+                                                                        model_form.update(|o| if let Some(o)=o {
+                                                                            if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                                                                e.use_for_video_generation = checked;
+                                                                                if checked {
+                                                                                    e.supports_vision = false;
+                                                                                    e.use_for_vision = false;
+                                                                                    e.use_for_image_generation = false;
+                                                                                }
+                                                                            }
+                                                                        });
+                                                                    } />
+                                                                <span>{move || t(locale.get(), "settings.use_for_video_generation")}</span>
+                                                            </label>
+                                                                    }.into_view()
+                                                                } else if image {
                                                                     view! {
                                                             <label class="settings-check">
                                                                 <input type="checkbox" data-testid="provider-use-for-image"
@@ -3090,6 +3225,27 @@ pub(super) fn SettingsView(
                                                                         });
                                                                     } />
                                                                 <span>{move || t(locale.get(), "settings.use_for_image_generation")}</span>
+                                                            </label>
+                                                            <label class="settings-check">
+                                                                <input type="checkbox" data-testid="provider-use-for-video"
+                                                                    prop:checked=move || model_form.get()
+                                                                        .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                                                        .map(|e| e.use_for_video_generation)
+                                                                        .unwrap_or(false)
+                                                                    on:change=move |ev| {
+                                                                        let checked = event_target_checked(&ev);
+                                                                        model_form.update(|o| if let Some(o)=o {
+                                                                            if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                                                                e.use_for_video_generation = checked;
+                                                                                if checked {
+                                                                                    e.supports_vision = false;
+                                                                                    e.use_for_vision = false;
+                                                                                    e.use_for_image_generation = false;
+                                                                                }
+                                                                            }
+                                                                        });
+                                                                    } />
+                                                                <span>{move || t(locale.get(), "settings.use_for_video_generation")}</span>
                                                             </label>
                                                                     }.into_view()
                                                                 }
@@ -3412,6 +3568,9 @@ pub(super) fn SettingsView(
                                                                 {m.use_for_vision.then(|| view! { <span class="settings-cap-badge" title="vision">"vision"</span> })}
                                                                 {m.use_for_image_generation.then(|| view! {
                                                                     <span class="settings-cap-badge" title="image generation">"image gen"</span>
+                                                                })}
+                                                                {m.use_for_video_generation.then(|| view! {
+                                                                    <span class="settings-cap-badge" title="video generation">"video gen"</span>
                                                                 })}
                                                             </span>
                                                             {show_sub.then(|| view! {
@@ -4854,6 +5013,18 @@ pub(super) fn SettingsView(
                 }.into_view())}
                 {move || (settings_section.get() == "browser").then(|| view! {
                     <div class="settings-pane settings-pane-list browser-filter-pane" data-testid="browser-url-filters">
+                        <div class="appearance-config-row">
+                            <div>
+                                <strong>{move || t(locale.get(), "browser.auto_launch")}</strong>
+                                <span>{move || t(locale.get(), "browser.auto_launch_hint")}</span>
+                            </div>
+                            <label class="toggle">
+                                <input type="checkbox" data-testid="browser-auto-launch"
+                                    prop:checked=move || browser_auto_launch.get()
+                                    on:change=move |ev| save_browser_auto_launch.call(event_target_checked(&ev)) />
+                                <span class="toggle-track" aria-hidden="true"></span>
+                            </label>
+                        </div>
                         <p class="settings-note">{move || t(locale.get(), "browser.filters.hint")}</p>
                         {move || browser_filters_msg.get().map(|(ok, text)| view! {
                             <div class="settings-status" class:ok=ok class:fail=move || !ok>{text}</div>

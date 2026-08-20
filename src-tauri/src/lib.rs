@@ -105,6 +105,7 @@ mod storage_prefs;
 mod terminal_sessions;
 mod turn_memory;
 mod turn_undo;
+mod video_generation_tool;
 mod windows_snap;
 mod workspace_manifest;
 mod workspace_scan;
@@ -3828,6 +3829,19 @@ fn add_configured_image_generation_tool(
     }
 }
 
+fn add_configured_video_generation_tool(
+    agent: &mut Agent,
+    config: Option<(String, String, String, models::VideoGenerationOptions)>,
+    proxy: Option<String>,
+) {
+    if let Some((api_url, model, api_key, options)) = config {
+        agent.add_tool(Box::new(
+            video_generation_tool::GenerateVideoTool::new(api_url, api_key, model, proxy)
+                .with_options(options),
+        ));
+    }
+}
+
 async fn build_vision_provider_config(store: &Store) -> Option<ProviderConfig> {
     let (provider, api_url, model, api_key, max_tokens, reasoning_effort) =
         models::vision_config(store).await?;
@@ -3978,11 +3992,12 @@ async fn wire_runtimes_and_mcp(
         registry.add(Box::new(
             session_context_tool::SessionExecutionContextTool::new(
                 Box::new(
-                    runtime_config_tool::SetRuntimeInterpreterTool::new_in_scope(
+                    runtime_config_tool::SetRuntimeInterpreterTool::new_in_session(
                         store.clone(),
                         runtime_manager.clone(),
                         project_id,
                         scope_key,
+                        frame_id,
                     ),
                 ),
                 store.clone(),
@@ -4018,10 +4033,13 @@ async fn wire_runtimes_and_mcp(
     if runtime_granted("python") && worker_path.is_file() {
         registry.add(Box::new(
             session_context_tool::SessionExecutionContextTool::new(
-                Box::new(wisp_runtime::ReplTool::new_in_scope(
+                // Keyed by conversation: parallel sessions of one project must
+                // never share interpreter state (#911).
+                Box::new(wisp_runtime::ReplTool::new_in_session(
                     runtime_manager.clone(),
                     project_id,
                     scope_key,
+                    frame_id,
                 )),
                 store.clone(),
                 frame_id,
@@ -4039,10 +4057,11 @@ async fn wire_runtimes_and_mcp(
     if runtime_granted("r") && r_worker_path.is_file() {
         registry.add(Box::new(
             session_context_tool::SessionExecutionContextTool::new(
-                Box::new(wisp_runtime::RTool::new_in_scope(
+                Box::new(wisp_runtime::RTool::new_in_session(
                     runtime_manager.clone(),
                     project_id,
                     scope_key,
+                    frame_id,
                 )),
                 store.clone(),
                 frame_id,
@@ -5977,6 +5996,7 @@ pub fn run() {
             let browser_bridge = startup.record("browser_bridge", || {
                 tauri::async_runtime::block_on(browser_bridge::BrowserBridge::start(
                     browser_extension_dir,
+                    store.clone(),
                 ))
             });
             let device_hub = Arc::new(device_hub::DeviceHub::default());
@@ -6200,6 +6220,8 @@ pub fn run() {
             runtime_commands::list_run_workspace_files,
             runtime_commands::download_run_files,
             runtime_commands::delete_run_files,
+            runtime_commands::should_prompt_run_review,
+            runtime_commands::dismiss_run_review,
             runtime_commands::list_remote_files,
             runtime_commands::remove_remote_files,
             runtime_commands::context_disposal_report,
@@ -6288,6 +6310,8 @@ pub fn run() {
             approval_commands::set_session_full_permission,
             browser_url_filters::get_browser_url_filters,
             browser_url_filters::set_browser_url_filters,
+            browser_url_filters::get_browser_auto_launch,
+            browser_url_filters::set_browser_auto_launch,
             settings_commands::get_settings,
             settings_commands::set_settings,
             configure::get_appearance_prefs,

@@ -353,6 +353,12 @@ harvest + 整目录清理"两个极端。
   PR 3 的删除通道；全目录删除仍走 `cleanup_run_workspace`。
 - Modal（UI）：run 进入终态后，RunMonitorCard/run 详情出现"结果与清理"操作打开
   modal；当前会话内前台监控的 run 完成时自动打开一次。内容：
+  - （#897 修订）自动打开只保留给**前台 `monitor_run` 监控**的 run（AutoRun
+    卡片代表的探索型命令 run 永不自动弹），且延迟到**回合结束**（会话空闲）才
+    触发；触发前后端 `should_prompt_run_review` 判定是否存在未决产物问题——
+    已声明 `output_specs` 但 harvest 未完成，或未声明 specs 且工作目录非空。
+    关闭 modal 通过 `dismiss_run_review` 持久化（`runs.review_dismissed_at`），
+    该 run 此后永不自动弹出；手动入口不受影响。
   - 懒加载文件树 + 过滤框 + 复选框（目录可整体勾选，显示文件数与总大小），
     命中 `output_specs` 的项预勾选并标注"已自动取回"状态；
   - "下载所选"（可跳过）；"删除所选 / 清理整个工作目录"（可跳过）；关闭即什么都不做。

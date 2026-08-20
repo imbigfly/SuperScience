@@ -1163,6 +1163,10 @@ mod session_context_window_tests {
             image_quality: String::new(),
             image_aspect_ratio: String::new(),
             image_resolution: String::new(),
+            use_for_video_generation: false,
+            video_duration_secs: None,
+            video_aspect_ratio: None,
+            video_resolution: None,
         }
     }
 
@@ -2610,6 +2614,14 @@ pub struct ModelProfile {
     pub image_aspect_ratio: String,
     #[serde(default)]
     pub image_resolution: String,
+    #[serde(default)]
+    pub use_for_video_generation: bool,
+    #[serde(default)]
+    pub video_duration_secs: Option<u32>,
+    #[serde(default)]
+    pub video_aspect_ratio: Option<String>,
+    #[serde(default)]
+    pub video_resolution: Option<String>,
 }
 
 /// Raster image-generation model IDs. Gateway `vendor/model` ids match on the
@@ -2636,9 +2648,26 @@ pub const GROK_IMAGE_ASPECT_RATIOS: &[&str] = &[
 pub const GROK_IMAGE_RESOLUTIONS: &[&str] = &["1k", "2k"];
 pub const GROK_IMAGE_QUALITIES: &[&str] = &["medium", "low"];
 
+/// Video-generation model IDs. Gateway `vendor/model` ids match on the last
+/// path segment. Exact IDs only — `grok-imagine-video` must not absorb
+/// `grok-imagine-video-1.5-preview` or a future sibling.
+pub fn is_video_generation_model(model: &str) -> bool {
+    let model = model.trim();
+    let tail = model.rsplit('/').next().unwrap_or(model);
+    tail.eq_ignore_ascii_case("grok-imagine-video")
+        || tail.eq_ignore_ascii_case("grok-imagine-video-1.5")
+        || tail.eq_ignore_ascii_case("grok-imagine-video-1.5-preview")
+}
+
+pub const VIDEO_ASPECT_RATIOS: &[&str] = &["16:9", "9:16", "1:1", "4:3", "3:4"];
+pub const VIDEO_RESOLUTIONS: &[&str] = &["480p", "720p", "1080p"];
+pub const VIDEO_DURATION_MIN_SECS: u32 = 1;
+pub const VIDEO_DURATION_MAX_SECS: u32 = 15;
+pub const VIDEO_DURATION_DEFAULT_SECS: u32 = 5;
+
 impl ModelProfile {
     pub fn is_chat_model(&self) -> bool {
-        !is_image_generation_model(&self.model)
+        !is_image_generation_model(&self.model) && !is_video_generation_model(&self.model)
     }
 }
 
@@ -2855,11 +2884,16 @@ pub struct ModelFormEntry {
     pub supports_vision: bool,
     pub use_for_vision: bool,
     pub use_for_image_generation: bool,
+    pub use_for_video_generation: bool,
 }
 
 impl ModelFormEntry {
     pub fn is_image_model(&self) -> bool {
         self.use_for_image_generation || is_image_generation_model(&self.model)
+    }
+
+    pub fn is_video_model(&self) -> bool {
+        self.use_for_video_generation || is_video_generation_model(&self.model)
     }
 }
 
@@ -2887,6 +2921,10 @@ mod image_generation_model_tests {
             image_quality: String::new(),
             image_aspect_ratio: String::new(),
             image_resolution: String::new(),
+            use_for_video_generation: false,
+            video_duration_secs: None,
+            video_aspect_ratio: None,
+            video_resolution: None,
         }
     }
 
@@ -2911,6 +2949,78 @@ mod image_generation_model_tests {
     }
 }
 
+#[cfg(test)]
+mod video_generation_model_tests {
+    use super::{is_video_generation_model, ModelFormEntry, ModelProfile};
+
+    fn profile(model: &str) -> ModelProfile {
+        ModelProfile {
+            id: "video".into(),
+            label: "video".into(),
+            provider: String::new(),
+            api_url: String::new(),
+            endpoint_suffix: String::new(),
+            model: model.into(),
+            has_api_key: false,
+            active: false,
+            max_tokens: 0,
+            context_window: 128_000,
+            reasoning_effort: String::new(),
+            supports_vision: false,
+            use_for_vision: false,
+            use_for_image_generation: false,
+            image_size: String::new(),
+            image_quality: String::new(),
+            image_aspect_ratio: String::new(),
+            image_resolution: String::new(),
+            use_for_video_generation: false,
+            video_duration_secs: None,
+            video_aspect_ratio: None,
+            video_resolution: None,
+        }
+    }
+
+    #[test]
+    fn known_video_ids_are_not_chat_models() {
+        for model in [
+            "grok-imagine-video",
+            "Grok-Imagine-Video",
+            "grok-imagine-video-1.5",
+            "grok-imagine-video-1.5-preview",
+            "xai/grok-imagine-video-1.5-preview",
+        ] {
+            assert!(is_video_generation_model(model), "{model}");
+            assert!(!profile(model).is_chat_model(), "{model}");
+        }
+        // Exact ids only: the base id must not absorb longer siblings, and
+        // image/chat models must not match.
+        for model in [
+            "grok-imagine-video-2.0",
+            "grok-imagine-video-1.5-preview-2",
+            "grok-imagine-image-2.0",
+            "gpt-5.5",
+        ] {
+            assert!(!is_video_generation_model(model), "{model}");
+        }
+        assert!(profile("gpt-5.5").is_chat_model());
+        assert!(ModelFormEntry {
+            model: "grok-imagine-video-1.5".into(),
+            ..ModelFormEntry::default()
+        }
+        .is_video_model());
+        assert!(!ModelFormEntry {
+            model: "gpt-5.5".into(),
+            ..ModelFormEntry::default()
+        }
+        .is_video_model());
+        assert!(ModelFormEntry {
+            use_for_video_generation: true,
+            ..ModelFormEntry::default()
+        }
+        .is_video_model());
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct ModelForm {
     pub id: Option<String>,
@@ -2929,6 +3039,10 @@ pub struct ModelForm {
     pub image_quality: String,
     pub image_aspect_ratio: String,
     pub image_resolution: String,
+    pub use_for_video_generation: bool,
+    pub video_duration_secs: Option<u32>,
+    pub video_aspect_ratio: Option<String>,
+    pub video_resolution: Option<String>,
     /// Used only when adding a provider (`id` is `None`): one row per model
     /// that should be created with the shared API URL and key.
     pub entries: Vec<ModelFormEntry>,

@@ -1,3 +1,5 @@
+> **Runtime note (0.3.0):** see [browser-runtime-architecture.md](browser-runtime-architecture.md) and [browser-runtime-acceptance.md](browser-runtime-acceptance.md). The extension is Protocol v2. Shared Chrome stays on `ws://127.0.0.1:18765`; workspace Chrome uses a dedicated profile and `18766`. Reload the unpacked extension after upgrading.
+
 # Real-browser automation
 
 > **Acknowledgement:** this feature is inspired by GenericAgent's
@@ -36,6 +38,20 @@ and the Agent must stop on live, latest, current, or URL-specific requests
 instead of answering from memory. After Chrome is open and the popup shows
 **Connected to Wisp**, use **Retry after connecting** to run the same
 request again.
+
+**Settings → Browser → Open browser automatically** is on by default. When a
+browser tool needs the real session and Chrome/Chromium/Edge is not running,
+Wisp starts that installed browser with the existing user profile so the
+unpacked extension can reconnect. Turn the setting off to keep Wisp from
+launching a browser.
+
+The banner describes the answer on screen, not the session. It is derived from
+the browser tool results of the latest turn only, and a single successful
+`web_scan`, `web_open_tab`, `web_execute_js`, or `web_screenshot` clears it: the
+extension's service worker sleeps and reconnects on a one-minute alarm, so a
+turn can mix refused attempts with successful ones and still be a live answer.
+A connected extension also counts as connected even when a build cannot verify
+its own bundled `browser-extension/` copy.
 
 The unpacked extension remains installed in that browser profile across Wisp
 and browser restarts. After updating Wisp, click **Reload** on the extension

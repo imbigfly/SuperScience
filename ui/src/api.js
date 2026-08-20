@@ -215,6 +215,8 @@ export async function crop_region_to_upload(hostId, left, top, width, height) {
 // panel bubble, assistant prose — not a separate blue-bubble skin).
 
 const SHARE_WIDTH = 840;
+const SHARE_MIN_WIDTH = 320;
+const SHARE_MAX_WIDTH = 2400;
 const SHARE_SCALE = 2;
 const SHARE_PAD = 24;
 const SHARE_GAP = 20;
@@ -661,7 +663,13 @@ export async function render_share_png(payloadJson) {
   const measure = document.createElement("canvas").getContext("2d");
   if (!measure) throw new Error("Canvas is not available");
 
-  const proseWidth = SHARE_WIDTH - SHARE_PAD * 2;
+  // The share dialog lets the user override the canvas width; out-of-range or
+  // missing values fall back to the default.
+  const requestedWidth = Number(payload.width);
+  const shareWidth = Number.isFinite(requestedWidth) && requestedWidth > 0
+    ? Math.min(Math.max(Math.round(requestedWidth), SHARE_MIN_WIDTH), SHARE_MAX_WIDTH)
+    : SHARE_WIDTH;
+  const proseWidth = shareWidth - SHARE_PAD * 2;
   const userSize = SHARE_THEME.fontSize + 0.5;
   const userLh = Math.round(userSize * 1.55);
   const thinkSize = SHARE_THEME.fontSize - 0.5;
@@ -723,14 +731,14 @@ export async function render_share_png(payloadJson) {
   const totalHeight = headerHeight + bodyHeight + footerHeight;
 
   const canvas = document.createElement("canvas");
-  canvas.width = SHARE_WIDTH * SHARE_SCALE;
+  canvas.width = shareWidth * SHARE_SCALE;
   canvas.height = totalHeight * SHARE_SCALE;
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("Canvas is not available");
   ctx.scale(SHARE_SCALE, SHARE_SCALE);
 
   ctx.fillStyle = SHARE_COLORS.bg;
-  ctx.fillRect(0, 0, SHARE_WIDTH, totalHeight);
+  ctx.fillRect(0, 0, shareWidth, totalHeight);
 
   ctx.fillStyle = SHARE_COLORS.text;
   ctx.font = `600 14px ${SHARE_SANS}`;
@@ -744,13 +752,13 @@ export async function render_share_png(payloadJson) {
   let y = headerHeight;
   for (const message of laid) {
     const user = message.kind === "user";
-    const x = user ? SHARE_WIDTH - SHARE_PAD - message.width : SHARE_PAD;
+    const x = user ? shareWidth - SHARE_PAD - message.width : SHARE_PAD;
 
     ctx.font = SHARE_LABEL_FONT;
     ctx.fillStyle = SHARE_COLORS.faint;
     const label = String(message.label || "").toUpperCase();
     const labelWidth = ctx.measureText(label).width;
-    ctx.fillText(label, user ? SHARE_WIDTH - SHARE_PAD - labelWidth : SHARE_PAD, y + 10);
+    ctx.fillText(label, user ? shareWidth - SHARE_PAD - labelWidth : SHARE_PAD, y + 10);
     y += 18;
 
     if (message.mode === "prose") {

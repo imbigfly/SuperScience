@@ -201,3 +201,7 @@ wisp-science/
   [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Meduni-wien.svg)
   (public domain; the mark itself is trademarked), cropped to the circular
   emblem.
+- Institution marks in `docs/assets/trusted-logos/` (Cornell, Michigan, UCLA,
+  Yale, Tsinghua, Zhejiang, WashU, SLU, SJTU, PKU, CAS) match the set served by
+  [wispscience.com](https://wispscience.com/institutions/). The marks themselves
+  remain trademarked by their owners.

@@ -13,6 +13,75 @@ pub(super) async fn list_execution_contexts(
         .map_err(|e| format!("{e}"))
 }
 
+/// The conversation whose runtimes this window's commands act on. Runtimes
+/// are keyed per conversation (#911), so the panel and the file-preview
+/// console follow the frame the window is viewing.
+fn active_session_id(state: &AppState, window_label: &str) -> String {
+    state.active_frame(window_label).unwrap_or_default()
+}
+
+/// Whether one runtime belongs in this window's Runtimes panel. The active
+/// project shows the viewed conversation's runtimes plus scope-shared ones;
+/// other projects keep all their mainline runtimes visible so a large kernel
+/// is never invisible.
+fn runtime_visible(
+    key: &wisp_runtime::RuntimeKey,
+    scope: &wisp_store::StateScope,
+    active_session: &str,
+) -> bool {
+    let session_matches = key.session_id.is_empty() || key.session_id == active_session;
+    match scope {
+        wisp_store::StateScope::Mainline { project_id } => {
+            key.scope_key == wisp_runtime::MAINLINE_RUNTIME_SCOPE
+                && (key.project_id != *project_id || session_matches)
+        }
+        wisp_store::StateScope::Exploration {
+            project_id,
+            exploration_id,
+        } => key.project_id == *project_id && key.scope_key == *exploration_id && session_matches,
+    }
+}
+
+/// Pick the runtime a UI command targets: prefer the viewed conversation's
+/// runtime, fall back to an existing scope-shared one, and default new
+/// runtimes to the conversation identity when a conversation is open.
+fn resolve_runtime_key(
+    manager: &wisp_runtime::RuntimeManager,
+    project_id: String,
+    scope_key: String,
+    active_session: &str,
+    context_id: String,
+    language: wisp_runtime::RuntimeLanguage,
+) -> wisp_runtime::RuntimeKey {
+    let session_key = wisp_runtime::RuntimeKey {
+        project_id,
+        scope_key,
+        session_id: active_session.to_string(),
+        context_id,
+        language,
+    };
+    if active_session.is_empty() {
+        return session_key;
+    }
+    let exists = |session: &str| {
+        manager.list().iter().any(|runtime| {
+            runtime.key.project_id == session_key.project_id
+                && runtime.key.scope_key == session_key.scope_key
+                && runtime.key.session_id == session
+                && runtime.key.context_id == session_key.context_id
+                && runtime.key.language == session_key.language
+        })
+    };
+    if exists(active_session) || !exists("") {
+        session_key
+    } else {
+        wisp_runtime::RuntimeKey {
+            session_id: String::new(),
+            ..session_key
+        }
+    }
+}
+
 #[tauri::command]
 pub(super) async fn list_runtimes(
     state: State<'_, AppState>,
@@ -20,19 +89,12 @@ pub(super) async fn list_runtimes(
 ) -> Result<Vec<wisp_runtime::RuntimeInfo>, String> {
     let (_, scope) =
         exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
+    let active_session = active_session_id(&state, window.label());
     Ok(state
         .runtime_manager
         .list()
         .into_iter()
-        .filter(|runtime| match &scope {
-            wisp_store::StateScope::Mainline { .. } => {
-                runtime.key.scope_key == wisp_runtime::MAINLINE_RUNTIME_SCOPE
-            }
-            wisp_store::StateScope::Exploration {
-                project_id,
-                exploration_id,
-            } => runtime.key.project_id == *project_id && runtime.key.scope_key == *exploration_id,
-        })
+        .filter(|runtime| runtime_visible(&runtime.key, &scope, &active_session))
         .collect())
 }
 
@@ -53,19 +115,22 @@ pub(super) async fn inspect_runtime(
             "exploration_scope_violation: cross-project runtime inspection is disabled".into(),
         );
     }
-    let scope_key = if scope.project_id() == project_id {
-        scope.scope_key()
+    let (scope_key, active_session) = if scope.project_id() == project_id {
+        (scope.scope_key(), active_session_id(&state, window.label()))
     } else {
-        wisp_runtime::MAINLINE_RUNTIME_SCOPE
+        (wisp_runtime::MAINLINE_RUNTIME_SCOPE, String::new())
     };
+    let key = resolve_runtime_key(
+        &state.runtime_manager,
+        project_id,
+        scope_key.into(),
+        &active_session,
+        context_id,
+        language,
+    );
     state
         .runtime_manager
-        .inspect(&wisp_runtime::RuntimeKey {
-            project_id,
-            scope_key: scope_key.into(),
-            context_id,
-            language,
-        })
+        .inspect(&key)
         .await
         .map_err(|error| error.to_string())
 }
@@ -103,12 +168,14 @@ pub(super) async fn execute_runtime(
             boundary.check_local_source(&code)?;
         }
     }
-    let key = wisp_runtime::RuntimeKey {
-        project_id: project.id.clone(),
-        scope_key: scope.scope_key().to_string(),
+    let key = resolve_runtime_key(
+        &state.runtime_manager,
+        project.id.clone(),
+        scope.scope_key().to_string(),
+        &active_session_id(&state, window.label()),
         context_id,
         language,
-    };
+    );
     let mut execution = state
         .runtime_manager
         .execute(&key, &project.root, code)
@@ -145,17 +212,17 @@ pub(super) async fn start_runtime(
         exploration_commands::working_project_for_active_frame(&state, window.label()).await?;
     let _project_activity = state.begin_project_activity(&project.id)?;
     exploration_commands::require_writable_scope(&state.store, &scope).await?;
+    let key = resolve_runtime_key(
+        &state.runtime_manager,
+        project.id.clone(),
+        scope.scope_key().to_string(),
+        &active_session_id(&state, window.label()),
+        context_id,
+        language,
+    );
     state
         .runtime_manager
-        .start(
-            wisp_runtime::RuntimeKey {
-                project_id: project.id.clone(),
-                scope_key: scope.scope_key().to_string(),
-                context_id,
-                language,
-            },
-            project.root,
-        )
+        .start(key, project.root)
         .await
         .map_err(|error| error.to_string())
 }
@@ -177,20 +244,36 @@ pub(super) async fn stop_runtime(
             "exploration_scope_violation: cross-project runtime control is disabled".into(),
         );
     }
-    let scope_key = if scope.project_id() == project_id {
-        scope.scope_key()
-    } else {
-        wisp_runtime::MAINLINE_RUNTIME_SCOPE
-    };
-    Ok(state
-        .runtime_manager
-        .stop(&wisp_runtime::RuntimeKey {
-            project_id,
-            scope_key: scope_key.to_string(),
-            context_id,
-            language,
-        })
-        .await)
+    if scope.project_id() != project_id {
+        // A row from another project may be any of its conversations'
+        // runtimes; the panel cannot address one, so free them all.
+        let targets = state
+            .runtime_manager
+            .list()
+            .into_iter()
+            .map(|runtime| runtime.key)
+            .filter(|key| {
+                key.project_id == project_id
+                    && key.scope_key == wisp_runtime::MAINLINE_RUNTIME_SCOPE
+                    && key.context_id == context_id
+                    && key.language == language
+            })
+            .collect::<Vec<_>>();
+        let mut stopped = None;
+        for key in targets {
+            stopped = state.runtime_manager.stop(&key).await.or(stopped);
+        }
+        return Ok(stopped);
+    }
+    let key = resolve_runtime_key(
+        &state.runtime_manager,
+        project_id,
+        scope.scope_key().to_string(),
+        &active_session_id(&state, window.label()),
+        context_id,
+        language,
+    );
+    Ok(state.runtime_manager.stop(&key).await)
 }
 
 #[tauri::command]
@@ -210,7 +293,8 @@ pub(super) async fn restart_runtime(
             "exploration_scope_violation: cross-project runtime control is disabled".into(),
         );
     }
-    let (root, target_scope) = if working.id == project_id {
+    let same_project = working.id == project_id;
+    let (root, target_scope) = if same_project {
         (working.root, scope)
     } else {
         let (_, workspace) = state
@@ -226,17 +310,22 @@ pub(super) async fn restart_runtime(
     };
     let _project_activity = state.begin_project_activity(&project_id)?;
     exploration_commands::require_writable_scope(&state.store, &target_scope).await?;
+    let active_session = if same_project {
+        active_session_id(&state, window.label())
+    } else {
+        String::new()
+    };
+    let key = resolve_runtime_key(
+        &state.runtime_manager,
+        project_id,
+        target_scope.scope_key().to_string(),
+        &active_session,
+        context_id,
+        language,
+    );
     state
         .runtime_manager
-        .restart(
-            wisp_runtime::RuntimeKey {
-                project_id,
-                scope_key: target_scope.scope_key().to_string(),
-                context_id,
-                language,
-            },
-            root,
-        )
+        .restart(key, root)
         .await
         .map_err(|error| error.to_string())
 }
@@ -435,6 +524,40 @@ pub(super) async fn download_run_files(
         .await
 }
 
+/// Whether the results-review modal is worth auto-opening for this Run: an
+/// unresolved product decision exists (unharvested declared outputs, or no
+/// declared outputs but files present in the workspace) and the user has not
+/// dismissed the prompt. The UI asks this once per candidate at turn end.
+#[tauri::command]
+pub(super) async fn should_prompt_run_review(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    run_id: String,
+) -> Result<bool, String> {
+    scoped_run(&state, &window, &run_id).await?;
+    state
+        .run_manager
+        .should_prompt_run_review(&state.store, &run_id)
+        .await
+}
+
+/// Persist that the user closed this Run's results-review prompt so it never
+/// auto-opens again. Manual review from the run card stays available.
+#[tauri::command]
+pub(super) async fn dismiss_run_review(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    run_id: String,
+) -> Result<(), String> {
+    scoped_run(&state, &window, &run_id).await?;
+    state
+        .store
+        .mark_run_review_dismissed(&run_id)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 /// Delete the user's selection inside a finished Run's workspace.
 #[tauri::command]
 pub(super) async fn delete_run_files(
@@ -553,4 +676,91 @@ pub(super) async fn cleanup_run_workspace(
         .run_manager
         .cleanup_run_workspace(&state.store, &run_id, force.unwrap_or(false))
         .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{resolve_runtime_key, runtime_visible};
+    use std::path::PathBuf;
+    use wisp_runtime::{RuntimeKey, RuntimeManager};
+
+    fn manager() -> RuntimeManager {
+        RuntimeManager::local(
+            PathBuf::from("unused-app-data"),
+            PathBuf::from("unused-worker.py"),
+            None,
+            vec![],
+        )
+    }
+
+    #[test]
+    fn mainline_panel_shows_own_conversation_shared_and_other_projects() {
+        let scope = wisp_store::StateScope::mainline("active");
+        let own = RuntimeKey::local_python("active").with_session("frame-1");
+        let sibling = RuntimeKey::local_python("active").with_session("frame-2");
+        let shared = RuntimeKey::local_python("active");
+        let other_project = RuntimeKey::local_python("other").with_session("frame-9");
+        let exploration =
+            RuntimeKey::python_in_scope("active", "exploration-1", wisp_runtime::LOCAL_CONTEXT_ID);
+
+        assert!(runtime_visible(&own, &scope, "frame-1"));
+        assert!(!runtime_visible(&sibling, &scope, "frame-1"));
+        assert!(runtime_visible(&shared, &scope, "frame-1"));
+        assert!(runtime_visible(&other_project, &scope, "frame-1"));
+        assert!(!runtime_visible(&exploration, &scope, "frame-1"));
+    }
+
+    #[test]
+    fn exploration_panel_is_limited_to_its_own_scope_and_conversation() {
+        let scope = wisp_store::StateScope::exploration("p", "exploration-1");
+        let own = RuntimeKey::python_in_scope("p", "exploration-1", wisp_runtime::LOCAL_CONTEXT_ID)
+            .with_session("frame-1");
+        let foreign_session = own.clone().with_session("frame-2");
+        let mainline = RuntimeKey::local_python("p");
+
+        assert!(runtime_visible(&own, &scope, "frame-1"));
+        assert!(!runtime_visible(&foreign_session, &scope, "frame-1"));
+        assert!(!runtime_visible(&mainline, &scope, "frame-1"));
+    }
+
+    #[tokio::test]
+    async fn resolver_prefers_the_viewed_conversation_and_falls_back_to_shared() {
+        let manager = manager();
+        // Nothing running: a viewed conversation owns any new runtime.
+        let key = resolve_runtime_key(
+            &manager,
+            "p".into(),
+            wisp_runtime::MAINLINE_RUNTIME_SCOPE.into(),
+            "frame-1",
+            "local".into(),
+            wisp_runtime::RuntimeLanguage::Python,
+        );
+        assert_eq!(key.session_id, "frame-1");
+
+        // A scope-shared runtime exists (registered even though the fake
+        // worker path cannot launch): commands fall back to it.
+        let shared = RuntimeKey::local_python("p");
+        let _ = manager.start(shared.clone(), PathBuf::from("p")).await;
+        let key = resolve_runtime_key(
+            &manager,
+            "p".into(),
+            wisp_runtime::MAINLINE_RUNTIME_SCOPE.into(),
+            "frame-1",
+            "local".into(),
+            wisp_runtime::RuntimeLanguage::Python,
+        );
+        assert!(key.session_id.is_empty());
+
+        // No viewed conversation: the shared identity is the target.
+        let key = resolve_runtime_key(
+            &manager,
+            "p".into(),
+            wisp_runtime::MAINLINE_RUNTIME_SCOPE.into(),
+            "",
+            "local".into(),
+            wisp_runtime::RuntimeLanguage::Python,
+        );
+        assert!(key.session_id.is_empty());
+        manager.shutdown_all().await;
+    }
 }

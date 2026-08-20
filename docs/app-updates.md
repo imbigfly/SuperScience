@@ -41,6 +41,33 @@ architectures.
 There is no background install or automatic downgrade. A rollback uses the same
 manual `.dmg` path with the desired older release.
 
+## Cutting a GitHub release
+
+Agents follow **Cutting a release** in `AGENTS.md`: push the version-bump
+commit, then `gh release create` so the GitHub Release (title + notes) exists
+before CI starts. That command creates the `v*` tag; the tag push starts the
+platform builds. Do not push the tag separately.
+
+The workflows are two steps so platform builds cannot overwrite the notes.
+
+1. **Create Release** (`release-create.yml`) is the fallback if someone only
+   pushes a tag. It reads `.github/release-notes/<tag>.md` and publishes the
+   GitHub Release title and body. An optional HTML comment sets the title:
+
+   ```markdown
+   <!-- release-title: v1.6.0: Theme -->
+   ```
+
+   Without that comment the title is the tag. If the release already exists
+   (the usual `gh release create` path), this job leaves title and body
+   unchanged unless `overwrite_notes` is checked.
+2. **Platform workflows** (Windows, macOS, Linux) wait until that release
+   exists, then attach installers. They do not set the release name or body.
+   macOS still merges `latest.json` for both architectures.
+
+Manual reruns of a platform workflow require the release from step 1 to
+already exist.
+
 ## Release configuration
 
 Updater artifacts are enabled only for the macOS release workflow through

@@ -140,6 +140,31 @@ impl wisp_tools::ToolEnv for DenyRunToolEnv {
     async fn emit(&self, _event: wisp_tools::ToolEvent) {}
 }
 
+struct GuidanceRunToolEnv {
+    root: PathBuf,
+    queue: Arc<wisp_core::GuidanceQueue>,
+}
+
+#[async_trait::async_trait]
+impl wisp_tools::ToolEnv for GuidanceRunToolEnv {
+    fn project_root(&self) -> &std::path::Path {
+        &self.root
+    }
+
+    async fn confirm(&self, _message: &str) -> bool {
+        true
+    }
+
+    async fn emit(&self, _event: wisp_tools::ToolEvent) {}
+
+    fn guidance_pending(&self) -> bool {
+        self.queue
+            .lock()
+            .map(|pending| !pending.is_empty())
+            .unwrap_or(false)
+    }
+}
+
 #[tokio::test]
 async fn denied_dangerous_run_stops_the_model_batch() {
     use wisp_tools::{Tool, ToolControl};
@@ -435,7 +460,9 @@ async fn monitor_run_waits_once_for_an_existing_run() {
         )
         .await;
     assert!(snapshot.success, "{}", snapshot.content);
-    assert!(snapshot.content.contains("Call monitor_run exactly once"));
+    assert!(snapshot
+        .content
+        .contains("Call monitor_run with this run_id"));
 
     let finishing_store = store.clone();
     tokio::spawn(async move {
@@ -466,6 +493,72 @@ async fn monitor_run_waits_once_for_an_existing_run() {
     assert!(result.success, "{}", result.content);
     let run: wisp_store::RunRecord = serde_json::from_str(&result.content).unwrap();
     assert_eq!(run.status, wisp_store::RunStatus::Succeeded);
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[tokio::test]
+async fn monitor_run_returns_early_when_mid_turn_guidance_is_pending() {
+    use wisp_tools::Tool;
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_monitor_run_guidance_{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "project", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    let mut run = wisp_store::RunRecord::new("long-run", "p", "ssh:gpu", "Long run", "ssh_direct");
+    run.command = Some("sleep 3600".into());
+    run.stdout_tail = Some("phase 2 of 9\n".into());
+    run.last_polled_at = Some(chrono::Utc::now().timestamp());
+    store.create_run(&run).await.unwrap();
+    assert!(store
+        .activate_run_lifecycle(
+            "long-run",
+            wisp_store::RunStatus::Running,
+            "monitor-owner",
+            60,
+        )
+        .await
+        .unwrap());
+
+    let queue = Arc::new(wisp_core::GuidanceQueue::default());
+    let env = GuidanceRunToolEnv {
+        root: tmp.clone(),
+        queue: queue.clone(),
+    };
+    let tool = MonitorRunTool::new(store.clone(), "p".into());
+    let waiting = tokio::spawn(async move {
+        tool.run(&serde_json::json!({ "run_id": "long-run" }), &env)
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    queue.lock().unwrap().push((1, "你在进行哪一步？".into()));
+    let result = tokio::time::timeout(Duration::from_secs(2), waiting)
+        .await
+        .expect("monitor_run should return once guidance is pending")
+        .unwrap();
+
+    assert!(result.success, "{}", result.content);
+    let value: serde_json::Value = serde_json::from_str(&result.content).unwrap();
+    assert_eq!(value["wait_interrupted"], true);
+    assert_eq!(value["status"], "running");
+    assert_eq!(value["stdout_tail"], "phase 2 of 9\n");
+    assert!(
+        value["next_action"]
+            .as_str()
+            .unwrap()
+            .contains("call monitor_run again"),
+        "{}",
+        value["next_action"]
+    );
+    assert!(value["wait_detached"].is_null());
+    let still = store.get_run("long-run").await.unwrap().unwrap();
+    assert_eq!(still.status, wisp_store::RunStatus::Running);
     let _ = std::fs::remove_dir_all(tmp);
 }
 
@@ -1378,7 +1471,8 @@ fn remote_compute_skill_uses_the_real_wisp_run_contract() {
     ] {
         assert!(!skill.contains(stale), "stale API remains: {stale}");
     }
-    assert!(skill.contains("call `monitor_run` exactly once"));
+    assert!(skill.contains("wait_interrupted"));
+    assert!(skill.contains("call `monitor_run` again"));
     assert!(skill.contains("never call it repeatedly"));
     assert!(!skill.contains("ssh <alias>"));
     assert!(skill.contains("Scheduler lifecycle is not implemented yet"));
@@ -4150,6 +4244,130 @@ async fn run_review_browse_and_delete_require_a_terminal_ssh_run() {
         assert!(payload.contains("rm -rf -- 'parts'"));
         assert!(payload.contains("cleanup-token"));
     }
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn review_prompt_reserved_for_unresolved_product_decisions() {
+    let tmp = std::env::temp_dir().join(format!("wisp_review_prompt_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = wisp_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .upsert_execution_context(&harvest_test_context())
+        .await
+        .unwrap();
+
+    let specs = r#"[{"glob":"results/*.tsv","kind":"table"}]"#;
+    seed_cleanup_run(
+        &store,
+        "run-unharvested",
+        wisp_store::RunStatus::Succeeded,
+        specs,
+        false,
+    )
+    .await;
+    seed_cleanup_run(
+        &store,
+        "run-harvested",
+        wisp_store::RunStatus::Succeeded,
+        specs,
+        true,
+    )
+    .await;
+    seed_cleanup_run(
+        &store,
+        "run-active",
+        wisp_store::RunStatus::Running,
+        "[]",
+        false,
+    )
+    .await;
+    seed_cleanup_run(
+        &store,
+        "run-files",
+        wisp_store::RunStatus::Succeeded,
+        "[]",
+        false,
+    )
+    .await;
+    seed_cleanup_run(
+        &store,
+        "run-empty",
+        wisp_store::RunStatus::Succeeded,
+        "[]",
+        false,
+    )
+    .await;
+
+    let runner = Arc::new(ScriptedRunRunner::new(vec![
+        ok_output("__WISP_LS__:file:1024::out.tsv\n__WISP_LS_DONE__\n"),
+        ok_output("__WISP_LS_DONE__\n"),
+    ]));
+    let manager = RunManager::with_runner(runner.clone());
+
+    // Declared outputs never harvested: results only exist on the server, so
+    // the prompt is warranted — decided from the record alone, no SSH call.
+    assert!(manager
+        .should_prompt_run_review(&store, "run-unharvested")
+        .await
+        .unwrap());
+    // Harvested products are already local; the leftover cleanup decision is
+    // not worth an interruption.
+    assert!(!manager
+        .should_prompt_run_review(&store, "run-harvested")
+        .await
+        .unwrap());
+    // Non-terminal runs never prompt.
+    assert!(!manager
+        .should_prompt_run_review(&store, "run-active")
+        .await
+        .unwrap());
+    assert_eq!(runner.commands.lock().unwrap().len(), 0);
+
+    // No declared outputs: the workspace listing decides. Files present →
+    // prompt; empty workspace → stay silent.
+    assert!(manager
+        .should_prompt_run_review(&store, "run-files")
+        .await
+        .unwrap());
+    assert!(!manager
+        .should_prompt_run_review(&store, "run-empty")
+        .await
+        .unwrap());
+    assert_eq!(runner.commands.lock().unwrap().len(), 2);
+
+    // A dismissed prompt stays dismissed, and dismissal is idempotent.
+    assert!(store
+        .mark_run_review_dismissed("run-unharvested")
+        .await
+        .unwrap());
+    assert!(!store
+        .mark_run_review_dismissed("run-unharvested")
+        .await
+        .unwrap());
+    assert!(store.run_review_dismissed("run-unharvested").await.unwrap());
+    assert!(!manager
+        .should_prompt_run_review(&store, "run-unharvested")
+        .await
+        .unwrap());
+
+    // Exploratory local command runs are out of scope regardless of state.
+    let mut local = wisp_store::RunRecord::new("run-local", "p", "local", "Local", "command");
+    local.frame_id = Some("f".into());
+    local.status = wisp_store::RunStatus::Succeeded;
+    store.create_run(&local).await.unwrap();
+    assert!(!manager
+        .should_prompt_run_review(&store, "run-local")
+        .await
+        .unwrap());
 
     let _ = std::fs::remove_dir_all(&tmp);
 }

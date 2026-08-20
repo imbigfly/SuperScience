@@ -102,7 +102,6 @@ extern "C" {
     fn switch_chat_scroll(scroller_id: &str, session_id: &str);
     fn preserve_chat_scroll_on_prepend(scroller_id: &str, content_id: &str);
     fn jump_chat_scroll(scroller_id: &str, selector: &str);
-    fn jump_chat_scroll_last_user(scroller_id: &str);
     fn follow_run_outputs();
 }
 
@@ -169,11 +168,6 @@ pub(crate) fn jump_chat_to_item(index: usize) {
         CHAT_SCROLLER_ID,
         &format!("[data-ui-index=\"{index}\"], [data-ui-indices~=\"{index}\"]"),
     );
-}
-
-/// Jump to the latest user turn (floating "Your last message" pill).
-pub(crate) fn jump_chat_to_last_user() {
-    jump_chat_scroll_last_user(CHAT_SCROLLER_ID);
 }
 
 /// Syntax-highlight the code block with the given DOM id, once it is mounted.

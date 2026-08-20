@@ -276,9 +276,15 @@ async fn agent_loop_inner(
     cancel: Option<&AtomicBool>,
     guidance: Option<&GuidanceQueue>,
 ) -> Result<AgentLoopOutcome> {
-    let env = match cancel {
-        Some(c) => ToolEnvAdapter::with_cancel(root.to_path_buf(), output, c),
-        None => ToolEnvAdapter::new(root.to_path_buf(), output),
+    let env = {
+        let adapter = match cancel {
+            Some(c) => ToolEnvAdapter::with_cancel(root.to_path_buf(), output, c),
+            None => ToolEnvAdapter::new(root.to_path_buf(), output),
+        };
+        match guidance {
+            Some(queue) => adapter.with_guidance(queue),
+            None => adapter,
+        }
     };
     let mut iteration = 0usize;
     let mut auto_continues = 0usize;
@@ -292,6 +298,12 @@ async fn agent_loop_inner(
         // persists the row and emits the User event the UI promotes on.
         if let Some(queue) = guidance {
             let drained: Vec<(u64, String)> = std::mem::take(&mut *queue.lock().unwrap());
+            if !drained.is_empty() {
+                // User injection is new information. Re-issuing monitor_run
+                // after a wait_interrupted return is expected progress, not a
+                // stuck loop (#907).
+                recent_sigs.clear();
+            }
             for (_, text) in drained {
                 ctx.append_user(&text);
                 if let Some(m) = ctx.messages.last() {
@@ -477,6 +489,9 @@ async fn agent_loop_inner(
             let producing = provenance::is_producing(&name);
             let root = producing.then(|| env.project_root().to_path_buf());
             let source = provenance::source_of(&name, &args);
+            // Registered before the pre-snapshot so concurrent sessions of the
+            // same workspace can tell which of each other's writes are theirs.
+            let window = root.as_deref().map(provenance::begin_window);
             let before = if let Some(root) = root.clone() {
                 tokio::task::spawn_blocking(move || provenance::snapshot(&root))
                     .await
@@ -504,7 +519,15 @@ async fn agent_loop_inner(
                 let after = tokio::task::spawn_blocking(move || provenance::snapshot(&root2))
                     .await
                     .unwrap_or_default();
+                let overlapping = window.map(provenance::ProducingWindow::finish);
                 let (mut written, mut read) = provenance::diff(&before, &after, root, &source);
+                provenance::retain_unambiguous_writes(
+                    &mut written,
+                    &after,
+                    root,
+                    &source,
+                    overlapping.as_deref().unwrap_or_default(),
+                );
                 provenance::augment_written_paths(
                     &name,
                     root,
@@ -897,7 +920,8 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
-    use wisp_llm::{FunctionCall, ToolCall};
+    use std::time::Duration;
+    use wisp_llm::{FunctionCall, Role, ToolCall};
     use wisp_tools::ask_user::ASK_USER;
     use wisp_tools::{Approval, Registry, Tool, ToolEnv, ToolResult};
 
@@ -2528,6 +2552,179 @@ mod tests {
             err.to_string().contains("identical tool call"),
             "unexpected error: {err}"
         );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    struct InterruptibleMonitorTool {
+        calls: Arc<AtomicUsize>,
+        queue: Arc<GuidanceQueue>,
+        succeed_after: usize,
+    }
+
+    #[async_trait]
+    impl Tool for InterruptibleMonitorTool {
+        fn name(&self) -> &str {
+            "monitor_run"
+        }
+
+        fn schema(&self) -> ToolSchema {
+            ToolSchema::new(
+                "monitor_run",
+                "wait for a run",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": { "run_id": { "type": "string" } }
+                }),
+            )
+        }
+
+        async fn run(&self, _args: &serde_json::Value, env: &dyn ToolEnv) -> ToolResult {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if n >= self.succeed_after {
+                return ToolResult::ok(r#"{"id":"run-1","status":"succeeded"}"#);
+            }
+            // Simulate the host pushing mid-turn guidance while this wait is
+            // blocked. The wait must observe it without draining.
+            self.queue
+                .lock()
+                .unwrap()
+                .push((n as u64, format!("progress check {n}")));
+            assert!(
+                env.guidance_pending(),
+                "monitor_run must see pending guidance through ToolEnv"
+            );
+            ToolResult::ok(
+                r#"{"id":"run-1","status":"running","wait_interrupted":true,"next_action":"respond then call monitor_run again"}"#,
+            )
+        }
+    }
+
+    struct RemonitorProvider {
+        stream_calls: AtomicUsize,
+    }
+
+    impl RemonitorProvider {
+        fn next(&self, messages: &[Message]) -> Completion {
+            let saw_success = messages.iter().any(|message| {
+                message.role == Role::Tool
+                    && message
+                        .content
+                        .as_text()
+                        .contains(r#""status":"succeeded""#)
+            });
+            if saw_success {
+                return Completion {
+                    content: "the run finished after the progress update".into(),
+                    finish_reason: Some("stop".into()),
+                    ..Completion::default()
+                };
+            }
+            let saw_interrupt = messages.iter().any(|message| {
+                message.role == Role::Tool
+                    && message
+                        .content
+                        .as_text()
+                        .contains(r#""wait_interrupted":true"#)
+            });
+            Completion {
+                content: if saw_interrupt {
+                    "still on phase 2; continuing to wait".into()
+                } else {
+                    String::new()
+                },
+                tool_calls: vec![call(
+                    "mon",
+                    "monitor_run",
+                    serde_json::json!({ "run_id": "run-1" }),
+                )],
+                finish_reason: Some("tool_calls".into()),
+                ..Completion::default()
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Provider for RemonitorProvider {
+        fn name(&self) -> &str {
+            "remonitor"
+        }
+        fn model(&self) -> &str {
+            "remonitor"
+        }
+        async fn complete(
+            &self,
+            messages: &[Message],
+            _tools: &[ToolSchema],
+        ) -> wisp_llm::Result<Completion> {
+            Ok(self.next(messages))
+        }
+        async fn stream(
+            &self,
+            messages: &[Message],
+            _tools: &[ToolSchema],
+            _sink: &mut dyn wisp_llm::StreamSink,
+        ) -> wisp_llm::Result<Completion> {
+            self.stream_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.next(messages))
+        }
+    }
+
+    #[tokio::test]
+    async fn mid_turn_guidance_interrupts_monitor_wait_and_does_not_trip_stuck_detection() {
+        let interrupts = STUCK_REPEAT_LIMIT;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let queue = Arc::new(GuidanceQueue::default());
+        let mut tools = Registry::builtins().filtered(&[]);
+        tools.add(Box::new(InterruptibleMonitorTool {
+            calls: calls.clone(),
+            queue: queue.clone(),
+            succeed_after: interrupts + 1,
+        }));
+        let provider = RemonitorProvider {
+            stream_calls: AtomicUsize::new(0),
+        };
+        let mut ctx = ContextManager::new(100_000);
+        let root = std::env::temp_dir().join(format!(
+            "wisp-core-guidance-interrupt-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let outcome = agent_loop_with_images(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            &root,
+            &NullOutput,
+            "run the long job",
+            &[],
+            false,
+            0,
+            None,
+            Some(queue.as_ref()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome, AgentLoopOutcome::Completed);
+        assert_eq!(calls.load(Ordering::SeqCst), interrupts + 1);
+        let guidance_count = ctx
+            .messages
+            .iter()
+            .filter(|message| {
+                message.role == Role::User && message.content.as_text().contains("progress check")
+            })
+            .count();
+        assert_eq!(guidance_count, interrupts);
+        assert!(ctx.messages.iter().any(|message| {
+            message.role == Role::Assistant
+                && message
+                    .content
+                    .as_text()
+                    .contains("still on phase 2; continuing to wait")
+        }));
+        assert!(provider.stream_calls.load(Ordering::SeqCst) >= interrupts + 2);
         std::fs::remove_dir_all(root).ok();
     }
 

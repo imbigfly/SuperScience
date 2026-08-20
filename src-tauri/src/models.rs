@@ -65,6 +65,19 @@ pub struct ModelProfile {
     /// Grok Imagine resolution (`1k` or `2k`).
     #[serde(default)]
     pub image_resolution: String,
+    /// Computed on read / accepted on save; true when this profile is assigned
+    /// to the video-generation tool.
+    #[serde(default)]
+    pub use_for_video_generation: bool,
+    /// Video length in seconds (1–15). None means the tool default.
+    #[serde(default)]
+    pub video_duration_secs: Option<u32>,
+    /// Video aspect ratio (`16:9`, `9:16`, `1:1`, `4:3`, `3:4`).
+    #[serde(default)]
+    pub video_aspect_ratio: Option<String>,
+    /// Video resolution (`480p`, `720p`, `1080p`).
+    #[serde(default)]
+    pub video_resolution: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -75,10 +88,28 @@ pub(crate) struct ImageGenerationOptions {
     pub resolution: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VideoGenerationOptions {
+    pub duration_secs: u32,
+    pub aspect_ratio: String,
+    pub resolution: String,
+}
+
+impl Default for VideoGenerationOptions {
+    fn default() -> Self {
+        Self {
+            duration_secs: 5,
+            aspect_ratio: "16:9".into(),
+            resolution: "720p".into(),
+        }
+    }
+}
+
 const PROFILES_KEY: &str = "model_profiles";
 const ACTIVE_KEY: &str = "active_model_id";
 const VISION_KEY: &str = "vision_model_id";
 const IMAGE_GENERATION_KEY: &str = "image_generation_model_id";
+const VIDEO_GENERATION_KEY: &str = "video_generation_model_id";
 const LEGACY_KEY_SECRET: &str = "api_key";
 const CUSTOM_CREDENTIALS_KEY: &str = "custom_credentials";
 const CUSTOM_CREDENTIAL_SECRET_PREFIX: &str = "custom_credential:";
@@ -633,6 +664,10 @@ async fn ensure(store: &wisp_store::Store) -> Vec<ModelProfile> {
         image_quality: String::new(),
         image_aspect_ratio: String::new(),
         image_resolution: String::new(),
+        use_for_video_generation: false,
+        video_duration_secs: None,
+        video_aspect_ratio: None,
+        video_resolution: None,
     };
     let profiles = vec![default];
     let _ = save_raw(store, &profiles).await;
@@ -757,6 +792,23 @@ pub(crate) fn is_grok_imagine_model(model: &str) -> bool {
     model_id_tail(model).eq_ignore_ascii_case("grok-imagine-image-2.0")
 }
 
+pub(crate) const VIDEO_GENERATION_UNSUPPORTED: &str = "Video generation currently supports xAI grok-imagine-video, grok-imagine-video-1.5, and grok-imagine-video-1.5-preview.";
+
+pub(crate) const VIDEO_ASPECT_RATIOS: &[&str] = &["16:9", "9:16", "1:1", "4:3", "3:4"];
+pub(crate) const VIDEO_RESOLUTIONS: &[&str] = &["480p", "720p", "1080p"];
+pub(crate) const VIDEO_DURATION_MIN_SECS: u32 = 1;
+pub(crate) const VIDEO_DURATION_MAX_SECS: u32 = 15;
+
+/// Video-generation model IDs. Gateway `vendor/model` ids match on the last
+/// path segment. Exact IDs only — `grok-imagine-video` must not absorb
+/// `grok-imagine-video-1.5-preview` or a future sibling.
+pub(crate) fn is_video_generation_model(model: &str) -> bool {
+    let tail = model_id_tail(model);
+    tail.eq_ignore_ascii_case("grok-imagine-video")
+        || tail.eq_ignore_ascii_case("grok-imagine-video-1.5")
+        || tail.eq_ignore_ascii_case("grok-imagine-video-1.5-preview")
+}
+
 fn normalize_image_options(profile: &mut ModelProfile) -> Result<(), String> {
     if !is_image_generation_model(&profile.model) {
         profile.image_size.clear();
@@ -821,8 +873,39 @@ pub(crate) fn supports_image_generation(provider: &str, model: &str) -> bool {
     ) && is_image_generation_model(model)
 }
 
+/// Out-of-range or unknown video options are dropped back to the tool
+/// defaults rather than rejected, so a stale form value cannot wedge a save.
+fn normalize_video_options(profile: &mut ModelProfile) {
+    if !is_video_generation_model(&profile.model) {
+        profile.video_duration_secs = None;
+        profile.video_aspect_ratio = None;
+        profile.video_resolution = None;
+        return;
+    }
+    profile.video_duration_secs = profile
+        .video_duration_secs
+        .map(|value| value.clamp(VIDEO_DURATION_MIN_SECS, VIDEO_DURATION_MAX_SECS));
+    profile.video_aspect_ratio = profile
+        .video_aspect_ratio
+        .take()
+        .map(|value| value.trim().to_string())
+        .filter(|value| VIDEO_ASPECT_RATIOS.contains(&value.as_str()));
+    profile.video_resolution = profile
+        .video_resolution
+        .take()
+        .map(|value| value.trim().to_string())
+        .filter(|value| VIDEO_RESOLUTIONS.contains(&value.as_str()));
+}
+
+pub(crate) fn supports_video_generation(provider: &str, model: &str) -> bool {
+    matches!(
+        provider.trim(),
+        "openai" | "openai_compatible" | "openai_responses" | "openai-responses" | "responses"
+    ) && is_video_generation_model(model)
+}
+
 fn is_chat_model(p: &ModelProfile) -> bool {
-    !is_image_generation_model(&p.model)
+    !is_image_generation_model(&p.model) && !is_video_generation_model(&p.model)
 }
 
 fn can_describe_images(p: &ModelProfile) -> bool {
@@ -831,6 +914,10 @@ fn can_describe_images(p: &ModelProfile) -> bool {
 
 fn can_generate_images(p: &ModelProfile) -> bool {
     supports_image_generation(&p.provider, &p.model)
+}
+
+fn can_generate_videos(p: &ModelProfile) -> bool {
+    supports_video_generation(&p.provider, &p.model)
 }
 
 async fn vision_id(store: &wisp_store::Store, profiles: &[ModelProfile]) -> Option<String> {
@@ -900,6 +987,47 @@ pub async fn image_generation_config(
             quality: p.image_quality.clone(),
             aspect_ratio: p.image_aspect_ratio.clone(),
             resolution: p.image_resolution.clone(),
+        },
+    ))
+}
+
+async fn video_generation_id(
+    store: &wisp_store::Store,
+    profiles: &[ModelProfile],
+) -> Option<String> {
+    let want = store
+        .get_setting(VIDEO_GENERATION_KEY)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    profiles
+        .iter()
+        .find(|p| p.id == want && can_generate_videos(p))
+        .map(|p| p.id.clone())
+}
+
+/// The explicitly assigned video-generation profile. Like image generation,
+/// there is no implicit fallback: no assignment means no `generate_video`
+/// tool is injected into the turn.
+pub async fn video_generation_config(
+    store: &wisp_store::Store,
+) -> Option<(String, String, String, VideoGenerationOptions)> {
+    let profiles = ensure(store).await;
+    let id = video_generation_id(store, &profiles).await?;
+    let p = profiles.iter().find(|p| p.id == id)?;
+    let defaults = VideoGenerationOptions::default();
+    Some((
+        effective_api_url(p),
+        p.model.clone(),
+        key_for(&p.id),
+        VideoGenerationOptions {
+            duration_secs: p.video_duration_secs.unwrap_or(defaults.duration_secs),
+            aspect_ratio: p
+                .video_aspect_ratio
+                .clone()
+                .unwrap_or(defaults.aspect_ratio),
+            resolution: p.video_resolution.clone().unwrap_or(defaults.resolution),
         },
     ))
 }
@@ -1089,6 +1217,7 @@ async fn decorated(store: &wisp_store::Store) -> Vec<ModelProfile> {
     let id = active_id(store, &profiles).await;
     let vision = vision_id(store, &profiles).await;
     let image_generation = image_generation_id(store, &profiles).await;
+    let video_generation = video_generation_id(store, &profiles).await;
     profiles
         .into_iter()
         .map(|mut p| {
@@ -1096,6 +1225,7 @@ async fn decorated(store: &wisp_store::Store) -> Vec<ModelProfile> {
             p.active = p.id == id;
             p.use_for_vision = vision.as_deref() == Some(p.id.as_str());
             p.use_for_image_generation = image_generation.as_deref() == Some(p.id.as_str());
+            p.use_for_video_generation = video_generation.as_deref() == Some(p.id.as_str());
             p
         })
         .collect()
@@ -1187,6 +1317,7 @@ pub async fn save_model(
     key: Option<String>,
     use_for_vision: Option<bool>,
     use_for_image_generation: Option<bool>,
+    use_for_video_generation: Option<bool>,
 ) -> Result<Vec<ModelProfile>, String> {
     // Explicit top-level param: the flag nested inside `profile` was observed
     // arriving as false through the webview IPC boundary, losing the
@@ -1194,8 +1325,11 @@ pub async fn save_model(
     let assign_vision = use_for_vision.unwrap_or(profile.use_for_vision);
     let assign_image_generation =
         use_for_image_generation.unwrap_or(profile.use_for_image_generation);
+    let assign_video_generation =
+        use_for_video_generation.unwrap_or(profile.use_for_video_generation);
     profile.use_for_vision = assign_vision;
     profile.use_for_image_generation = assign_image_generation;
+    profile.use_for_video_generation = assign_video_generation;
     let mut profiles = ensure(&state.store).await;
     if profile.model.trim().is_empty() {
         return Err("Model is required.".into());
@@ -1211,7 +1345,11 @@ pub async fn save_model(
     if assign_image_generation && !can_generate_images(&profile) {
         return Err(IMAGE_GENERATION_UNSUPPORTED.into());
     }
+    if assign_video_generation && !can_generate_videos(&profile) {
+        return Err(VIDEO_GENERATION_UNSUPPORTED.into());
+    }
     normalize_image_options(&mut profile)?;
+    normalize_video_options(&mut profile);
     clamp_to_catalog(&mut profile);
     if profile.label.trim().is_empty() {
         profile.label = profile.model.clone();
@@ -1262,6 +1400,20 @@ pub async fn save_model(
             .unwrap_or_default();
         if current == id {
             let _ = state.store.set_setting(IMAGE_GENERATION_KEY, "").await;
+        }
+    }
+    if assign_video_generation {
+        let _ = state.store.set_setting(VIDEO_GENERATION_KEY, &id).await;
+    } else {
+        let current = state
+            .store
+            .get_setting(VIDEO_GENERATION_KEY)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        if current == id {
+            let _ = state.store.set_setting(VIDEO_GENERATION_KEY, "").await;
         }
     }
     // Land the user on a freshly added model so they can edit/use it right away.
@@ -1325,6 +1477,16 @@ pub async fn remove_model(
     if image_generation == id {
         let _ = state.store.set_setting(IMAGE_GENERATION_KEY, "").await;
     }
+    let video_generation = state
+        .store
+        .get_setting(VIDEO_GENERATION_KEY)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    if video_generation == id {
+        let _ = state.store.set_setting(VIDEO_GENERATION_KEY, "").await;
+    }
     crate::clear_idle_agents(&state).await;
     Ok(decorated(&state.store).await)
 }
@@ -1364,7 +1526,7 @@ pub async fn set_active_model(
         .find(|p| p.id == id)
         .is_some_and(|p| !is_chat_model(p))
     {
-        return Err("Image generation models cannot be used for chat.".into());
+        return Err("Image or video generation models cannot be used for chat.".into());
     }
     if let Some(session_id) = session_id.filter(|value| !value.is_empty()) {
         let (project, scope) =
@@ -1456,6 +1618,10 @@ mod tests {
             image_quality: String::new(),
             image_aspect_ratio: String::new(),
             image_resolution: String::new(),
+            use_for_video_generation: false,
+            video_duration_secs: None,
+            video_aspect_ratio: None,
+            video_resolution: None,
         }
     }
 
@@ -1821,6 +1987,154 @@ mod tests {
             ["chat"]
         );
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn video_generation_matches_exact_model_ids() {
+        for model in [
+            "grok-imagine-video",
+            "Grok-Imagine-Video",
+            "grok-imagine-video-1.5",
+            "grok-imagine-video-1.5-preview",
+            "xai/grok-imagine-video-1.5-preview",
+        ] {
+            assert!(is_video_generation_model(model), "{model}");
+        }
+        // Exact ids only: the base id must not absorb longer siblings, and
+        // unrelated models (chat, image) must not match.
+        for model in [
+            "grok-imagine-video-2.0",
+            "grok-imagine-video-1.5-preview-2",
+            "grok-imagine-image-2.0",
+            "gpt-image-2",
+            "gpt-5.5",
+        ] {
+            assert!(!is_video_generation_model(model), "{model}");
+        }
+        assert!(!is_chat_model(&test_profile(
+            "video",
+            "video",
+            "grok-imagine-video-1.5-preview"
+        )));
+    }
+
+    #[test]
+    fn video_generation_requires_a_compatible_provider() {
+        let mut profile = test_profile("video", "video", "grok-imagine-video");
+        assert!(can_generate_videos(&profile));
+        profile.provider = "openai_compatible".into();
+        assert!(can_generate_videos(&profile));
+        profile.provider = "anthropic".into();
+        assert!(!can_generate_videos(&profile));
+        profile.provider = "openai".into();
+        profile.model = "grok-imagine-video-2.0".into();
+        assert!(!can_generate_videos(&profile));
+    }
+
+    #[test]
+    fn video_options_are_normalized() {
+        let mut video = test_profile("video", "video", "grok-imagine-video");
+        video.video_duration_secs = Some(42);
+        video.video_aspect_ratio = Some(" 9:16 ".into());
+        video.video_resolution = Some("4k".into());
+        normalize_video_options(&mut video);
+        assert_eq!(video.video_duration_secs, Some(15));
+        assert_eq!(video.video_aspect_ratio.as_deref(), Some("9:16"));
+        assert_eq!(video.video_resolution, None);
+
+        video.video_duration_secs = Some(0);
+        normalize_video_options(&mut video);
+        assert_eq!(video.video_duration_secs, Some(1));
+
+        // Non-video profiles drop any leftover video options.
+        let mut chat = test_profile("chat", "chat", "gpt-5.5");
+        chat.video_duration_secs = Some(5);
+        chat.video_aspect_ratio = Some("16:9".into());
+        normalize_video_options(&mut chat);
+        assert_eq!(chat.video_duration_secs, None);
+        assert_eq!(chat.video_aspect_ratio, None);
+    }
+
+    #[tokio::test]
+    async fn video_generation_requires_an_explicit_assignment() {
+        let tmp =
+            std::env::temp_dir().join(format!("wisp_video_gen_{}.sqlite", uuid::Uuid::new_v4()));
+        let store = wisp_store::Store::open(&tmp).await.unwrap();
+        let chat = test_profile("chat", "chat", "gpt-5.5");
+        let mut video = test_profile("video", "video", "grok-imagine-video-1.5");
+        video.video_duration_secs = Some(10);
+        video.video_aspect_ratio = Some("9:16".into());
+        save_raw(&store, &[chat, video]).await.unwrap();
+
+        assert!(video_generation_config(&store).await.is_none());
+        store
+            .set_setting(VIDEO_GENERATION_KEY, "video")
+            .await
+            .unwrap();
+        let (url, model, _key, options) = video_generation_config(&store).await.unwrap();
+        assert_eq!(url, "u");
+        assert_eq!(model, "grok-imagine-video-1.5");
+        assert_eq!(options.duration_secs, 10);
+        assert_eq!(options.aspect_ratio, "9:16");
+        assert_eq!(options.resolution, "720p");
+
+        let decorated = decorated(&store).await;
+        assert!(
+            decorated
+                .iter()
+                .find(|profile| profile.id == "video")
+                .unwrap()
+                .use_for_video_generation
+        );
+        assert_eq!(
+            delegation_profiles(&store)
+                .await
+                .iter()
+                .map(|profile| profile.id.as_str())
+                .collect::<Vec<_>>(),
+            ["chat"]
+        );
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[tokio::test]
+    async fn video_generation_config_falls_back_to_option_defaults() {
+        let tmp = std::env::temp_dir().join(format!(
+            "wisp_video_gen_defaults_{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let store = wisp_store::Store::open(&tmp).await.unwrap();
+        save_raw(
+            &store,
+            &[
+                test_profile("chat", "chat", "gpt-5.5"),
+                test_profile("video", "video", "grok-imagine-video"),
+            ],
+        )
+        .await
+        .unwrap();
+        store
+            .set_setting(VIDEO_GENERATION_KEY, "video")
+            .await
+            .unwrap();
+
+        let (_url, _model, _key, options) = video_generation_config(&store).await.unwrap();
+        assert_eq!(options, VideoGenerationOptions::default());
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn use_for_video_generation_survives_deserialization() {
+        let p: ModelProfile = serde_json::from_str(
+            r#"{"id":"m1","label":"l","provider":"openai","api_url":"u","model":"grok-imagine-video",
+                "use_for_video_generation":true,"video_duration_secs":8,
+                "video_aspect_ratio":"9:16","video_resolution":"1080p"}"#,
+        )
+        .unwrap();
+        assert!(p.use_for_video_generation);
+        assert_eq!(p.video_duration_secs, Some(8));
+        assert_eq!(p.video_aspect_ratio.as_deref(), Some("9:16"));
+        assert_eq!(p.video_resolution.as_deref(), Some("1080p"));
     }
 
     #[tokio::test]
