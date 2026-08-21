@@ -7873,6 +7873,30 @@ test("markdown table font follows UI font size", async ({ page }) => {
   await expect.poll(tableFont).toBe("17px");
 });
 
+test("custom CSS hides the bold-at-start lead bar", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("MDLEADBAR");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const leadStrong = page.locator(".msg.assistant .body.md > p.md-lead-strong > strong").first();
+  await expect(leadStrong).toBeVisible();
+  const barWidth = (target: typeof leadStrong) =>
+    target.evaluate((el) => getComputedStyle(el).borderLeftWidth);
+  expect(await barWidth(leadStrong)).toBe("3px");
+
+  // Mid-sentence bold is a plain `<strong>`; only paragraph-leading bold gets the bar.
+  const midStrong = page.locator(".msg.assistant .body.md > p:not(.md-lead-strong) > strong").first();
+  await expect(midStrong).toHaveText("12.5px");
+  expect(await barWidth(midStrong)).toBe("0px");
+
+  await openSettingsSection(page, "Appearance");
+  await page.getByTestId("appearance-custom-css")
+    .fill(":root { --md-lead-bar-width: 0; --md-lead-bar-pad: 0; }");
+  await page.getByRole("button", { name: "Back to app" }).click();
+  await expect.poll(() => barWidth(leadStrong)).toBe("0px");
+  await expect.poll(() => leadStrong.evaluate((el) => getComputedStyle(el).paddingLeft)).toBe("0px");
+});
+
 test("appearance custom CSS can be pasted, imported, and cleared", async ({ page }, testInfo) => {
   await enterApp(page);
   await openSettingsSection(page, "Appearance");
