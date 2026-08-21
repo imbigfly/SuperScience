@@ -895,10 +895,7 @@ mod tests {
         assert!(tools[0].visible_to_model());
         // Plan mode's retrieval passthrough reads exactly this hint.
         assert!(tools[0].read_only());
-        assert_eq!(
-            tools[0].display_title(),
-            "Open Motif for Claude Science"
-        );
+        assert_eq!(tools[0].display_title(), "Open Motif for Claude Science");
 
         let app_only = tools_into_remote(vec![json!({
             "name": "motif_refresh",

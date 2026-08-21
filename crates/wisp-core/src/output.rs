@@ -243,9 +243,11 @@ impl<'a> wisp_tools::ToolEnv for ToolEnvAdapter<'a> {
             wisp_tools::ToolEvent::Diff { path, old, new } => self.out.diff(&path, &old, &new),
             wisp_tools::ToolEvent::FileChanged { path } => self.out.file_changed(&path),
             wisp_tools::ToolEvent::Stdout { chunk } => self.out.stdout_chunk(&chunk),
-            wisp_tools::ToolEvent::Presentation { kind, payload, server } => {
-                self.out.tool_presentation(&kind, &payload, server)
-            }
+            wisp_tools::ToolEvent::Presentation {
+                kind,
+                payload,
+                server,
+            } => self.out.tool_presentation(&kind, &payload, server),
             wisp_tools::ToolEvent::Result { ok: _ } => {}
         }
         let _ = Value::Null;

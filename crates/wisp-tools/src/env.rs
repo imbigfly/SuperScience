@@ -118,9 +118,7 @@ impl std::fmt::Debug for ToolEvent {
             ToolEvent::FileChanged { path } => {
                 f.debug_struct("FileChanged").field("path", path).finish()
             }
-            ToolEvent::Stdout { chunk } => {
-                f.debug_struct("Stdout").field("chunk", chunk).finish()
-            }
+            ToolEvent::Stdout { chunk } => f.debug_struct("Stdout").field("chunk", chunk).finish(),
             ToolEvent::Presentation { kind, payload, .. } => f
                 .debug_struct("Presentation")
                 .field("kind", kind)
