@@ -7873,6 +7873,25 @@ test("markdown table font follows UI font size", async ({ page }) => {
   await expect.poll(tableFont).toBe("17px");
 });
 
+test("custom CSS hides the bold-at-start lead bar", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("MDLEADBAR");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const leadStrong = page.locator(".msg.assistant .body.md").last()
+    .locator("p.md-lead-strong > strong").first();
+  await expect(leadStrong).toHaveText("结论");
+  const barWidth = () => leadStrong.evaluate((el) => getComputedStyle(el).borderLeftWidth);
+  expect(await barWidth()).toBe("3px");
+
+  await openSettingsSection(page, "Appearance");
+  await page.getByTestId("appearance-custom-css")
+    .fill(":root { --md-lead-bar-width: 0; --md-lead-bar-pad: 0; }");
+  await page.getByRole("button", { name: "Back to app" }).click();
+  await expect.poll(barWidth).toBe("0px");
+  await expect.poll(() => leadStrong.evaluate((el) => getComputedStyle(el).paddingLeft)).toBe("0px");
+});
+
 test("appearance custom CSS can be pasted, imported, and cleared", async ({ page }, testInfo) => {
   await enterApp(page);
   await openSettingsSection(page, "Appearance");

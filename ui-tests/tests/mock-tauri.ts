@@ -5316,6 +5316,19 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               }, 30);
               return fid;
             }
+            if (String(arg("message") ?? "").includes("MDLEADBAR")) {
+              const md = [
+                "**结论**：字号已经跟随设置。",
+                "",
+                "表格字号现在跟随外观设置，不再写死。",
+              ].join("\n");
+              setTimeout(() => {
+                emit("agent", { kind: "User", frame_id: fid, text: msg });
+                emit("agent", { kind: "Text", frame_id: fid, delta: md });
+                emit("agent", { kind: "Done", frame_id: fid });
+              }, 30);
+              return fid;
+            }
             if (String(arg("message") ?? "").includes("MDTABLE")) {
               const md = [
                 "| Tissue | TPM |",
