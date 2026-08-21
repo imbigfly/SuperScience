@@ -6469,6 +6469,7 @@ pub fn run() {
             skill_update::get_skill_update_enabled,
             skill_update::set_skill_update_enabled,
             skill_update::get_skill_update_status,
+            skill_update::preview_skill_updates,
             skill_update::check_skill_updates,
             plugins::list_plugins,
             plugins::pick_plugin_source,

@@ -79,8 +79,8 @@ use std::rc::Rc;
 use text::{
     dom_value, event_target_checked, event_target_value, file_kind, format_bytes,
     group_artifact_indices, ime_composing, join_path, md_to_html, note_composition_end,
-    opens_in_system_browser, parent_path, provider_defaults, runtime_language,
-    user_message_presentation, DEEPSEEK_FLASH_MODEL, DEEPSEEK_PRO_MODEL,
+    opens_in_system_browser, parent_path, runtime_language,
+    user_message_presentation,
 };
 use user_center::{refresh_tctoken_session, TctokenSession, UserCenterOverlay};
 use wasm_bindgen::prelude::*;
@@ -1380,8 +1380,6 @@ fn App() -> impl IntoView {
     let caps = create_rw_signal::<Option<Capabilities>>(None);
     let bootstrap = create_rw_signal::<Option<BootstrapStatus>>(None);
     let show_onboarding = create_rw_signal(false);
-    let onboard_step = create_rw_signal(0usize);
-    let onboard_key = create_rw_signal(String::new());
 
     create_effect(move |_| {
         if file_source.get() != "local" {
@@ -6145,80 +6143,6 @@ fn App() -> impl IntoView {
     });
     let dismiss_onboard = move |_| dismiss_onboarding.call(());
 
-    // Onboarding step 0: save the entered key as DeepSeek models (flash as
-    // the default, pro for heavier work), reusing the same `save_model`
-    // command as Settings. Blank key = skip.
-    // ponytail: onboarding is DeepSeek-only; other providers go through Settings › Models.
-    let save_onboard_key = Callback::new(move |_| {
-        let key = onboard_key.get();
-        if key.trim().is_empty() {
-            return;
-        }
-        let provider = "openai".to_string();
-        let (api_url, _) = provider_defaults(&provider);
-        // `save_model` makes every newly created profile the active one, so
-        // the model the user should land on has to be saved last.
-        let wanted = [DEEPSEEK_PRO_MODEL, DEEPSEEK_FLASH_MODEL];
-        spawn_local(async move {
-            for model in wanted {
-                let arg = to_value(&serde_json::json!({
-                    "profile": {
-                        "id": "",
-                        "label": "",
-                        "provider": provider,
-                        "api_url": api_url,
-                        "model": model,
-                        "max_tokens": 8192,
-                        "reasoning_effort": "",
-                        "supports_vision": false,
-                        "use_for_vision": false,
-                        "use_for_image_generation": false,
-                        "use_for_video_generation": false,
-                    },
-                    "key": Some(key.clone()),
-                    "useForVision": false,
-                    "useForImageGeneration": false,
-                    "useForVideoGeneration": false,
-                }))
-                .unwrap();
-                if let Ok(v) = invoke_checked("save_model", arg).await {
-                    if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ModelProfile>>(v) {
-                        models.set(list);
-                    }
-                }
-            }
-            // Bind the built-in Reader to the flash tier so reading-heavy work
-            // runs on the cheap model out of the box. An already-bound Reader
-            // is the user's choice — leave it alone.
-            let flash_id = models
-                .get_untracked()
-                .iter()
-                .find(|p| p.model == DEEPSEEK_FLASH_MODEL)
-                .map(|p| p.id.clone());
-            if let Some(flash_id) = flash_id {
-                if let Ok(v) = invoke_checked("list_specialists", JsValue::UNDEFINED).await {
-                    if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<Specialist>>(v) {
-                        if let Some(mut reader) = list
-                            .into_iter()
-                            .find(|s| s.id == "reader" && s.model_id.trim().is_empty())
-                        {
-                            reader.model_id = flash_id;
-                            let arg = to_value(&serde_json::json!({ "spec": reader })).unwrap();
-                            if let Ok(v) = invoke_checked("save_specialist_cmd", arg).await {
-                                if let Ok(list) =
-                                    serde_wasm_bindgen::from_value::<Vec<Specialist>>(v)
-                                {
-                                    specialists.set(list);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            onboard_key.set(String::new());
-        });
-    });
-
     let ctx_menu = create_rw_signal::<Option<CtxMenu>>(None);
     let rename_session_target = create_rw_signal::<Option<(String, String)>>(None);
     let rename_session_input = create_rw_signal(String::new());
@@ -7786,11 +7710,7 @@ fn App() -> impl IntoView {
         }
         if show_onboarding.get() {
             ev.prevent_default();
-            if onboard_step.get() > 0 {
-                onboard_step.update(|s| *s = s.saturating_sub(1));
-            } else {
-                dismiss_onboarding.call(());
-            }
+            dismiss_onboarding.call(());
             return;
         }
         if show_library.get() {
@@ -14766,9 +14686,7 @@ fn App() -> impl IntoView {
         />
         <UserCenterOverlay locale=locale show=show_user_center session=tctoken_session />
         <OnboardingOverlay
-            locale=locale show_onboarding=show_onboarding onboard_step=onboard_step
-            onboard_key=onboard_key
-            save_onboard_key=save_onboard_key
+            locale=locale show_onboarding=show_onboarding
             dismiss_onboard=Callback::new(dismiss_onboard)
         />
         <ContextRecoveryOverlay

@@ -3615,19 +3615,36 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               ...mockSkillUpdateReport,
               enabled: mockSkillUpdateEnabled,
             };
-          case "check_skill_updates":
+          case "preview_skill_updates":
+            if (query.get("mockSkillUpdate") === "1") {
+              return {
+                available: [
+                  {
+                    id: "nature-skills",
+                    current_pin: "c171989db699bd601d4373912b3fb8db96ecc95b",
+                    remote_pin: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  },
+                ],
+                errors: [],
+              };
+            }
+            return { available: [], errors: [] };
+          case "check_skill_updates": {
+            const force = Boolean(arg("force"));
+            const doCheck = mockSkillUpdateEnabled || force;
             mockSkillUpdateReport = {
               ...mockSkillUpdateReport,
               enabled: mockSkillUpdateEnabled,
-              checked: mockSkillUpdateEnabled,
-              last_check_at: mockSkillUpdateEnabled ? new Date().toISOString() : null,
-              last_check_at_ms: mockSkillUpdateEnabled ? Date.now() : null,
-              updated: [],
-              skipped: ["nature-skills", "academic-research-skills", "humanizer-zh", "ppt-master"],
+              checked: doCheck,
+              last_check_at: doCheck ? new Date().toISOString() : null,
+              last_check_at_ms: doCheck ? Date.now() : null,
+              updated: query.get("mockSkillUpdate") === "1" && doCheck ? ["nature-skills"] : [],
+              skipped: ["academic-research-skills", "humanizer-zh", "ppt-master"],
               errors: [],
               dropped_overlays: [],
             };
             return mockSkillUpdateReport;
+          }
           case "reload_skills": {
             if (query.get("mockSkillReload") === "1" && !skills.some((skill) => skill.name === "fresh-project-skill")) {
               skills.push({
@@ -3743,7 +3760,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                   transport: "",
                   subtitle: "",
                   auth: "",
-                  tools: [{ name: "biomart_query", mode: "allow", description: "" }],
+                  tools: [{ name: "list_marts", mode: "allow", description: "List all available BioMart marts from Ensembl." }],
                 },
                 ...mockMcpConnections.map((connection) => ({
                   key: connection.id,

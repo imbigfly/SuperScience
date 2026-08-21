@@ -587,6 +587,7 @@ test("Usage groups workspaces, charts activity and models, and paginates session
   await expect(cumulative).toHaveAttribute("aria-pressed", "true");
 
   const modelShare = page.getByTestId("usage-model-share");
+  const workspacesCard = page.getByTestId("usage-workspaces");
   await expect(modelShare.getByText("deepseek-v4-pro", { exact: true })).toBeVisible();
   await expect(modelShare.getByText("opus-4.8", { exact: true })).toBeVisible();
   await expect(modelShare.locator(".usage-model-pie")).toHaveCSS(
@@ -594,10 +595,24 @@ test("Usage groups workspaces, charts activity and models, and paginates session
     /conic-gradient/,
   );
 
+  const modelBox = await modelShare.boundingBox();
+  const workspaceBox = await workspacesCard.boundingBox();
+  expect(modelBox).toBeTruthy();
+  expect(workspaceBox).toBeTruthy();
+  expect(Math.abs((modelBox?.y ?? 0) - (workspaceBox?.y ?? 0))).toBeLessThan(2);
+  expect(Math.abs((modelBox?.height ?? 0) - (workspaceBox?.height ?? 0))).toBeLessThan(2);
+
   const toolRank = page.getByTestId("usage-tool-rank");
   await expect(toolRank.getByText("bear-support", { exact: true })).toBeVisible();
   await expect(toolRank.getByText("pubmed_search", { exact: true })).toBeVisible();
   await expect(toolRank.getByTestId("usage-tool-rank-row")).toHaveCount(3);
+
+  const activityBox = await activity.boundingBox();
+  const toolBox = await toolRank.boundingBox();
+  expect(activityBox).toBeTruthy();
+  expect(toolBox).toBeTruthy();
+  expect(Math.abs((toolBox?.width ?? 0) - (activityBox?.width ?? 0))).toBeLessThan(2);
+  expect((toolBox?.y ?? 0)).toBeGreaterThan((modelBox?.y ?? 0) + (modelBox?.height ?? 0) - 1);
 
   const workspaces = page.getByTestId("usage-workspace-row");
   await expect(workspaces).toHaveCount(2);
@@ -7703,15 +7718,15 @@ test("model settings updates activation and confirms removal", async ({ page }) 
   await enterApp(page);
   await openSettingsSection(page, "Models");
 
-  const opus = page.locator(".model-card").filter({ hasText: "opus-4.8" });
+  const opus = page.locator(".model-card").filter({ hasText: "api.anthropic.com" });
   await opus.getByRole("button", { name: "Use" }).click();
   await expect.poll(() => lastInvokeArgs(page, "set_active_model")).toMatchObject({ id: "opus" });
   await expect(opus).toHaveClass(/active/);
 
-  const deepseek = page.locator(".model-card").filter({ hasText: "deepseek-v4-pro" });
+  const deepseek = page.locator(".model-card").filter({ hasText: "api.deepseek.com" });
   await deepseek.getByTitle("Remove model").click();
   const confirm = page.getByTestId("model-delete-confirm");
-  await expect(confirm).toContainText("Remove deepseek-v4-pro? This cannot be undone.");
+  await expect(confirm).toContainText("Remove api.deepseek.com? This cannot be undone.");
   await expect.poll(() => lastInvokeArgs(page, "remove_model")).toBeNull();
 
   await confirm.getByRole("button", { name: "Remove model" }).click();
@@ -8136,29 +8151,25 @@ test("one DeepSeek Base URL can save Responses and Anthropic protocol models", a
     ]);
 });
 
-test("onboarding key setup lands on flash after adding pro", async ({ page }) => {
+test("onboarding shows three value cards and dismisses on Get started", async ({ page }) => {
   await page.goto("/?mockOnboarding=1");
-  await expect(page.locator(".onboard-overlay")).toBeVisible();
-  await page.getByLabel("API key (stored in OS keyring)").fill("sk-onboard");
-  await page.getByRole("button", { name: "Next" }).click();
-  // Order matters: save_model activates each new profile, so flash must land
-  // last for the user to start on the cheaper default.
-  await expect.poll(() => page.evaluate(() => ((window as any).__skillInvokeLog ?? [])
-    .filter((c: any) => c.cmd === "save_model")
-    .map((c: any) => {
-      const args = c.args instanceof Map ? Object.fromEntries(c.args) : c.args;
-      const profile = args.profile instanceof Map ? Object.fromEntries(args.profile) : args.profile;
-      return profile.model;
-    }))).toEqual(["deepseek-v4-pro", "deepseek-v4-flash"]);
-  // The built-in Reader gets bound to the flash profile so reading-heavy
-  // work runs on the cheap tier out of the box.
-  await expect.poll(() => page.evaluate(() => ((window as any).__skillInvokeLog ?? [])
-    .filter((c: any) => c.cmd === "save_specialist_cmd")
-    .map((c: any) => {
-      const args = c.args instanceof Map ? Object.fromEntries(c.args) : c.args;
-      const spec = args.spec instanceof Map ? Object.fromEntries(args.spec) : args.spec;
-      return { id: spec.id, model_id: spec.model_id };
-    }))).toEqual([{ id: "reader", model_id: "m2" }]);
+  await expect(page.getByTestId("onboard-overlay")).toBeVisible();
+  await expect(page.getByTestId("onboard-card-1")).toContainText("I never touch your data.");
+  await expect(page.getByTestId("onboard-card-1")).toContainText("Everything runs on your laptop");
+  await expect(page.getByTestId("onboard-card-2")).toContainText("I do the grunt work.");
+  await expect(page.getByTestId("onboard-card-3")).toContainText("You direct; I execute.");
+  await page.getByTestId("onboard-start").click();
+  await expect(page.getByTestId("onboard-overlay")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() =>
+    ((window as any).__skillInvokeLog ?? []).some((c: any) => c.cmd === "dismiss_onboarding")
+  )).toBe(true);
+});
+
+test("Escape dismisses onboarding without moving focus inside", async ({ page }) => {
+  await page.goto("/?mockOnboarding=1");
+  await expect(page.getByTestId("onboard-overlay")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("onboard-overlay")).toHaveCount(0);
 });
 
 test("API access on xAI suggests grok chat and imagine image", async ({ page }) => {
@@ -8175,7 +8186,7 @@ test("API access on xAI suggests grok chat and imagine image", async ({ page }) 
 test("gpt-image-2 can be assigned for generation but not selected for chat", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Models");
-  const opus = page.locator(".model-card", { hasText: "opus-4.8" });
+  const opus = page.locator(".model-card", { hasText: "api.anthropic.com" });
   await opus.click();
 
   await providerSelect(page).selectOption("openai_responses");
@@ -8207,8 +8218,7 @@ test("gpt-image-2 can be assigned for generation but not selected for chat", asy
     },
   });
 
-  const imageModel = page.locator(".model-card", { hasText: "opus-4.8" });
-  await expect(imageModel).toContainText("gpt-image-2");
+  const imageModel = page.locator(".model-card", { hasText: "api.openai.com" });
   await expect(imageModel).toContainText("image gen");
   await expect(imageModel.getByRole("button", { name: "Use" })).toHaveCount(0);
 
@@ -8221,7 +8231,7 @@ test("gpt-image-2 can be assigned for generation but not selected for chat", asy
 test("grok-imagine-image-2.0 can be assigned for generation but not selected for chat", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Models");
-  const opus = page.locator(".model-card", { hasText: "opus-4.8" });
+  const opus = page.locator(".model-card", { hasText: "api.anthropic.com" });
   await opus.click();
 
   await providerSelect(page).selectOption("openai");
@@ -8257,8 +8267,7 @@ test("grok-imagine-image-2.0 can be assigned for generation but not selected for
     },
   });
 
-  const imageModel = page.locator(".model-card", { hasText: "opus-4.8" });
-  await expect(imageModel).toContainText("grok-imagine-image-2.0");
+  const imageModel = page.locator(".model-card", { hasText: "api.x.ai" });
   await expect(imageModel).toContainText("image gen");
   await expect(imageModel.getByRole("button", { name: "Use" })).toHaveCount(0);
 
@@ -8271,7 +8280,7 @@ test("grok-imagine-image-2.0 can be assigned for generation but not selected for
 test("grok-imagine-video can be assigned for generation but not selected for chat", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Models");
-  const opus = page.locator(".model-card", { hasText: "opus-4.8" });
+  const opus = page.locator(".model-card", { hasText: "api.anthropic.com" });
   await opus.click();
 
   await providerSelect(page).selectOption("openai");
@@ -8307,8 +8316,7 @@ test("grok-imagine-video can be assigned for generation but not selected for cha
     },
   });
 
-  const videoModel = page.locator(".model-card", { hasText: "opus-4.8" });
-  await expect(videoModel).toContainText("grok-imagine-video");
+  const videoModel = page.locator(".model-card", { hasText: "api.x.ai" });
   await expect(videoModel).toContainText("video gen");
   await expect(videoModel.getByRole("button", { name: "Use" })).toHaveCount(0);
 
@@ -8363,6 +8371,23 @@ test("settings can validate current API config", async ({ page }) => {
   await expect(page.locator(".settings-status")).toHaveText("Validated openai with deepseek-v4-pro");
 });
 
+test("each model card can test connectivity, has delete, and has no link shortcut", async ({ page }) => {
+  await enterApp(page);
+  await openModelsSettings(page);
+  const row = page.getByTestId("provider-model-row").first();
+  await expect(row.getByTestId("provider-delete-model")).toBeVisible();
+  await expect(row.getByTestId("provider-delete-model")).toBeEnabled();
+  await expect(row.locator(".provider-model-icon").filter({ has: page.locator("svg") })).toHaveCount(2);
+  await row.getByTestId("provider-test-model").click();
+  await expect.poll(() => lastInvokeArgs(page, "validate_settings")).toMatchObject({
+    settings: { model: "deepseek-v4-pro" },
+  });
+  const status = page.getByTestId("provider-model-test-status");
+  await expect(status).toBeVisible();
+  await expect(status).toContainText("Validated openai with deepseek-v4-pro");
+  await expect(page.locator(".provider-model-block").first().getByTestId("provider-model-test-status")).toBeVisible();
+});
+
 test("edit model can add another model on the same API", async ({ page }) => {
   await enterApp(page);
   await openModelsSettings(page);
@@ -8387,6 +8412,11 @@ test("edit model can add another model on the same API", async ({ page }) => {
     { id: "default", model: "deepseek-v4-pro" },
     { id: "", model: "deepseek-v4-flash" },
   ]);
+
+  await expect(page.locator(".model-card")).toHaveCount(2);
+  const deepseek = page.locator(".model-card").filter({ hasText: "api.deepseek.com" });
+  await expect(deepseek).toContainText("2 models");
+  await expect(page.locator(".model-card").filter({ hasText: "deepseek-v4-flash" })).toHaveCount(0);
 });
 
 test("model advanced fields stay collapsed until opened and remain editable", async ({ page }) => {
@@ -8411,7 +8441,7 @@ test("editing a saved model validates with that model profile id", async ({ page
   await enterApp(page);
   await globalSettingsButton(page).click();
   await page.getByRole("button", { name: "Models" }).click();
-  await page.locator(".model-card", { hasText: "opus-4.8" }).click();
+  await page.locator(".model-card", { hasText: "api.anthropic.com" }).click();
   await expect(providerSelect(page)).toBeVisible();
   await expect(page.getByTestId("provider-model-row").first().getByLabel("Model ID")).toHaveValue("opus-4.8");
 
@@ -8902,6 +8932,41 @@ test("skill manager updates and deletes user-added skills", async ({ page }) => 
   await expect(page.getByText("Skill deleted.")).toBeVisible();
 });
 
+test("skill manager reports up to date when no packs need an update", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Skills");
+  await page.getByRole("button", { name: "Check for updates" }).click();
+  await expect(page.getByText("Allowlisted skills are up to date.")).toBeVisible();
+  await expect(page.getByTestId("skill-update-confirm")).toHaveCount(0);
+});
+
+test("skill manager installs previewed updates only after confirm", async ({ page }) => {
+  await enterApp(page, "/?mockSkillUpdate=1");
+  await openSettingsSection(page, "Skills");
+
+  const auto = page.getByTestId("skill-update-enabled");
+  await expect(auto).toBeChecked();
+  await auto.click();
+  await expect.poll(() => lastInvokeArgs(page, "set_skill_update_enabled")).toEqual({
+    enabled: false,
+  });
+
+  await page.getByRole("button", { name: "Check for updates" }).click();
+  const confirm = page.getByTestId("skill-update-confirm");
+  await expect(confirm).toContainText("nature-skills");
+  await expect(confirm).toContainText("c171989");
+  await page.keyboard.press("Escape");
+  await expect(confirm).toHaveCount(0);
+  await expect(page.locator(".settings-page")).toBeVisible();
+
+  await page.getByRole("button", { name: "Check for updates" }).click();
+  await page.getByRole("button", { name: "Install updates" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "check_skill_updates")).toEqual({
+    force: true,
+  });
+  await expect(page.getByText("Updated: nature-skills")).toBeVisible();
+});
+
 test("plugin settings diagnose, launch, install, and remove a feature plugin", async ({ page }) => {
   await enterApp(page, "/?mockPluginImport=1");
   await openSettingsSection(page, "Plugins");
@@ -9003,6 +9068,34 @@ test("plugin settings diagnose, launch, install, and remove a feature plugin", a
     version: "0.2.1",
   });
   await expect(row).toHaveCount(0);
+});
+
+test("MCP Links shows a capability line under each bundled tool name", async ({ page }) => {
+  await enterApp(page);
+  await globalSettingsButton(page).click();
+  await page.getByRole("button", { name: "MCP Links" }).click();
+
+  const featured = page.locator(".settings-list-row", { hasText: "BioMart" });
+  await expect(featured).toContainText("Query Ensembl BioMart datasets, attributes, and ID translation");
+  await featured.click();
+  await expect(page.getByText("list_marts", { exact: true })).toBeVisible();
+  await expect(page.locator(".conn-tool-desc")).toHaveText(
+    "List all available BioMart marts from Ensembl.",
+  );
+});
+
+test("MCP Links tool briefs follow the UI language", async ({ page }) => {
+  await enterApp(page, "/?mockLocale=zh");
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "MCP链接" }).click();
+
+  const featured = page.locator(".settings-list-row", { hasText: "BioMart" });
+  await expect(featured).toContainText("查询 Ensembl BioMart 数据集、字段并转换基因 ID");
+  await featured.click();
+  await expect(page.getByText("list_marts", { exact: true })).toBeVisible();
+  await expect(page.locator(".conn-tool-desc")).toHaveText(
+    "列出 Ensembl 上所有可用的 BioMart 数据库",
+  );
 });
 
 test("custom MCP row opens tools while edit uses a dedicated button", async ({ page }) => {

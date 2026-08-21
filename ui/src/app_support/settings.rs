@@ -203,6 +203,28 @@ mod provider_form_tests {
     }
 
     #[test]
+    fn edit_form_groups_empty_base_urls_as_one_channel() {
+        let clicked = ModelProfile {
+            id: "default".into(),
+            label: "Default".into(),
+            model: "default".into(),
+            ..profile("", false)
+        };
+        let sibling = ModelProfile {
+            id: "extra".into(),
+            label: "extra".into(),
+            model: "extra".into(),
+            ..profile("", false)
+        };
+        let form = super::profiles_to_edit_form(&clicked, &[clicked.clone(), sibling]);
+        assert_eq!(form.entries.len(), 2);
+        assert!(form
+            .entries
+            .iter()
+            .any(|entry| entry.profile_id.as_deref() == Some("extra")));
+    }
+
+    #[test]
     fn provider_mark_letter_uses_label_then_host() {
         assert_eq!(super::provider_mark_letter("天成TOKEN", ""), "天");
         assert_eq!(
@@ -210,6 +232,45 @@ mod provider_form_tests {
             "A"
         );
         assert_eq!(super::provider_mark_letter("opus-4.8", ""), "O");
+    }
+
+    #[test]
+    fn settings_list_groups_models_by_base_url() {
+        let tctoken_a = ModelProfile {
+            id: "tctoken".into(),
+            label: "qwen3.6-plus-p".into(),
+            model: "qwen3.6-plus-p".into(),
+            ..profile("https://www.tctoken.cn/v1", true)
+        };
+        let tctoken_b = ModelProfile {
+            id: "flash".into(),
+            label: "qwen3.7-flash".into(),
+            model: "qwen3.7-flash".into(),
+            ..profile("https://www.tctoken.cn/v1", true)
+        };
+        let empty = ModelProfile {
+            id: "default".into(),
+            label: "Default".into(),
+            model: "default".into(),
+            ..profile("", false)
+        };
+        let groups = super::group_models_by_channel(&[tctoken_a, empty.clone(), tctoken_b]);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].title(), "tctoken.cn");
+        assert_eq!(groups[0].model_count(), 2);
+        assert_eq!(
+            groups[0]
+                .profiles
+                .iter()
+                .map(|profile| profile.id.as_str())
+                .collect::<Vec<_>>(),
+            ["tctoken", "flash"]
+        );
+        assert_eq!(groups[1].title(), "Default");
+        assert_eq!(groups[1].model_count(), 1);
+        assert_eq!(groups[1].deletable_ids(), vec!["default".to_string()]);
+        assert!(super::same_model_channel("", ""));
+        assert!(!super::same_endpoint("", ""));
     }
 }
 
@@ -463,6 +524,11 @@ pub(crate) fn skill_matches_filter(skill: &SkillRow, tag: &str, query: &str) -> 
         "__untagged" => skill.tags.is_empty(),
         "__enabled" => skill.enabled,
         "__disabled" => !skill.enabled,
+        "__bundled" => skill.scope == "bundled",
+        "__added" => matches!(
+            skill.scope.as_str(),
+            "global" | "project" | "extra" | "custom"
+        ),
         t => skill.tags.iter().any(|s| s == t),
     };
     let q = query.trim().to_ascii_lowercase();
@@ -499,6 +565,85 @@ mod skill_filter_tests {
         assert!(!skill_matches_filter(&enabled, "__disabled", ""));
         assert!(skill_matches_filter(&disabled, "__disabled", "workflow"));
         assert!(!skill_matches_filter(&disabled, "__enabled", ""));
+    }
+
+    #[test]
+    fn skill_scope_filters_separate_bundled_from_user_added() {
+        let bundled = skill("remote-compute", true, &["compute"]);
+        let mut added = skill("paper-narrative", true, &[]);
+        added.scope = "global".into();
+        added.builtin = false;
+
+        assert!(skill_matches_filter(&bundled, "__bundled", ""));
+        assert!(!skill_matches_filter(&bundled, "__added", ""));
+        assert!(skill_matches_filter(&added, "__added", ""));
+        assert!(!skill_matches_filter(&added, "__bundled", ""));
+    }
+}
+
+pub(crate) fn shorten_skill_pin(pin: &str) -> String {
+    let trimmed = pin.trim();
+    if trimmed.len() >= 40 && trimmed.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        trimmed.chars().take(7).collect()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+pub(crate) fn skill_update_result_message(locale: Locale, report: &SkillUpdateReport) -> String {
+    if let Some(error) = report.errors.first() {
+        return tf(locale, "skills.auto_update_failed", &[("error", error)]);
+    }
+    if !report.updated.is_empty() {
+        return tf(
+            locale,
+            "skills.auto_update_updated",
+            &[("packs", &report.updated.join(", "))],
+        );
+    }
+    if report.checked {
+        t(locale, "skills.auto_update_ok").into()
+    } else {
+        t(locale, "skills.auto_update_never").into()
+    }
+}
+
+#[cfg(test)]
+mod skill_update_copy_tests {
+    use super::*;
+
+    #[test]
+    fn shorten_skill_pin_keeps_semver_and_clips_commits() {
+        assert_eq!(shorten_skill_pin("v3.20.1"), "v3.20.1");
+        assert_eq!(
+            shorten_skill_pin("c171989db699bd601d4373912b3fb8db96ecc95b"),
+            "c171989"
+        );
+    }
+
+    #[test]
+    fn skill_update_result_message_prefers_errors_then_updated() {
+        let failed = SkillUpdateReport {
+            errors: vec!["nature-skills: timeout".into()],
+            ..SkillUpdateReport::default()
+        };
+        assert!(skill_update_result_message(Locale::En, &failed).contains("timeout"));
+
+        let updated = SkillUpdateReport {
+            checked: true,
+            updated: vec!["nature-skills".into()],
+            ..SkillUpdateReport::default()
+        };
+        assert!(skill_update_result_message(Locale::En, &updated).contains("nature-skills"));
+
+        let ok = SkillUpdateReport {
+            checked: true,
+            ..SkillUpdateReport::default()
+        };
+        assert_eq!(
+            skill_update_result_message(Locale::En, &ok),
+            t(Locale::En, "skills.auto_update_ok")
+        );
     }
 }
 
@@ -873,6 +1018,117 @@ pub(crate) fn profile_to_entry(m: &ModelProfile) -> ModelFormEntry {
     }
 }
 
+/// Channel identity for the settings list: one card per Base URL, including
+/// an empty URL so unfinished "Default" rows stay together.
+pub(crate) fn model_channel_key(api_url: &str) -> String {
+    normalize_endpoint(api_url)
+}
+
+pub(crate) fn same_model_channel(left: &str, right: &str) -> bool {
+    model_channel_key(left) == model_channel_key(right)
+}
+
+/// One API access (Base URL + key) and every model saved on it.
+#[derive(Clone)]
+pub(crate) struct ModelChannel {
+    pub key: String,
+    pub profiles: Vec<ModelProfile>,
+}
+
+impl ModelChannel {
+    pub fn representative(&self) -> &ModelProfile {
+        self.profiles
+            .iter()
+            .find(|profile| profile.active)
+            .or_else(|| self.profiles.first())
+            .expect("channel has at least one profile")
+    }
+
+    pub fn title(&self) -> String {
+        let host = crate::text::endpoint_host(self.representative().api_url.as_str());
+        let host = host.strip_prefix("www.").unwrap_or(host.as_str());
+        if !host.is_empty() {
+            return host.to_string();
+        }
+        self.profiles
+            .iter()
+            .map(|profile| profile.label.trim())
+            .find(|label| !label.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| self.representative().id.clone())
+    }
+
+    pub fn api_url(&self) -> &str {
+        self.representative().api_url.as_str()
+    }
+
+    pub fn model_count(&self) -> usize {
+        self.profiles.len()
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.profiles.iter().any(|profile| profile.active)
+    }
+
+    pub fn is_builtin(&self) -> bool {
+        self.profiles.iter().any(|profile| profile.is_builtin())
+    }
+
+    pub fn can_delete(&self) -> bool {
+        self.profiles.iter().any(|profile| !profile.is_builtin())
+    }
+
+    pub fn deletable_ids(&self) -> Vec<String> {
+        self.profiles
+            .iter()
+            .filter(|profile| !profile.is_builtin())
+            .map(|profile| profile.id.clone())
+            .collect()
+    }
+
+    pub fn use_profile_id(&self) -> Option<String> {
+        if self.is_active() {
+            return None;
+        }
+        self.profiles
+            .iter()
+            .find(|profile| profile.is_chat_model())
+            .map(|profile| profile.id.clone())
+    }
+
+    pub fn use_for_vision(&self) -> bool {
+        self.profiles.iter().any(|profile| profile.use_for_vision)
+    }
+
+    pub fn use_for_image_generation(&self) -> bool {
+        self.profiles
+            .iter()
+            .any(|profile| profile.use_for_image_generation)
+    }
+
+    pub fn use_for_video_generation(&self) -> bool {
+        self.profiles
+            .iter()
+            .any(|profile| profile.use_for_video_generation)
+    }
+}
+
+pub(crate) fn group_models_by_channel(models: &[ModelProfile]) -> Vec<ModelChannel> {
+    let mut groups: Vec<ModelChannel> = Vec::new();
+    for profile in models {
+        let key = model_channel_key(&profile.api_url);
+        if let Some(group) = groups.iter_mut().find(|group| group.key == key) {
+            group.profiles.push(profile.clone());
+        } else {
+            groups.push(ModelChannel {
+                key,
+                profiles: vec![profile.clone()],
+            });
+        }
+    }
+    groups
+}
+
 /// Edit one saved profile together with every other model that already
 /// shares its Base URL, so the form can add / update / remove siblings.
 pub(crate) fn profiles_to_edit_form(clicked: &ModelProfile, all: &[ModelProfile]) -> ModelForm {
@@ -881,7 +1137,7 @@ pub(crate) fn profiles_to_edit_form(clicked: &ModelProfile, all: &[ModelProfile]
     let mut siblings: Vec<ModelFormEntry> = all
         .iter()
         .filter(|profile| {
-            profile.id != clicked.id && same_endpoint(&profile.api_url, &clicked.api_url)
+            profile.id != clicked.id && same_model_channel(&profile.api_url, &clicked.api_url)
         })
         .map(profile_to_entry)
         .collect();
@@ -1265,6 +1521,47 @@ pub(crate) const CRED_GROUPS: &[CredGroup] = &[
         ],
     },
 ];
+
+pub(crate) fn cred_group_mark(id: &str) -> &'static str {
+    match id {
+        "openalex" => "O",
+        "infinisynapse" => "I",
+        "scimaster" => "S",
+        "ncbi" => "N",
+        _ => "C",
+    }
+}
+
+pub(crate) fn cred_group_configured(
+    status: &std::collections::HashMap<String, bool>,
+    fields: &[CredField],
+) -> bool {
+    fields
+        .iter()
+        .any(|field| status.get(field.id).copied().unwrap_or(false))
+}
+
+#[cfg(test)]
+mod cred_group_status_tests {
+    use super::{cred_group_configured, cred_group_mark, CRED_GROUPS};
+    use std::collections::HashMap;
+
+    #[test]
+    fn mark_letters_follow_known_services() {
+        assert_eq!(cred_group_mark("openalex"), "O");
+        assert_eq!(cred_group_mark("ncbi"), "N");
+        assert_eq!(cred_group_mark("other"), "C");
+    }
+
+    #[test]
+    fn group_is_configured_when_any_field_is_stored() {
+        let ncbi = CRED_GROUPS.iter().find(|group| group.id == "ncbi").unwrap();
+        let mut status = HashMap::new();
+        assert!(!cred_group_configured(&status, ncbi.fields));
+        status.insert("ncbi_email".into(), true);
+        assert!(cred_group_configured(&status, ncbi.fields));
+    }
+}
 
 pub(crate) fn settings_subpage_label(
     loc: Locale,

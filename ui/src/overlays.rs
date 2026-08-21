@@ -4,7 +4,7 @@ use crate::app_support::{
     share_png_width, show_toast, ShareExportFormat, ShareHtmlRow, ShareHtmlTheme, ShareMessage,
     ShareRole,
 };
-use crate::bindings::{invoke_checked, open_external_url, render_share_png, snapshot_share_theme};
+use crate::bindings::{invoke_checked, render_share_png, snapshot_share_theme};
 use crate::dto::*;
 use crate::i18n::{brand_product_name, localize_backend, t, tf, Locale};
 use crate::text::{dom_value, event_target_value, file_kind, format_bytes};
@@ -1270,81 +1270,44 @@ pub(super) fn CapabilitiesOverlay(
     }
 }
 
-// ponytail: onboarding only offers DeepSeek; other providers live in Settings › Models.
-const DEEPSEEK_KEY_URL: &str = "https://platform.deepseek.com/api_keys";
-
 #[component]
 pub(super) fn OnboardingOverlay(
     locale: RwSignal<Locale>,
     show_onboarding: RwSignal<bool>,
-    onboard_step: RwSignal<usize>,
-    onboard_key: RwSignal<String>,
-    save_onboard_key: Callback<()>,
     dismiss_onboard: Callback<web_sys::MouseEvent>,
 ) -> impl IntoView {
     move || {
         show_onboarding.get().then(|| {
-    let step = onboard_step.get();
-    let loc = locale.get();
-    view! {
-        <div class="overlay onboard-overlay">
-            <div class="modal onboard">
-                {match step {
-                    0 => view! {
-                        <h2>{t(loc, "onboard.apikey.title")}</h2>
-                        <ol class="onboard-steps">
-                            <li>
-                                <p class="hint">{t(loc, "onboard.getkey.body")}</p>
-                                <button type="button" class="linklike onboard-getkey"
-                                    on:click=move |_| open_external_url(DEEPSEEK_KEY_URL.into())>
-                                    {t(loc, "onboard.apikey.get_key")}
-                                </button>
-                            </li>
-                            <li>
-                                <p class="hint">{t(loc, "onboard.apikey.body")}</p>
-                                <label>{t(loc, "settings.api_key")}
-                                    <input type="password" autocomplete="new-password"
-                                        prop:value=move || onboard_key.get()
-                                        on:input=move |ev| onboard_key.set(event_target_value(&ev)) />
-                                </label>
-                            </li>
-                        </ol>
-                    }.into_view(),
-                    1 => view! {
-                        <h2>{t(loc, "onboard.welcome.title")}</h2>
-                        <p class="hint">{t(loc, "onboard.welcome.body")}</p>
-                    }.into_view(),
-                    _ => view! {
-                        <h2>{t(loc, "onboard.features.title")}</h2>
-                        <p class="hint">{t(loc, "onboard.features.body")}</p>
-                    }.into_view(),
-                }}
-                <div class="onboard-dots">
-                    {(0..3).map(|i| view! {
-                        <span class="onboard-dot" class:active=move || onboard_step.get() == i></span>
-                    }).collect_view()}
+            let loc = locale.get();
+            view! {
+                <div class="overlay onboard-overlay" data-testid="onboard-overlay">
+                    <div class="modal onboard">
+                        <h2 data-testid="onboard-title">{t(loc, "onboard.title")}</h2>
+                        <div class="onboard-cards" data-testid="onboard-cards">
+                            <article class="onboard-card" data-testid="onboard-card-1">
+                                <h3 class="onboard-card-title">{t(loc, "onboard.card1.title")}</h3>
+                                <p class="onboard-card-body">{t(loc, "onboard.card1.body")}</p>
+                            </article>
+                            <article class="onboard-card" data-testid="onboard-card-2">
+                                <h3 class="onboard-card-title">{t(loc, "onboard.card2.title")}</h3>
+                                <p class="onboard-card-body">{t(loc, "onboard.card2.body")}</p>
+                            </article>
+                            <article class="onboard-card" data-testid="onboard-card-3">
+                                <h3 class="onboard-card-title">{t(loc, "onboard.card3.title")}</h3>
+                                <p class="onboard-card-body">{t(loc, "onboard.card3.body")}</p>
+                            </article>
+                        </div>
+                        <div class="row onboard-actions">
+                            <button type="button" class="primary" data-testid="onboard-start"
+                                on:click=move |ev| dismiss_onboard.call(ev)>
+                                {move || t(locale.get(), "onboard.start")}
+                            </button>
+                        </div>
+                    </div>
                 </div>
-                <div class="row">
-                    {if step > 0 {
-                        view! { <button on:click=move |_| onboard_step.update(|s| *s = s.saturating_sub(1))>{move || t(locale.get(), "onboard.back")}</button> }.into_view()
-                    } else { view! { <span></span> }.into_view() }}
-                    {if step < 2 {
-                        view! { <button class="primary" on:click=move |_| {
-                            if step == 0 { save_onboard_key.call(()); }
-                            onboard_step.update(|s| *s += 1);
-                        }>{move || t(locale.get(), if step == 0 && onboard_key.get().trim().is_empty() {
-                            "onboard.apikey.later"
-                        } else { "onboard.next" })}</button> }.into_view()
-                    } else {
-                        view! {
-                            <button class="primary" on:click=move |ev| dismiss_onboard.call(ev)>{move || t(locale.get(), "onboard.start")}</button>
-                        }.into_view()
-                    }}
-                </div>
-            </div>
-        </div>
-    }.into_view()
-})
+            }
+            .into_view()
+        })
     }
 }
 

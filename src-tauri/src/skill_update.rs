@@ -40,6 +40,23 @@ pub(super) struct SkillUpdateReport {
     pub dropped_overlays: Vec<String>,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct SkillUpdateCandidate {
+    pub id: String,
+    #[serde(default)]
+    pub current_pin: String,
+    #[serde(default)]
+    pub remote_pin: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct SkillUpdatePreview {
+    #[serde(default)]
+    pub available: Vec<SkillUpdateCandidate>,
+    #[serde(default)]
+    pub errors: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct PackOverlayState {
     pin: String,
@@ -494,10 +511,64 @@ async fn enable_skill_names(state: &AppState, label: &str, names: &[String]) -> 
     Ok(())
 }
 
+async fn preview_ppt_master(skills_dir: &Path) -> Result<Option<SkillUpdateCandidate>, String> {
+    let skill_dir = skills_dir.join("ppt-master");
+    if !skill_dir.join("SKILL.md").is_file() {
+        return Ok(None);
+    }
+    let overlay_pin = read_pack_state(skills_dir, "ppt-master").map(|state| state.pin);
+    let client = skill_commands::catalog_http_client()?;
+    let spec = skill_commands::catalog_skill_spec("ppt-master")?;
+    let (url, _) = skill_commands::resolve_catalog_skill_zip(spec, &client).await?;
+    let remote_pin = release_tag_from_download_url(&url)
+        .ok_or_else(|| "ppt-master release URL is missing a tag".to_string())?;
+    if !needs_remote_install(overlay_pin.as_deref(), "", &remote_pin) {
+        return Ok(None);
+    }
+    Ok(Some(SkillUpdateCandidate {
+        id: "ppt-master".into(),
+        current_pin: overlay_pin.unwrap_or_default(),
+        remote_pin,
+    }))
+}
+
+async fn preview_vendor_packs(skills_dir: &Path) -> SkillUpdatePreview {
+    let mut preview = SkillUpdatePreview::default();
+    let client = match archive_http_client() {
+        Ok(client) => client,
+        Err(error) => {
+            preview.errors.push(error);
+            return preview;
+        }
+    };
+    for pack in VENDOR_PACKS {
+        let overlay_pin = read_pack_state(skills_dir, pack.id).map(|state| state.pin);
+        match fetch_remote_pin(&client, pack).await {
+            Ok((remote_pin, _)) => {
+                if needs_remote_install(overlay_pin.as_deref(), pack.bundled_pin, &remote_pin) {
+                    preview.available.push(SkillUpdateCandidate {
+                        id: pack.id.to_string(),
+                        current_pin: overlay_pin.unwrap_or_else(|| pack.bundled_pin.to_string()),
+                        remote_pin,
+                    });
+                }
+            }
+            Err(error) => preview.errors.push(format!("{}: {error}", pack.id)),
+        }
+    }
+    match preview_ppt_master(skills_dir).await {
+        Ok(Some(item)) => preview.available.push(item),
+        Ok(None) => {}
+        Err(error) => preview.errors.push(format!("ppt-master: {error}")),
+    }
+    preview
+}
+
 async fn run_skill_update_check(
     app: &AppHandle,
     state: &AppState,
     label: &str,
+    force: bool,
 ) -> Result<SkillUpdateReport, String> {
     let enabled = load_skill_update_enabled(&state.store).await;
     let skills_dir = skill_commands::user_skills_dir()?;
@@ -510,7 +581,7 @@ async fn run_skill_update_check(
     };
     report.dropped_overlays = drop_stale_overlays(&skills_dir);
 
-    if !enabled {
+    if !enabled && !force {
         if !report.dropped_overlays.is_empty() {
             skill_commands::reload_host_skill_index(state, label);
         }
@@ -643,12 +714,19 @@ pub(super) async fn get_skill_update_status(
 }
 
 #[tauri::command]
+pub(super) async fn preview_skill_updates() -> Result<SkillUpdatePreview, String> {
+    let skills_dir = skill_commands::user_skills_dir()?;
+    Ok(preview_vendor_packs(&skills_dir).await)
+}
+
+#[tauri::command]
 pub(super) async fn check_skill_updates(
     app: AppHandle,
     state: State<'_, AppState>,
     window: WebviewWindow,
+    force: Option<bool>,
 ) -> Result<SkillUpdateReport, String> {
-    run_skill_update_check(&app, &state, window.label()).await
+    run_skill_update_check(&app, &state, window.label(), force.unwrap_or(false)).await
 }
 
 #[cfg(test)]

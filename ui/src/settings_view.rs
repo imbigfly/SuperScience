@@ -1,14 +1,16 @@
 use crate::agent_workflows::{workflow_studio as workflow_studio_view, AgentPanelState};
 use crate::app_support::{
-    allow_drop, apply_base_url_suggestions, build_conn_json, close_details_ancestor, compose_icon,
-    conn_form_from_row, context_capability_summary, drag_session_id, endpoint_has_stored_key,
-    focus_element_soon, format_relative_time, import_custom_css_from_input, join_tags,
-    js_error_text, model_form_entry, new_acp_form, new_model_form, profiles_to_edit_form,
-    provider_mark_letter, select_form_row, sync_form_from_selected,
-    provider_entries_are_pristine, quick_action_label, reviewer_backend_key,
-    reviewer_backend_label, reviewer_missing_acp_profile_id, set_reviewer_backend,
-    settings_nav_group, settings_section_label, settings_subpage_label, skill_matches_filter,
-    start_session_drag, CRED_GROUPS,
+    allow_drop, apply_base_url_suggestions, build_conn_json, bundled_connector_blurb,
+    close_details_ancestor, compose_icon, conn_form_from_row, context_capability_summary,
+    cred_group_configured, cred_group_mark, drag_session_id, endpoint_has_stored_key,
+    focus_element_soon, format_relative_time, group_models_by_channel,
+    import_custom_css_from_input, join_tags, js_error_text, mcp_tool_brief, model_form_entry,
+    new_acp_form, new_model_form, profiles_to_edit_form, provider_entries_are_pristine,
+    provider_mark_letter, quick_action_label, reviewer_backend_key, reviewer_backend_label,
+    reviewer_missing_acp_profile_id, select_form_row, set_reviewer_backend, settings_nav_group,
+    settings_section_label, settings_subpage_label, shorten_skill_pin, skill_matches_filter,
+    skill_update_result_message, start_session_drag,
+    sync_form_from_selected, CRED_GROUPS,
 };
 use crate::bindings::{invoke, invoke_checked, is_mac, is_windows};
 use crate::dto::*;
@@ -31,7 +33,7 @@ use wasm_bindgen::JsValue;
 #[derive(Clone)]
 pub(super) enum DeleteConfirm {
     Model {
-        id: String,
+        ids: Vec<String>,
         label: String,
     },
     Acp {
@@ -650,8 +652,7 @@ fn apply_catalog_limits(
         let still_current = model_form.get().is_some_and(|form| {
             crate::app_support::selected_entry(&form)
                 .map(|entry| {
-                    entry.row_id == row_id
-                        && entry.model.trim().eq_ignore_ascii_case(model.trim())
+                    entry.row_id == row_id && entry.model.trim().eq_ignore_ascii_case(model.trim())
                 })
                 .unwrap_or(false)
         });
@@ -854,7 +855,13 @@ fn selected_entry_advanced_fields(
         model_form.with(|f| {
             f.as_ref()
                 .and_then(|f| f.entries.iter().find(|e| e.row_id == row_id))
-                .map(|e| (e.provider.clone(), e.model.clone(), e.reasoning_effort.clone()))
+                .map(|e| {
+                    (
+                        e.provider.clone(),
+                        e.model.clone(),
+                        e.reasoning_effort.clone(),
+                    )
+                })
                 .unwrap_or_default()
         })
     });
@@ -1134,14 +1141,11 @@ fn selected_entry_advanced_fields(
     }
 }
 
-fn can_remove_provider_entry(form: &ModelForm, row_id: u64, min_entries: usize) -> bool {
+fn can_remove_provider_entry(form: &ModelForm, row_id: u64, _min_entries: usize) -> bool {
     let Some(entry) = form.entries.iter().find(|entry| entry.row_id == row_id) else {
         return false;
     };
-    if entry.profile_id.as_deref() == Some(TCTOKEN_MODEL_ID) {
-        return false;
-    }
-    entry.profile_id.is_some() || min_entries == 0 || form.entries.len() > min_entries
+    entry.profile_id.as_deref() != Some(TCTOKEN_MODEL_ID)
 }
 
 fn remove_provider_entry(form: &mut ModelForm, row_id: u64, min_entries: usize) {
@@ -1149,7 +1153,11 @@ fn remove_provider_entry(form: &mut ModelForm, row_id: u64, min_entries: usize) 
         return;
     }
     form.entries.retain(|entry| entry.row_id != row_id);
-    if !form.entries.iter().any(|entry| entry.row_id == form.selected_row_id) {
+    if !form
+        .entries
+        .iter()
+        .any(|entry| entry.row_id == form.selected_row_id)
+    {
         if let Some(first) = form.entries.first() {
             select_form_row(form, first.row_id);
         }
@@ -1181,7 +1189,10 @@ fn request_remove_provider_entry(
         } else {
             entry.label.clone()
         };
-        delete_confirm.set(Some(DeleteConfirm::Model { id, label }));
+        delete_confirm.set(Some(DeleteConfirm::Model {
+            ids: vec![id],
+            label,
+        }));
         return;
     }
     model_form.update(|option| {
@@ -1203,7 +1214,10 @@ fn drop_deleted_model_from_form(form: &mut Option<ModelForm>, id: &str) {
         return;
     }
     if inner.id.as_deref() == Some(id) {
-        inner.id = inner.entries.iter().find_map(|entry| entry.profile_id.clone());
+        inner.id = inner
+            .entries
+            .iter()
+            .find_map(|entry| entry.profile_id.clone());
     }
     if !inner
         .entries
@@ -1250,15 +1264,15 @@ mod provider_entry_remove_tests {
     }
 
     #[test]
-    fn last_unsaved_row_stays_when_min_entries_is_one() {
+    fn last_unsaved_row_can_be_removed() {
         let custom = ModelFormEntry {
             row_id: 2,
             ..ModelFormEntry::default()
         };
         let mut current = form(vec![custom]);
-        assert!(!can_remove_provider_entry(&current, 2, 1));
+        assert!(can_remove_provider_entry(&current, 2, 1));
         remove_provider_entry(&mut current, 2, 1);
-        assert_eq!(current.entries.len(), 1);
+        assert!(current.entries.is_empty());
     }
 
     #[test]
@@ -1281,9 +1295,20 @@ fn provider_model_entries_editor(
     locale: RwSignal<Locale>,
     model_catalog_limits: RwSignal<Option<CatalogEntryDto>>,
     delete_confirm: RwSignal<Option<DeleteConfirm>>,
+    model_form_msg: RwSignal<Option<(bool, String)>>,
+    validate_model_form: Callback<web_sys::MouseEvent>,
     min_entries: usize,
 ) -> impl IntoView {
     let search = create_rw_signal(String::new());
+    create_effect(move |_| {
+        if model_form_msg.get().is_none() {
+            return;
+        }
+        if let Ok(Some(el)) = document().query_selector("[data-testid='provider-model-test-status']")
+        {
+            el.scroll_into_view();
+        }
+    });
     view! {
         <div class="provider-models" data-testid="provider-models">
             <label class="provider-models-search">
@@ -1310,6 +1335,18 @@ fn provider_model_entries_editor(
                 {
                     let row_id = entry.row_id;
                     view! {
+                        <div class="provider-model-block">
+                        {move || {
+                            let selected = model_form.get().is_some_and(|f| f.selected_row_id == row_id);
+                            selected.then(|| model_form_msg.get()).flatten().map(|(ok, text)| view! {
+                                <div class="settings-status provider-model-status"
+                                    class:ok=ok
+                                    class:fail=move || !ok
+                                    data-testid="provider-model-test-status">
+                                    {text}
+                                </div>
+                            })
+                        }}
                         <div class="provider-model-row" data-testid="provider-model-row"
                             class:selected=move || model_form.get().is_some_and(|f| f.selected_row_id == row_id)
                             on:focusin=move |_| {
@@ -1342,18 +1379,13 @@ fn provider_model_entries_editor(
                                     </span>
                                 </div>
                                 <div class="provider-model-summary-actions">
-                                    <button type="button" class="provider-model-icon"
-                                        title=move || t(locale.get(), "settings.validate")
+                                    <button type="button" class="provider-model-icon" data-testid="provider-test-model"
+                                        title=move || t(locale.get(), "models.test_connection")
                                         on:click=move |ev| {
                                             ev.stop_propagation();
                                             model_form.update(|o| if let Some(o)=o { select_form_row(o, row_id); });
+                                            validate_model_form.call(ev);
                                         }>{compose_icon("flask")}</button>
-                                    <button type="button" class="provider-model-icon"
-                                        title=move || t(locale.get(), "settings.endpoint_suffix")
-                                        on:click=move |ev| {
-                                            ev.stop_propagation();
-                                            model_form.update(|o| if let Some(o)=o { select_form_row(o, row_id); });
-                                        }>{compose_icon("link")}</button>
                                     <button type="button" class="provider-model-icon"
                                         title=move || t(locale.get(), "models.advanced")
                                         on:click=move |ev| {
@@ -1638,21 +1670,26 @@ fn provider_model_entries_editor(
                                 }}
                                 {move || t(locale.get(), "models.advanced")}
                             </button>
-                            {move || model_form.get().is_some_and(|f| {
-                                can_remove_provider_entry(&f, row_id, min_entries)
-                            }).then(|| view! {
-                                <button type="button" class="provider-access-btn danger" data-testid="provider-delete-model"
-                                    title=move || t(locale.get(), "models.remove")
-                                    on:click=move |ev| {
-                                        ev.stop_propagation();
-                                        request_remove_provider_entry(
-                                            model_form,
-                                            delete_confirm,
-                                            row_id,
-                                            min_entries,
-                                        );
-                                    }>{move || t(locale.get(), "models.card.delete")}</button>
-                            })}
+                            <button type="button" class="provider-access-btn danger" data-testid="provider-delete-model"
+                                title=move || {
+                                    if model_form.get().is_some_and(|f| can_remove_provider_entry(&f, row_id, min_entries)) {
+                                        t(locale.get(), "models.remove")
+                                    } else {
+                                        t(locale.get(), "err.tctoken_locked")
+                                    }
+                                }
+                                disabled=move || model_form.get().is_some_and(|f| {
+                                    !can_remove_provider_entry(&f, row_id, min_entries)
+                                })
+                                on:click=move |ev| {
+                                    ev.stop_propagation();
+                                    request_remove_provider_entry(
+                                        model_form,
+                                        delete_confirm,
+                                        row_id,
+                                        min_entries,
+                                    );
+                                }>{move || t(locale.get(), "models.card.delete")}</button>
                             </div>
                             <div class="provider-model-advanced-wrap"
                                 class:open=move || model_form.get()
@@ -1660,6 +1697,7 @@ fn provider_model_entries_editor(
                                     .is_some_and(|e| e.advanced_open)>
                                 {selected_entry_advanced_fields(model_form, locale, model_catalog_limits, row_id)}
                             </div>
+                        </div>
                         </div>
                     }
                 }
@@ -1806,6 +1844,95 @@ pub(super) fn SettingsView(
     let browser_block_reason = create_rw_signal(String::new());
     let browser_prefer_host = create_rw_signal(String::new());
     let browser_prefer_reason = create_rw_signal(String::new());
+    let skill_update_enabled = create_rw_signal(true);
+    let skill_update_report = create_rw_signal(SkillUpdateReport::default());
+    let skill_update_busy = create_rw_signal(false);
+    let skill_update_confirm = create_rw_signal(None::<Vec<SkillUpdateCandidate>>);
+    create_effect(move |_| {
+        if show_settings.get() && settings_section.get() == "skills" {
+            spawn_local(async move {
+                if let Ok(value) =
+                    invoke_checked("get_skill_update_status", JsValue::UNDEFINED).await
+                {
+                    if let Ok(report) = serde_wasm_bindgen::from_value::<SkillUpdateReport>(value) {
+                        skill_update_enabled.set(report.enabled);
+                        skill_update_report.set(report);
+                    }
+                }
+            });
+        }
+    });
+    let apply_skill_updates = Callback::new(move |_: ()| {
+        skill_update_busy.set(true);
+        skills_msg.set(Some((
+            true,
+            t(locale.get(), "skills.auto_update_checking").into(),
+        )));
+        spawn_local(async move {
+            let arg = to_value(&serde_json::json!({ "force": true })).unwrap();
+            match invoke_checked("check_skill_updates", arg).await {
+                Ok(value) => {
+                    if let Ok(report) = serde_wasm_bindgen::from_value::<SkillUpdateReport>(value) {
+                        skill_update_enabled.set(report.enabled);
+                        skill_update_report.set(report.clone());
+                        let ok = report.errors.is_empty();
+                        skills_msg.set(Some((
+                            ok,
+                            skill_update_result_message(locale.get(), &report),
+                        )));
+                        if !report.updated.is_empty() {
+                            refresh_skills.call(());
+                        }
+                    }
+                }
+                Err(error) => skills_msg.set(Some((
+                    false,
+                    localize_backend(locale.get(), &js_error_text(error)),
+                ))),
+            }
+            skill_update_busy.set(false);
+        });
+    });
+    let preview_skill_updates = Callback::new(move |_: ()| {
+        if skill_update_busy.get_untracked() {
+            return;
+        }
+        skill_update_busy.set(true);
+        skills_msg.set(Some((
+            true,
+            t(locale.get(), "skills.auto_update_checking").into(),
+        )));
+        spawn_local(async move {
+            match invoke_checked("preview_skill_updates", JsValue::UNDEFINED).await {
+                Ok(value) => match serde_wasm_bindgen::from_value::<SkillUpdatePreview>(value) {
+                    Ok(preview) => {
+                        if preview.available.is_empty() {
+                            if let Some(error) = preview.errors.first() {
+                                skills_msg.set(Some((
+                                    false,
+                                    tf(locale.get(), "skills.auto_update_failed", &[("error", error)]),
+                                )));
+                            } else {
+                                skills_msg.set(Some((
+                                    true,
+                                    t(locale.get(), "skills.auto_update_ok").into(),
+                                )));
+                            }
+                        } else {
+                            skills_msg.set(None);
+                            skill_update_confirm.set(Some(preview.available));
+                        }
+                    }
+                    Err(error) => skills_msg.set(Some((false, error.to_string()))),
+                },
+                Err(error) => skills_msg.set(Some((
+                    false,
+                    localize_backend(locale.get(), &js_error_text(error)),
+                ))),
+            }
+            skill_update_busy.set(false);
+        });
+    });
     create_effect(move |_| {
         if show_settings.get() && settings_section.get() == "browser" {
             spawn_local(async move {
@@ -1946,10 +2073,21 @@ pub(super) fn SettingsView(
             memory_project_menu_open.set(false);
             return true;
         }
+        if skill_update_confirm.get_untracked().is_some() {
+            skill_update_confirm.set(None);
+            return true;
+        }
         if let Some(document) = web_sys::window().and_then(|window| window.document()) {
-            if let Ok(Some(details)) = document.query_selector("details.settings-add-menu[open]") {
-                let _ = details.remove_attribute("open");
-                return true;
+            for selector in [
+                "details.settings-add-menu[open]",
+                "details.skills-overflow-menu[open]",
+                "details.skill-row-menu[open]",
+                "details.skill-tag-picker[open]",
+            ] {
+                if let Ok(Some(details)) = document.query_selector(selector) {
+                    let _ = details.remove_attribute("open");
+                    return true;
+                }
             }
         }
         if quick_action_form.get_untracked().is_some() {
@@ -3074,8 +3212,8 @@ pub(super) fn SettingsView(
                                                 </div>
                                             </div>
                                         </section>
-                                        <div class="usage-overview-grid">
-                                            <div class="usage-left-stack">
+                                        <div class="usage-dashboard">
+                                            <div class="usage-overview-grid" data-testid="usage-overview">
                                             <section class="usage-card usage-model-card" data-testid="usage-model-share">
                                                 <div class="usage-card-head">
                                                     <div>
@@ -3115,58 +3253,7 @@ pub(super) fn SettingsView(
                                                     }.into_view()
                                                 }}
                                             </section>
-                                            <section class="usage-card usage-tool-rank-card" data-testid="usage-tool-rank">
-                                                <div class="usage-card-head">
-                                                    <div>
-                                                        <h3>{t(loc, "settings.usage.tool_rank")}</h3>
-                                                        <p>{t(loc, "settings.usage.tool_rank_hint")}</p>
-                                                    </div>
-                                                </div>
-                                                {if tool_rows.is_empty() {
-                                                    view! {
-                                                        <p class="settings-field-hint">{t(loc, "settings.usage.tools_empty")}</p>
-                                                    }.into_view()
-                                                } else {
-                                                    view! {
-                                                        <div class="usage-tool-rank-list">
-                                                            {tool_rows.into_iter().enumerate().map(|(index, row)| {
-                                                                let pct = row.calls as f64
-                                                                    / tool_total.max(1) as f64
-                                                                    * 100.0;
-                                                                let width = row.calls as f64
-                                                                    / tool_max as f64
-                                                                    * 100.0;
-                                                                let badge = match row.kind.as_str() {
-                                                                    "skill" => t(loc, "settings.usage.tool_kind_skill"),
-                                                                    "mcp" => t(loc, "settings.usage.tool_kind_mcp"),
-                                                                    _ => t(loc, "settings.usage.other_tools"),
-                                                                };
-                                                                view! {
-                                                                    <div class="usage-tool-rank-row" data-testid="usage-tool-rank-row">
-                                                                        <span class="usage-tool-rank-index">{index + 1}</span>
-                                                                        <span class=format!("usage-tool-rank-badge kind-{}", row.kind)>{badge}</span>
-                                                                        <div class="usage-tool-rank-main">
-                                                                            <div class="usage-tool-rank-meta">
-                                                                                <span title=row.name.clone()>{row.name}</span>
-                                                                                <strong>{format!("{pct:.1}%")}</strong>
-                                                                                <small>{row.calls}</small>
-                                                                            </div>
-                                                                            <div class="usage-tool-rank-track" aria-hidden="true">
-                                                                                <i style=format!(
-                                                                                    "width:{width:.1}%;background:{}",
-                                                                                    row.color
-                                                                                )></i>
-                                                                            </div>
-                                                                        </div>
-                                                                    </div>
-                                                                }
-                                                            }).collect_view()}
-                                                        </div>
-                                                    }.into_view()
-                                                }}
-                                            </section>
-                                            </div>
-                                            <section class="usage-card usage-workspaces-card">
+                                            <section class="usage-card usage-workspaces-card" data-testid="usage-workspaces">
                                                 <div class="usage-card-head">
                                                     <div>
                                                         <h3>{t(loc, "settings.usage.workspaces")}</h3>
@@ -3219,6 +3306,57 @@ pub(super) fn SettingsView(
                                                     }).collect_view()}
                                                 </div>
                                             </section>
+                                        </div>
+                                        <section class="usage-card usage-tool-rank-card" data-testid="usage-tool-rank">
+                                            <div class="usage-card-head">
+                                                <div>
+                                                    <h3>{t(loc, "settings.usage.tool_rank")}</h3>
+                                                    <p>{t(loc, "settings.usage.tool_rank_hint")}</p>
+                                                </div>
+                                            </div>
+                                            {if tool_rows.is_empty() {
+                                                view! {
+                                                    <p class="settings-field-hint">{t(loc, "settings.usage.tools_empty")}</p>
+                                                }.into_view()
+                                            } else {
+                                                view! {
+                                                    <div class="usage-tool-rank-list">
+                                                        {tool_rows.into_iter().enumerate().map(|(index, row)| {
+                                                            let pct = row.calls as f64
+                                                                / tool_total.max(1) as f64
+                                                                * 100.0;
+                                                            let width = row.calls as f64
+                                                                / tool_max as f64
+                                                                * 100.0;
+                                                            let badge = match row.kind.as_str() {
+                                                                "skill" => t(loc, "settings.usage.tool_kind_skill"),
+                                                                "mcp" => t(loc, "settings.usage.tool_kind_mcp"),
+                                                                _ => t(loc, "settings.usage.other_tools"),
+                                                            };
+                                                            view! {
+                                                                <div class="usage-tool-rank-row" data-testid="usage-tool-rank-row">
+                                                                    <span class="usage-tool-rank-index">{index + 1}</span>
+                                                                    <span class=format!("usage-tool-rank-badge kind-{}", row.kind)>{badge}</span>
+                                                                    <div class="usage-tool-rank-main">
+                                                                        <div class="usage-tool-rank-meta">
+                                                                            <span title=row.name.clone()>{row.name}</span>
+                                                                            <strong>{format!("{pct:.1}%")}</strong>
+                                                                            <small>{row.calls}</small>
+                                                                        </div>
+                                                                        <div class="usage-tool-rank-track" aria-hidden="true">
+                                                                            <i style=format!(
+                                                                                "width:{width:.1}%;background:{}",
+                                                                                row.color
+                                                                            )></i>
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                            }
+                                                        }).collect_view()}
+                                                    </div>
+                                                }.into_view()
+                                            }}
+                                        </section>
                                         </div>
                                     }.into_view()
                                 }
@@ -3513,10 +3651,7 @@ pub(super) fn SettingsView(
                                                 autocomplete="new-password"
                                                 on:input=move |ev| model_form_key.set(event_target_input(&ev).value()) /></label>
                                     </div>
-                                    {provider_model_entries_editor(model_form, locale, model_catalog_limits, delete_confirm, 1)}
-                                    {move || model_form_msg.get().map(|(ok, text)| view! {
-                                        <div class="settings-status" class:ok=ok class:fail=move || !ok>{text}</div>
-                                    })}
+                                    {provider_model_entries_editor(model_form, locale, model_catalog_limits, delete_confirm, model_form_msg, validate_model_form, 1)}
                                     <div class="row settings-footer">
                                         <button type="button" disabled=move || settings_busy.get() on:click=move |ev| validate_model_form.call(ev)>{move || t(locale.get(), "settings.validate")}</button>
                                         <button type="button" disabled=move || settings_busy.get() on:click=move |_| close_settings_subpage.call(())>{move || t(locale.get(), "settings.cancel")}</button>
@@ -3536,7 +3671,7 @@ pub(super) fn SettingsView(
                                         data-testid="models-category-http"
                                         on:click=move |_| show_acp_agents.set(false)>
                                         {move || {
-                                            let n = models.get().len();
+                                            let n = group_models_by_channel(&models.get()).len();
                                             format!("{} ({n})", t(locale.get(), "models.category.http"))
                                         }}
                                     </button>
@@ -3725,33 +3860,37 @@ pub(super) fn SettingsView(
                                         }).collect_view()}
                                     </div>
                                     <div class="model-card-grid">
-                                        <For each=move || models.get() key=|m| (m.id.clone(), m.active) let:m>
+                                        <For each=move || group_models_by_channel(&models.get()) key=|ch| (ch.key.clone(), ch.is_active()) let:channel>
                                             {
-                                                let pick_id = m.id.clone();
-                                                let del_id = m.id.clone();
-                                                let del_label = m.label.clone();
-                                                let edit = m.clone();
+                                                let title = channel.title();
+                                                let edit = channel.representative().clone();
                                                 let edit_key = edit.clone();
                                                 let edit_models_btn = edit.clone();
                                                 let edit_settings_btn = edit.clone();
-                                                let is_active = m.active;
-                                                let is_chat_model = m.is_chat_model();
-                                                let builtin = m.is_builtin();
-                                                let can_delete = !builtin;
-                                                let show_sub = !m.model.is_empty() && m.model != m.label;
-                                                let drag_id = m.id.clone();
-                                                let drag_cls = m.id.clone();
-                                                let enter_id = m.id.clone();
-                                                let drop_id = m.id.clone();
-                                                let over_cls = m.id.clone();
-                                                let mark = provider_mark_letter(&m.label, &m.api_url);
+                                                let is_active = channel.is_active();
+                                                let builtin = channel.is_builtin();
+                                                let can_delete = channel.can_delete();
+                                                let del_ids = channel.deletable_ids();
+                                                let del_label = title.clone();
+                                                let pick_id = channel.use_profile_id();
+                                                let model_count = channel.model_count().to_string();
+                                                let api_url = channel.api_url().to_string();
+                                                let use_for_vision = channel.use_for_vision();
+                                                let use_for_image = channel.use_for_image_generation();
+                                                let use_for_video = channel.use_for_video_generation();
+                                                let drag_id = channel.key.clone();
+                                                let drag_cls = channel.key.clone();
+                                                let enter_id = channel.key.clone();
+                                                let drop_id = channel.key.clone();
+                                                let over_cls = channel.key.clone();
+                                                let mark = provider_mark_letter(&title, &api_url);
                                                 view! {
                                                     <article class="model-card provider-access-card"
                                                         class:active=is_active
                                                         class:builtin=builtin
                                                         class:dragging=move || drag_model.get().as_deref() == Some(drag_cls.as_str())
                                                         class:model-drag-over=move || drop_model.get().as_deref() == Some(over_cls.as_str())
-                                                        data-testid=format!("model-card-{}", m.id)
+                                                        data-testid=format!("model-card-{}", channel.key)
                                                         attr:draggable="true"
                                                         on:dragstart=move |ev: web_sys::DragEvent| {
                                                             start_session_drag(&ev, &drag_id);
@@ -3774,18 +3913,25 @@ pub(super) fn SettingsView(
                                                             drag_model.set(None);
                                                             drop_model.set(None);
                                                             let Some(from) = from.filter(|f| f != &drop_id) else { return };
-                                                            let mut list = models.get_untracked();
+                                                            let mut groups = group_models_by_channel(&models.get_untracked());
                                                             let (Some(fi), Some(ti)) = (
-                                                                list.iter().position(|x| x.id == from),
-                                                                list.iter().position(|x| x.id == drop_id),
+                                                                groups.iter().position(|g| g.key == from),
+                                                                groups.iter().position(|g| g.key == drop_id),
                                                             ) else { return };
-                                                            let item = list.remove(fi);
+                                                            let item = groups.remove(fi);
                                                             // After removal the target shifts up by one when dragging
                                                             // downward; insert after it so the row lands where dropped.
-                                                            let at = list.iter().position(|x| x.id == drop_id).unwrap()
+                                                            let at = groups.iter().position(|g| g.key == drop_id).unwrap()
                                                                 + usize::from(fi < ti);
-                                                            list.insert(at, item);
-                                                            let ids: Vec<String> = list.iter().map(|x| x.id.clone()).collect();
+                                                            groups.insert(at, item);
+                                                            let ids: Vec<String> = groups
+                                                                .iter()
+                                                                .flat_map(|g| g.profiles.iter().map(|p| p.id.clone()))
+                                                                .collect();
+                                                            let list: Vec<ModelProfile> = groups
+                                                                .into_iter()
+                                                                .flat_map(|g| g.profiles)
+                                                                .collect();
                                                             models.set(list);
                                                             spawn_local(async move {
                                                                 let arg = to_value(&serde_json::json!({ "ids": ids })).unwrap();
@@ -3809,18 +3955,7 @@ pub(super) fn SettingsView(
                                                                 {mark}
                                                             </div>
                                                             <div class="model-card-meta">
-                                                                <strong class="model-card-title">
-                                                                    {m.label.clone()}
-                                                                    {builtin.then(|| view! {
-                                                                        <span class="model-card-badge">{move || t(locale.get(), "specialists.builtin")}</span>
-                                                                    })}
-                                                                    {is_active.then(|| view! {
-                                                                        <span class="model-card-badge active">{move || t(locale.get(), "models.use")}</span>
-                                                                    })}
-                                                                </strong>
-                                                                {show_sub.then(|| view! {
-                                                                    <span class="model-card-sub">{m.model.clone()}</span>
-                                                                })}
+                                                                <strong class="model-card-title">{title.clone()}</strong>
                                                             </div>
                                                             <div class="provider-access-tags">
                                                                 {if builtin {
@@ -3828,18 +3963,21 @@ pub(super) fn SettingsView(
                                                                 } else {
                                                                     view! { <span class="provider-access-tag custom">{move || t(locale.get(), "models.tag.custom")}</span> }.into_view()
                                                                 }}
-                                                                {m.has_api_key.then(|| view! {
-                                                                    <span class="provider-access-live">
-                                                                        <i></i>
-                                                                        {move || t(locale.get(), "models.status.live")}
-                                                                    </span>
+                                                                {use_for_vision.then(|| view! {
+                                                                    <span class="provider-access-tag cap" title="vision">"vision"</span>
+                                                                })}
+                                                                {use_for_image.then(|| view! {
+                                                                    <span class="provider-access-tag cap" title="image generation">"image gen"</span>
+                                                                })}
+                                                                {use_for_video.then(|| view! {
+                                                                    <span class="provider-access-tag cap" title="video generation">"video gen"</span>
                                                                 })}
                                                             </div>
                                                         </header>
                                                         <div class="provider-access-fields">
                                                             <div class="provider-access-field">
                                                                 <span class="provider-access-k">{move || t(locale.get(), "models.field.endpoint")}</span>
-                                                                <div class="provider-access-v">{m.api_url.clone()}</div>
+                                                                <div class="provider-access-v">{api_url.clone()}</div>
                                                             </div>
                                                             <div class="provider-access-field">
                                                                 <span class="provider-access-k">{move || t(locale.get(), "models.field.api_key_short")}</span>
@@ -3860,12 +3998,12 @@ pub(super) fn SettingsView(
                                                             </div>
                                                             <div class="provider-access-field">
                                                                 <span class="provider-access-k">{move || t(locale.get(), "models.field.models")}</span>
-                                                                <div class="provider-access-v">{tf(locale.get(), "models.count", &[("n", "1")])}</div>
+                                                                <div class="provider-access-v">{tf(locale.get(), "models.count", &[("n", &model_count)])}</div>
                                                             </div>
                                                         </div>
-                                                        <div class="model-card-actions">
-                                                            {(!is_active && is_chat_model).then(|| { let id = pick_id.clone(); view! {
-                                                                <button class="model-card-use" type="button"
+                                                        <footer class="provider-access-foot">
+                                                            {pick_id.map(|id| view! {
+                                                                <button class="provider-access-btn model-card-use" type="button"
                                                                     on:click=move |ev| {
                                                                         ev.stop_propagation();
                                                                         let id = id.clone();
@@ -3878,9 +4016,7 @@ pub(super) fn SettingsView(
                                                                             }
                                                                         });
                                                                     }>{move || t(locale.get(), "models.use")}</button>
-                                                            }})}
-                                                        </div>
-                                                        <footer class="provider-access-foot">
+                                                            })}
                                                             <button type="button" class="provider-access-btn"
                                                                 on:click=move |ev| {
                                                                     ev.stop_propagation();
@@ -3901,24 +4037,15 @@ pub(super) fn SettingsView(
                                                                     model_form_key.set(String::new());
                                                                     model_form_msg.set(None);
                                                                 }>{move || t(locale.get(), "models.card.settings")}</button>
-                                                            {can_delete.then(|| { let id = del_id.clone(); view! {
+                                                            {can_delete.then(|| view! {
                                                                 <button class="provider-access-btn danger" type="button" title=move || t(locale.get(), "models.remove")
                                                                     on:click=move |ev| {
                                                                         ev.stop_propagation();
                                                                         delete_confirm.set(Some(DeleteConfirm::Model {
-                                                                            id: id.clone(),
+                                                                            ids: del_ids.clone(),
                                                                             label: del_label.clone(),
                                                                         }));
                                                                     }>{move || t(locale.get(), "models.card.delete")}</button>
-                                                            }})}
-                                                        </footer>
-                                                        <footer class="model-card-caps">
-                                                            {m.use_for_vision.then(|| view! { <span class="settings-cap-badge" title="vision">"vision"</span> })}
-                                                            {m.use_for_image_generation.then(|| view! {
-                                                                <span class="settings-cap-badge" title="image generation">"image gen"</span>
-                                                            })}
-                                                            {m.use_for_video_generation.then(|| view! {
-                                                                <span class="settings-cap-badge" title="video generation">"video gen"</span>
                                                             })}
                                                         </footer>
                                                     </article>
@@ -5489,39 +5616,52 @@ pub(super) fn SettingsView(
                     </div>
                 }.into_view())}
                 {move || (settings_section.get() == "skills").then(|| view! {
-                    <div class="settings-pane settings-pane-list">
-                        <div class="settings-toolbar">
-                            <span class="settings-filter">{move || {
-                                let q = skills_search.get().trim().to_lowercase();
-                                let tag = skill_filter_tag.get();
-                                let skills = skills_list.get();
-                                let visible = skills.iter().filter(|s| {
-                                    skill_matches_filter(s, &tag, &q)
-                                }).count();
-                                let enabled = skills.iter().filter(|s| s.enabled).count();
-                                tf(locale.get(), "skills.summary", &[
-                                    ("visible", &visible.to_string()),
-                                    ("enabled", &enabled.to_string()),
-                                    ("total", &skills.len().to_string()),
-                                ])
-                            }}</span>
+                    <div class="settings-pane settings-pane-list skills-pane">
+                        <div class="skills-update-bar">
+                            <div class="skills-update-copy">
+                                <strong>{move || t(locale.get(), "skills.auto_update")}</strong>
+                                <span>{move || t(locale.get(), "skills.auto_update_hint")}</span>
+                                <span class="skills-update-meta">{move || {
+                                    let loc = locale.get();
+                                    skill_update_report.get().last_check_at_ms
+                                        .filter(|ms| *ms > 0)
+                                        .map(|ms| format_relative_time(ms, loc))
+                                        .filter(|text| !text.is_empty())
+                                        .map(|when| tf(loc, "skills.auto_update_last", &[("when", &when)]))
+                                        .unwrap_or_else(|| t(loc, "skills.auto_update_never").into())
+                                }}</span>
+                            </div>
+                            <div class="skills-update-actions">
+                                <label class="toggle" title=move || t(locale.get(), "skills.auto_update")>
+                                    <input type="checkbox" data-testid="skill-update-enabled"
+                                        prop:checked=move || skill_update_enabled.get()
+                                        on:change=move |ev| {
+                                            let on = event_target_checked(&ev);
+                                            skill_update_enabled.set(on);
+                                            spawn_local(async move {
+                                                let arg = to_value(&serde_json::json!({ "enabled": on })).unwrap();
+                                                let _ = invoke_checked("set_skill_update_enabled", arg).await;
+                                            });
+                                        } />
+                                    <span class="toggle-track" aria-hidden="true"></span>
+                                </label>
+                                <button type="button"
+                                    disabled=move || skill_update_busy.get()
+                                    on:click=move |_| preview_skill_updates.call(())>
+                                    {move || t(locale.get(), "skills.check")}
+                                </button>
+                            </div>
+                        </div>
+                        <div class="settings-toolbar skills-toolbar">
                             <input class="settings-search" type="text" inputmode="search"
                                 autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"
                                 placeholder=move || t(locale.get(), "skills.search_ph")
                                 prop:value=move || skills_search.get()
                                 on:input=move |ev| skills_search.set(event_target_input(&ev).value()) />
-                            <button type="button" on:click=move |_| set_visible_skills_enabled.call(true)>
-                                {move || t(locale.get(), "skills.enable_visible")}
-                            </button>
-                            <button type="button" on:click=move |_| set_visible_skills_enabled.call(false)>
-                                {move || t(locale.get(), "skills.disable_visible")}
-                            </button>
-                            <button type="button" on:click=move |_| reload_skills.call(())>
-                                {move || t(locale.get(), "skills.reload")}
-                            </button>
                             <details class="settings-add-menu">
                                 <summary>{move || t(locale.get(), "skills.add")}</summary>
-                                <button type="button" on:click=move |_| {
+                                <button type="button" on:click=move |ev| {
+                                    close_details_ancestor(&ev);
                                     spawn_local(async move {
                                         let picked = invoke("pick_skill_source", JsValue::UNDEFINED).await;
                                         if let Some(path) = picked.as_string() {
@@ -5529,7 +5669,8 @@ pub(super) fn SettingsView(
                                         }
                                     });
                                 }>{move || t(locale.get(), "skills.add_file")}</button>
-                                <button type="button" on:click=move |_| {
+                                <button type="button" on:click=move |ev| {
+                                    close_details_ancestor(&ev);
                                     spawn_local(async move {
                                         let picked = invoke("pick_directory", JsValue::UNDEFINED).await;
                                         if let Some(path) = picked.as_string() {
@@ -5538,40 +5679,96 @@ pub(super) fn SettingsView(
                                     });
                                 }>{move || t(locale.get(), "skills.add_folder")}</button>
                             </details>
+                            <details class="skills-overflow-menu" data-testid="skills-overflow-menu">
+                                <summary title=move || t(locale.get(), "skills.more")
+                                    aria-label=move || t(locale.get(), "skills.more")>
+                                    {compose_icon("more")}
+                                </summary>
+                                <div class="skills-overflow-panel">
+                                    <button type="button" on:click=move |ev| {
+                                        close_details_ancestor(&ev);
+                                        set_visible_skills_enabled.call(true);
+                                    }>{move || t(locale.get(), "skills.enable_visible")}</button>
+                                    <button type="button" on:click=move |ev| {
+                                        close_details_ancestor(&ev);
+                                        set_visible_skills_enabled.call(false);
+                                    }>{move || t(locale.get(), "skills.disable_visible")}</button>
+                                    <button type="button" on:click=move |ev| {
+                                        close_details_ancestor(&ev);
+                                        reload_skills.call(());
+                                    }>{move || t(locale.get(), "skills.reload")}</button>
+                                </div>
+                            </details>
                         </div>
-                        <div class="skill-tags-filter">
-                            <button class:active=move || skill_filter_tag.get().is_empty()
-                                on:click=move |_| skill_filter_tag.set(String::new())>
-                                {move || t(locale.get(), "skills.all")}
-                            </button>
-                            <button class:active=move || skill_filter_tag.get() == "__untagged"
-                                on:click=move |_| skill_filter_tag.set("__untagged".into())>
-                                {move || t(locale.get(), "skills.untagged")}
-                            </button>
-                            <button class:active=move || skill_filter_tag.get() == "__enabled"
-                                on:click=move |_| skill_filter_tag.set("__enabled".into())>
-                                {move || t(locale.get(), "skills.enabled")}
-                            </button>
-                            <button class:active=move || skill_filter_tag.get() == "__disabled"
-                                on:click=move |_| skill_filter_tag.set("__disabled".into())>
-                                {move || t(locale.get(), "skills.disabled")}
-                            </button>
+                        <div class="skill-filter-bar">
+                            <div class="skill-tags-filter">
+                                <button class:active=move || skill_filter_tag.get().is_empty()
+                                    on:click=move |_| skill_filter_tag.set(String::new())>
+                                    {move || t(locale.get(), "skills.all")}
+                                </button>
+                                <button class:active=move || skill_filter_tag.get() == "__untagged"
+                                    on:click=move |_| skill_filter_tag.set("__untagged".into())>
+                                    {move || t(locale.get(), "skills.untagged")}
+                                </button>
+                                <button class:active=move || skill_filter_tag.get() == "__enabled"
+                                    on:click=move |_| skill_filter_tag.set("__enabled".into())>
+                                    {move || t(locale.get(), "skills.enabled")}
+                                </button>
+                                <button class:active=move || skill_filter_tag.get() == "__disabled"
+                                    on:click=move |_| skill_filter_tag.set("__disabled".into())>
+                                    {move || t(locale.get(), "skills.disabled")}
+                                </button>
+                                <button class:active=move || skill_filter_tag.get() == "__bundled"
+                                    on:click=move |_| skill_filter_tag.set("__bundled".into())>
+                                    {move || t(locale.get(), "skills.filter_bundled")}
+                                </button>
+                                <button class:active=move || skill_filter_tag.get() == "__added"
+                                    on:click=move |_| skill_filter_tag.set("__added".into())>
+                                    {move || t(locale.get(), "skills.filter_added")}
+                                </button>
+                                <span class="skills-enabled-frac">{move || {
+                                    let skills = skills_list.get();
+                                    let enabled = skills.iter().filter(|s| s.enabled).count();
+                                    tf(locale.get(), "skills.enabled_frac", &[
+                                        ("enabled", &enabled.to_string()),
+                                        ("total", &skills.len().to_string()),
+                                    ])
+                                }}</span>
+                            </div>
                             {move || {
                                 let tags = skills_list.get().iter()
                                     .flat_map(|s| s.tags.iter().cloned())
                                     .collect::<BTreeSet<_>>()
                                     .into_iter()
                                     .collect::<Vec<_>>();
-                                tags.into_iter().map(|tag| {
-                                    let active_tag = tag.clone();
-                                    let set_tag = tag.clone();
-                                    view! {
-                                        <button class:active=move || skill_filter_tag.get() == active_tag
-                                            on:click=move |_| skill_filter_tag.set(set_tag.clone())>
-                                            {tag}
-                                        </button>
-                                    }
-                                }).collect_view()
+                                (!tags.is_empty()).then(|| view! {
+                                    <details class="skill-tag-picker">
+                                        <summary>{move || {
+                                            let current = skill_filter_tag.get();
+                                            if current.starts_with("__") || current.is_empty() {
+                                                t(locale.get(), "skills.filter_tags").into()
+                                            } else {
+                                                current
+                                            }
+                                        }}</summary>
+                                        <div class="skill-tag-picker-panel">
+                                            {tags.into_iter().map(|tag| {
+                                                let active_tag = tag.clone();
+                                                let set_tag = tag.clone();
+                                                view! {
+                                                    <button type="button"
+                                                        class:active=move || skill_filter_tag.get() == active_tag
+                                                        on:click=move |ev| {
+                                                            close_details_ancestor(&ev);
+                                                            skill_filter_tag.set(set_tag.clone());
+                                                        }>
+                                                        {tag}
+                                                    </button>
+                                                }
+                                            }).collect_view()}
+                                        </div>
+                                    </details>
+                                })
                             }}
                         </div>
                         <p class="settings-note">{move || t(locale.get(), "settings.auto_saved_new_session")}</p>
@@ -5604,11 +5801,12 @@ pub(super) fn SettingsView(
                                     let scope = s.scope.clone();
                                     let scope_label = t(locale.get(), &format!("skills.scope.{scope}"));
                                     let source_path = s.dir.clone();
-                                    let tags_text = join_tags(&s.tags);
-                                    let tags_input_text = tags_text.clone();
+                                    let tags_input_text = join_tags(&s.tags);
                                     let tags_cb = save_skill_tags.clone();
+                                    let can_remove = scope == "global" && !builtin;
+                                    let show_row_menu = !managed;
                                     view! {
-                                        <div class="settings-list-row" data-skill-name=s.name.clone()>
+                                        <div class="settings-list-row skill-row" data-skill-name=s.name.clone()>
                                             <div class="settings-list-main">
                                                 <span class="settings-list-title">
                                                     {s.name.clone()}
@@ -5618,30 +5816,8 @@ pub(super) fn SettingsView(
                                                     let desc = s.description.clone();
                                                     view! { <span class="settings-list-sub">{desc}</span> }
                                                 })}
-                                                {(!managed).then(|| view! {
-                                                    <details class="skill-tags-editor">
-                                                        <summary>
-                                                            <span>{move || t(locale.get(), "skills.edit_tags")}</span>
-                                                            <span class="skill-tags-summary">{tags_text}</span>
-                                                        </summary>
-                                                        <input class="skill-tags-input"
-                                                            prop:value=tags_input_text
-                                                            prop:placeholder=move || t(locale.get(), "skills.tags_placeholder")
-                                                            on:change=move |ev| tags_cb.call((name_tags.clone(), event_target_value(&ev))) />
-                                                    </details>
-                                                })}
                                             </div>
                                             <div class="settings-list-actions">
-                                                {(scope == "global" && !builtin).then(|| { let n = name_remove.clone(); view! {
-                                                    <button class="settings-skill-remove" type="button"
-                                                        title=move || t(locale.get(), "skills.remove")
-                                                        on:click=move |_| delete_confirm.set(Some(DeleteConfirm::Skill {
-                                                            name: n.clone(),
-                                                            label: n.clone(),
-                                                        }))>
-                                                        {move || t(locale.get(), "skills.remove")}
-                                                    </button>
-                                                }})}
                                                 {if managed {
                                                     let provider = managed_by.unwrap_or_else(|| t(locale.get(), "settings.nav.plugins").to_string());
                                                     view! {
@@ -5665,6 +5841,36 @@ pub(super) fn SettingsView(
                                                         </label>
                                                     }.into_view()
                                                 }}
+                                                {show_row_menu.then(|| view! {
+                                                    <details class="skill-row-menu" data-testid="skill-row-menu">
+                                                        <summary title=move || t(locale.get(), "skills.more")
+                                                            aria-label=move || t(locale.get(), "skills.more")>
+                                                            {compose_icon("more")}
+                                                        </summary>
+                                                        <div class="skill-row-menu-panel">
+                                                            <label class="skill-row-menu-label">
+                                                                <span>{move || t(locale.get(), "skills.edit_tags")}</span>
+                                                                <input class="skill-tags-input"
+                                                                    prop:value=tags_input_text
+                                                                    prop:placeholder=move || t(locale.get(), "skills.tags_placeholder")
+                                                                    on:change=move |ev| tags_cb.call((name_tags.clone(), event_target_value(&ev))) />
+                                                            </label>
+                                                            {can_remove.then(|| {
+                                                                let n = name_remove.clone();
+                                                                view! {
+                                                                    <button class="settings-skill-remove" type="button"
+                                                                        on:click=move |_| delete_confirm.set(Some(DeleteConfirm::Skill {
+                                                                            name: n.clone(),
+                                                                            label: n.clone(),
+                                                                        }))>
+                                                                        {compose_icon("trash")}
+                                                                        {move || t(locale.get(), "skills.remove")}
+                                                                    </button>
+                                                                }
+                                                            })}
+                                                        </div>
+                                                    </details>
+                                                })}
                                             </div>
                                         </div>
                                     }
@@ -5674,38 +5880,55 @@ pub(super) fn SettingsView(
                     </div>
                 }.into_view())}
                 {move || (settings_section.get() == "credentials").then(|| view! {
-                    <div class="settings-pane">
-                        <p class="settings-note">{move || t(locale.get(), "cred.desc")}</p>
+                    <div class="settings-pane credentials-pane">
+                        <div class="cred-intro">
+                            <p class="settings-note">{move || t(locale.get(), "cred.desc")}</p>
+                        </div>
+                        <div class="cred-block-grid">
                         {CRED_GROUPS.iter().map(|g| {
                             let tooltip_id = format!("cred-help-{}", g.id);
                             let described_by = tooltip_id.clone();
+                            let mark = cred_group_mark(g.id);
+                            let fields = g.fields;
                             view! {
-                            <div class="cred-group-heading">
-                                <div class="conn-group-label">{move || t(locale.get(), g.name_key)}</div>
-                                <span class="cred-help">
-                                    <button
-                                        type="button"
-                                        class="cred-help-trigger"
-                                        aria-label=move || format!("{}: {}", t(locale.get(), g.name_key), t(locale.get(), "cred.help.aria"))
-                                        aria-describedby=described_by
-                                    >"?"</button>
-                                    <span id=tooltip_id class="cred-help-tooltip" role="tooltip">
-                                        <span class="cred-help-section">
-                                            <strong>{move || t(locale.get(), "cred.help.what")}</strong>
-                                            <span>{move || t(locale.get(), g.about_key)}</span>
-                                        </span>
-                                        <span class="cred-help-section">
-                                            <strong>{move || t(locale.get(), "cred.help.configured")}</strong>
-                                            <span>{move || t(locale.get(), g.configured_key)}</span>
-                                        </span>
-                                        <span class="cred-help-section">
-                                            <strong>{move || t(locale.get(), "cred.help.unconfigured")}</strong>
-                                            <span>{move || t(locale.get(), g.unconfigured_key)}</span>
+                            <article class="cred-block" data-cred-group=g.id>
+                            <header class="cred-block-head">
+                                <span class="cred-block-mark" attr:data-letter=mark>{mark}</span>
+                                <div class="cred-block-title">
+                                    <strong>{move || t(locale.get(), g.name_key)}</strong>
+                                    <span class="cred-help">
+                                        <button
+                                            type="button"
+                                            class="cred-help-trigger"
+                                            aria-label=move || format!("{}: {}", t(locale.get(), g.name_key), t(locale.get(), "cred.help.aria"))
+                                            aria-describedby=described_by
+                                        >{compose_icon("circle-help")}</button>
+                                        <span id=tooltip_id class="cred-help-tooltip" role="tooltip">
+                                            <span class="cred-help-section">
+                                                <strong>{move || t(locale.get(), "cred.help.what")}</strong>
+                                                <span>{move || t(locale.get(), g.about_key)}</span>
+                                            </span>
+                                            <span class="cred-help-section">
+                                                <strong>{move || t(locale.get(), "cred.help.configured")}</strong>
+                                                <span>{move || t(locale.get(), g.configured_key)}</span>
+                                            </span>
+                                            <span class="cred-help-section">
+                                                <strong>{move || t(locale.get(), "cred.help.unconfigured")}</strong>
+                                                <span>{move || t(locale.get(), g.unconfigured_key)}</span>
+                                            </span>
                                         </span>
                                     </span>
+                                </div>
+                                <span class="cred-block-badge"
+                                    class:stored=move || cred_group_configured(&cred_status.get(), fields)>
+                                    {move || if cred_group_configured(&cred_status.get(), fields) {
+                                        t(locale.get(), "cred.stored")
+                                    } else {
+                                        t(locale.get(), "cred.not_stored")
+                                    }}
                                 </span>
-                            </div>
-                            <div class="settings-form-grid">
+                            </header>
+                            <div class="settings-form-grid cred-block-fields">
                                 {g.fields.iter().map(|f| {
                                     let id = f.id;
                                     let stored = move || cred_status.get().get(id).copied().unwrap_or(false);
@@ -5747,15 +5970,20 @@ pub(super) fn SettingsView(
                                             <button type="button" class="cred-external-link"
                                                 on:click=move |_| crate::bindings::open_external_url(url.into())>
                                                 <span>{move || t(locale.get(), link.label_key)}</span>
-                                                <span aria-hidden="true">"↗"</span>
+                                                {compose_icon("external")}
                                             </button>
                                         }
                                     }).collect_view()}
                                 </span>
                             </div>
+                            </article>
                         }}).collect_view()}
-                        <div class="conn-group-label">{move || t(locale.get(), "cred.custom.name")}</div>
-                        <p class="settings-note">{move || t(locale.get(), "cred.custom.hint")}</p>
+                        </div>
+                        <section class="cred-custom-section">
+                        <header class="cred-section-head">
+                            <strong>{move || t(locale.get(), "cred.custom.name")}</strong>
+                            <p class="settings-note">{move || t(locale.get(), "cred.custom.hint")}</p>
+                        </header>
                         <For
                             each=move || custom_credentials.get()
                             key=|credential| (credential.id.clone(), credential.name.clone())
@@ -5770,7 +5998,7 @@ pub(super) fn SettingsView(
                                 let remove_id = id.clone();
                                 let initial_present = credential.present;
                                 view! {
-                                    <div class="custom-credential-card" data-custom-credential=credential.env_var.clone()>
+                                    <div class="cred-block custom-credential-card" data-custom-credential=credential.env_var.clone()>
                                         <div class="custom-credential-head">
                                             <div class="custom-credential-meta">
                                                 <strong>{credential.name.clone()}</strong>
@@ -5835,8 +6063,13 @@ pub(super) fn SettingsView(
                                 }
                             }
                         </For>
-                        <div class="settings-sync-block custom-credential-add">
-                            <h3>{move || t(locale.get(), "cred.custom.add")}</h3>
+                        <article class="cred-block cred-block-add custom-credential-add">
+                            <header class="cred-block-head">
+                                <span class="cred-block-mark" data-letter="+" aria-hidden="true">{compose_icon("plus")}</span>
+                                <div class="cred-block-title">
+                                    <strong>{move || t(locale.get(), "cred.custom.add")}</strong>
+                                </div>
+                            </header>
                             <div class="settings-form-grid">
                                 <label>
                                     <span>{move || t(locale.get(), "cred.custom.service_name")}</span>
@@ -5910,11 +6143,12 @@ pub(super) fn SettingsView(
                                         t(locale.get(), "cred.custom.add")
                                     }}</button>
                             </div>
-                        </div>
+                        </article>
+                        </section>
                         {move || cred_msg.get().map(|(ok, text)| view! {
                             <div class="settings-status" class:ok=move || ok class:fail=move || !ok>{text}</div>
                         })}
-                        <div class="row settings-footer">
+                        <div class="row settings-footer cred-save-bar">
                             <button type="button" class="primary" on:click=move |_| {
                                 // Save every field that was edited (non-empty input); blank inputs
                                 // leave a stored key untouched (placeholder communicates this).
@@ -6329,7 +6563,11 @@ pub(super) fn SettingsView(
                                                 {tools.iter().map(|tool| {
                                                     let name = tool.name.clone();
                                                     let mode = tool.mode.clone();
-                                                    let desc = tool.description.clone();
+                                                    let desc = mcp_tool_brief(
+                                                        locale.get(),
+                                                        &tool.name,
+                                                        &tool.description,
+                                                    );
                                                     let seg = |m: &'static str, glyph: &'static str, key: &'static str| {
                                                         let name2 = name.clone();
                                                         let active = mode.as_str() == m;
@@ -6352,7 +6590,7 @@ pub(super) fn SettingsView(
                                                             <div class="settings-list-main">
                                                                 <span class="settings-list-title">{tool.name.clone()}</span>
                                                                 {(!desc.is_empty()).then(|| view! {
-                                                                    <span class="settings-list-sub">{desc.clone()}</span>
+                                                                    <span class="settings-list-sub conn-tool-desc" title=desc.clone()>{desc.clone()}</span>
                                                                 })}
                                                             </div>
                                                             {(!is_custom).then(|| view! {
@@ -6427,6 +6665,7 @@ pub(super) fn SettingsView(
                                 {
                                     let key_open = c.key.clone();
                                     let key_toggle = c.key.clone();
+                                    let key_blurb = c.key.clone();
                                     let n_tools = c.tools.len();
                                     let enabled = c.enabled;
                                     view! {
@@ -6434,7 +6673,13 @@ pub(super) fn SettingsView(
                                             on:click=move |_| open_conn_key.set(Some(key_open.clone()))>
                                             <div class="settings-list-main">
                                                 <span class="settings-list-title">{c.name.clone()}</span>
-                                                <span class="settings-list-sub">{move || tf(locale.get(), "conn.tools_count", &[("n", &n_tools.to_string())])}</span>
+                                                <span class="settings-list-sub">{move || {
+                                                    let count = tf(locale.get(), "conn.tools_count", &[("n", &n_tools.to_string())]);
+                                                    match bundled_connector_blurb(locale.get(), &key_blurb) {
+                                                        Some(blurb) => format!("{blurb} · {count}"),
+                                                        None => count.into(),
+                                                    }
+                                                }}</span>
                                             </div>
                                             <div class="settings-list-actions">
                                                 <label class="toggle" on:click=move |ev| ev.stop_propagation()>
@@ -6550,6 +6795,10 @@ pub(super) fn SettingsView(
                 let is_plugin = matches!(target, DeleteConfirm::Plugin { .. });
                 let is_skill = matches!(target, DeleteConfirm::Skill { .. });
                 let is_host = matches!(target, DeleteConfirm::Host { .. });
+                let channel_count = match &target {
+                    DeleteConfirm::Model { ids, .. } if ids.len() > 1 => Some(ids.len()),
+                    _ => None,
+                };
                 let host_detail = match &target {
                     DeleteConfirm::Host { detail, .. } => Some(detail.clone()),
                     _ => None,
@@ -6560,6 +6809,8 @@ pub(super) fn SettingsView(
                     ("skills.remove_confirm", "skill", "skills.remove", "skill-remove-confirm")
                 } else if is_host {
                     ("hosts.remove_confirm", "host", "environments.remove", "host-remove-confirm")
+                } else if channel_count.is_some() {
+                    ("models.remove_channel_confirm", "channel", "models.remove", "model-delete-confirm")
                 } else {
                     ("models.remove_confirm", "model", "models.remove", "model-delete-confirm")
                 };
@@ -6567,11 +6818,17 @@ pub(super) fn SettingsView(
                     <div class="overlay" data-testid=test_id>
                         <div class="modal confirm-modal">
                             <h2>{move || t(locale.get(), "confirm.title")}</h2>
-                            <div class="hint">{move || tf(
-                                locale.get(),
-                                message_key,
-                                &[(placeholder, &label)],
-                            )}</div>
+                            <div class="hint">{move || {
+                                let loc = locale.get();
+                                if let Some(n) = channel_count {
+                                    tf(loc, message_key, &[
+                                        (placeholder, &label),
+                                        ("n", &n.to_string()),
+                                    ])
+                                } else {
+                                    tf(loc, message_key, &[(placeholder, &label)])
+                                }
+                            }}</div>
                             {host_detail.clone().map(|detail| view! {
                                 <div class="hint host-disposal-detail" data-testid="host-disposal-detail">{detail}</div>
                             })}
@@ -6584,13 +6841,15 @@ pub(super) fn SettingsView(
                                     delete_confirm.set(None);
                                     spawn_local(async move {
                                         match target {
-                                            DeleteConfirm::Model { id, .. } => {
-                                                let arg = to_value(&serde_json::json!({ "id": id })).unwrap();
-                                                if let Ok(value) = invoke_checked("remove_model", arg).await {
-                                                    if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ModelProfile>>(value) {
-                                                        models.set(list);
+                                            DeleteConfirm::Model { ids, .. } => {
+                                                for id in ids {
+                                                    let arg = to_value(&serde_json::json!({ "id": id })).unwrap();
+                                                    if let Ok(value) = invoke_checked("remove_model", arg).await {
+                                                        if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ModelProfile>>(value) {
+                                                            models.set(list);
+                                                        }
+                                                        model_form.update(|form| drop_deleted_model_from_form(form, &id));
                                                     }
-                                                    model_form.update(|form| drop_deleted_model_from_form(form, &id));
                                                 }
                                             }
                                             DeleteConfirm::Acp { id, .. } => {
@@ -6640,6 +6899,40 @@ pub(super) fn SettingsView(
                         </div>
                     </div>
                 }
+            })}
+            {move || skill_update_confirm.get().map(|packs| view! {
+                <div class="overlay" data-testid="skill-update-confirm">
+                    <div class="modal confirm-modal">
+                        <h2>{move || t(locale.get(), "skills.check_confirm")}</h2>
+                        <div class="hint">{move || t(locale.get(), "skills.check_confirm_body")}</div>
+                        <ul class="skill-update-pack-list">
+                            {packs.into_iter().map(|pack| {
+                                let current = shorten_skill_pin(&pack.current_pin);
+                                let remote = shorten_skill_pin(&pack.remote_pin);
+                                let version = if current.is_empty() {
+                                    remote
+                                } else {
+                                    format!("{current} → {remote}")
+                                };
+                                view! {
+                                    <li>
+                                        <strong>{pack.id}</strong>
+                                        <span>{version}</span>
+                                    </li>
+                                }
+                            }).collect_view()}
+                        </ul>
+                        <div class="row">
+                            <button type="button" on:click=move |_| skill_update_confirm.set(None)>
+                                {move || t(locale.get(), "settings.cancel")}
+                            </button>
+                            <button class="primary" type="button" on:click=move |_| {
+                                skill_update_confirm.set(None);
+                                apply_skill_updates.call(());
+                            }>{move || t(locale.get(), "skills.update_apply")}</button>
+                        </div>
+                    </div>
+                </div>
             })}
         </div>
 }.into_view())

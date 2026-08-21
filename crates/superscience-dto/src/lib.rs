@@ -2790,6 +2790,23 @@ pub struct SkillUpdateReport {
     pub dropped_overlays: Vec<String>,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillUpdateCandidate {
+    pub id: String,
+    #[serde(default)]
+    pub current_pin: String,
+    #[serde(default)]
+    pub remote_pin: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillUpdatePreview {
+    #[serde(default)]
+    pub available: Vec<SkillUpdateCandidate>,
+    #[serde(default)]
+    pub errors: Vec<String>,
+}
+
 #[derive(Clone, serde::Deserialize, PartialEq)]
 pub struct PluginRow {
     pub id: String,

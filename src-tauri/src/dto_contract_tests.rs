@@ -221,3 +221,21 @@ fn project_transfer_progress_contract() {
     assert!(!dto.is_complete());
     assert!(!dto.is_failed());
 }
+
+#[test]
+fn skill_update_preview_contract() {
+    let backend = crate::skill_update::SkillUpdatePreview {
+        available: vec![crate::skill_update::SkillUpdateCandidate {
+            id: "nature-skills".into(),
+            current_pin: "abc".into(),
+            remote_pin: "def".into(),
+        }],
+        errors: vec!["ppt-master: timeout".into()],
+    };
+    let dto: superscience_dto::SkillUpdatePreview = roundtrip(&backend);
+    assert_eq!(dto.available.len(), 1);
+    assert_eq!(dto.available[0].id, "nature-skills");
+    assert_eq!(dto.available[0].current_pin, "abc");
+    assert_eq!(dto.available[0].remote_pin, "def");
+    assert_eq!(dto.errors, vec!["ppt-master: timeout"]);
+}

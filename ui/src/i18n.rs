@@ -476,6 +476,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "models.search") => Some("Search models…"),
         (Locale::En, "models.undetected") => Some("Not detected"),
         (Locale::En, "models.user_added") => Some("User added"),
+        (Locale::En, "models.test_connection") => Some("Test whether this model is reachable"),
         (Locale::En, "models.masked_key") => Some("******"),
         (Locale::En, "models.edit") => Some("Edit model"),
         (Locale::En, "models.add_acp") => Some("Add ACP Agent"),
@@ -485,6 +486,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "models.remove") => Some("Remove model"),
         (Locale::En, "models.reorder") => Some("Drag to reorder"),
         (Locale::En, "models.remove_confirm") => Some("Remove {model}? This cannot be undone."),
+        (Locale::En, "models.remove_channel_confirm") => Some("Remove {channel} and its {n} models? This cannot be undone."),
         (Locale::En, "models.switch_confirm_title") => Some("Switch model?"),
         (Locale::En, "models.switch_confirm_hint") => Some("Switching models invalidates this conversation's model cache, so it will be rebuilt on the next turn. Switch to {model}?"),
         (Locale::En, "models.switch_confirm_image_hint") => Some("{model} does not accept image input. Previously sent images will be omitted from future requests to this model; the saved conversation and existing text replies stay unchanged. Ignore those historical images and switch?"),
@@ -1686,7 +1688,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "skills.remove_confirm") => Some("Delete {skill}? Its installed files will be removed. This cannot be undone."),
         (Locale::En, "skills.removed") => Some("Skill deleted."),
         (Locale::En, "skills.auto_update") => Some("Skill auto-update"),
-        (Locale::En, "skills.auto_update_hint") => Some("Check allowlisted bundled skills on launch and install overlays."),
+        (Locale::En, "skills.auto_update_hint") => Some("Allow updates for allowlisted bundled skills. Checking still asks before installing."),
         (Locale::En, "skills.auto_update_never") => Some("Not checked yet."),
         (Locale::En, "skills.auto_update_last") => Some("Last check: {when}"),
         (Locale::En, "skills.auto_update_checking") => Some("Checking skill updates…"),
@@ -1694,9 +1696,15 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "skills.auto_update_ok") => Some("Allowlisted skills are up to date."),
         (Locale::En, "skills.auto_update_failed") => Some("Skill update check failed: {error}"),
         (Locale::En, "skills.check_now") => Some("Check and update now"),
+        (Locale::En, "skills.check") => Some("Check for updates"),
+        (Locale::En, "skills.check_confirm") => Some("Install skill updates?"),
+        (Locale::En, "skills.check_confirm_body") => Some("These allowlisted skill packs have a newer version. Confirm to download and install them into your user skills folder."),
+        (Locale::En, "skills.update_apply") => Some("Install updates"),
+        (Locale::En, "skills.update_available_n") => Some("{n} pack(s) can be updated"),
         (Locale::En, "skills.more") => Some("More"),
         (Locale::En, "skills.filter_bundled") => Some("Bundled"),
         (Locale::En, "skills.filter_added") => Some("Added by me"),
+        (Locale::En, "skills.filter_tags") => Some("Tags"),
         (Locale::En, "skills.enabled_frac") => Some("{enabled}/{total}"),
         (Locale::En, "err.client_updates_config_not_found") => Some("No installer is published for this platform yet."),
         (Locale::En, "memory.off_banner") => Some("Memory is off. The agent won't save new notes or search existing ones, but notes below are kept and stay editable. Turn memory on to resume."),
@@ -2659,6 +2667,13 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         ),
         (Locale::En, "caps.ready") => Some("ready"),
         (Locale::En, "caps.missing") => Some("missing"),
+        (Locale::En, "onboard.title") => Some("Welcome to 天成科研助手"),
+        (Locale::En, "onboard.card1.title") => Some("I never touch your data."),
+        (Locale::En, "onboard.card1.body") => Some("Everything runs on your laptop — nothing is uploaded."),
+        (Locale::En, "onboard.card2.title") => Some("I do the grunt work."),
+        (Locale::En, "onboard.card2.body") => Some("I pull data from messy PDFs/Word docs, fix typos, and straighten timelines. You think about the science; I type."),
+        (Locale::En, "onboard.card3.title") => Some("You direct; I execute."),
+        (Locale::En, "onboard.card3.body") => Some("Say “show a survival curve” and I plot it. Say “change the color” and I redraw. No arguing, no walkouts."),
         (Locale::En, "onboard.welcome.title") => Some("Welcome to 天成科研助手"),
         (Locale::En, "onboard.welcome.body") => Some("Your local science assistant — design experiments, analyze data, and query ~80 biological databases without leaving your machine."),
         (Locale::En, "onboard.getkey.body") => Some("Open the DeepSeek console, sign in, create a key and copy it."),
@@ -3289,6 +3304,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "models.search") => Some("搜索模型..."),
         (Locale::Zh, "models.undetected") => Some("未检测"),
         (Locale::Zh, "models.user_added") => Some("用户添加"),
+        (Locale::Zh, "models.test_connection") => Some("点击测试当前模型是否正常连通"),
         (Locale::Zh, "models.masked_key") => Some("******"),
         (Locale::Zh, "models.edit") => Some("编辑模型"),
         (Locale::Zh, "models.add_acp") => Some("添加 ACP Agent"),
@@ -3298,6 +3314,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "models.remove") => Some("删除模型"),
         (Locale::Zh, "models.reorder") => Some("拖动可排序"),
         (Locale::Zh, "models.remove_confirm") => Some("确定删除“{model}”吗？此操作无法撤销。"),
+        (Locale::Zh, "models.remove_channel_confirm") => Some("确定删除“{channel}”及其 {n} 个模型吗？此操作无法撤销。"),
         (Locale::Zh, "models.switch_confirm_title") => Some("切换模型？"),
         (Locale::Zh, "models.switch_confirm_hint") => Some("切换模型会使当前对话的模型缓存失效，并在下一轮重新创建。是否切换到 {model}？"),
         (Locale::Zh, "models.switch_confirm_image_hint") => Some("“{model}”不支持图片输入。后续请求不会再把历史图片发送给该模型；已保存的对话和已有文字回复不会改变。是否忽略这些历史图片并切换？"),
@@ -4499,7 +4516,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "skills.remove_confirm") => Some("确定删除“{skill}”吗？已安装文件将被移除，且无法撤销。"),
         (Locale::Zh, "skills.removed") => Some("技能已删除。"),
         (Locale::Zh, "skills.auto_update") => Some("技能自动更新"),
-        (Locale::Zh, "skills.auto_update_hint") => Some("启动时检查可溯源的预装技能，并安装到用户目录。"),
+        (Locale::Zh, "skills.auto_update_hint") => Some("允许更新可溯源的预装技能。检测后需确认才会安装。"),
         (Locale::Zh, "skills.auto_update_never") => Some("尚未检查。"),
         (Locale::Zh, "skills.auto_update_last") => Some("上次检查：{when}"),
         (Locale::Zh, "skills.auto_update_checking") => Some("正在检查技能更新…"),
@@ -4507,9 +4524,15 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "skills.auto_update_ok") => Some("预装技能已是最新。"),
         (Locale::Zh, "skills.auto_update_failed") => Some("技能更新检查失败：{error}"),
         (Locale::Zh, "skills.check_now") => Some("立即检查并更新"),
+        (Locale::Zh, "skills.check") => Some("检测更新"),
+        (Locale::Zh, "skills.check_confirm") => Some("安装技能更新？"),
+        (Locale::Zh, "skills.check_confirm_body") => Some("以下可溯源技能包有新版本。确认后将下载并安装到用户技能目录。"),
+        (Locale::Zh, "skills.update_apply") => Some("安装更新"),
+        (Locale::Zh, "skills.update_available_n") => Some("可更新 {n} 个技能包"),
         (Locale::Zh, "skills.more") => Some("更多"),
         (Locale::Zh, "skills.filter_bundled") => Some("预装"),
         (Locale::Zh, "skills.filter_added") => Some("我添加的"),
+        (Locale::Zh, "skills.filter_tags") => Some("标签"),
         (Locale::Zh, "skills.enabled_frac") => Some("{enabled}/{total}"),
         (Locale::Zh, "err.client_updates_config_not_found") => Some("该平台还没有发布安装包。"),
         (Locale::Zh, "memory.off_banner") => Some("记忆已关闭。Agent 不会保存或检索新笔记，但下方已有笔记仍会保留且可编辑。开启记忆以恢复。"),
@@ -5470,6 +5493,13 @@ Do not leave generated files in the project root.",
         ),
         (Locale::Zh, "caps.ready") => Some("就绪"),
         (Locale::Zh, "caps.missing") => Some("缺失"),
+        (Locale::Zh, "onboard.title") => Some("欢迎使用天成科研助手"),
+        (Locale::Zh, "onboard.card1.title") => Some("我不碰您的数据。"),
+        (Locale::Zh, "onboard.card1.body") => Some("所有处理在您的笔记本上完成，绝不联网上传。"),
+        (Locale::Zh, "onboard.card2.title") => Some("我只干脏活累活。"),
+        (Locale::Zh, "onboard.card2.body") => Some("从模糊的PDF/Word里扒数据、纠错别字、理时间线。您负责思考科学问题，我负责敲键盘。"),
+        (Locale::Zh, "onboard.card3.title") => Some("您指挥，我执行。"),
+        (Locale::Zh, "onboard.card3.body") => Some("您说“我要看生存曲线”，我立马出图。您说“改个颜色”，我立马重画。不犟嘴，不罢工。"),
         (Locale::Zh, "onboard.welcome.title") => Some("欢迎使用天成科研助手"),
         (Locale::Zh, "onboard.welcome.body") => Some("本地科研助手——设计实验、分析数据，查询约 80 个生物数据库，无需离开本机。"),
         (Locale::Zh, "onboard.getkey.body") => Some("打开 DeepSeek 控制台，登录后创建一个密钥并复制。"),
@@ -6376,8 +6406,36 @@ mod queue_label_tests {
             brand_visible_copy(Locale::En, "Wisp Charcoal"),
             "SuperScience Charcoal"
         );
-        assert_eq!(brand_product_name(Locale::Zh), superscience_paths::PRODUCT_NAME_ZH);
-        assert_eq!(brand_product_name(Locale::En), superscience_paths::PRODUCT_NAME);
+        assert_eq!(
+            brand_product_name(Locale::Zh),
+            superscience_paths::PRODUCT_NAME_ZH
+        );
+        assert_eq!(
+            brand_product_name(Locale::En),
+            superscience_paths::PRODUCT_NAME
+        );
+    }
+
+    #[test]
+    fn onboarding_cards_use_the_three_promises() {
+        assert_eq!(t(Locale::Zh, "onboard.card1.title"), "我不碰您的数据。");
+        assert_eq!(
+            t(Locale::Zh, "onboard.card1.body"),
+            "所有处理在您的笔记本上完成，绝不联网上传。"
+        );
+        assert_eq!(t(Locale::Zh, "onboard.card2.title"), "我只干脏活累活。");
+        assert_eq!(
+            t(Locale::Zh, "onboard.card2.body"),
+            "从模糊的PDF/Word里扒数据、纠错别字、理时间线。您负责思考科学问题，我负责敲键盘。"
+        );
+        assert_eq!(t(Locale::Zh, "onboard.card3.title"), "您指挥，我执行。");
+        assert_eq!(
+            t(Locale::Zh, "onboard.card3.body"),
+            "您说“我要看生存曲线”，我立马出图。您说“改个颜色”，我立马重画。不犟嘴，不罢工。"
+        );
+        assert_eq!(t(Locale::En, "onboard.card1.title"), "I never touch your data.");
+        assert_eq!(t(Locale::Zh, "onboard.start"), "开始使用");
+        assert_eq!(t(Locale::En, "onboard.start"), "Get started");
     }
 
     #[test]
@@ -6397,7 +6455,10 @@ mod queue_label_tests {
             t(Locale::En, "projects.slogan"),
             superscience_paths::PRODUCT_SLOGAN_EN
         );
-        assert_eq!(brand_product_name(Locale::Zh), superscience_paths::PRODUCT_NAME_ZH);
+        assert_eq!(
+            brand_product_name(Locale::Zh),
+            superscience_paths::PRODUCT_NAME_ZH
+        );
     }
 
     #[test]

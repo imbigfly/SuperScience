@@ -301,7 +301,7 @@ impl ModelSettingsState {
             .iter()
             .filter(|profile| {
                 !profile.is_builtin()
-                    && same_endpoint(&profile.api_url, &group_url)
+                    && same_model_channel(&profile.api_url, &group_url)
                     && !keep.contains(&profile.id)
             })
             .map(|profile| profile.id.clone())
@@ -329,7 +329,8 @@ impl ModelSettingsState {
                         }
                     }
                     Err(err) => {
-                        model_form_msg.set(Some((false, localize_backend(loc, &js_error_text(err)))));
+                        model_form_msg
+                            .set(Some((false, localize_backend(loc, &js_error_text(err)))));
                         settings_busy.set(false);
                         return;
                     }
@@ -557,16 +558,13 @@ impl ModelSettingsState {
                 .find(|m| Some(m.id.as_str()) == form.id.as_deref())
                 .map(|m| m.has_api_key)
                 .unwrap_or(false);
-        let profile_id = entry
-            .profile_id
-            .clone()
-            .or_else(|| {
-                if form.id.is_none() {
-                    sibling_profile_id(&listed, &form.api_url).map(str::to_string)
-                } else {
-                    form.id.clone()
-                }
-            });
+        let profile_id = entry.profile_id.clone().or_else(|| {
+            if form.id.is_none() {
+                sibling_profile_id(&listed, &form.api_url).map(str::to_string)
+            } else {
+                form.id.clone()
+            }
+        });
         let form = probe;
         let cfg = model_form_to_settings(&form, has_key);
         if let Some(err_key) = settings_required_error_key(&cfg, &key) {
