@@ -6448,7 +6448,7 @@ pub fn run() {
                 completion_dispatches: tokio::sync::Mutex::new(HashSet::new()),
                 project_activity: ProjectActivityLocks::default(),
                 resource_leases: resource_leases::ProjectResourceCoordinator::default(),
-                mcp_app_tool_bridges: StdMutex::new(HashMap::new()),
+                mcp_app_tool_bridges: McpAppBridges::default(),
                 active_frame: std::sync::RwLock::new(HashMap::new()),
                 notification_window: std::sync::RwLock::new(HashMap::new()),
                 confirms: Arc::new(StdMutex::new(HashMap::new())),

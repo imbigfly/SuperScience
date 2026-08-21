@@ -251,6 +251,35 @@ pub(crate) const MCP_APP_MAX_CONCURRENT_CALLS: usize = 4;
 pub(crate) const MCP_APP_MAX_CALLS_PER_WINDOW: usize = 20;
 pub(crate) const MCP_APP_CALL_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// Live `serverTools` bridges keyed by app instance id. Kept as its own type
+/// so instance routing (two parallel Apps, teardown, session delete) is
+/// testable without building a whole `AppState`.
+#[derive(Default)]
+pub(crate) struct McpAppBridges {
+    bridges: StdMutex<HashMap<String, McpAppToolBridge>>,
+}
+
+impl McpAppBridges {
+    pub(crate) fn register(&self, instance_id: String, bridge: McpAppToolBridge) {
+        self.bridges.lock().unwrap().insert(instance_id, bridge);
+    }
+
+    pub(crate) fn get(&self, instance_id: &str) -> Option<McpAppToolBridge> {
+        self.bridges.lock().unwrap().get(instance_id).cloned()
+    }
+
+    pub(crate) fn close(&self, instance_id: &str) -> bool {
+        self.bridges.lock().unwrap().remove(instance_id).is_some()
+    }
+
+    pub(crate) fn remove_for_frame(&self, frame_id: &str) {
+        self.bridges
+            .lock()
+            .unwrap()
+            .retain(|_, bridge| bridge.frame_id != frame_id);
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct McpAppCallLimiter {
     max_concurrent: usize,
@@ -392,7 +421,7 @@ pub(crate) struct AppState {
     /// URLs, commands, or credentials. Instances are revoked on teardown or
     /// session delete; after an agent rebuild the embedded `Weak` client dies
     /// and further calls fail with a stale-instance error.
-    pub(crate) mcp_app_tool_bridges: StdMutex<HashMap<String, McpAppToolBridge>>,
+    pub(crate) mcp_app_tool_bridges: McpAppBridges,
     /// The frame id the UI is currently viewing. Drives artifact attachment
     /// (`upload_file`/`register_artifact`) and `list_artifacts` fallback.
     /// Written only by view-navigation commands (`load_session`/`new_session`/
@@ -500,31 +529,17 @@ impl AppState {
         self.notification_window.write().unwrap().remove(frame_id);
     }
     pub(crate) fn register_mcp_app_bridge(&self, instance_id: String, bridge: McpAppToolBridge) {
-        self.mcp_app_tool_bridges
-            .lock()
-            .unwrap()
-            .insert(instance_id, bridge);
+        self.mcp_app_tool_bridges.register(instance_id, bridge);
     }
     pub(crate) fn mcp_app_bridge(&self, instance_id: &str) -> Option<McpAppToolBridge> {
-        self.mcp_app_tool_bridges
-            .lock()
-            .unwrap()
-            .get(instance_id)
-            .cloned()
+        self.mcp_app_tool_bridges.get(instance_id)
     }
     pub(crate) fn close_mcp_app_bridge(&self, instance_id: &str) -> bool {
-        self.mcp_app_tool_bridges
-            .lock()
-            .unwrap()
-            .remove(instance_id)
-            .is_some()
+        self.mcp_app_tool_bridges.close(instance_id)
     }
     /// Revoke every app bridge owned by a conversation (session delete).
     pub(crate) fn remove_mcp_app_bridges_for_frame(&self, frame_id: &str) {
-        self.mcp_app_tool_bridges
-            .lock()
-            .unwrap()
-            .retain(|_, bridge| bridge.frame_id != frame_id);
+        self.mcp_app_tool_bridges.remove_for_frame(frame_id);
     }
     pub(crate) fn preferred_notification_window(
         &self,
