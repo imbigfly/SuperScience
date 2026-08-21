@@ -1134,10 +1134,153 @@ fn selected_entry_advanced_fields(
     }
 }
 
+fn can_remove_provider_entry(form: &ModelForm, row_id: u64, min_entries: usize) -> bool {
+    let Some(entry) = form.entries.iter().find(|entry| entry.row_id == row_id) else {
+        return false;
+    };
+    if entry.profile_id.as_deref() == Some(TCTOKEN_MODEL_ID) {
+        return false;
+    }
+    entry.profile_id.is_some() || min_entries == 0 || form.entries.len() > min_entries
+}
+
+fn remove_provider_entry(form: &mut ModelForm, row_id: u64, min_entries: usize) {
+    if !can_remove_provider_entry(form, row_id, min_entries) {
+        return;
+    }
+    form.entries.retain(|entry| entry.row_id != row_id);
+    if !form.entries.iter().any(|entry| entry.row_id == form.selected_row_id) {
+        if let Some(first) = form.entries.first() {
+            select_form_row(form, first.row_id);
+        }
+    }
+}
+
+fn request_remove_provider_entry(
+    model_form: RwSignal<Option<ModelForm>>,
+    delete_confirm: RwSignal<Option<DeleteConfirm>>,
+    row_id: u64,
+    min_entries: usize,
+) {
+    let Some(form) = model_form.get() else {
+        return;
+    };
+    let Some(entry) = form.entries.iter().find(|entry| entry.row_id == row_id) else {
+        return;
+    };
+    if entry.profile_id.as_deref() == Some(TCTOKEN_MODEL_ID) {
+        return;
+    }
+    if let Some(id) = entry.profile_id.clone() {
+        let label = if entry.label.trim().is_empty() {
+            if entry.model.trim().is_empty() {
+                id.clone()
+            } else {
+                entry.model.clone()
+            }
+        } else {
+            entry.label.clone()
+        };
+        delete_confirm.set(Some(DeleteConfirm::Model { id, label }));
+        return;
+    }
+    model_form.update(|option| {
+        if let Some(form) = option {
+            remove_provider_entry(form, row_id, min_entries);
+        }
+    });
+}
+
+fn drop_deleted_model_from_form(form: &mut Option<ModelForm>, id: &str) {
+    let Some(inner) = form.as_mut() else {
+        return;
+    };
+    inner
+        .entries
+        .retain(|entry| entry.profile_id.as_deref() != Some(id));
+    if inner.entries.is_empty() {
+        *form = None;
+        return;
+    }
+    if inner.id.as_deref() == Some(id) {
+        inner.id = inner.entries.iter().find_map(|entry| entry.profile_id.clone());
+    }
+    if !inner
+        .entries
+        .iter()
+        .any(|entry| entry.row_id == inner.selected_row_id)
+    {
+        if let Some(first) = inner.entries.first() {
+            select_form_row(inner, first.row_id);
+        }
+    }
+}
+
+#[cfg(test)]
+mod provider_entry_remove_tests {
+    use super::*;
+
+    fn form(entries: Vec<ModelFormEntry>) -> ModelForm {
+        let selected_row_id = entries.first().map(|entry| entry.row_id).unwrap_or(0);
+        ModelForm {
+            entries,
+            selected_row_id,
+            ..ModelForm::default()
+        }
+    }
+
+    #[test]
+    fn saved_tctoken_row_stays_locked() {
+        let tctoken = ModelFormEntry {
+            row_id: 1,
+            profile_id: Some(TCTOKEN_MODEL_ID.into()),
+            ..ModelFormEntry::default()
+        };
+        assert!(!can_remove_provider_entry(&form(vec![tctoken]), 1, 1));
+    }
+
+    #[test]
+    fn saved_custom_row_can_be_removed() {
+        let custom = ModelFormEntry {
+            row_id: 2,
+            profile_id: Some("default".into()),
+            ..ModelFormEntry::default()
+        };
+        assert!(can_remove_provider_entry(&form(vec![custom]), 2, 1));
+    }
+
+    #[test]
+    fn last_unsaved_row_stays_when_min_entries_is_one() {
+        let custom = ModelFormEntry {
+            row_id: 2,
+            ..ModelFormEntry::default()
+        };
+        let mut current = form(vec![custom]);
+        assert!(!can_remove_provider_entry(&current, 2, 1));
+        remove_provider_entry(&mut current, 2, 1);
+        assert_eq!(current.entries.len(), 1);
+    }
+
+    #[test]
+    fn dropping_the_only_saved_row_closes_the_form() {
+        let mut current = Some(ModelForm {
+            id: Some("default".into()),
+            ..form(vec![ModelFormEntry {
+                row_id: 1,
+                profile_id: Some("default".into()),
+                ..ModelFormEntry::default()
+            }])
+        });
+        drop_deleted_model_from_form(&mut current, "default");
+        assert!(current.is_none());
+    }
+}
+
 fn provider_model_entries_editor(
     model_form: RwSignal<Option<ModelForm>>,
     locale: RwSignal<Locale>,
     model_catalog_limits: RwSignal<Option<CatalogEntryDto>>,
+    delete_confirm: RwSignal<Option<DeleteConfirm>>,
     min_entries: usize,
 ) -> impl IntoView {
     let search = create_rw_signal(String::new());
@@ -1318,25 +1461,15 @@ fn provider_model_entries_editor(
                                 <button type="button" class="settings-list-remove" data-testid="provider-remove-model"
                                     title=move || t(locale.get(), "models.remove_entry")
                                     disabled=move || model_form.get().is_some_and(|f| {
-                                        let locked = f.entries.iter().any(|e| {
-                                            e.row_id == row_id && e.profile_id.as_deref() == Some(TCTOKEN_MODEL_ID)
-                                        });
-                                        locked || (min_entries > 0 && f.entries.len() <= min_entries)
+                                        !can_remove_provider_entry(&f, row_id, min_entries)
                                     })
                                     on:click=move |_| {
-                                        model_form.update(|o| if let Some(o)=o {
-                                            if min_entries == 0 || o.entries.len() > min_entries {
-                                                o.entries.retain(|e| {
-                                                    e.row_id != row_id
-                                                        || e.profile_id.as_deref() == Some(TCTOKEN_MODEL_ID)
-                                                });
-                                                if !o.entries.iter().any(|e| e.row_id == o.selected_row_id) {
-                                                    if let Some(first) = o.entries.first() {
-                                                        select_form_row(o, first.row_id);
-                                                    }
-                                                }
-                                            }
-                                        });
+                                        request_remove_provider_entry(
+                                            model_form,
+                                            delete_confirm,
+                                            row_id,
+                                            min_entries,
+                                        );
                                     }>{compose_icon("close")}</button>
                             </div>
                             <div class="provider-model-roles">
@@ -1479,6 +1612,7 @@ fn provider_model_entries_editor(
                                     }
                                 }}
                             </div>
+                            <div class="provider-model-card-foot">
                             <button type="button" class="provider-model-advanced-toggle"
                                 data-testid="provider-model-advanced-toggle"
                                 aria-expanded=move || model_form.get()
@@ -1504,6 +1638,22 @@ fn provider_model_entries_editor(
                                 }}
                                 {move || t(locale.get(), "models.advanced")}
                             </button>
+                            {move || model_form.get().is_some_and(|f| {
+                                can_remove_provider_entry(&f, row_id, min_entries)
+                            }).then(|| view! {
+                                <button type="button" class="provider-access-btn danger" data-testid="provider-delete-model"
+                                    title=move || t(locale.get(), "models.remove")
+                                    on:click=move |ev| {
+                                        ev.stop_propagation();
+                                        request_remove_provider_entry(
+                                            model_form,
+                                            delete_confirm,
+                                            row_id,
+                                            min_entries,
+                                        );
+                                    }>{move || t(locale.get(), "models.card.delete")}</button>
+                            })}
+                            </div>
                             <div class="provider-model-advanced-wrap"
                                 class:open=move || model_form.get()
                                     .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
@@ -3363,7 +3513,7 @@ pub(super) fn SettingsView(
                                                 autocomplete="new-password"
                                                 on:input=move |ev| model_form_key.set(event_target_input(&ev).value()) /></label>
                                     </div>
-                                    {provider_model_entries_editor(model_form, locale, model_catalog_limits, 1)}
+                                    {provider_model_entries_editor(model_form, locale, model_catalog_limits, delete_confirm, 1)}
                                     {move || model_form_msg.get().map(|(ok, text)| view! {
                                         <div class="settings-status" class:ok=ok class:fail=move || !ok>{text}</div>
                                     })}
@@ -3587,9 +3737,7 @@ pub(super) fn SettingsView(
                                                 let is_active = m.active;
                                                 let is_chat_model = m.is_chat_model();
                                                 let builtin = m.is_builtin();
-                                                let can_delete = !builtin && models.get().iter().any(|other| {
-                                                    other.id != m.id && other.is_chat_model()
-                                                });
+                                                let can_delete = !builtin;
                                                 let show_sub = !m.model.is_empty() && m.model != m.label;
                                                 let drag_id = m.id.clone();
                                                 let drag_cls = m.id.clone();
@@ -3753,7 +3901,7 @@ pub(super) fn SettingsView(
                                                                     model_form_key.set(String::new());
                                                                     model_form_msg.set(None);
                                                                 }>{move || t(locale.get(), "models.card.settings")}</button>
-                                                            {(can_delete && !is_active).then(|| { let id = del_id.clone(); view! {
+                                                            {can_delete.then(|| { let id = del_id.clone(); view! {
                                                                 <button class="provider-access-btn danger" type="button" title=move || t(locale.get(), "models.remove")
                                                                     on:click=move |ev| {
                                                                         ev.stop_propagation();
@@ -6442,6 +6590,7 @@ pub(super) fn SettingsView(
                                                     if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ModelProfile>>(value) {
                                                         models.set(list);
                                                     }
+                                                    model_form.update(|form| drop_deleted_model_from_form(form, &id));
                                                 }
                                             }
                                             DeleteConfirm::Acp { id, .. } => {

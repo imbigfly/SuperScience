@@ -650,87 +650,89 @@ fn has_tctoken(profiles: &[ModelProfile]) -> bool {
 /// The built-in Tctoken profile is always present and cannot be deleted.
 async fn ensure(store: &superscience_store::Store) -> Vec<ModelProfile> {
     let mut profiles = load_raw(store).await;
-    if profiles.is_empty() {
-        let provider = store
-            .get_setting("provider")
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        let api_url = store
-            .get_setting("api_url")
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        let model = store
-            .get_setting("model")
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        let max_tokens = store
-            .get_setting("max_tokens")
-            .await
-            .ok()
-            .flatten()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-        let reasoning_effort = store
-            .get_setting("reasoning_effort")
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        let has_legacy =
-            !provider.trim().is_empty() || !api_url.trim().is_empty() || !model.trim().is_empty();
-        if has_legacy {
-            let default = ModelProfile {
-                id: "default".into(),
-                label: if model.trim().is_empty() {
-                    "Default".into()
-                } else {
-                    model.clone()
-                },
-                provider,
-                api_url,
-                endpoint_suffix: String::new(),
-                model,
-                has_api_key: false,
-                active: false,
-                max_tokens,
-                context_window: DEFAULT_CONTEXT_WINDOW,
-                reasoning_effort,
-                supports_vision: false,
-                use_for_vision: false,
-                use_for_image_generation: false,
-                image_size: String::new(),
-                image_quality: String::new(),
-                image_aspect_ratio: String::new(),
-                image_resolution: String::new(),
-                use_for_video_generation: false,
-                video_duration_secs: None,
-                video_aspect_ratio: None,
-                video_resolution: None,
-            };
-            profiles = vec![tctoken_profile(), default];
+    if !profiles.is_empty() {
+        if !has_tctoken(&profiles) {
+            profiles.insert(0, tctoken_profile());
             let _ = save_raw(store, &profiles).await;
-            let _ = store.set_setting(ACTIVE_KEY, "default").await;
-            let legacy = secret_get(LEGACY_KEY_SECRET);
-            if !legacy.is_empty() {
-                let _ = secret_set(&secret_name("default"), &legacy);
-            }
-        } else {
-            profiles = vec![tctoken_profile()];
-            let _ = save_raw(store, &profiles).await;
-            let _ = store.set_setting(ACTIVE_KEY, TCTOKEN_MODEL_ID).await;
         }
         return profiles;
     }
-    if !has_tctoken(&profiles) {
-        profiles.insert(0, tctoken_profile());
+    let provider = store
+        .get_setting("provider")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let api_url = store
+        .get_setting("api_url")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let model = store
+        .get_setting("model")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let max_tokens = store
+        .get_setting("max_tokens")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let reasoning_effort = store
+        .get_setting("reasoning_effort")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let has_legacy =
+        !provider.trim().is_empty() || !api_url.trim().is_empty() || !model.trim().is_empty();
+    let profiles = if has_legacy {
+        let default = ModelProfile {
+            id: "default".into(),
+            label: if model.trim().is_empty() {
+                "Default".into()
+            } else {
+                model.clone()
+            },
+            provider,
+            api_url,
+            endpoint_suffix: String::new(),
+            model,
+            has_api_key: false,
+            active: false,
+            max_tokens,
+            context_window: DEFAULT_CONTEXT_WINDOW,
+            reasoning_effort,
+            supports_vision: false,
+            use_for_vision: false,
+            use_for_image_generation: false,
+            image_size: String::new(),
+            image_quality: String::new(),
+            image_aspect_ratio: String::new(),
+            image_resolution: String::new(),
+            use_for_video_generation: false,
+            video_duration_secs: None,
+            video_aspect_ratio: None,
+            video_resolution: None,
+        };
+        let profiles = vec![tctoken_profile(), default];
         let _ = save_raw(store, &profiles).await;
-    }
+        let _ = store.set_setting(ACTIVE_KEY, "default").await;
+        let legacy = secret_get(LEGACY_KEY_SECRET);
+        if !legacy.is_empty() {
+            let _ = secret_set(&secret_name("default"), &legacy);
+        }
+        profiles
+    } else {
+        let profiles = vec![tctoken_profile()];
+        let _ = save_raw(store, &profiles).await;
+        let _ = store.set_setting(ACTIVE_KEY, TCTOKEN_MODEL_ID).await;
+        profiles
+    };
     profiles
 }
 

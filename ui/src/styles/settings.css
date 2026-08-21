@@ -2005,8 +2005,11 @@ button.workflow-graph-port.output.active {
   background: #e07b18;
   border-color: #e07b18;
 }
-.provider-models-search {
+/* Beat `.settings-page label { flex-direction: column }` so the icon sits
+   beside the placeholder instead of stacking above it. */
+.settings-page label.provider-models-search {
   display: flex;
+  flex-direction: row;
   align-items: center;
   gap: 8px;
   padding: 0 12px;
@@ -2014,17 +2017,21 @@ button.workflow-graph-port.output.active {
   border-radius: 10px;
   background: var(--bg-elev);
   color: var(--text-faint);
+  font-size: inherit;
+  font-weight: 400;
 }
-.provider-models-search svg { width: 16px; height: 16px; flex: none; }
-.provider-models-search input {
+.settings-page label.provider-models-search svg { width: 16px; height: 16px; flex: none; }
+.settings-page label.provider-models-search input {
   flex: 1;
   min-width: 0;
   border: none;
   background: transparent;
   box-shadow: none;
   padding: 10px 0;
+  appearance: none;
+  -webkit-appearance: none;
 }
-.provider-models-search input:focus { outline: none; box-shadow: none; }
+.settings-page label.provider-models-search input:focus { outline: none; box-shadow: none; }
 .provider-model-row {
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -2808,11 +2815,18 @@ button.workflow-graph-port.output.active {
   border-color: color-mix(in srgb, var(--clay) 55%, var(--border));
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--clay) 28%, transparent);
 }
+.provider-model-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+}
 .provider-model-advanced-toggle {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  margin-top: 10px;
+  margin-top: 0;
   padding: 0;
   border: none;
   background: none;
