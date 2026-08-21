@@ -112,6 +112,111 @@ fn mcp_app_tool_confirm_payload_parses_and_keys_a_grant() {
     assert_eq!(tool, "python");
 }
 
+/// One MCP server behind an App bridge: answers only its own tool and reports
+/// which connector served the call, so a crossed route is visible in the result.
+struct FakeAppServer {
+    connector_id: String,
+    tool: String,
+}
+
+#[async_trait::async_trait]
+impl wisp_tools::McpAppServer for FakeAppServer {
+    fn connector_id(&self) -> &str {
+        &self.connector_id
+    }
+    fn app_name(&self) -> &str {
+        &self.connector_id
+    }
+    fn require_approval(&self) -> bool {
+        false
+    }
+    fn tools(&self) -> Vec<serde_json::Value> {
+        vec![serde_json::json!({ "name": self.tool, "inputSchema": { "type": "object" } })]
+    }
+    fn visible_to_app(&self, name: &str) -> bool {
+        name == self.tool
+    }
+    fn read_only(&self, _name: &str) -> bool {
+        true
+    }
+    async fn call_tool(
+        &self,
+        name: &str,
+        _arguments: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        if name != self.tool {
+            return Err(format!("tool '{name}' is not on this server"));
+        }
+        Ok(serde_json::json!({
+            "content": [],
+            "structuredContent": { "servedBy": self.connector_id },
+            "isError": false,
+        }))
+    }
+}
+
+fn fake_app_bridge(frame_id: &str, connector_id: &str, tool: &str) -> super::McpAppToolBridge {
+    super::McpAppToolBridge {
+        frame_id: frame_id.into(),
+        server: Arc::new(FakeAppServer {
+            connector_id: connector_id.into(),
+            tool: tool.into(),
+        }),
+        limiter: super::McpAppCallLimiter::with_limits(1, 8, std::time::Duration::from_secs(10)),
+    }
+}
+
+#[tokio::test]
+async fn parallel_mcp_app_instances_keep_separate_bridges() {
+    let bridges = super::McpAppBridges::default();
+    let figures = "mcp-app:session-a:figures";
+    let motif = "mcp-app:session-b:motif";
+    bridges.register(
+        figures.into(),
+        fake_app_bridge("session-a", "figure-library", "figure_preview_exact"),
+    );
+    bridges.register(
+        motif.into(),
+        fake_app_bridge("session-b", "motif", "motif_refresh"),
+    );
+
+    // Each instance resolves to the connection that presented it, and neither
+    // can reach the sibling App's tool.
+    let first = bridges.get(figures).unwrap();
+    let second = bridges.get(motif).unwrap();
+    assert_eq!(first.frame_id, "session-a");
+    assert_eq!(second.frame_id, "session-b");
+    assert!(first.server.visible_to_app("figure_preview_exact"));
+    assert!(!first.server.visible_to_app("motif_refresh"));
+    let served = first
+        .server
+        .call_tool("figure_preview_exact", &serde_json::json!({}))
+        .await
+        .unwrap();
+    assert_eq!(served["structuredContent"]["servedBy"], "figure-library");
+    let served = second
+        .server
+        .call_tool("motif_refresh", &serde_json::json!({}))
+        .await
+        .unwrap();
+    assert_eq!(served["structuredContent"]["servedBy"], "motif");
+
+    // Limiters are per instance: saturating one App must not rate-limit another.
+    let _busy = first.limiter.try_acquire().unwrap();
+    assert!(first.limiter.try_acquire().is_err());
+    assert!(second.limiter.try_acquire().is_ok());
+
+    // Teardown revokes only that instance; deleting a session revokes only its
+    // own frame's bridges.
+    assert!(bridges.close(figures));
+    assert!(bridges.get(figures).is_none());
+    assert!(bridges.get(motif).is_some());
+    bridges.remove_for_frame("session-a");
+    assert!(bridges.get(motif).is_some());
+    bridges.remove_for_frame("session-b");
+    assert!(bridges.get(motif).is_none());
+}
+
 #[test]
 fn mcp_app_call_limiter_caps_concurrency() {
     let limiter = super::McpAppCallLimiter::with_limits(2, 8, std::time::Duration::from_secs(10));
