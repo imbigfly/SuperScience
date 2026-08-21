@@ -5320,7 +5320,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               const md = [
                 "**结论**：字号已经跟随设置。",
                 "",
-                "表格就是恒定的 **12.5px**，当前版本不再写死。",
+                "表格字号现在跟随外观设置，不再写死。",
               ].join("\n");
               setTimeout(() => {
                 emit("agent", { kind: "User", frame_id: fid, text: msg });

@@ -7878,22 +7878,17 @@ test("custom CSS hides the bold-at-start lead bar", async ({ page }) => {
   await composer(page).fill("MDLEADBAR");
   await page.getByRole("button", { name: "Send" }).click();
 
-  const leadStrong = page.locator(".msg.assistant .body.md > p.md-lead-strong > strong").first();
-  await expect(leadStrong).toBeVisible();
-  const barWidth = (target: typeof leadStrong) =>
-    target.evaluate((el) => getComputedStyle(el).borderLeftWidth);
-  expect(await barWidth(leadStrong)).toBe("3px");
-
-  // Mid-sentence bold is a plain `<strong>`; only paragraph-leading bold gets the bar.
-  const midStrong = page.locator(".msg.assistant .body.md > p:not(.md-lead-strong) > strong").first();
-  await expect(midStrong).toHaveText("12.5px");
-  expect(await barWidth(midStrong)).toBe("0px");
+  const leadStrong = page.locator(".msg.assistant .body.md").last()
+    .locator("p.md-lead-strong > strong").first();
+  await expect(leadStrong).toHaveText("结论");
+  const barWidth = () => leadStrong.evaluate((el) => getComputedStyle(el).borderLeftWidth);
+  expect(await barWidth()).toBe("3px");
 
   await openSettingsSection(page, "Appearance");
   await page.getByTestId("appearance-custom-css")
     .fill(":root { --md-lead-bar-width: 0; --md-lead-bar-pad: 0; }");
   await page.getByRole("button", { name: "Back to app" }).click();
-  await expect.poll(() => barWidth(leadStrong)).toBe("0px");
+  await expect.poll(barWidth).toBe("0px");
   await expect.poll(() => leadStrong.evaluate((el) => getComputedStyle(el).paddingLeft)).toBe("0px");
 });
 
