@@ -323,6 +323,114 @@ class KernelWorkerTests(unittest.TestCase):
             finally:
                 self._close(worker)
 
+    def test_bytecode_cache_is_not_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "helper_mod.py").write_text("V = 1\n", encoding="utf-8")
+            worker = self._spawn(cwd=tmp)
+            try:
+                response = self._exec(
+                    worker,
+                    "import sys\nsys.path.insert(0, '.')\nimport helper_mod",
+                    rid="pycache",
+                )
+                self.assertIsNone(response.get("error"), response.get("error"))
+                written = response.get("files_written")
+                self.assertIsNotNone(written)
+                self.assertFalse(
+                    [path for path in written if "__pycache__" in path],
+                    written,
+                )
+            finally:
+                self._close(worker)
+
+    def test_bytecode_cache_does_not_consume_the_cap(self):
+        # The host discards `__pycache__` paths, so they must not evict the
+        # real outputs of the same cell from the report.
+        with tempfile.TemporaryDirectory() as tmp:
+            for index in range(300):
+                Path(tmp, f"mod_{index}.py").write_text(f"V = {index}\n", encoding="utf-8")
+            worker = self._spawn(cwd=tmp)
+            try:
+                response = self._exec(
+                    worker,
+                    "\n".join(
+                        [
+                            "import os, sys",
+                            "sys.path.insert(0, '.')",
+                            "for i in range(300):",
+                            "    __import__(f'mod_{i}')",
+                            "os.makedirs('results', exist_ok=True)",
+                            "for i in range(250):",
+                            "    open(f'results/out_{i}.csv', 'w').write('x')",
+                        ]
+                    ),
+                    rid="pycache-cap",
+                )
+                self.assertIsNone(response.get("error"), response.get("error"))
+                written = response.get("files_written")
+                self.assertIsNotNone(written, "300 discarded .pyc paths exhausted the cap")
+                self.assertEqual(len(written), 250, written)
+            finally:
+                self._close(worker)
+
+    def test_write_intent_without_a_write_is_not_reported(self):
+        # `r+` and a bare `a` carry write intent but change nothing. Opening a
+        # store read-only through such a mode is idiomatic (`h5py.File(p, "a")`).
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "data.h5").write_text("existing", encoding="utf-8")
+            Path(tmp, "run.log").write_text("log\n", encoding="utf-8")
+            worker = self._spawn(cwd=tmp)
+            try:
+                response = self._exec(
+                    worker,
+                    "open('data.h5', 'r+').read()\nopen('run.log', 'a').close()",
+                    rid="intent-only",
+                )
+                self.assertIsNone(response.get("error"), response.get("error"))
+                self.assertEqual(response.get("files_written"), [])
+            finally:
+                self._close(worker)
+
+    def test_write_through_an_intent_mode_is_still_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "data.h5").write_text("existing", encoding="utf-8")
+            Path(tmp, "run.log").write_text("log\n", encoding="utf-8")
+            worker = self._spawn(cwd=tmp)
+            try:
+                expected = {
+                    self._worker_abspath(worker, "data.h5"),
+                    self._worker_abspath(worker, "run.log"),
+                }
+                response = self._exec(
+                    worker,
+                    "open('data.h5', 'r+').write('mutated')\n"
+                    "open('run.log', 'a').write('more\\n')",
+                    rid="intent-write",
+                )
+                self.assertIsNone(response.get("error"), response.get("error"))
+                self.assertEqual(set(response.get("files_written") or []), expected)
+            finally:
+                self._close(worker)
+
+    def test_same_length_rewrite_is_reported(self):
+        # Size alone cannot see this write; the mtime half of the pre/post
+        # comparison is what keeps the credit.
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "same.csv").write_text("AAAAAAAAAAA", encoding="utf-8")
+            worker = self._spawn(cwd=tmp)
+            try:
+                expected = self._worker_abspath(worker, "same.csv")
+                response = self._exec(
+                    worker,
+                    "open('same.csv', 'w').write('BBBBBBBBBBB')",
+                    rid="same-length",
+                )
+                self.assertIsNone(response.get("error"), response.get("error"))
+                self.assertIn(expected, response.get("files_written") or [])
+                self.assertEqual(Path(tmp, "same.csv").stat().st_size, 11)
+            finally:
+                self._close(worker)
+
 
 if __name__ == "__main__":
     unittest.main()
