@@ -61,6 +61,20 @@ def _open_has_write_intent(mode, flags) -> bool:
     return False
 
 
+def _is_bytecode_cache(path) -> bool:
+    """True for anything under a `__pycache__` directory.
+
+    Importing a project-local module writes bytecode through `os.replace`,
+    which the hook sees. The host discards those paths anyway (its workspace
+    snapshot skips the directory), but they used to consume the report cap
+    first, so a cell that imported enough modules lost its real outputs.
+    Separators are normalized only on Windows: on Unix a literal `\\` is a
+    legal filename character.
+    """
+    normalized = path.replace("\\", "/") if os.name == "nt" else path
+    return "__pycache__" in normalized.split("/")[:-1]
+
+
 class _WriteObserver:
     """Collect paths this interpreter opened for writing during one cell.
 
@@ -115,6 +129,10 @@ class _WriteObserver:
         except Exception:
             return
         if resolved in self._seen:
+            return
+        # Filtered before the cap so paths that can never be reported do not
+        # evict the ones that can.
+        if _is_bytecode_cache(resolved):
             return
         if len(self._paths) >= MAX_REPORTED_WRITES:
             self._truncated = True

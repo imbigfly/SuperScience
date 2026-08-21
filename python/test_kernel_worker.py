@@ -323,6 +323,56 @@ class KernelWorkerTests(unittest.TestCase):
             finally:
                 self._close(worker)
 
+    def test_bytecode_cache_is_not_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "helper_mod.py").write_text("V = 1\n", encoding="utf-8")
+            worker = self._spawn(cwd=tmp)
+            try:
+                response = self._exec(
+                    worker,
+                    "import sys\nsys.path.insert(0, '.')\nimport helper_mod",
+                    rid="pycache",
+                )
+                self.assertIsNone(response.get("error"), response.get("error"))
+                written = response.get("files_written")
+                self.assertIsNotNone(written)
+                self.assertFalse(
+                    [path for path in written if "__pycache__" in path],
+                    written,
+                )
+            finally:
+                self._close(worker)
+
+    def test_bytecode_cache_does_not_consume_the_cap(self):
+        # The host discards `__pycache__` paths, so they must not evict the
+        # real outputs of the same cell from the report.
+        with tempfile.TemporaryDirectory() as tmp:
+            for index in range(300):
+                Path(tmp, f"mod_{index}.py").write_text(f"V = {index}\n", encoding="utf-8")
+            worker = self._spawn(cwd=tmp)
+            try:
+                response = self._exec(
+                    worker,
+                    "\n".join(
+                        [
+                            "import os, sys",
+                            "sys.path.insert(0, '.')",
+                            "for i in range(300):",
+                            "    __import__(f'mod_{i}')",
+                            "os.makedirs('results', exist_ok=True)",
+                            "for i in range(250):",
+                            "    open(f'results/out_{i}.csv', 'w').write('x')",
+                        ]
+                    ),
+                    rid="pycache-cap",
+                )
+                self.assertIsNone(response.get("error"), response.get("error"))
+                written = response.get("files_written")
+                self.assertIsNotNone(written, "300 discarded .pyc paths exhausted the cap")
+                self.assertEqual(len(written), 250, written)
+            finally:
+                self._close(worker)
+
 
 if __name__ == "__main__":
     unittest.main()
