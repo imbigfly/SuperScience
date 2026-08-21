@@ -63,6 +63,43 @@ credit for rewrites the mtime-granularity snapshot cannot see.
   removed union, removed skip filter, removed report call, ungated context,
   non-draining buffer — now fail a test.
 
+## Report precision (2026-08-21, #947 gaps 1 and 2)
+
+- **Bytecode no longer evicts real outputs.** `MAX_REPORTED_WRITES` is counted
+  in the worker, before the host filters, so `__pycache__` paths the host was
+  always going to discard consumed the cap. Measured: one cell importing 300
+  project-local modules and writing 250 CSVs reported *nothing* — 550 > 512, so
+  the field was omitted and the cell fell back to snapshot inference, i.e. #911
+  case 1 reproduced again. `_is_bytecode_cache` now drops those paths before the
+  cap is consulted. The other `SKIP_DIRS` entries stay a host concern: the
+  worker has first-hand knowledge of its own bytecode, not of project layout,
+  and duplicating that list would give it two sources of truth.
+- **`files_written` means "changed", not "opened with write intent".** The
+  `open` audit event carries intent, and it fires *before* the OS call
+  completes — so `_note` samples `(size, st_mtime_ns)` at that moment and
+  `finish` compares it again. A cell that opens a file `'r+'` or `'a'` and
+  writes nothing is no longer credited with it; `h5py.File(p, "a")` and
+  `zarr.open(p, mode="a")` are the idiomatic way to open a store you then only
+  read. This is not the intersect-with-the-diff approach #942 rejected: the
+  comparison happens inside the worker across the open itself, so a
+  same-length in-place rewrite — invisible to size, and to the host's
+  coarser-grained snapshot — keeps its credit through `st_mtime_ns`.
+- Overhead is two extra `os.stat` calls per distinct candidate path. Measured
+  on 500 writes with every path under the cap: 0.024 s median baseline vs
+  0.028 s with the hook, about 8 µs per file.
+
+**Not done: #947 gap 3 (WSL).** The gap as filed assumed WSL kernels run in the
+project directory and only needed a `/mnt/<drive>/…` prefix translation. They do
+not: `build_attached_command` runs `cd {runtime_workdir} && exec …` where
+`runtime_workdir` is the context's configured workdir, else the probed
+`pwd`/`home`, else `~` — and `project_root` is unused in that branch
+(`src-tauri/src/runtime_launcher.rs`). So a WSL cell's relative writes land
+outside the project entirely, which also means the host's workspace snapshot
+cannot see them either. Making reports work there requires first deciding
+whether WSL kernels should `cd` into the project (WSL *terminals* already do,
+via `wsl.exe --cd`); that is a user-visible behavior change, not a path-mapping
+fix.
+
 ## Deviations
 
 - Windows CI invokes `python` instead of `python3` (sibling step on the same matrix job). `python3` is not on PATH on `windows-latest`; Unix steps keep the planned `python3` command so the worker tests still run on all three OSes.
