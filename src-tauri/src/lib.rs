@@ -2244,9 +2244,7 @@ async fn request_mcp_app_tool_confirmation(
         .lock()
         .unwrap()
         .insert(frame_id.to_string());
-    state
-        .device_hub
-        .mark_needs_user(frame_id, Some(project_id));
+    state.device_hub.mark_needs_user(frame_id, Some(project_id));
     let _ = app.emit(
         "confirm-request",
         ConfirmRequest {
@@ -2494,10 +2492,7 @@ async fn list_mcp_app_tools(
 /// requests then fail with a stale-instance error. Also drops the instance's
 /// model-context injection so a closed app cannot keep feeding the next turn.
 #[tauri::command]
-async fn close_mcp_app(
-    state: State<'_, AppState>,
-    instance_id: String,
-) -> Result<bool, String> {
+async fn close_mcp_app(state: State<'_, AppState>, instance_id: String) -> Result<bool, String> {
     let removed = state.close_mcp_app_bridge(&instance_id);
     if removed {
         if let Ok(frame_id) = mcp_app_frame_id(&instance_id) {
@@ -5671,7 +5666,18 @@ async fn side_chat(
         snapshot_version = messages.last().map(|(seq, _)| *seq).unwrap_or_default();
         history = side_chat::history_from_messages(&messages);
     }
-    let evidence = side_chat::retrieve_evidence(question, &history);
+    let http_llm = side_chat_http_provider(&state).await;
+    let intent = match &http_llm {
+        Ok(llm) => side_chat::classify_intent(llm.as_ref(), question).await?,
+        Err(error) => {
+            if acp_agent_id.as_deref().is_some_and(|id| !id.is_empty()) {
+                side_chat::SideChatIntent::session_fallback(question)
+            } else {
+                return Err(error.clone());
+            }
+        }
+    };
+    let evidence = side_chat::retrieve_evidence(question, &history, &intent);
     if evidence.is_empty() {
         return Ok(side_chat::SideChatResponse {
             answer: String::new(),
@@ -5681,34 +5687,24 @@ async fn side_chat(
             no_evidence: true,
         });
     }
-    let prompt = side_chat::answer_prompt(frame_id, snapshot_version, question, &evidence);
+    let prompt = side_chat::answer_prompt(frame_id, snapshot_version, question, &evidence, &intent);
     // ACP side chat: one-shot, read-only answer from the selected ACP Agent,
     // running in the active project root. Never touches the main thread.
     let answer = if let Some(agent_id) = acp_agent_id.as_deref().filter(|id| !id.is_empty()) {
         let cwd = state.active(window.label()).root;
         acp::acp_side_chat_once(&state, &cwd, agent_id, &prompt).await?
     } else {
-        let (provider, api_url, model, api_key) = load_settings(&state.store).await;
-        let (max_tokens, reasoning_effort) = models::active_llm_advanced(&state.store).await;
-        let cfg = build_provider_config(
-            &provider,
-            &api_url,
-            &api_key,
-            &model,
-            max_tokens,
-            &reasoning_effort,
-        )?;
-        let llm = wisp_llm::build(cfg);
-        llm.complete(
-            &[
-                Message::system(side_chat::SYSTEM_PROMPT),
-                Message::user(prompt),
-            ],
-            &[],
-        )
-        .await
-        .map_err(|e| format!("{e}"))?
-        .content
+        http_llm?
+            .complete(
+                &[
+                    Message::system(side_chat::SYSTEM_PROMPT),
+                    Message::user(prompt),
+                ],
+                &[],
+            )
+            .await
+            .map_err(|e| format!("{e}"))?
+            .content
     };
     Ok(side_chat::SideChatResponse {
         answer,
@@ -5717,6 +5713,20 @@ async fn side_chat(
         evidence,
         no_evidence: false,
     })
+}
+
+async fn side_chat_http_provider(state: &AppState) -> Result<Box<dyn wisp_llm::Provider>, String> {
+    let (provider, api_url, model, api_key) = load_settings(&state.store).await;
+    let (max_tokens, reasoning_effort) = models::active_llm_advanced(&state.store).await;
+    let cfg = build_provider_config(
+        &provider,
+        &api_url,
+        &api_key,
+        &model,
+        max_tokens,
+        &reasoning_effort,
+    )?;
+    Ok(wisp_llm::build(cfg))
 }
 
 fn mcp_lib_dir(_root: &std::path::Path) -> Option<PathBuf> {
