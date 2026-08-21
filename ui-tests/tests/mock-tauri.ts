@@ -1934,7 +1934,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                   index: 1,
                   started_at: 1755000000000,
                   cells: [
-                    { kind: "user", summary: "Analyze the ESR1 dataset", detail_input: null, detail_output: null, ok: null, is_error: false, ts: 1755000000000, duration_ms: null, usage: null },
+                    { kind: "user", summary: "Analyze the ESR1 dataset", detail_input: null, detail_output: "Analyze the ESR1 dataset", ok: null, is_error: false, ts: 1755000000000, duration_ms: null, usage: null },
                     { kind: "assistant", summary: "I will inspect the counts matrix first.", detail_input: null, detail_output: "I will inspect the counts matrix first.", ok: null, is_error: false, ts: 1755000000500, duration_ms: 1200, usage: null },
                     { kind: "tool", summary: "python · df.describe()", detail_input: "{\"code\": \"df.describe()\"}", detail_output: "count  612.0\nmean  4.2", ok: true, is_error: false, ts: 1755000002000, duration_ms: 3400, usage: null },
                     { kind: "usage", summary: "", detail_input: null, detail_output: null, ok: null, is_error: false, ts: 1755000005600, duration_ms: null, usage: { round: 1, model: "deepseek-v4-pro", input_tokens: 12300, output_tokens: 1400, reasoning_tokens: 300, cached_input_tokens: 9225 } },
