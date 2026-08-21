@@ -11,10 +11,14 @@ chat; the transcript is not replaced.
 ## What it shows
 
 A session-level Gantt (Duration / Turns / Calls) sits above a split view:
-the event list on the left, a detail inspector on the right.
+the event list on the left, a detail inspector on the right. Close the
+inspector with its × to give the list the full width; click a row or a
+Gantt segment to open it again. The list uses colored **USER / ASSISTANT /
+TOOL** badges when it is wide, and compact icons when the inspector makes
+the list narrow.
 
 Events are grouped into turns — a turn starts at each of your messages and
-covers everything the agent did in response. Each row has a badge and a
+covers everything the agent did in response. Each row has a kind marker and a
 one-line summary:
 
 - **USER** — your message that opened the turn.

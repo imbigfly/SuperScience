@@ -49,9 +49,10 @@ test("trajectory modal renders turns, inspector tabs, usage lines, and stats", a
   await inspector.getByTestId("traj-tab-source").click();
   await expect(inspector.getByTestId("traj-source")).toContainText("Analyze the ESR1 dataset");
 
-  // Badges + one-line summaries.
+  // Inspector open: the narrow list uses icons instead of USER/TOOL badges.
   const toolRow = view.getByTestId("traj-row-tool").first();
-  await expect(toolRow).toContainText("TOOL");
+  await expect(toolRow.getByTestId("traj-row-icon")).toBeVisible();
+  await expect(toolRow.locator(".traj-badge")).toBeHidden();
   await expect(toolRow).toContainText("python · df.describe()");
   await expect(toolRow).toContainText("3s");
   await expect(view.getByTestId("traj-row-user").first()).toContainText("Analyze the ESR1 dataset");
@@ -83,8 +84,19 @@ test("trajectory modal renders turns, inspector tabs, usage lines, and stats", a
   await view.getByPlaceholder("Search events").fill("");
   await expect(view.getByText("Turn 1", { exact: true })).toBeVisible();
 
+  // Closing the inspector (not the modal) expands the list; badges return.
+  await page.getByTestId("traj-inspector-close").click();
+  await expect(view.getByTestId("traj-inspector")).toHaveCount(0);
+  await expect(toolRow.getByText("TOOL", { exact: true })).toBeVisible();
+  await expect(toolRow.getByTestId("traj-row-icon")).toBeHidden();
+  await expect(view.getByText("Turn 1", { exact: true })).toBeVisible();
+
+  // Clicking a row reopens the inspector.
+  await toolRow.click();
+  await expect(view.getByTestId("traj-inspector")).toBeVisible();
+
   // Closing the modal restores the chat thread.
-  await page.getByTestId("trajectory-overlay").locator(".ps-close").click();
+  await page.getByTestId("trajectory-overlay").locator(".ps-head .ps-close").click();
   await expect(page.getByTestId("trajectory-overlay")).toHaveCount(0);
   await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
 });
