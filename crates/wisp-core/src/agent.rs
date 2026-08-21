@@ -547,7 +547,7 @@ async fn agent_loop_inner(
                 // After retain: a kernel-reported path survives an ambiguity
                 // drop, and a report never widens what retain kept for
                 // unreported paths.
-                provenance::union_paths_by_identity(&mut written, &reported);
+                provenance::union_reported_writes(&mut written, &reported);
                 read.retain(|path| !written.contains(path));
                 if !written.is_empty() {
                     let file_changes =
@@ -3059,5 +3059,163 @@ mod tests {
             "recovered after overload",
             "the recovered turn's content must land in context intact"
         );
+    }
+
+    /// Stands in for the `python` tool: reports paths the way a local kernel
+    /// does, without touching the filesystem.
+    struct ReportingTool {
+        paths: Vec<String>,
+    }
+
+    #[async_trait]
+    impl Tool for ReportingTool {
+        fn name(&self) -> &str {
+            "python"
+        }
+
+        fn schema(&self) -> ToolSchema {
+            ToolSchema::new(
+                "python",
+                "run python",
+                serde_json::json!({"type": "object"}),
+            )
+        }
+
+        async fn run(&self, _args: &serde_json::Value, env: &dyn ToolEnv) -> ToolResult {
+            env.report_written_paths(&self.paths);
+            ToolResult::ok("ran")
+        }
+    }
+
+    #[derive(Default)]
+    struct ProvenanceRecorder {
+        records: Mutex<Vec<provenance::ProvenanceRecord>>,
+    }
+
+    impl Output for ProvenanceRecorder {
+        fn provenance(&self, rec: &provenance::ProvenanceRecord) {
+            self.records.lock().unwrap().push(rec.clone());
+        }
+    }
+
+    impl ProvenanceRecorder {
+        fn recorded_tools(&self) -> Vec<String> {
+            self.records
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|rec| rec.tool.clone())
+                .collect()
+        }
+    }
+
+    fn tool_call_turn(id: &str, name: &str) -> Completion {
+        Completion {
+            tool_calls: vec![call(id, name, serde_json::json!({"code": "import helper"}))],
+            finish_reason: Some("tool_calls".into()),
+            ..Completion::default()
+        }
+    }
+
+    fn final_turn() -> Completion {
+        Completion {
+            content: "done".into(),
+            finish_reason: Some("stop".into()),
+            ..Completion::default()
+        }
+    }
+
+    /// A root whose `notes.txt` is older than the turn — the snapshot diff
+    /// finds nothing to attribute — plus bytecode under a snapshot-skipped
+    /// directory.
+    fn reported_writes_root(tag: &str) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("wisp-reported-{tag}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("__pycache__")).unwrap();
+        std::fs::write(root.join("notes.txt"), b"unchanged").unwrap();
+        std::fs::write(root.join("__pycache__/helper.cpython-312.pyc"), b"bytecode").unwrap();
+        root
+    }
+
+    /// End-to-end fold-in (#937): a record exists at all only because the loop
+    /// unions the kernel report into the diff-derived list. The reported
+    /// `__pycache__` bytecode, which the snapshot deliberately skips, must not
+    /// ride along.
+    #[tokio::test]
+    async fn kernel_report_reaches_the_record_without_snapshot_skipped_paths() {
+        let root = reported_writes_root("foldin");
+        let provider = SequenceProvider::new([tool_call_turn("call_1", "python"), final_turn()]);
+        let mut tools = Registry::builtins();
+        tools.add(Box::new(ReportingTool {
+            paths: vec![
+                "notes.txt".into(),
+                "__pycache__/helper.cpython-312.pyc".into(),
+            ],
+        }));
+        let output = ProvenanceRecorder::default();
+        let mut ctx = ContextManager::new(100_000);
+
+        agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            &root,
+            &output,
+            "write the notes",
+            10,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let records = output.records.lock().unwrap();
+        assert_eq!(records.len(), 1, "the fold-in must produce one record");
+        assert_eq!(records[0].tool, "python");
+        assert_eq!(records[0].files_written, vec!["notes.txt".to_string()]);
+        drop(records);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The loop drains the report buffer after every tool call, so the second
+    /// producing call — which reported nothing and wrote nothing — must not
+    /// inherit the first call's paths.
+    #[tokio::test]
+    async fn a_kernel_report_never_leaks_into_the_next_tool_call() {
+        let root = reported_writes_root("drain");
+        let provider = SequenceProvider::new([
+            tool_call_turn("call_1", "python"),
+            tool_call_turn("call_2", "r"),
+            final_turn(),
+        ]);
+        let mut tools = Registry::builtins();
+        tools.add(Box::new(ReportingTool {
+            paths: vec!["notes.txt".into()],
+        }));
+        let runs = Arc::new(AtomicUsize::new(0));
+        tools.add(Box::new(CountingTool {
+            name: "r",
+            runs: runs.clone(),
+        }));
+        let output = ProvenanceRecorder::default();
+        let mut ctx = ContextManager::new(100_000);
+
+        agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            &root,
+            &output,
+            "write the notes",
+            10,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(runs.load(Ordering::SeqCst), 1, "the r tool must have run");
+        assert_eq!(output.recorded_tools(), vec!["python".to_string()]);
+        std::fs::remove_dir_all(&root).ok();
     }
 }

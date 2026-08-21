@@ -59,6 +59,23 @@ fn project_relative_writes(root: &Path, reported: &[String]) -> Vec<String> {
     out
 }
 
+/// Hand a finished cell's self-reported writes to the running tool
+/// environment. Only local kernels report: a remote or WSL worker's absolute
+/// paths describe another machine's filesystem. An absent report means the
+/// worker could not observe, so the host keeps inferring from its snapshot.
+fn report_local_writes(env: &dyn ToolEnv, context_id: &str, response: &KernelResp) {
+    if context_id != LOCAL_CONTEXT_ID {
+        return;
+    }
+    let Some(reported) = &response.files_written else {
+        return;
+    };
+    let paths = project_relative_writes(env.project_root(), reported);
+    if !paths.is_empty() {
+        env.report_written_paths(&paths);
+    }
+}
+
 pub struct ReplTool {
     manager: RuntimeManager,
     project_id: String,
@@ -201,14 +218,7 @@ async fn run_runtime(
                     env.emit(ToolEvent::Stdout { chunk }).await;
                 }
                 Some(RuntimeEvent::Finished(Ok(response))) => {
-                    if key.context_id == LOCAL_CONTEXT_ID {
-                        if let Some(reported) = &response.files_written {
-                            let paths = project_relative_writes(env.project_root(), reported);
-                            if !paths.is_empty() {
-                                env.report_written_paths(&paths);
-                            }
-                        }
-                    }
+                    report_local_writes(env, &key.context_id, &response);
                     let success = response.error.is_none();
                     return ToolResult {
                         success,
@@ -342,10 +352,13 @@ impl Tool for RTool {
 #[cfg(test)]
 mod tests {
     use super::{
-        code_arg, context_id, project_relative_writes, PYTHON_TOOL_DESCRIPTION, R_TOOL_DESCRIPTION,
+        code_arg, context_id, project_relative_writes, report_local_writes,
+        PYTHON_TOOL_DESCRIPTION, R_TOOL_DESCRIPTION,
     };
-    use crate::MAX_CODE_BYTES;
-    use std::path::PathBuf;
+    use crate::{KernelResp, LOCAL_CONTEXT_ID, MAX_CODE_BYTES};
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+    use wisp_tools::{ToolEnv, ToolEvent};
 
     #[test]
     fn python_description_keeps_package_setup_out_of_the_repl() {
@@ -466,6 +479,76 @@ mod tests {
             std::path::MAIN_SEPARATOR
         );
         assert!(project_relative_writes(&root, &[escape]).is_empty());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Captures what the finished-cell branch of `run_runtime` hands to the
+    /// agent loop.
+    struct RecordingEnv {
+        root: PathBuf,
+        reported: Mutex<Vec<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ToolEnv for RecordingEnv {
+        fn project_root(&self) -> &Path {
+            &self.root
+        }
+        async fn confirm(&self, _message: &str) -> bool {
+            true
+        }
+        async fn emit(&self, _event: ToolEvent) {}
+        fn report_written_paths(&self, paths: &[String]) {
+            self.reported.lock().unwrap().push(paths.to_vec());
+        }
+    }
+
+    fn recording_env(root: PathBuf) -> RecordingEnv {
+        RecordingEnv {
+            root,
+            reported: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn response_with(files_written: Option<Vec<String>>) -> KernelResp {
+        KernelResp {
+            files_written,
+            ..KernelResp::default()
+        }
+    }
+
+    #[test]
+    fn local_kernel_report_reaches_the_tool_environment() {
+        let root = unique_tmp("report_local");
+        std::fs::write(root.join("fig_1.png"), b"x").unwrap();
+        let env = recording_env(root.clone());
+        let reported = vec![root.join("fig_1.png").to_string_lossy().into_owned()];
+
+        report_local_writes(&env, LOCAL_CONTEXT_ID, &response_with(Some(reported)));
+
+        assert_eq!(
+            *env.reported.lock().unwrap(),
+            vec![vec!["fig_1.png".to_string()]]
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A remote or WSL worker's absolute paths describe another filesystem,
+    /// and an absent report means "host, keep inferring". Neither may reach
+    /// the record.
+    #[test]
+    fn only_local_kernels_with_an_actual_report_are_forwarded() {
+        let root = unique_tmp("report_gates");
+        std::fs::write(root.join("fig_1.png"), b"x").unwrap();
+        let inside = vec![root.join("fig_1.png").to_string_lossy().into_owned()];
+        let env = recording_env(root.clone());
+
+        report_local_writes(&env, "ssh:gpu-box", &response_with(Some(inside.clone())));
+        report_local_writes(&env, "wsl:Ubuntu", &response_with(Some(inside)));
+        report_local_writes(&env, LOCAL_CONTEXT_ID, &response_with(None));
+        report_local_writes(&env, LOCAL_CONTEXT_ID, &response_with(Some(Vec::new())));
+
+        assert!(env.reported.lock().unwrap().is_empty());
         std::fs::remove_dir_all(&root).ok();
     }
 }

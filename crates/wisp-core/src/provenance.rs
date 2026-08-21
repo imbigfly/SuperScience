@@ -321,6 +321,32 @@ fn relative_identity(path: &str) -> String {
     path_identity(Path::new(path))
 }
 
+/// True when [`snapshot`] would never have reported `relative`, because one
+/// of its parent directories is in `SKIP_DIRS`. Applies the snapshot's own
+/// rule — a directory is skipped by name at any depth — so the two cannot
+/// drift.
+fn is_snapshot_skipped(relative: &str) -> bool {
+    match relative.rsplit_once('/') {
+        Some((parents, _)) => parents.split('/').any(|dir| SKIP_DIRS.contains(&dir)),
+        None => false,
+    }
+}
+
+/// Union interpreter-reported writes into the diff-derived list.
+///
+/// A report bypasses the workspace snapshot, so it must be confined by the
+/// snapshot's exclusions first: otherwise a cell that merely imports a
+/// project-local module credits itself with the `__pycache__` bytecode the
+/// import wrote, and the record names paths the diff could never produce.
+pub fn union_reported_writes(paths: &mut Vec<String>, reported: &[String]) {
+    let kept: Vec<String> = reported
+        .iter()
+        .filter(|path| !is_snapshot_skipped(path))
+        .cloned()
+        .collect();
+    union_paths_by_identity(paths, &kept);
+}
+
 /// Union `extra` into `paths`, keeping the spelling already present when
 /// two spellings resolve to one file (`out\b.txt` vs `out/b.txt`; case
 /// variants on Windows). Every merge of written paths goes through here so
@@ -1071,7 +1097,7 @@ mod tests {
             &window,
         );
         assert_eq!(written, vec!["fig_2.png".to_string()]);
-        union_paths_by_identity(&mut written, &["fig_1.png".to_string()]);
+        union_reported_writes(&mut written, &["fig_1.png".to_string()]);
         assert_eq!(
             written,
             vec!["fig_1.png".to_string(), "fig_2.png".to_string()]
@@ -1103,9 +1129,50 @@ mod tests {
             &window,
         );
         assert_eq!(written, vec!["fig_2.png".to_string()]);
-        union_paths_by_identity(&mut written, &[]);
+        union_reported_writes(&mut written, &[]);
         assert_eq!(written, vec!["fig_2.png".to_string()]);
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// A report bypasses the snapshot, so every directory the snapshot skips
+    /// must be skipped here too. `__pycache__` is the one that fires in
+    /// ordinary use: importing a project-local module writes bytecode the
+    /// diff would never have shown.
+    #[test]
+    fn reported_writes_under_skipped_dirs_never_enter_the_record() {
+        let mut written = vec!["out/fig.png".to_string()];
+        union_reported_writes(
+            &mut written,
+            &[
+                "__pycache__/helper.cpython-312.pyc".to_string(),
+                "src/__pycache__/helper.cpython-312.pyc".to_string(),
+                ".venv/lib/python3.12/site-packages/pkg/mod.py".to_string(),
+                ".git/index".to_string(),
+                ".wisp/tool-output/spill.txt".to_string(),
+                "uploads/raw.csv".to_string(),
+                "node_modules/x/index.js".to_string(),
+                "results/table.csv".to_string(),
+            ],
+        );
+        assert_eq!(
+            written,
+            vec!["out/fig.png".to_string(), "results/table.csv".to_string()]
+        );
+    }
+
+    /// Only parent directories gate inclusion. A file whose own name matches
+    /// a skipped directory is a normal project file.
+    #[test]
+    fn reported_leaf_named_like_a_skipped_dir_is_kept() {
+        let mut written = Vec::new();
+        union_reported_writes(
+            &mut written,
+            &["uploads".to_string(), "notes/.git".to_string()],
+        );
+        assert_eq!(
+            written,
+            vec!["notes/.git".to_string(), "uploads".to_string()]
+        );
     }
 
     #[test]
