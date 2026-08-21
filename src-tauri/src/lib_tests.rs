@@ -94,17 +94,42 @@ fn resource_conflict_confirmation_has_dedicated_ui_payload_and_no_saved_grant() 
 
 #[test]
 fn mcp_app_tool_confirm_payload_parses_and_keys_a_grant() {
-    let message = "Run tool 'figure_preview_exact' from MCP App 'Figure Library'?";
+    let message =
+        "Run tool 'figure_preview_exact' from MCP App 'Figure Library' (connector 'figure-library')?";
     let (tool, preview) = super::parse_confirm_payload(message);
     assert_eq!(tool, "figure_preview_exact");
     assert_eq!(preview, "");
-    // Always-allow grants save against the tool name, same as agent calls.
-    let key = super::approval_grant_key(message).unwrap();
-    assert_eq!(key.kind, "tool");
-    assert_eq!(key.target, "figure_preview_exact");
-    // The classic agent message still parses identically.
+    let key = super::mcp_app_approval_grant_key("figure-library", "figure_preview_exact");
+    assert_eq!(key.kind, "mcp_app_tool");
+    assert_eq!(key.target, "figure-library:figure_preview_exact");
+    let other = super::mcp_app_approval_grant_key("other-server", "figure_preview_exact");
+    assert_ne!(key, other);
+    // Agent Always-allow grants stay tool-name scoped and do not match App grants.
+    let agent = super::approval_grant_key("Run tool 'figure_preview_exact'?").unwrap();
+    assert_eq!(agent.kind, "tool");
+    assert_ne!(agent, key);
     let (tool, _) = super::parse_confirm_payload("Run tool 'python'?");
     assert_eq!(tool, "python");
+}
+
+#[test]
+fn mcp_app_call_limiter_caps_concurrency() {
+    let limiter = super::McpAppCallLimiter::with_limits(2, 8, std::time::Duration::from_secs(10));
+    let first = limiter.try_acquire().unwrap();
+    let second = limiter.try_acquire().unwrap();
+    assert!(limiter.try_acquire().is_err());
+    drop(first);
+    assert!(limiter.try_acquire().is_ok());
+    drop(second);
+}
+
+#[test]
+fn mcp_app_call_limiter_caps_rate() {
+    let limiter = super::McpAppCallLimiter::with_limits(8, 2, std::time::Duration::from_secs(10));
+    let _first = limiter.try_acquire().unwrap();
+    let _second = limiter.try_acquire().unwrap();
+    let error = limiter.try_acquire().unwrap_err();
+    assert!(error.contains("rate limited"));
 }
 
 #[test]

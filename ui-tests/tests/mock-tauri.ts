@@ -2099,7 +2099,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                         addEventListener("message", (event) => {
                           const message = event.data || {};
                           if (message.id === 1 && message.result?.hostInfo?.name === "wisp-science") {
-                            document.getElementById("state").textContent = "restored";
+                            document.getElementById("state").textContent =
+                              message.result?.hostCapabilities?.serverTools ? "restored-with-tools" : "restored";
                             parent.postMessage({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} }, "*");
                           }
                         });
@@ -5413,6 +5414,33 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return null;
           case "get_session_specialist":
             return mockSpecialists.find((s) => s.id === sessionSpecialists[arg("frameId")]) ?? null;
+          case "mcp_app_has_server_tools":
+            return Boolean((window as any).__mcpAppLiveBridges);
+          case "list_mcp_app_tools":
+            if (!(window as any).__mcpAppLiveBridges) {
+              throw new Error("stale-instance: the MCP App is no longer bound to a live MCP server");
+            }
+            return {
+              tools: (window as any).__mcpAppTools ?? [{
+                name: "figure_preview_exact",
+                inputSchema: { type: "object" },
+              }],
+            };
+          case "call_mcp_app_tool": {
+            if (!(window as any).__mcpAppLiveBridges) {
+              throw new Error("stale-instance: the MCP App is no longer bound to a live MCP server");
+            }
+            const name = String(arg("name") ?? "");
+            const canned = (window as any).__mcpAppToolResults;
+            if (canned && canned[name]) return canned[name];
+            return {
+              content: [{ type: "text", text: "exact preview" }],
+              structuredContent: { preview: true, tool: name },
+              isError: false,
+            };
+          }
+          case "close_mcp_app":
+            return true;
           default:
             return null;
         }

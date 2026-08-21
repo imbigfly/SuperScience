@@ -458,6 +458,18 @@ fn approval_grant_key(message: &str) -> Option<ApprovalGrantKey> {
     })
 }
 
+fn mcp_app_approval_grant_key(connector_id: &str, tool: &str) -> ApprovalGrantKey {
+    let connector = if connector_id.trim().is_empty() {
+        "_"
+    } else {
+        connector_id.trim()
+    };
+    ApprovalGrantKey {
+        kind: "mcp_app_tool".into(),
+        target: format!("{connector}:{tool}"),
+    }
+}
+
 #[cfg(any(target_os = "macos", test))]
 fn should_hide_app_on_macos_close(window_label: &str, app_is_exiting: bool) -> bool {
     !app_is_exiting && window_label == "main"
@@ -2229,13 +2241,14 @@ async fn request_mcp_app_tool_confirmation(
     message: String,
     tool: &str,
     preview: String,
+    grant: Option<ApprovalGrantKey>,
 ) -> wisp_tools::ConfirmDecision {
     let (tx, rx) = tokio::sync::oneshot::channel();
     state.confirms.lock().unwrap().insert(
         frame_id.to_string(),
         PendingConfirm {
             tx,
-            grant: approval_grant_key(&message),
+            grant,
             project_id: project_id.to_string(),
         },
     );
@@ -2244,9 +2257,7 @@ async fn request_mcp_app_tool_confirmation(
         .lock()
         .unwrap()
         .insert(frame_id.to_string());
-    state
-        .device_hub
-        .mark_needs_user(frame_id, Some(project_id));
+    state.device_hub.mark_needs_user(frame_id, Some(project_id));
     let _ = app.emit(
         "confirm-request",
         ConfirmRequest {
@@ -2312,6 +2323,10 @@ async fn call_mcp_app_tool(
             "MCP App tool '{name}' is not visible to apps on this server."
         ));
     }
+    if let Some(schema) = bridge.server.input_schema(&name) {
+        wisp_mcp::validate_tool_arguments(&schema, &arguments)?;
+    }
+    let _permit = bridge.limiter.try_acquire()?;
     let project_id = state
         .store
         .frame_project_id(&frame_id)
@@ -2370,17 +2385,17 @@ async fn call_mcp_app_tool(
     );
     if approval == wisp_tools::Approval::Ask {
         let preview = bounded_ui_tool_input(&arguments.to_string());
+        let connector_id = bridge.server.connector_id();
+        let grant_key = mcp_app_approval_grant_key(connector_id, &name);
         let message = format!(
-            "Run tool '{name}' from MCP App '{}'?",
+            "Run tool '{name}' from MCP App '{}' (connector '{connector_id}')?",
             bridge.server.app_name()
         );
-        let granted = approval_grant_key(&message).is_some_and(|key| {
-            state
-                .approval_grants
-                .lock()
-                .map(|grants| grants.allows(&frame_id, &project_id, &key))
-                .unwrap_or(false)
-        });
+        let granted = state
+            .approval_grants
+            .lock()
+            .map(|grants| grants.allows(&frame_id, &project_id, &grant_key))
+            .unwrap_or(false);
         if !granted {
             let decision = request_mcp_app_tool_confirmation(
                 &app,
@@ -2390,6 +2405,7 @@ async fn call_mcp_app_tool(
                 message,
                 &name,
                 preview,
+                Some(grant_key),
             )
             .await;
             if !decision.approved() {
@@ -2489,15 +2505,25 @@ async fn list_mcp_app_tools(
     Ok(serde_json::json!({ "tools": tools }))
 }
 
+/// Cheap live-bridge probe so `ui/initialize` only advertises `serverTools`
+/// when this instance can actually forward `tools/call`.
+#[tauri::command]
+async fn mcp_app_has_server_tools(
+    state: State<'_, AppState>,
+    instance_id: String,
+) -> Result<bool, String> {
+    let frame_id = mcp_app_frame_id(&instance_id)?;
+    Ok(state
+        .mcp_app_bridge(&instance_id)
+        .is_some_and(|bridge| bridge.frame_id == frame_id))
+}
+
 /// Revoke an MCP App instance's host-side bridge when the iframe tears down
 /// (user close, replacement, or session navigation). Later `tools/call`
 /// requests then fail with a stale-instance error. Also drops the instance's
 /// model-context injection so a closed app cannot keep feeding the next turn.
 #[tauri::command]
-async fn close_mcp_app(
-    state: State<'_, AppState>,
-    instance_id: String,
-) -> Result<bool, String> {
+async fn close_mcp_app(state: State<'_, AppState>, instance_id: String) -> Result<bool, String> {
     let removed = state.close_mcp_app_bridge(&instance_id);
     if removed {
         if let Ok(frame_id) = mcp_app_frame_id(&instance_id) {
@@ -2785,6 +2811,7 @@ impl Output for TauriOutput {
                     McpAppToolBridge {
                         frame_id: self.frame_id.clone(),
                         server,
+                        limiter: McpAppCallLimiter::new(),
                     },
                 );
             }
@@ -4676,12 +4703,17 @@ async fn register_mcp_filtered_with_approval(
             if !collisions.is_empty() {
                 return Err(format!("tool name collision: {}", collisions.join(", ")));
             }
-            // Every tool of one connection shares the same catalog snapshot so
-            // an MCP App presented by any of them can bridge sibling tools.
-            let catalog = std::sync::Arc::new(tools);
+            // Shared catalog for App bridges: skipped (disabled-domain) tools
+            // stay out so an App cannot call a connector the user turned off.
+            let catalog = std::sync::Arc::new(
+                tools
+                    .into_iter()
+                    .filter(|tool| !skip.contains(&tool.name))
+                    .collect::<Vec<_>>(),
+            );
             let mut names = Vec::new();
             for t in catalog.iter() {
-                if skip.contains(&t.name) || !t.visible_to_model() {
+                if !t.visible_to_model() {
                     continue;
                 }
                 names.push(t.name.clone());
@@ -6478,6 +6510,7 @@ pub fn run() {
             update_mcp_app_context,
             call_mcp_app_tool,
             list_mcp_app_tools,
+            mcp_app_has_server_tools,
             close_mcp_app,
             agent_turn::enqueue_turn,
             agent_turn::queued_turn_action,

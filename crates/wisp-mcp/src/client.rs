@@ -10,17 +10,19 @@ use crate::process_tree::ProcessTree;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{ChildStdin, ChildStdout};
-use tokio::sync::Mutex;
+use tokio::process::ChildStdin;
+use tokio::sync::{oneshot, Mutex};
 
 /// Hard cap on a single stdio JSON-RPC exchange, matching the HTTP transport's
 /// request timeout. Without it a hung server blocks the agent turn forever.
 /// Exceeding this cap closes the stdio transport and terminates its process
-/// tree because a late JSON-RPC response cannot be safely reused.
+/// tree. In-flight waiters are failed; a late response for a timed-out id is
+/// dropped instead of being delivered to a different caller.
 const STDIO_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 const STDIO_SHUTDOWN_EOF_GRACE: std::time::Duration = std::time::Duration::from_millis(100);
 const STDIO_SHUTDOWN_TERM_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
@@ -154,10 +156,13 @@ struct JsonRpcError {
     message: String,
 }
 
+type StdioWaiters =
+    Arc<StdMutex<HashMap<u64, oneshot::Sender<Result<JsonRpcResp, anyhow::Error>>>>>;
+
 enum Transport {
     Stdio {
         stdin: Arc<Mutex<Option<ChildStdin>>>,
-        stdout: Arc<Mutex<BufReader<ChildStdout>>>,
+        waiters: StdioWaiters,
         child: Mutex<Option<tokio::process::Child>>,
         process_tree: ProcessTree,
         closing: AtomicBool,
@@ -277,6 +282,8 @@ impl McpClient {
         })?;
         let stdin = child.stdin.take().ok_or_else(|| anyhow!("no stdin"))?;
         let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
+        let waiters: StdioWaiters = Arc::new(StdMutex::new(HashMap::new()));
+        spawn_stdio_reader(stdout, Arc::clone(&waiters));
         let stderr = child.stderr.take();
         // Drain stderr in the background so a chatty server cannot fill the
         // pipe; keep a short tail for initialize failures.
@@ -308,7 +315,7 @@ impl McpClient {
         let client = Self {
             transport: Transport::Stdio {
                 stdin: Arc::new(Mutex::new(Some(stdin))),
-                stdout: Arc::new(Mutex::new(BufReader::new(stdout))),
+                waiters,
                 child: Mutex::new(Some(child)),
                 process_tree,
                 closing: AtomicBool::new(false),
@@ -394,7 +401,7 @@ impl McpClient {
         match &self.transport {
             Transport::Stdio {
                 stdin,
-                stdout,
+                waiters,
                 child,
                 process_tree,
                 closing,
@@ -413,8 +420,9 @@ impl McpClient {
                     params,
                 };
                 let val = serde_json::to_value(&req)?;
+                let (tx, rx) = oneshot::channel();
+                waiters.lock().unwrap().insert(id, tx);
                 let exchange = async {
-                    // send
                     {
                         let mut w = stdin.lock().await;
                         let w = w
@@ -424,26 +432,15 @@ impl McpClient {
                         w.write_all(b"\n").await?;
                         w.flush().await?;
                     }
-                    // read matching id
-                    loop {
-                        let mut line = String::new();
-                        let mut r = stdout.lock().await;
-                        let n = r.read_line(&mut line).await?;
-                        drop(r);
-                        if n == 0 {
-                            return Err(anyhow!("MCP server closed stdout"));
-                        }
-                        let trimmed = line.trim();
-                        if trimmed.is_empty() {
-                            continue;
-                        }
-                        let resp: JsonRpcResp = serde_json::from_str(trimmed)?;
-                        if resp.id == Some(id) {
+                    match rx.await {
+                        Ok(Ok(resp)) => {
                             if let Some(e) = resp.error {
                                 return Err(anyhow!("MCP error: {}", e.message));
                             }
-                            return Ok(resp.result.unwrap_or(Value::Null));
+                            Ok(resp.result.unwrap_or(Value::Null))
                         }
+                        Ok(Err(error)) => Err(error),
+                        Err(_) => Err(anyhow!("MCP stdio response channel closed")),
                     }
                 };
                 let mut cancellation = CancellationCleanup {
@@ -458,10 +455,12 @@ impl McpClient {
                         Ok(result)
                     }
                     Ok(Err(error)) => {
+                        waiters.lock().unwrap().remove(&id);
                         cancellation.disarm();
                         Err(error)
                     }
                     Err(_) => {
+                        waiters.lock().unwrap().remove(&id);
                         let cleanup = shutdown_stdio(
                             stdin,
                             child,
@@ -469,6 +468,7 @@ impl McpClient {
                             closing,
                             terminated,
                             shutdown_lock,
+                            waiters,
                         )
                         .await;
                         cancellation.disarm();
@@ -646,6 +646,7 @@ impl McpClient {
         match &self.transport {
             Transport::Stdio {
                 stdin,
+                waiters,
                 child,
                 process_tree,
                 closing,
@@ -660,6 +661,7 @@ impl McpClient {
                     closing,
                     terminated,
                     shutdown_lock,
+                    waiters,
                 )
                 .await
             }
@@ -682,6 +684,49 @@ impl Drop for McpClient {
     }
 }
 
+fn fail_stdio_waiters(waiters: &StdioWaiters, message: impl Into<String>) {
+    let message = message.into();
+    let pending = std::mem::take(&mut *waiters.lock().unwrap());
+    for (_, tx) in pending {
+        let _ = tx.send(Err(anyhow!(message.clone())));
+    }
+}
+
+fn spawn_stdio_reader(stdout: tokio::process::ChildStdout, waiters: StdioWaiters) {
+    tokio::spawn(async move {
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line).await {
+                Ok(0) => {
+                    fail_stdio_waiters(&waiters, "MCP server closed stdout");
+                    break;
+                }
+                Ok(_) => {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    let Ok(resp) = serde_json::from_str::<JsonRpcResp>(trimmed) else {
+                        tracing::warn!("ignoring malformed MCP stdio line");
+                        continue;
+                    };
+                    if let Some(id) = resp.id {
+                        if let Some(tx) = waiters.lock().unwrap().remove(&id) {
+                            let _ = tx.send(Ok(resp));
+                        }
+                    }
+                }
+                Err(error) => {
+                    fail_stdio_waiters(&waiters, format!("MCP server stdout: {error}"));
+                    break;
+                }
+            }
+        }
+    });
+}
+
 async fn shutdown_stdio(
     stdin: &Arc<Mutex<Option<ChildStdin>>>,
     child: &Mutex<Option<tokio::process::Child>>,
@@ -689,8 +734,10 @@ async fn shutdown_stdio(
     closing: &AtomicBool,
     terminated: &AtomicBool,
     shutdown_lock: &Mutex<()>,
+    waiters: &StdioWaiters,
 ) -> Result<()> {
     closing.store(true, Ordering::SeqCst);
+    fail_stdio_waiters(waiters, "MCP stdio connection is shutting down");
     let _shutdown = match tokio::time::timeout(STDIO_SHUTDOWN_LOCK_WAIT, shutdown_lock.lock()).await
     {
         Ok(guard) => guard,
@@ -895,10 +942,7 @@ mod tests {
         assert!(tools[0].visible_to_model());
         // Plan mode's retrieval passthrough reads exactly this hint.
         assert!(tools[0].read_only());
-        assert_eq!(
-            tools[0].display_title(),
-            "Open Motif for Claude Science"
-        );
+        assert_eq!(tools[0].display_title(), "Open Motif for Claude Science");
 
         let app_only = tools_into_remote(vec![json!({
             "name": "motif_refresh",
@@ -952,5 +996,114 @@ mod tests {
             is_error: false,
         };
         assert_eq!(result.text_content(), "Prepared workbench");
+    }
+
+    #[tokio::test]
+    async fn http_concurrent_calls_keep_matching_ids() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for stream in listener.incoming().take(4) {
+                let Ok(stream) = stream else {
+                    continue;
+                };
+                std::thread::spawn(move || serve_http_jsonrpc(stream));
+            }
+        });
+
+        let url = format!("http://{addr}/mcp");
+        let client = McpClient::connect_http(&url, &[]).await.unwrap();
+        let slow_args = json!({ "token": "slow", "delay_ms": 180 });
+        let fast_args = json!({ "token": "fast", "delay_ms": 20 });
+        let slow = client.tool_call_rich("echo", &slow_args);
+        let fast = client.tool_call_rich("echo", &fast_args);
+        let (slow, fast) = tokio::join!(slow, fast);
+        let slow = slow.unwrap();
+        let fast = fast.unwrap();
+        assert_eq!(slow.structured_content.unwrap()["token"], "slow");
+        assert_eq!(fast.structured_content.unwrap()["token"], "fast");
+        drop(client);
+        let _ = server;
+    }
+
+    fn serve_http_jsonrpc(mut stream: std::net::TcpStream) {
+        use std::io::{Read, Write};
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 2048];
+        let n = match stream.read(&mut tmp) {
+            Ok(0) | Err(_) => return,
+            Ok(n) => n,
+        };
+        buf.extend_from_slice(&tmp[..n]);
+        let Some(header_end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+            return;
+        };
+        let headers = std::str::from_utf8(&buf[..header_end]).unwrap_or("");
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+            })
+            .unwrap_or(0);
+        let body_start = header_end + 4;
+        while buf.len() < body_start + content_length {
+            match stream.read(&mut tmp) {
+                Ok(0) | Err(_) => return,
+                Ok(n) => buf.extend_from_slice(&tmp[..n]),
+            }
+        }
+        let Ok(body) =
+            serde_json::from_slice::<Value>(&buf[body_start..body_start + content_length])
+        else {
+            return;
+        };
+        if body.get("id").is_none() {
+            let _ = stream.write_all(
+                b"HTTP/1.1 202 Accepted\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+            );
+            return;
+        }
+        let id = body.get("id").cloned().unwrap_or(Value::Null);
+        let method = body.get("method").and_then(Value::as_str).unwrap_or("");
+        let result = match method {
+            "initialize" => json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": { "tools": {} },
+                "serverInfo": { "name": "fake-http", "version": "1" }
+            }),
+            "tools/list" => json!({ "tools": [{
+                "name": "echo",
+                "inputSchema": { "type": "object" }
+            }] }),
+            "tools/call" => {
+                let arguments = body
+                    .pointer("/params/arguments")
+                    .cloned()
+                    .unwrap_or(json!({}));
+                let delay = arguments
+                    .get("delay_ms")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                if delay > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(delay));
+                }
+                json!({
+                    "content": [{ "type": "text", "text": "ok" }],
+                    "structuredContent": { "token": arguments.get("token").cloned().unwrap_or(Value::Null) },
+                    "isError": false
+                })
+            }
+            _ => json!({}),
+        };
+        let payload = json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{payload}",
+            payload.len()
+        );
+        let _ = stream.write_all(response.as_bytes());
     }
 }

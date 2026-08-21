@@ -244,6 +244,86 @@ pub(crate) struct ActiveProject {
 pub(crate) struct McpAppToolBridge {
     pub(crate) frame_id: String,
     pub(crate) server: Arc<dyn wisp_tools::McpAppServer>,
+    pub(crate) limiter: Arc<McpAppCallLimiter>,
+}
+
+pub(crate) const MCP_APP_MAX_CONCURRENT_CALLS: usize = 4;
+pub(crate) const MCP_APP_MAX_CALLS_PER_WINDOW: usize = 20;
+pub(crate) const MCP_APP_CALL_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+
+#[derive(Debug)]
+pub(crate) struct McpAppCallLimiter {
+    max_concurrent: usize,
+    max_per_window: usize,
+    window: std::time::Duration,
+    in_flight: std::sync::atomic::AtomicUsize,
+    recent: StdMutex<std::collections::VecDeque<std::time::Instant>>,
+}
+
+#[derive(Debug)]
+pub(crate) struct McpAppCallPermit {
+    limiter: Arc<McpAppCallLimiter>,
+}
+
+impl Drop for McpAppCallPermit {
+    fn drop(&mut self) {
+        self.limiter
+            .in_flight
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl McpAppCallLimiter {
+    pub(crate) fn new() -> Arc<Self> {
+        Self::with_limits(
+            MCP_APP_MAX_CONCURRENT_CALLS,
+            MCP_APP_MAX_CALLS_PER_WINDOW,
+            MCP_APP_CALL_WINDOW,
+        )
+    }
+
+    pub(crate) fn with_limits(
+        max_concurrent: usize,
+        max_per_window: usize,
+        window: std::time::Duration,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            max_concurrent,
+            max_per_window,
+            window,
+            in_flight: std::sync::atomic::AtomicUsize::new(0),
+            recent: StdMutex::new(std::collections::VecDeque::new()),
+        })
+    }
+
+    pub(crate) fn try_acquire(self: &Arc<Self>) -> Result<McpAppCallPermit, String> {
+        let now = std::time::Instant::now();
+        {
+            let mut recent = self.recent.lock().unwrap();
+            while recent
+                .front()
+                .is_some_and(|started| now.duration_since(*started) >= self.window)
+            {
+                recent.pop_front();
+            }
+            if recent.len() >= self.max_per_window {
+                return Err("MCP App tool calls are rate limited. Try again shortly.".into());
+            }
+            recent.push_back(now);
+        }
+        let current = self
+            .in_flight
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if current >= self.max_concurrent {
+            self.in_flight
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            self.recent.lock().unwrap().pop_back();
+            return Err("MCP App already has too many in-flight tool calls.".into());
+        }
+        Ok(McpAppCallPermit {
+            limiter: Arc::clone(self),
+        })
+    }
 }
 
 #[derive(Default)]

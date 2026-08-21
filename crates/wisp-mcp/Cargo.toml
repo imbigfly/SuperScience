@@ -33,3 +33,8 @@ windows-sys = { version = "0.61", features = [
 name = "process_tree_shutdown"
 path = "tests/process_tree_shutdown.rs"
 harness = false
+
+[[test]]
+name = "mcp_transport"
+path = "tests/mcp_transport.rs"
+harness = false

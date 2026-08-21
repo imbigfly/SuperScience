@@ -10114,6 +10114,63 @@ test("MCP App opens as a persistent center tab and delivers tool data", async ({
   }).toEqual({});
 });
 
+test("live MCP App tools/call reaches the host without a new agent turn", async ({ page }) => {
+  await enterApp(page);
+  const html = `<!doctype html><html><body><div id="state">waiting</div><script>
+    const state = document.getElementById("state");
+    addEventListener("message", (event) => {
+      const message = event.data || {};
+      if (message.id === 1 && message.result?.hostCapabilities?.serverTools) {
+        parent.postMessage({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} }, "*");
+        parent.postMessage({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/call",
+          params: { name: "figure_preview_exact", arguments: { id: "fig-1" } },
+        }, "*");
+      } else if (message.id === 2 && message.result?.structuredContent?.preview === true) {
+        state.textContent = "preview:" + message.result.structuredContent.tool;
+      } else if (message.id === 2 && message.error) {
+        state.textContent = "error:" + message.error.message;
+      }
+    });
+    parent.postMessage({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ui/initialize",
+      params: { protocolVersion: "2026-01-26" },
+    }, "*");
+  <\/script></body></html>`;
+  await composer(page).fill("open the figure library");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "send_message")).not.toBeNull();
+  const sendsBefore = (await invokeArgsList(page, "send_message")).length;
+  const frameId = String((await lastInvokeArgs(page, "send_message")).sessionId);
+  await page.evaluate(() => { (window as any).__mcpAppLiveBridges = true; });
+  await page.evaluate(({ frameId, html }) => {
+    (window as any).__tauriEmit("agent", {
+      kind: "ToolPresentation",
+      frame_id: frameId,
+      presentation_id: "live-figure-library",
+      presentation_kind: "mcp_app",
+      payload: {
+        tool: { name: "figure_search", title: "Figure Library" },
+        arguments: {},
+        result: { content: [], structuredContent: { hits: 1 } },
+        resource: { uri: "ui://figure/library.html", text: html, _meta: {} },
+      },
+    });
+  }, { frameId, html });
+
+  const app = page.frameLocator('iframe[title="Figure Library"]');
+  await expect(app.locator("#state")).toHaveText("preview:figure_preview_exact");
+  await expect.poll(() => lastInvokeArgs(page, "call_mcp_app_tool")).toMatchObject({
+    name: "figure_preview_exact",
+    arguments: { id: "fig-1" },
+  });
+  expect((await invokeArgsList(page, "send_message")).length).toBe(sendsBefore);
+});
+
 test("reopening a saved session restores its MCP App workbench", async ({ page }) => {
   const openSavedSession = async () => {
     await page.locator(".proj-card-main").first().click();

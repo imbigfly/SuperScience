@@ -2039,23 +2039,38 @@ function createMcpAppInstance(instanceId, payloadJson) {
     if (event.source !== frame.contentWindow || !event.data || event.data.jsonrpc !== "2.0") return;
     const message = event.data;
     if (message.method === "ui/initialize" && message.id != null) {
-      post({
-        jsonrpc: "2.0",
-        id: message.id,
-        result: {
-          protocolVersion: message.params?.protocolVersion || "2026-01-26",
-          hostCapabilities: {
-            sandbox: { csp: payload?.resource?._meta?.ui?.csp || payload?.resource?._meta?.csp || {} },
-            updateModelContext: { text: {} },
-            // MCP Apps `serverTools`: the host re-uses the MCP server that
-            // presented this app for `tools/call`. `listChanged` stays false —
-            // Wisp does not push `ui/notifications/tools/list_changed` yet.
-            serverTools: {},
-          },
-          hostInfo: { name: "wisp-science", version: wispAppVersion },
-          hostContext: hostContext(),
+      const hostCapabilities = {
+        sandbox: { csp: payload?.resource?._meta?.ui?.csp || payload?.resource?._meta?.csp || {} },
+        updateModelContext: { text: {} },
+      };
+      // Only advertise serverTools when this instance still has a live host
+      // bridge. Restored/parked Apps without the original MCP connection keep
+      // using updateModelContext instead of a false capability.
+      void invoke_strict("mcp_app_has_server_tools", { instanceId }).then(
+        (available) => {
+          if (available) hostCapabilities.serverTools = {};
+          post({
+            jsonrpc: "2.0",
+            id: message.id,
+            result: {
+              protocolVersion: message.params?.protocolVersion || "2026-01-26",
+              hostCapabilities,
+              hostInfo: { name: "wisp-science", version: wispAppVersion },
+              hostContext: hostContext(),
+            },
+          });
         },
-      });
+        () => post({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            protocolVersion: message.params?.protocolVersion || "2026-01-26",
+            hostCapabilities,
+            hostInfo: { name: "wisp-science", version: wispAppVersion },
+            hostContext: hostContext(),
+          },
+        }),
+      );
       return;
     }
     if (message.method === "ui/notifications/initialized") {
