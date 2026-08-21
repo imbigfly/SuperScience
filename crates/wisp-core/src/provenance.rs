@@ -1,7 +1,7 @@
 //! Best-effort artifact provenance: snapshot the workspace around a producing
 //! tool call and diff to learn which files it wrote and read.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -314,6 +314,33 @@ fn path_identity(path: &Path) -> String {
     #[cfg(not(windows))]
     {
         path
+    }
+}
+
+fn relative_identity(path: &str) -> String {
+    path_identity(Path::new(path))
+}
+
+/// Union `extra` into `paths`, keeping the spelling already present when
+/// two spellings resolve to one file (`out\b.txt` vs `out/b.txt`; case
+/// variants on Windows). Every merge of written paths goes through here so
+/// the equality rule cannot drift between call sites.
+pub fn union_paths_by_identity(paths: &mut Vec<String>, extra: &[String]) {
+    if extra.is_empty() {
+        return;
+    }
+    let mut seen: HashSet<String> = paths.iter().map(|p| relative_identity(p)).collect();
+    let mut inserted = false;
+    for path in extra {
+        if seen.insert(relative_identity(path)) {
+            paths.push(path.clone());
+            inserted = true;
+        }
+    }
+    // Only re-sort when something was added: a report that covers nothing
+    // new must leave the record byte-identical to the pre-report behavior.
+    if inserted {
+        paths.sort();
     }
 }
 
@@ -1017,6 +1044,99 @@ mod tests {
         );
         assert_eq!(written, vec!["final_results.csv".to_string()]);
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// #937: a computed-name path dropped by foreign overlap is restored
+    /// when the kernel reports it; the literal-named sibling stays too.
+    #[test]
+    fn kernel_reported_computed_name_survives_foreign_overlap() {
+        let tmp = unique_tmp("937_repro");
+        std::fs::write(tmp.join("fig_1.png"), b"computed").unwrap();
+        std::fs::write(tmp.join("fig_2.png"), b"literal").unwrap();
+        let after = snapshot(&tmp);
+        let mtime = after[&tmp.join("fig_1.png")];
+        let window = window_over(
+            mtime,
+            vec![(
+                mtime - Duration::from_secs(1),
+                mtime + Duration::from_secs(1),
+            )],
+        );
+        let mut written = vec!["fig_1.png".to_string(), "fig_2.png".to_string()];
+        retain_unambiguous_writes(
+            &mut written,
+            &after,
+            &tmp,
+            "open('fig_2.png','w'); name = f'fig_{1}.png'; open(name,'w')",
+            &window,
+        );
+        assert_eq!(written, vec!["fig_2.png".to_string()]);
+        union_paths_by_identity(&mut written, &["fig_1.png".to_string()]);
+        assert_eq!(
+            written,
+            vec!["fig_1.png".to_string(), "fig_2.png".to_string()]
+        );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// Reports must not weaken #935 for paths they do not cover.
+    #[test]
+    fn unreported_ambiguous_path_stays_dropped() {
+        let tmp = unique_tmp("937_control");
+        std::fs::write(tmp.join("fig_1.png"), b"computed").unwrap();
+        std::fs::write(tmp.join("fig_2.png"), b"literal").unwrap();
+        let after = snapshot(&tmp);
+        let mtime = after[&tmp.join("fig_1.png")];
+        let window = window_over(
+            mtime,
+            vec![(
+                mtime - Duration::from_secs(1),
+                mtime + Duration::from_secs(1),
+            )],
+        );
+        let mut written = vec!["fig_1.png".to_string(), "fig_2.png".to_string()];
+        retain_unambiguous_writes(
+            &mut written,
+            &after,
+            &tmp,
+            "open('fig_2.png','w'); name = f'fig_{1}.png'; open(name,'w')",
+            &window,
+        );
+        assert_eq!(written, vec!["fig_2.png".to_string()]);
+        union_paths_by_identity(&mut written, &[]);
+        assert_eq!(written, vec!["fig_2.png".to_string()]);
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn union_keeps_diff_spelling_for_the_same_identity() {
+        let mut written = vec!["out/b.txt".to_string()];
+        union_paths_by_identity(&mut written, &[r"out\b.txt".to_string()]);
+        assert_eq!(written, vec!["out/b.txt".to_string()]);
+    }
+
+    #[test]
+    fn all_duplicate_report_leaves_written_byte_identical() {
+        let mut written = vec![
+            "c.txt".to_string(),
+            "a.txt".to_string(),
+            r"b\d.txt".to_string(),
+        ];
+        let before = written.clone();
+        union_paths_by_identity(&mut written, &["a.txt".to_string(), "b/d.txt".to_string()]);
+        assert_eq!(written, before);
+    }
+
+    #[test]
+    fn empty_report_leaves_written_byte_identical() {
+        let mut written = vec![
+            "a.txt".to_string(),
+            "c.txt".to_string(),
+            "b.txt".to_string(),
+        ];
+        let before = written.clone();
+        union_paths_by_identity(&mut written, &[]);
+        assert_eq!(written, before);
     }
 
     #[test]

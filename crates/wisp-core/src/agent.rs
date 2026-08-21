@@ -515,6 +515,9 @@ async fn agent_loop_inner(
             };
             let t0 = std::time::Instant::now();
             let result = tools.run(&name, &args, &env).await;
+            // Drain even for non-producing calls so a stale kernel report
+            // cannot leak into the next call's provenance record.
+            let reported = env.take_reported_writes();
             let control = result.control;
             let duration_ms = t0.elapsed().as_millis() as u64;
             if let Some(root) = &root {
@@ -541,6 +544,10 @@ async fn agent_loop_inner(
                     &preimages,
                     &mut written,
                 );
+                // After retain: a kernel-reported path survives an ambiguity
+                // drop, and a report never widens what retain kept for
+                // unreported paths.
+                provenance::union_paths_by_identity(&mut written, &reported);
                 read.retain(|path| !written.contains(path));
                 if !written.is_empty() {
                     let file_changes =

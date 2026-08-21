@@ -9,7 +9,8 @@ Streamed: {"type": "stdout_chunk", "id": "<uuid>", "data": "<text>"}
 Response: {"type": "result", "id": "<uuid>", "stdout": "...", "stderr": "...",
            "error": null|"<traceback>", "interrupted": false,
            "trace": {"error_lineno": null, "error_call": null},
-           "usage": {"wall_s": 0.0, "cpu_s": 0.0, "rss_kb": 0}}
+           "usage": {"wall_s": 0.0, "cpu_s": 0.0, "rss_kb": 0},
+           "files_written": ["<abs path>", ...]  # omitted if unobserved/truncated}
 
 This is a Windows-friendly port of the upstream wisp-science
 `kernels/kernel_worker.py`: the POSIX-only `resource`, `/proc`, and
@@ -37,6 +38,12 @@ MAX_LINECACHE_BYTES = 8 * 1024 * 1024
 MAX_CODE_SIZE = 1024 * 1024
 MAX_CODE_LINES = 20_000
 MAX_REQUEST_SIZE = 8 * 1024 * 1024
+# Cap on distinct write paths reported per cell. Exceeding it omits the
+# field entirely: a truncated list would look authoritative while being wrong.
+MAX_REPORTED_WRITES = 512
+_WRITE_FLAGS = (
+    os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
+)
 
 # Force a non-interactive matplotlib backend before matplotlib is ever imported.
 # Without this, generated plotting code (plt.show(), scanpy sc.pl.*) selects the
@@ -44,6 +51,94 @@ MAX_REQUEST_SIZE = 8 * 1024 * 1024
 # the kernel until the user closes it, stalling the whole analysis (issue #37).
 # Figures are meant to be surfaced via savefig, never a GUI window.
 os.environ["MPLBACKEND"] = "Agg"
+
+
+def _open_has_write_intent(mode, flags) -> bool:
+    if isinstance(mode, str) and any(ch in mode for ch in "wax+"):
+        return True
+    if isinstance(flags, int) and flags & _WRITE_FLAGS:
+        return True
+    return False
+
+
+class _WriteObserver:
+    """Collect paths this interpreter opened for writing during one cell.
+
+    Audit hooks cannot be unregistered, so per-cell collection is toggled
+    with begin() / finish(). The hook body is wrapped in a broad
+    try/except and returns immediately while collection is off: a raise
+    would propagate into arbitrary user code, including C-extension I/O.
+    """
+
+    def __init__(self):
+        self._active = False
+        self._paths = []
+        self._seen = set()
+        self._truncated = False
+
+    def begin(self):
+        self._active = True
+        self._paths = []
+        self._seen = set()
+        self._truncated = False
+
+    def finish(self):
+        self._active = False
+        if self._truncated:
+            self._paths = []
+            self._seen = set()
+            return None
+        out = []
+        for path in self._paths:
+            try:
+                if os.path.isfile(path):
+                    out.append(path)
+            except Exception:
+                pass
+        self._paths = []
+        self._seen = set()
+        return out
+
+    def _note(self, path):
+        if not self._active or self._truncated:
+            return
+        try:
+            resolved = os.path.abspath(os.fspath(path))
+            if isinstance(resolved, bytes):
+                resolved = os.fsdecode(resolved)
+            # The path must survive the JSON protocol: bytes are not
+            # serializable at all, and surrogate escapes from undecodable
+            # filenames are rejected by the host's strict JSON parser.
+            # Skip such paths — the host's snapshot inference still covers
+            # them, and skipping can never suppress it (reports only add).
+            resolved.encode("utf-8", "strict")
+        except Exception:
+            return
+        if resolved in self._seen:
+            return
+        if len(self._paths) >= MAX_REPORTED_WRITES:
+            self._truncated = True
+            return
+        self._seen.add(resolved)
+        self._paths.append(resolved)
+
+    def hook(self, event, args):
+        try:
+            if not self._active or self._truncated:
+                return
+            if event == "open":
+                path = args[0] if args else None
+                mode = args[1] if len(args) > 1 else None
+                flags = args[2] if len(args) > 2 else None
+                if path is not None and _open_has_write_intent(mode, flags):
+                    self._note(path)
+            elif event in ("os.rename", "os.replace") and len(args) > 1:
+                self._note(args[1])
+        except Exception:
+            return
+
+
+_WRITE_OBSERVER = _WriteObserver()
 
 
 def _neutralize_pyplot_show() -> None:
@@ -307,6 +402,7 @@ def main():
         return mod
 
     builtins.__import__ = import_wrapper
+    sys.addaudithook(_WRITE_OBSERVER.hook)
     _kernel_init(namespace)
     protocol_out.write(json.dumps({
         "type": "ready",
@@ -393,6 +489,8 @@ def main():
         wall0 = time.perf_counter()
         cpu0 = time.process_time()
         old_out, old_err = sys.stdout, sys.stderr
+        files_written = None
+        _WRITE_OBSERVER.begin()
         try:
             sys.stdout = stdout_cap
             sys.stderr = stderr_cap
@@ -405,6 +503,7 @@ def main():
             stdout_cap._active = False
             sys.stdout = old_out
             sys.stderr = old_err
+            files_written = _WRITE_OBSERVER.finish()
 
         usage = {
             "wall_s": round(time.perf_counter() - wall0, 3),
@@ -421,6 +520,10 @@ def main():
             "trace": {"error_lineno": error_lineno, "error_call": None},
             "usage": usage,
         }
+        # Absent ≠ empty: omit the field when the observer could not produce a
+        # complete list (cap exceeded). An explicit [] means "wrote nothing".
+        if files_written is not None:
+            resp["files_written"] = files_written
         with protocol_lock:
             protocol_out.write(json.dumps(resp) + "\n")
             protocol_out.flush()

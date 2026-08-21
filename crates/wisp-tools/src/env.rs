@@ -297,6 +297,9 @@ pub trait ToolEnv: Send + Sync {
     /// Optional post-check after a shell command finishes so the host can open
     /// a connectivity gate without spawning another SSH attempt.
     fn note_shell_outcome(&self, _cmd: &str, _success: bool, _detail: &str) {}
+    /// Paths an interpreter reported writing during the current tool call.
+    /// Default: dropped — hosts that do not track attribution lose nothing.
+    fn report_written_paths(&self, _paths: &[String]) {}
 }
 
 #[derive(Debug, Clone)]
@@ -363,5 +366,29 @@ impl ToolResult {
     pub fn stop_turn(mut self) -> Self {
         self.control = ToolControl::StopTurn;
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    struct StubEnv;
+
+    #[async_trait::async_trait]
+    impl ToolEnv for StubEnv {
+        fn project_root(&self) -> &Path {
+            Path::new(".")
+        }
+        async fn confirm(&self, _message: &str) -> bool {
+            true
+        }
+        async fn emit(&self, _event: ToolEvent) {}
+    }
+
+    #[test]
+    fn report_written_paths_default_is_noop() {
+        StubEnv.report_written_paths(&["a.txt".into()]);
     }
 }

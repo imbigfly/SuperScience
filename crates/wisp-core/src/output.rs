@@ -147,6 +147,14 @@ pub struct ToolEnvAdapter<'a> {
     /// Mid-turn guidance queue (`GuidanceQueue`). Typed as the mutex so this
     /// module does not depend on `agent`.
     guidance: Option<&'a std::sync::Mutex<Vec<(u64, String)>>>,
+    /// Kernel-reported writes for the in-flight tool call.
+    ///
+    /// Tool calls within one agent loop run strictly sequentially, so
+    /// drain-per-call is race-free; parallel subagent loops each construct
+    /// their own adapter, so reports cannot cross loops. The buffer must be
+    /// drained unconditionally after every tool call so a stale report can
+    /// never leak into the next call's record.
+    reported_writes: std::sync::Mutex<Vec<String>>,
 }
 
 impl<'a> ToolEnvAdapter<'a> {
@@ -156,6 +164,7 @@ impl<'a> ToolEnvAdapter<'a> {
             out,
             cancel: None,
             guidance: None,
+            reported_writes: std::sync::Mutex::new(Vec::new()),
         }
     }
     /// Like `new`, but tools can poll `is_cancelled()` to stop mid-execution.
@@ -169,7 +178,17 @@ impl<'a> ToolEnvAdapter<'a> {
             out,
             cancel: Some(cancel),
             guidance: None,
+            reported_writes: std::sync::Mutex::new(Vec::new()),
         }
+    }
+    /// Drain kernel-reported writes accumulated during the current tool call.
+    pub(crate) fn take_reported_writes(&self) -> Vec<String> {
+        std::mem::take(
+            &mut *self
+                .reported_writes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
     }
     /// Let long-running tools see that the host has queued mid-turn guidance
     /// without draining it. The agent loop still injects at the iteration
@@ -236,6 +255,12 @@ impl<'a> wisp_tools::ToolEnv for ToolEnvAdapter<'a> {
     }
     fn note_shell_outcome(&self, cmd: &str, success: bool, detail: &str) {
         self.out.note_shell_outcome(cmd, success, detail);
+    }
+    fn report_written_paths(&self, paths: &[String]) {
+        self.reported_writes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .extend(paths.iter().cloned());
     }
     async fn emit(&self, event: wisp_tools::ToolEvent) {
         match event {
@@ -384,5 +409,22 @@ mod tests {
         assert!(!wisp_tools::ToolEnv::guidance_pending(
             &ToolEnvAdapter::new(std::path::PathBuf::from("."), &out)
         ));
+    }
+
+    #[test]
+    fn reported_writes_accumulate_then_drain_empty() {
+        let out = NullOutput;
+        let env = ToolEnvAdapter::new(std::path::PathBuf::from("."), &out);
+        wisp_tools::ToolEnv::report_written_paths(&env, &["a.txt".into(), "b.txt".into()]);
+        wisp_tools::ToolEnv::report_written_paths(&env, &["c.txt".into()]);
+        assert_eq!(
+            env.take_reported_writes(),
+            vec![
+                "a.txt".to_string(),
+                "b.txt".to_string(),
+                "c.txt".to_string()
+            ]
+        );
+        assert!(env.take_reported_writes().is_empty());
     }
 }
