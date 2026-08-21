@@ -40,6 +40,29 @@ written) is still credited. Same-conversation only, and undo marks it
 non-reversible. Intersecting reports with the diff would forfeit real
 credit for rewrites the mtime-granularity snapshot cannot see.
 
+## Post-merge fixes (2026-08-21)
+
+- **Reports bypassed the snapshot's skipped directories.** A cell that only
+  imported a project-local module reported the `__pycache__` bytecode the
+  import wrote, and `project_relative_writes` confines to the project root
+  but knows nothing about `SKIP_DIRS`. The path reached the Generated card,
+  `execution_log`, session exports, and publication capsules — places the
+  snapshot diff could never put it. `provenance::union_reported_writes` now
+  applies the snapshot's own rule (skip by directory name at any depth, only
+  parent components gate inclusion) before the identity union, and
+  `agent_loop_inner` calls it instead of `union_paths_by_identity`.
+- **Neither wiring point was covered.** Deleting the `agent.rs` union left all
+  160 `wisp-core` tests green, and deleting `env.report_written_paths(&paths)`
+  left all 40 `wisp-runtime` tests green: the whole feature could stop working
+  silently. The `#937` engine test called `retain_unambiguous_writes` and the
+  union directly rather than driving the loop. Added two `agent_loop` tests
+  (report folded into the record, snapshot-skipped paths excluded, no leak into
+  the next tool call) and lifted the runtime's forwarding branch into
+  `report_local_writes` so the local-only gate and the absent-vs-empty
+  distinction are testable against a recording `ToolEnv`. All five mutants —
+  removed union, removed skip filter, removed report call, ungated context,
+  non-draining buffer — now fail a test.
+
 ## Deviations
 
 - Windows CI invokes `python` instead of `python3` (sibling step on the same matrix job). `python3` is not on PATH on `windows-latest`; Unix steps keep the planned `python3` command so the worker tests still run on all three OSes.
