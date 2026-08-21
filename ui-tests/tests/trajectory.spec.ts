@@ -145,3 +145,68 @@ test("trajectory modal shows the empty state when a session has no turns", async
   const view = await openTrajectory(page);
   await expect(view).toContainText("No trajectory yet");
 });
+
+test("clicking a Gantt segment selects that event and scrolls it to the top of the list", async ({ page }) => {
+  await enterApp(page);
+  await page.locator("#composer-input").fill("analyze ESR1");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await page.evaluate(() => {
+    const cell = (kind: string, summary: string, index: number, extra: Record<string, unknown> = {}) => ({
+      kind,
+      summary,
+      detail_input: kind === "tool" ? `{"n":${index}}` : null,
+      detail_output: summary,
+      ok: kind === "tool" ? true : null,
+      is_error: false,
+      ts: 1755000000000 + index * 1000,
+      duration_ms: kind === "tool" ? 200 : 50,
+      usage: null,
+      ...extra,
+    });
+    const turns = Array.from({ length: 20 }, (_, i) => {
+      const n = i + 1;
+      return {
+        index: n,
+        started_at: 1755000000000 + n * 4000,
+        cells: [
+          cell("user", `User turn ${n}`, n),
+          cell("assistant", `Assistant turn ${n}`, n),
+          cell("tool", `late_tool_${n}`, n),
+        ],
+      };
+    });
+    (window as any).__trajectorySnapshot = {
+      frame_id: "",
+      model: "deepseek-v4-pro",
+      turns,
+      stats: {
+        turns: 20,
+        steps: 40,
+        llm_ms: 1000,
+        tool_ms: 4000,
+        input_tokens: 1000,
+        output_tokens: 1000,
+        cached_input_tokens: 0,
+        cache_hit_pct: null,
+        tokens_per_sec: 10,
+      },
+    };
+  });
+  const view = await openTrajectory(page);
+  const list = view.getByTestId("traj-list");
+  await expect(list.getByText("User turn 1", { exact: true })).toBeVisible();
+
+  await view.locator('.traj-gantt [data-traj-key="20:2"]').click();
+  const selected = list.locator(".traj-row.selected");
+  await expect(selected).toContainText("late_tool_20");
+  await expect(view.getByTestId("traj-meta-source")).toHaveText("Tool");
+  await expect
+    .poll(async () => {
+      const listBox = await list.boundingBox();
+      const rowBox = await selected.boundingBox();
+      if (!listBox || !rowBox) return 9999;
+      return rowBox.y - listBox.y;
+    })
+    .toBeLessThan(72);
+});

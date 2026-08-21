@@ -6,6 +6,7 @@ use crate::dto::{
 use crate::i18n::{t, tf, use_locale, Locale};
 use crate::text::{event_target_value, format_duration_ms};
 use leptos::*;
+use wasm_bindgen::JsCast;
 
 /// Session-level Gantt scale, matching the DeepSeek session-log axis.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -273,6 +274,29 @@ fn gantt_events<'a>(
         .collect()
 }
 
+fn traj_dom_id(key: &str) -> String {
+    format!("traj-cell-{}", key.replace(':', "-"))
+}
+
+fn scroll_traj_row_to_top(key: &str) {
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return;
+    };
+    let Some(row) = document.get_element_by_id(&traj_dom_id(key)) else {
+        return;
+    };
+    let Ok(Some(list_el)) = document.query_selector("[data-testid='traj-list']") else {
+        row.scroll_into_view_with_bool(true);
+        return;
+    };
+    let Ok(list) = list_el.dyn_into::<web_sys::HtmlElement>() else {
+        row.scroll_into_view_with_bool(true);
+        return;
+    };
+    let delta = row.get_bounding_client_rect().top() - list.get_bounding_client_rect().top();
+    list.set_scroll_top((list.scroll_top() as f64 + delta).round().max(0.0) as i32);
+}
+
 fn sequential_pack(cells: &[(String, i64, &TrajectoryCellDto)], weights: &[f64]) -> Vec<GanttSeg> {
     let total = weights.iter().copied().sum::<f64>().max(1.0);
     let mut acc = 0.0;
@@ -378,6 +402,8 @@ fn TrajectoryCellRow(
             class:pending=cell.ok.is_none() && cell.kind == "tool"
             class:selected=move || selected.get().as_deref() == Some(active_key.as_str())
             data-testid=format!("traj-row-{}", cell.kind)
+            data-traj-key=cell_key.clone()
+            id=traj_dom_id(&cell_key)
             on:click=move |_| {
                 selected.set(Some(select_key.clone()));
                 inspector_open.set(true);
@@ -418,15 +444,17 @@ fn TrajectoryInspector(
     view! {
         <div class="traj-inspector" data-testid="traj-inspector">
             <div class="traj-inspector-head">
-                <span class=format!("traj-badge {kind}")>{badge}</span>
-                <span class="traj-inspector-title">{move || {
-                    let loc = locale.get();
-                    format!(
-                        "{} · {}",
-                        tf(loc, "trajectory.turn", &[("n", &turn.to_string())]),
-                        t(loc, head_kind_key(&kind_for_title))
-                    )
-                }}</span>
+                <div class="traj-inspector-ident">
+                    <span class=format!("traj-badge {kind}")>{badge}</span>
+                    <span class="traj-inspector-title">{move || {
+                        let loc = locale.get();
+                        format!(
+                            "{} · {}",
+                            tf(loc, "trajectory.turn", &[("n", &turn.to_string())]),
+                            t(loc, head_kind_key(&kind_for_title))
+                        )
+                    }}</span>
+                </div>
                 <button type="button" class="ps-close" data-testid="traj-inspector-close"
                     title=move || t(locale.get(), "trajectory.close_inspector")
                     aria-label=move || t(locale.get(), "trajectory.close_inspector")
@@ -558,6 +586,20 @@ pub(crate) fn TrajectoryView(
     let inspector_open = create_rw_signal(true);
     let axis = create_rw_signal(TimelineAxis::Duration);
     let tab = create_rw_signal(InspectorTab::Summary);
+    let jump_seq = create_rw_signal(0u32);
+    let jump_target = create_rw_signal(None::<String>);
+
+    create_effect(move |_| {
+        let _tick = jump_seq.get();
+        let Some(key) = jump_target.get() else {
+            return;
+        };
+        request_animation_frame(move || {
+            request_animation_frame(move || {
+                scroll_traj_row_to_top(&key);
+            });
+        });
+    });
 
     create_effect(move |_| {
         let q = query.get().trim().to_lowercase();
@@ -657,10 +699,13 @@ pub(crate) fn TrajectoryView(
                                                         class:selected=move || selected.get().as_deref() == Some(active_key.as_str())
                                                         style=format!("left:{:.2}%;width:{:.2}%", seg.left_pct, seg.width_pct)
                                                         data-testid="traj-gantt-seg"
+                                                        data-traj-key=key.clone()
                                                         aria-label=key.clone()
                                                         on:click=move |_| {
                                                             selected.set(Some(select_key.clone()));
                                                             inspector_open.set(true);
+                                                            jump_target.set(Some(select_key.clone()));
+                                                            jump_seq.update(|n| *n = n.saturating_add(1));
                                                         }>
                                                     </button>
                                                 }
@@ -797,7 +842,7 @@ pub(crate) fn TrajectoryView(
                 view! {
                     {gantt}
                     <div class="traj-split" class:is-open=inspector_open.get() data-testid="traj-split">
-                        <div class="traj-list">
+                        <div class="traj-list" data-testid="traj-list">
                             {turn_views}
                             {live_view}
                             {no_match}

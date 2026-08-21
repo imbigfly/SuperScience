@@ -13,7 +13,8 @@ chat; the transcript is not replaced.
 A session-level Gantt (Duration / Turns / Calls) sits above a split view:
 the event list on the left, a detail inspector on the right. Close the
 inspector with its × to give the list the full width; click a row or a
-Gantt segment to open it again. The list uses colored **USER / ASSISTANT /
+Gantt segment to open it again. Clicking a Gantt segment also scrolls that
+event to the top of the list. The list uses colored **USER / ASSISTANT /
 TOOL** badges when it is wide, and compact icons when the inspector makes
 the list narrow.
 
