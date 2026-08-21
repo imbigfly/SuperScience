@@ -1,18 +1,36 @@
 use crate::app_support::compose_icon;
 use crate::chat_render::fmt_tokens;
-use crate::dto::{TrajectoryCellDto, TrajectorySnapshotDto, TrajectoryStatsDto, TrajectoryUsageDto};
+use crate::dto::{
+    TrajectoryCellDto, TrajectorySnapshotDto, TrajectoryStatsDto, TrajectoryUsageDto,
+};
 use crate::i18n::{t, tf, use_locale, Locale};
 use crate::text::{event_target_value, format_duration_ms};
 use leptos::*;
-use std::collections::HashSet;
 
-/// Which pane the thread area shows: the ordinary chat transcript or the
-/// per-turn event trajectory (轨迹).
+/// Session-level Gantt scale, matching the DeepSeek session-log axis.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum ThreadView {
+enum TimelineAxis {
     #[default]
-    Chat,
-    Trajectory,
+    Duration,
+    Turns,
+    Calls,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum InspectorTab {
+    #[default]
+    Summary,
+    Preview,
+    Raw,
+    Source,
+}
+
+#[derive(Clone, Debug)]
+struct GanttSeg {
+    key: String,
+    lane: &'static str,
+    left_pct: f64,
+    width_pct: f64,
 }
 
 /// Per-turn split of wall time: idle/input gap, model time, tool time.
@@ -50,6 +68,14 @@ fn badge_label(kind: &str) -> String {
         "tool" => "TOOL".to_string(),
         "usage" => "USAGE".to_string(),
         other => other.to_uppercase(),
+    }
+}
+
+fn cell_lane(kind: &str) -> &'static str {
+    match kind {
+        "user" => "input",
+        "tool" => "tools",
+        _ => "model",
     }
 }
 
@@ -124,39 +150,206 @@ fn stats_line(locale: Locale, stats: &TrajectoryStatsDto) -> String {
     )
 }
 
+fn cell_status_key(cell: &TrajectoryCellDto, running: bool) -> &'static str {
+    if cell.is_error || cell.ok == Some(false) {
+        "trajectory.status.error"
+    } else if cell.kind == "tool" && cell.ok.is_none() {
+        if running {
+            "trajectory.status.running"
+        } else {
+            "trajectory.status.pending"
+        }
+    } else if running && cell.kind == "assistant" && cell.ok.is_none() && cell.duration_ms.is_none()
+    {
+        "trajectory.status.running"
+    } else {
+        "trajectory.status.completed"
+    }
+}
+
+fn source_key(kind: &str) -> &'static str {
+    match kind {
+        "user" => "trajectory.source.user",
+        "assistant" => "trajectory.source.assistant",
+        "tool" => "trajectory.source.tool",
+        "usage" => "trajectory.source.usage",
+        _ => "trajectory.source.unknown",
+    }
+}
+
+fn head_kind_key(kind: &str) -> &'static str {
+    match kind {
+        "user" => "trajectory.head.user",
+        "assistant" => "trajectory.head.assistant",
+        "tool" => "trajectory.head.tool",
+        "usage" => "trajectory.head.usage",
+        _ => "trajectory.head.event",
+    }
+}
+
+fn cell_raw_json(cell: &TrajectoryCellDto) -> String {
+    serde_json::to_string_pretty(cell).unwrap_or_else(|_| cell.summary.clone())
+}
+
+fn cell_preview_text(locale: Locale, cell: &TrajectoryCellDto) -> String {
+    if cell.kind == "usage" {
+        return cell
+            .usage
+            .as_ref()
+            .map(|usage| usage_line(locale, usage))
+            .unwrap_or_else(|| cell.summary.clone());
+    }
+    cell.detail_output
+        .clone()
+        .filter(|text| !text.trim().is_empty())
+        .or_else(|| cell.detail_input.clone())
+        .unwrap_or_else(|| cell.summary.clone())
+}
+
+fn cell_source_text(locale: Locale, cell: &TrajectoryCellDto) -> String {
+    match cell.kind.as_str() {
+        "tool" => cell
+            .detail_input
+            .clone()
+            .unwrap_or_else(|| cell.summary.clone()),
+        "usage" => cell
+            .usage
+            .as_ref()
+            .and_then(|usage| serde_json::to_string_pretty(usage).ok())
+            .unwrap_or_else(|| {
+                cell.usage
+                    .as_ref()
+                    .map(|usage| usage_line(locale, usage))
+                    .unwrap_or_else(|| cell.summary.clone())
+            }),
+        _ => cell
+            .detail_output
+            .clone()
+            .filter(|text| !text.trim().is_empty())
+            .unwrap_or_else(|| cell.summary.clone()),
+    }
+}
+
+fn visible_rows<'a>(
+    snap: &'a Option<TrajectorySnapshotDto>,
+    live: &'a [TrajectoryCellDto],
+    query: &str,
+) -> Vec<(String, i64, &'a TrajectoryCellDto)> {
+    let mut rows = Vec::new();
+    if let Some(snapshot) = snap {
+        for turn in &snapshot.turns {
+            for (ci, cell) in turn.cells.iter().enumerate() {
+                if cell_matches(cell, query) {
+                    rows.push((format!("{}:{ci}", turn.index), turn.index, cell));
+                }
+            }
+        }
+    }
+    let next_turn = snap.as_ref().map(|s| s.turns.len() as i64 + 1).unwrap_or(1);
+    for (ci, cell) in live.iter().enumerate() {
+        if cell_matches(cell, query) {
+            rows.push((format!("live:{ci}"), next_turn, cell));
+        }
+    }
+    rows
+}
+
+fn gantt_segments(axis: TimelineAxis, rows: &[(String, i64, &TrajectoryCellDto)]) -> Vec<GanttSeg> {
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    match axis {
+        TimelineAxis::Duration => duration_segments(rows),
+        TimelineAxis::Turns => {
+            let mut groups: Vec<(i64, Vec<usize>)> = Vec::new();
+            for (i, (_, turn, _)) in rows.iter().enumerate() {
+                match groups.last_mut() {
+                    Some((t, idxs)) if *t == *turn => idxs.push(i),
+                    _ => groups.push((*turn, vec![i])),
+                }
+            }
+            let n = groups.len().max(1) as f64;
+            let mut out = Vec::new();
+            for (gi, (_turn, idxs)) in groups.iter().enumerate() {
+                let col = 100.0 / n;
+                let n_cells = idxs.len().max(1) as f64;
+                let cell_w = col / n_cells;
+                for (ci, &row_i) in idxs.iter().enumerate() {
+                    let (key, _, cell) = &rows[row_i];
+                    out.push(GanttSeg {
+                        key: key.clone(),
+                        lane: cell_lane(&cell.kind),
+                        left_pct: gi as f64 * col + ci as f64 * cell_w,
+                        width_pct: cell_w.max(0.6),
+                    });
+                }
+            }
+            out
+        }
+        TimelineAxis::Calls => {
+            let n = rows.len() as f64;
+            rows.iter()
+                .enumerate()
+                .map(|(i, (key, _, cell))| GanttSeg {
+                    key: key.clone(),
+                    lane: cell_lane(&cell.kind),
+                    left_pct: i as f64 / n * 100.0,
+                    width_pct: (100.0 / n).max(0.6),
+                })
+                .collect()
+        }
+    }
+}
+
+fn duration_segments(rows: &[(String, i64, &TrajectoryCellDto)]) -> Vec<GanttSeg> {
+    let mut start = None;
+    let mut end = None;
+    for (_, _, cell) in rows {
+        if let Some(ts) = cell.ts {
+            let cell_end = ts + cell.duration_ms.unwrap_or(0);
+            start = Some(start.map_or(ts, |s: i64| s.min(ts)));
+            end = Some(end.map_or(cell_end, |e: i64| e.max(cell_end)));
+        }
+    }
+    let (start, end) = match (start, end) {
+        (Some(s), Some(e)) if e > s => (s, e),
+        (Some(s), Some(_)) => (s, s + 1),
+        _ => return Vec::new(),
+    };
+    let span = (end - start) as f64;
+    rows.iter()
+        .filter_map(|(key, _, cell)| {
+            let ts = cell.ts?;
+            let dur = cell.duration_ms.unwrap_or(0).max(1) as f64;
+            Some(GanttSeg {
+                key: key.clone(),
+                lane: cell_lane(&cell.kind),
+                left_pct: (ts - start) as f64 / span * 100.0,
+                width_pct: (dur / span * 100.0).max(0.6),
+            })
+        })
+        .collect()
+}
+
 #[component]
 fn TrajectoryCellRow(
     cell: TrajectoryCellDto,
     cell_key: String,
-    expanded: RwSignal<HashSet<String>>,
+    selected: RwSignal<Option<String>>,
 ) -> impl IntoView {
     let locale = use_locale();
     let is_usage = cell.kind == "usage";
-    let detail_input = cell.detail_input.clone();
-    let detail_output = cell.detail_output.clone();
-    let expandable = !is_usage && (detail_input.is_some() || detail_output.is_some());
     let duration = cell.duration_ms.filter(|ms| *ms > 0);
-    let row_class = format!(
-        "traj-row {}{}",
-        cell.kind,
-        if expandable { " expandable" } else { "" }
-    );
-    let toggle_key = cell_key.clone();
-    let on_click = move |_| {
-        if expandable {
-            expanded.update(|set| {
-                if !set.remove(&toggle_key) {
-                    set.insert(toggle_key.clone());
-                }
-            });
-        }
-    };
+    let row_class = format!("traj-row {}", cell.kind);
+    let select_key = cell_key.clone();
+    let active_key = cell_key.clone();
     view! {
         <div class=row_class
             class:error=cell.is_error
             class:pending=cell.ok.is_none() && cell.kind == "tool"
+            class:selected=move || selected.get().as_deref() == Some(active_key.as_str())
             data-testid=format!("traj-row-{}", cell.kind)
-            on:click=on_click>
+            on:click=move |_| selected.set(Some(select_key.clone()))>
             <span class=format!("traj-badge {}", cell.kind)>{badge_label(&cell.kind)}</span>
             <span class="traj-summary">{move || {
                 if is_usage {
@@ -172,21 +365,139 @@ fn TrajectoryCellRow(
                 <span class="traj-duration">{format_duration_ms(ms.max(0) as u64)}</span>
             })}
         </div>
-        {move || {
-            let open = expanded.with(|set| set.contains(&cell_key));
-            (open && expandable).then(|| view! {
-                <div class="traj-detail" data-testid="traj-detail">
-                    {detail_input.as_ref().map(|input| view! {
-                        <span class="traj-detail-label">{t(locale.get(), "trajectory.detail_input")}</span>
-                        <pre data-testid="traj-detail-input">{input.clone()}</pre>
-                    })}
-                    {detail_output.as_ref().map(|output| view! {
-                        <span class="traj-detail-label">{t(locale.get(), "trajectory.detail_output")}</span>
-                        <pre data-testid="traj-detail-output">{output.clone()}</pre>
-                    })}
-                </div>
-            })
-        }}
+    }
+}
+
+#[component]
+fn TrajectoryInspector(
+    cell: TrajectoryCellDto,
+    turn: i64,
+    running: bool,
+    tab: RwSignal<InspectorTab>,
+) -> impl IntoView {
+    let locale = use_locale();
+    let kind = cell.kind.clone();
+    let badge = badge_label(&kind);
+    let kind_for_title = kind.clone();
+    view! {
+        <div class="traj-inspector" data-testid="traj-inspector">
+            <div class="traj-inspector-head">
+                <span class=format!("traj-badge {kind}")>{badge}</span>
+                <span class="traj-inspector-title">{move || {
+                    let loc = locale.get();
+                    format!(
+                        "{} · {}",
+                        tf(loc, "trajectory.turn", &[("n", &turn.to_string())]),
+                        t(loc, head_kind_key(&kind_for_title))
+                    )
+                }}</span>
+            </div>
+            <div class="traj-inspector-tabs" role="tablist">
+                <button type="button" class="traj-inspector-tab" data-testid="traj-tab-summary"
+                    class:active=move || tab.get() == InspectorTab::Summary
+                    on:click=move |_| tab.set(InspectorTab::Summary)>
+                    {move || t(locale.get(), "trajectory.tab.summary")}
+                </button>
+                <button type="button" class="traj-inspector-tab" data-testid="traj-tab-preview"
+                    class:active=move || tab.get() == InspectorTab::Preview
+                    on:click=move |_| tab.set(InspectorTab::Preview)>
+                    {move || t(locale.get(), "trajectory.tab.preview")}
+                </button>
+                <button type="button" class="traj-inspector-tab" data-testid="traj-tab-raw"
+                    class:active=move || tab.get() == InspectorTab::Raw
+                    on:click=move |_| tab.set(InspectorTab::Raw)>
+                    {move || t(locale.get(), "trajectory.tab.raw")}
+                </button>
+                <button type="button" class="traj-inspector-tab" data-testid="traj-tab-source"
+                    class:active=move || tab.get() == InspectorTab::Source
+                    on:click=move |_| tab.set(InspectorTab::Source)>
+                    {move || t(locale.get(), "trajectory.tab.source")}
+                </button>
+            </div>
+            <div class="traj-inspector-body">
+                {move || inspector_body(locale.get(), tab.get(), &cell, running)}
+            </div>
+        </div>
+    }
+}
+
+fn inspector_body(loc: Locale, tab: InspectorTab, cell: &TrajectoryCellDto, running: bool) -> View {
+    let kind = cell.kind.as_str();
+    match tab {
+        InspectorTab::Summary => {
+            let duration_label = cell
+                .duration_ms
+                .map(|ms| format_duration_ms(ms.max(0) as u64))
+                .unwrap_or_else(|| "—".into());
+            let preview = cell_preview_text(loc, cell);
+            let usage = cell.usage.clone();
+            view! {
+                <dl class="traj-meta">
+                    <dt>{t(loc, "trajectory.meta.source")}</dt>
+                    <dd data-testid="traj-meta-source">{t(loc, source_key(kind))}</dd>
+                    <dt>{t(loc, "trajectory.meta.status")}</dt>
+                    <dd data-testid="traj-meta-status">{t(loc, cell_status_key(cell, running))}</dd>
+                    <dt>{t(loc, "trajectory.meta.duration")}</dt>
+                    <dd data-testid="traj-meta-duration">{duration_label}</dd>
+                </dl>
+                {usage.map(|usage| {
+                    let model = usage.model.clone().unwrap_or_else(|| "—".into());
+                    view! {
+                        <dl class="traj-meta traj-meta-usage">
+                            <dt>{t(loc, "trajectory.meta.model")}</dt>
+                            <dd>{model}</dd>
+                            <dt>{t(loc, "trajectory.meta.input")}</dt>
+                            <dd>{fmt_tokens(usage.input_tokens.max(0) as u64)}</dd>
+                            <dt>{t(loc, "trajectory.meta.output")}</dt>
+                            <dd>{fmt_tokens(usage.output_tokens.max(0) as u64)}</dd>
+                            <dt>{t(loc, "trajectory.meta.cached")}</dt>
+                            <dd>{fmt_tokens(usage.cached_input_tokens.max(0) as u64)}</dd>
+                        </dl>
+                    }
+                })}
+                {(!preview.trim().is_empty()).then(|| view! {
+                    <div class="traj-preview-block">
+                        <span class="traj-detail-label">{t(loc, "trajectory.tab.preview")}</span>
+                        <pre data-testid="traj-summary-preview">{preview.clone()}</pre>
+                    </div>
+                })}
+            }
+            .into_view()
+        }
+        InspectorTab::Preview if kind == "tool" => view! {
+            <div class="traj-preview-block">
+                {cell.detail_input.as_ref().map(|input| view! {
+                    <span class="traj-detail-label">{t(loc, "trajectory.detail_input")}</span>
+                    <pre data-testid="traj-detail-input">{input.clone()}</pre>
+                })}
+                {cell.detail_output.as_ref().map(|output| view! {
+                    <span class="traj-detail-label">{t(loc, "trajectory.detail_output")}</span>
+                    <pre data-testid="traj-detail-output">{output.clone()}</pre>
+                })}
+            </div>
+        }
+        .into_view(),
+        InspectorTab::Preview => view! {
+            <div class="traj-preview-block">
+                <pre data-testid="traj-preview">{cell_preview_text(loc, cell)}</pre>
+            </div>
+        }
+        .into_view(),
+        InspectorTab::Raw => view! {
+            <div class="traj-preview-block">
+                <pre data-testid="traj-raw">{cell_raw_json(cell)}</pre>
+            </div>
+        }
+        .into_view(),
+        InspectorTab::Source => view! {
+            <div class="traj-preview-block">
+                {(kind == "tool").then(|| view! {
+                    <span class="traj-detail-label">{t(loc, "trajectory.detail_input")}</span>
+                })}
+                <pre data-testid="traj-source">{cell_source_text(loc, cell)}</pre>
+            </div>
+        }
+        .into_view(),
     }
 }
 
@@ -198,11 +509,48 @@ pub(crate) fn TrajectoryView(
 ) -> impl IntoView {
     let locale = use_locale();
     let query = create_rw_signal(String::new());
-    let expanded = create_rw_signal(HashSet::<String>::new());
+    let selected = create_rw_signal(None::<String>);
+    let axis = create_rw_signal(TimelineAxis::Duration);
+    let tab = create_rw_signal(InspectorTab::Summary);
+
+    create_effect(move |_| {
+        let q = query.get().trim().to_lowercase();
+        let snap = snapshot.get();
+        let live_cells = live.get();
+        let keys: Vec<String> = visible_rows(&snap, &live_cells, &q)
+            .into_iter()
+            .map(|(key, _, _)| key)
+            .collect();
+        let current = selected.get_untracked();
+        if current
+            .as_ref()
+            .is_some_and(|key| keys.iter().any(|candidate| candidate == key))
+        {
+            return;
+        }
+        selected.set(keys.first().cloned());
+    });
 
     view! {
         <div class="trajectory" data-testid="trajectory-view">
             <div class="trajectory-toolbar">
+                <div class="traj-axis" role="tablist" aria-label=move || t(locale.get(), "trajectory.axis")>
+                    <button type="button" class="traj-axis-btn" data-testid="traj-axis-duration"
+                        class:active=move || axis.get() == TimelineAxis::Duration
+                        on:click=move |_| axis.set(TimelineAxis::Duration)>
+                        {move || t(locale.get(), "trajectory.axis.duration")}
+                    </button>
+                    <button type="button" class="traj-axis-btn" data-testid="traj-axis-turns"
+                        class:active=move || axis.get() == TimelineAxis::Turns
+                        on:click=move |_| axis.set(TimelineAxis::Turns)>
+                        {move || t(locale.get(), "trajectory.axis.turns")}
+                    </button>
+                    <button type="button" class="traj-axis-btn" data-testid="traj-axis-calls"
+                        class:active=move || axis.get() == TimelineAxis::Calls
+                        on:click=move |_| axis.set(TimelineAxis::Calls)>
+                        {move || t(locale.get(), "trajectory.axis.calls")}
+                    </button>
+                </div>
                 <div class="trajectory-search">
                     {compose_icon("search")}
                     <input type="search"
@@ -223,12 +571,55 @@ pub(crate) fn TrajectoryView(
                 let snap = snapshot.get();
                 let live_cells = live.get();
                 let running = busy.get();
+                let axis_now = axis.get();
                 let turns = snap.as_ref().map(|s| s.turns.len()).unwrap_or(0);
                 if turns == 0 && live_cells.is_empty() {
                     return view! {
                         <div class="trajectory-empty">{t(loc, "trajectory.empty")}</div>
                     }.into_view();
                 }
+                let rows = visible_rows(&snap, &live_cells, &q);
+                let segs = gantt_segments(axis_now, &rows);
+                let selected_key = selected.get();
+                let selected_cell = selected_key.as_ref().and_then(|key| {
+                    rows.iter().find(|(k, _, _)| k == key).map(|(_, turn, cell)| (*turn, (*cell).clone()))
+                });
+                let lanes = ["input", "model", "tools"];
+                let gantt = (!segs.is_empty()).then(|| {
+                    view! {
+                        <div class="traj-gantt" data-testid="traj-gantt">
+                            {lanes.into_iter().map(|lane| {
+                                let lane_segs: Vec<GanttSeg> = segs.iter().filter(|seg| seg.lane == lane).cloned().collect();
+                                let label_key = match lane {
+                                    "input" => "trajectory.legend.input",
+                                    "model" => "trajectory.legend.model",
+                                    _ => "trajectory.legend.tools",
+                                };
+                                view! {
+                                    <div class="traj-gantt-lane">
+                                        <span class="traj-gantt-label">{t(loc, label_key)}</span>
+                                        <div class="traj-gantt-track">
+                                            {lane_segs.into_iter().map(|seg| {
+                                                let key = seg.key.clone();
+                                                let select_key = key.clone();
+                                                let active_key = key.clone();
+                                                view! {
+                                                    <button type="button" class=format!("traj-gantt-seg {}", seg.lane)
+                                                        class:selected=move || selected.get().as_deref() == Some(active_key.as_str())
+                                                        style=format!("left:{:.2}%;width:{:.2}%", seg.left_pct, seg.width_pct)
+                                                        data-testid="traj-gantt-seg"
+                                                        aria-label=key.clone()
+                                                        on:click=move |_| selected.set(Some(select_key.clone()))>
+                                                    </button>
+                                                }
+                                            }).collect_view()}
+                                        </div>
+                                    </div>
+                                }
+                            }).collect_view()}
+                        </div>
+                    }
+                });
                 let mut any_visible = false;
                 let turn_views = snap
                     .as_ref()
@@ -246,8 +637,8 @@ pub(crate) fn TrajectoryView(
                                     return None;
                                 }
                                 any_visible = true;
-                                let timing = turn_timing(&turn.cells);
                                 let running_turn = running && turn.index as usize == turns;
+                                let timing = turn_timing(&turn.cells);
                                 Some(view! {
                                     <section class="traj-turn">
                                         <div class="traj-turn-head">
@@ -276,7 +667,7 @@ pub(crate) fn TrajectoryView(
                                                     <TrajectoryCellRow
                                                         cell=cell.clone()
                                                         cell_key=key
-                                                        expanded=expanded />
+                                                        selected=selected />
                                                 }
                                             }).collect_view()}
                                         </div>
@@ -286,8 +677,6 @@ pub(crate) fn TrajectoryView(
                             .collect_view()
                     })
                     .unwrap_or_default();
-                // Live cells of the in-flight turn trail the persisted turns;
-                // the Done refetch replaces them with exact backend data.
                 let live_view = (!live_cells.is_empty()).then(|| {
                     let next_turn = turns as i64 + 1;
                     let visible: Vec<(usize, &TrajectoryCellDto)> = live_cells
@@ -308,13 +697,30 @@ pub(crate) fn TrajectoryView(
                                         <TrajectoryCellRow
                                             cell=cell.clone()
                                             cell_key=key
-                                            expanded=expanded />
+                                            selected=selected />
                                     }
                                 }).collect_view()}
                             </div>
                         </section>
                     }
                 });
+                let inspector = match selected_cell {
+                    Some((turn, cell)) => {
+                        let live_selected = selected_key.as_deref().is_some_and(|k| k.starts_with("live:"));
+                        view! {
+                            <TrajectoryInspector
+                                cell=cell
+                                turn=turn
+                                running=running && live_selected
+                                tab=tab />
+                        }.into_view()
+                    }
+                    None => view! {
+                        <div class="traj-inspector traj-inspector-empty" data-testid="traj-inspector">
+                            {t(loc, "trajectory.select_event")}
+                        </div>
+                    }.into_view(),
+                };
                 let footer = snap.as_ref().map(|s| {
                     view! {
                         <div class="trajectory-footer" data-testid="trajectory-footer">
@@ -326,12 +732,136 @@ pub(crate) fn TrajectoryView(
                     view! { <div class="trajectory-empty">{t(loc, "trajectory.no_match")}</div> }
                 });
                 view! {
-                    {turn_views}
-                    {live_view}
-                    {no_match}
+                    {gantt}
+                    <div class="traj-split">
+                        <div class="traj-list">
+                            {turn_views}
+                            {live_view}
+                            {no_match}
+                        </div>
+                        {inspector}
+                    </div>
                     {footer}
                 }.into_view()
             }}
         </div>
+    }
+}
+
+/// Full-window inspector for the current session's event trajectory.
+#[component]
+pub(crate) fn TrajectoryOverlay(
+    open: RwSignal<bool>,
+    snapshot: RwSignal<Option<TrajectorySnapshotDto>>,
+    live: RwSignal<Vec<TrajectoryCellDto>>,
+    busy: RwSignal<bool>,
+) -> impl IntoView {
+    let locale = use_locale();
+    move || {
+        open.get().then(move || {
+            view! {
+                <div class="overlay" data-testid="trajectory-overlay">
+                    <div class="modal traj-modal" role="dialog" aria-modal="true"
+                        aria-labelledby="trajectory-modal-title">
+                        <div class="ps-head">
+                            <h2 id="trajectory-modal-title">{move || t(locale.get(), "trajectory.title")}</h2>
+                            <button type="button" class="ps-close"
+                                title=move || t(locale.get(), "trajectory.close")
+                                aria-label=move || t(locale.get(), "trajectory.close")
+                                on:click=move |_| open.set(false)>
+                                {compose_icon("close")}
+                            </button>
+                        </div>
+                        <TrajectoryView snapshot=snapshot live=live busy=busy />
+                    </div>
+                </div>
+            }
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cell(kind: &str, summary: &str, ts: i64, duration_ms: Option<i64>) -> TrajectoryCellDto {
+        TrajectoryCellDto {
+            kind: kind.into(),
+            summary: summary.into(),
+            ts: Some(ts),
+            duration_ms,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn turn_timing_splits_input_model_and_tools() {
+        let cells = vec![
+            cell("user", "q", 1000, None),
+            cell("assistant", "a", 1500, Some(400)),
+            cell("tool", "t", 1900, Some(200)),
+        ];
+        assert_eq!(turn_timing(&cells), Some((500, 400, 200)));
+    }
+
+    #[test]
+    fn cell_matches_searches_summary_and_detail() {
+        let mut tool = cell("tool", "python", 0, None);
+        tool.detail_input = Some(r#"{"code":"df.describe()"}"#.into());
+        tool.detail_output = Some("count 612".into());
+        assert!(cell_matches(&tool, "describe"));
+        assert!(cell_matches(&tool, "612"));
+        assert!(!cell_matches(&tool, "volcano"));
+    }
+
+    #[test]
+    fn duration_gantt_places_cells_on_lanes() {
+        let user = cell("user", "q", 0, None);
+        let assistant = cell("assistant", "a", 100, Some(100));
+        let tool = cell("tool", "t", 200, Some(100));
+        let rows = vec![
+            ("1:0".into(), 1, &user),
+            ("1:1".into(), 1, &assistant),
+            ("1:2".into(), 1, &tool),
+        ];
+        let segs = gantt_segments(TimelineAxis::Duration, &rows);
+        assert_eq!(segs.len(), 3);
+        assert_eq!(segs[0].lane, "input");
+        assert_eq!(segs[1].lane, "model");
+        assert_eq!(segs[2].lane, "tools");
+        assert!(segs[2].left_pct > segs[0].left_pct);
+    }
+
+    #[test]
+    fn calls_gantt_gives_equal_width_slots() {
+        let a = cell("user", "q", 0, None);
+        let b = cell("tool", "t", 10, Some(5));
+        let rows = vec![("1:0".into(), 1, &a), ("1:1".into(), 1, &b)];
+        let segs = gantt_segments(TimelineAxis::Calls, &rows);
+        assert_eq!(segs.len(), 2);
+        assert!((segs[0].width_pct - 50.0).abs() < 0.01);
+        assert!((segs[1].left_pct - 50.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn cell_raw_json_includes_kind_and_summary() {
+        let cell = cell("user", "Analyze the ESR1 dataset", 1, None);
+        let raw = cell_raw_json(&cell);
+        assert!(raw.contains("\"kind\": \"user\""));
+        assert!(raw.contains("Analyze the ESR1 dataset"));
+    }
+
+    #[test]
+    fn failed_tool_status_is_error() {
+        let mut tool = cell("tool", "boom", 0, Some(8));
+        tool.ok = Some(false);
+        tool.is_error = true;
+        assert_eq!(cell_status_key(&tool, false), "trajectory.status.error");
+        let pending = cell("tool", "wait", 0, None);
+        assert_eq!(cell_status_key(&pending, true), "trajectory.status.running");
+        assert_eq!(
+            cell_status_key(&cell("user", "q", 0, None), false),
+            "trajectory.status.completed"
+        );
     }
 }

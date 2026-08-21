@@ -35,10 +35,10 @@ use app_overlays::{
 use bindings::{
     attach_chat_autoscroll, cancel_saved_marks_apply, clear_selection, close_mcp_app,
     force_chat_bottom, invoke, invoke_checked, is_mac, is_windows, jump_chat_to_item,
-    jump_chat_to_user, listen, listen_current_window,
-    listen_native_file_drop, native_drop_in_composer, open_external_url, pasted_image_count,
-    preserve_chat_prepend_position, preview_selection, restore_chat_session_scroll,
-    schedule_chat_follow, set_saved_marks, CHAT_SCROLLER_ID, CHAT_THREAD_ID,
+    jump_chat_to_user, listen, listen_current_window, listen_native_file_drop,
+    native_drop_in_composer, open_external_url, pasted_image_count, preserve_chat_prepend_position,
+    preview_selection, restore_chat_session_scroll, schedule_chat_follow, set_saved_marks,
+    CHAT_SCROLLER_ID, CHAT_THREAD_ID,
 };
 use context_menu::{ContextMenuPortal, CtxMenu};
 use dto::*;
@@ -78,7 +78,7 @@ use text::{
     opens_in_system_browser, parent_path, provider_defaults, runtime_language,
     user_message_presentation, DEEPSEEK_FLASH_MODEL, DEEPSEEK_PRO_MODEL,
 };
-use trajectory::{ThreadView, TrajectoryView};
+use trajectory::TrajectoryOverlay;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use window_titlebar::WindowTitlebar;
@@ -437,10 +437,10 @@ fn App() -> impl IntoView {
         }
     });
     let sessions = create_rw_signal::<Vec<SessionInfo>>(vec![]);
-    // Trajectory (轨迹) tab: the fetched per-session snapshot plus lightweight
+    // Trajectory (轨迹) modal: the fetched per-session snapshot plus lightweight
     // live cells for the in-flight turn. The Done/Error refetch reconciles the
     // live cells with exact backend data.
-    let thread_view = create_rw_signal(ThreadView::default());
+    let trajectory_open = create_rw_signal(false);
     let trajectory_snapshot = create_rw_signal::<Option<TrajectorySnapshotDto>>(None);
     let trajectory_live = create_rw_signal::<Vec<TrajectoryCellDto>>(vec![]);
     let fetch_trajectory: Rc<dyn Fn(String)> = Rc::new(move |frame_id: String| {
@@ -456,19 +456,19 @@ fn App() -> impl IntoView {
             }
         });
     });
-    // Fetch on tab switch and on session change; never let one session's
-    // timeline bleed into another.
+    // Fetch when the modal opens and on session change; never let one
+    // session's timeline bleed into another.
     let trajectory_session = create_rw_signal::<Option<String>>(None);
     let fetch_trajectory_fx = fetch_trajectory.clone();
     create_effect(move |_| {
         let session = active_session.get();
-        let view = thread_view.get();
+        let open = trajectory_open.get();
         if trajectory_session.get_untracked() != session {
             trajectory_session.set(session.clone());
             trajectory_snapshot.set(None);
             trajectory_live.set(vec![]);
         }
-        if view == ThreadView::Trajectory {
+        if open {
             if let Some(id) = session {
                 fetch_trajectory_fx(id);
             }
@@ -2109,7 +2109,7 @@ fn App() -> impl IntoView {
     let conversation_outlines_cb = conversation_outlines;
     let transcript_projection_epoch_cb = transcript_projection_epoch;
     let trajectory_live_cb = trajectory_live;
-    let thread_view_cb = thread_view;
+    let trajectory_open_cb = trajectory_open;
     let fetch_trajectory_cb = fetch_trajectory.clone();
     // Desktop notification for task status (#327). The backend drops it while
     // any app window is focused or when disabled in settings, so callers just
@@ -2307,7 +2307,7 @@ fn App() -> impl IntoView {
         let trajectory_settle = |frame_id: &str| {
             if active_cb.get_untracked().as_deref() == Some(frame_id) {
                 trajectory_live_cb.set(vec![]);
-                if thread_view_cb.get_untracked() == ThreadView::Trajectory {
+                if trajectory_open_cb.get_untracked() {
                     fetch_trajectory_cb(frame_id.to_string());
                 }
             }
@@ -2325,8 +2325,13 @@ fn App() -> impl IntoView {
                 set_pet_activity(&frame_id, "running");
                 flush_now();
                 let outline_text = text.clone();
-                let live_user_summary: String =
-                    text.lines().next().unwrap_or("").chars().take(160).collect();
+                let live_user_summary: String = text
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .take(160)
+                    .collect();
                 let model = session_model_label(
                     &models_cb.get_untracked(),
                     &session_models_cb.get_untracked(),
@@ -2557,18 +2562,18 @@ fn App() -> impl IntoView {
                 // attempt after a successful scan must not claim the answer has
                 // no live results (#921).
                 if is_browser_retrieval_tool(&name) {
-                    let notice =
-                        if active_cb.get_untracked().as_deref() == Some(frame_id.as_str()) {
-                            items_cb.with_untracked(|rows| {
-                                browser_offline_notice_from_items(&frame_id, rows)
-                            })
-                        } else {
-                            transcripts_cb.with_untracked(|cache| {
-                                cache.get(&frame_id).and_then(|rows| {
-                                    browser_offline_notice_from_items(&frame_id, rows)
-                                })
-                            })
-                        };
+                    let notice = if active_cb.get_untracked().as_deref() == Some(frame_id.as_str())
+                    {
+                        items_cb.with_untracked(|rows| {
+                            browser_offline_notice_from_items(&frame_id, rows)
+                        })
+                    } else {
+                        transcripts_cb.with_untracked(|cache| {
+                            cache
+                                .get(&frame_id)
+                                .and_then(|rows| browser_offline_notice_from_items(&frame_id, rows))
+                        })
+                    };
                     set_browser_offline_notice(browser_offline_cb, &frame_id, notice);
                 }
                 if active_cb.get_untracked().as_deref() == Some(frame_id.as_str()) {
@@ -5944,6 +5949,7 @@ fn App() -> impl IntoView {
             // Open the share preview over the current transcript; thinking
             // rows are listed but deselected (hidden from the export).
             "share" => open_share.call(()),
+            "trajectory" => trajectory_open.set(true),
             _ => {}
         }
         true
@@ -7812,6 +7818,11 @@ fn App() -> impl IntoView {
         if share_draft.get().is_some() {
             ev.prevent_default();
             share_draft.set(None);
+            return;
+        }
+        if trajectory_open.get() {
+            ev.prevent_default();
+            trajectory_open.set(false);
             return;
         }
         if let Some(modal) = update_check_modal.get() {
@@ -9725,6 +9736,13 @@ fn App() -> impl IntoView {
                     on:click=move |_| open_share.call(())>
                     {compose_icon("share")}
                 </button>
+                <button type="button" class="icon-btn" data-testid="trajectory-topbar"
+                    title=move || t(locale.get(), "trajectory.topbar")
+                    aria-label=move || t(locale.get(), "trajectory.topbar")
+                    class:active=move || trajectory_open.get()
+                    on:click=move |_| trajectory_open.set(true)>
+                    {compose_icon("timeline")}
+                </button>
                 <div class="inbox-wrap">
                     <button class="icon-btn"
                         class:active=move || inbox_open.get()
@@ -10232,22 +10250,7 @@ fn App() -> impl IntoView {
                         selection_popup.set(None);
                     }
                 }>
-                <div class="thread-tabs" data-testid="thread-tabs">
-                    <button type="button" class="thread-tab" data-testid="thread-tab-chat"
-                        class:active=move || thread_view.get() == ThreadView::Chat
-                        on:click=move |_| thread_view.set(ThreadView::Chat)>
-                        {move || compose_icon("chat")}
-                        <span>{move || t(locale.get(), "thread.tab.chat")}</span>
-                    </button>
-                    <button type="button" class="thread-tab" data-testid="thread-tab-trajectory"
-                        class:active=move || thread_view.get() == ThreadView::Trajectory
-                        on:click=move |_| thread_view.set(ThreadView::Trajectory)>
-                        {move || compose_icon("timeline")}
-                        <span>{move || t(locale.get(), "thread.tab.trajectory")}</span>
-                    </button>
-                </div>
-                <div class="thread" id=CHAT_THREAD_ID
-                    class:thread-hidden=move || thread_view.get() == ThreadView::Trajectory>
+                <div class="thread" id=CHAT_THREAD_ID>
                     {move || active_session.get().and_then(|frame_id| {
                         let rows = explorations.get();
                         if let Some(summary) = rows.iter().find(|row| {
@@ -10976,12 +10979,6 @@ fn App() -> impl IntoView {
                         })
                     })}
                 </div>
-                {move || (thread_view.get() == ThreadView::Trajectory).then(|| view! {
-                    <TrajectoryView
-                        snapshot=trajectory_snapshot
-                        live=trajectory_live
-                        busy=busy />
-                })}
             </div>
             // Static element; scroll.js toggles `.visible` — no reactive rebuild.
             <button type="button" id="chat-jump-pill" class="chat-jump-pill"
@@ -14929,6 +14926,12 @@ fn App() -> impl IntoView {
         <ShareOverlay
             locale=locale
             draft=share_draft
+        />
+        <TrajectoryOverlay
+            open=trajectory_open
+            snapshot=trajectory_snapshot
+            live=trajectory_live
+            busy=busy
         />
         <CapabilitiesOverlay
             locale=locale show_capabilities=show_capabilities

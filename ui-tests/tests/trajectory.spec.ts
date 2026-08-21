@@ -1,9 +1,9 @@
 import { test, expect, type Page } from "@playwright/test";
 import { tauriMock } from "./mock-tauri";
 
-// Trajectory (轨迹) tab: the thread area swaps the chat transcript for the
-// per-turn event timeline returned by `load_session_trajectory` (mocked in
-// mock-tauri.ts with two turns, tool details, usage cells, and stats).
+// Trajectory (轨迹) modal: a split inspector over the chat, opened from the
+// topbar or `/trajectory`. Data comes from `load_session_trajectory` (mocked
+// in mock-tauri.ts with two turns, tool details, usage cells, and stats).
 
 test.beforeEach(async ({ page }) => {
   // Install the Tauri bridge mock before the page's wasm runs.
@@ -16,19 +16,38 @@ async function enterApp(page: Page) {
   await expect(page.locator("#composer-input")).toBeVisible();
 }
 
-test("trajectory tab renders turns, expandable tool rows, usage lines, and stats", async ({ page }) => {
+async function openTrajectory(page: Page) {
+  await page.getByTestId("trajectory-topbar").click();
+  const overlay = page.getByTestId("trajectory-overlay");
+  await expect(overlay).toBeVisible();
+  return overlay.getByTestId("trajectory-view");
+}
+
+test("trajectory modal renders turns, inspector tabs, usage lines, and stats", async ({ page }) => {
   await enterApp(page);
   await page.locator("#composer-input").fill("analyze ESR1");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByTestId("thread-tabs")).toHaveCount(0);
 
-  await page.getByTestId("thread-tab-trajectory").click();
-  const view = page.getByTestId("trajectory-view");
-  await expect(view).toBeVisible();
+  const view = await openTrajectory(page);
+  const inspector = view.getByTestId("traj-inspector");
 
   // Turn groups and their headers.
   await expect(view.getByText("Turn 1", { exact: true })).toBeVisible();
   await expect(view.getByText("Turn 2", { exact: true })).toBeVisible();
+  await expect(view.getByTestId("traj-gantt")).toBeVisible();
+  await expect(view.getByTestId("traj-axis-duration")).toBeVisible();
+
+  // Auto-selected first row: user message summary in the inspector.
+  await expect(inspector.getByTestId("traj-meta-source")).toHaveText("User");
+  await expect(inspector.getByTestId("traj-meta-status")).toHaveText("Completed");
+  await inspector.getByTestId("traj-tab-preview").click();
+  await expect(inspector.getByTestId("traj-preview")).toContainText("Analyze the ESR1 dataset");
+  await inspector.getByTestId("traj-tab-raw").click();
+  await expect(inspector.getByTestId("traj-raw")).toContainText('"kind": "user"');
+  await inspector.getByTestId("traj-tab-source").click();
+  await expect(inspector.getByTestId("traj-source")).toContainText("Analyze the ESR1 dataset");
 
   // Badges + one-line summaries.
   const toolRow = view.getByTestId("traj-row-tool").first();
@@ -40,14 +59,11 @@ test("trajectory tab renders turns, expandable tool rows, usage lines, and stats
   // Usage rows stay compact single lines.
   await expect(view.getByText("round 1 · in 12.3k · out 1.4k · cached 75%")).toBeVisible();
 
-  // Tool rows expand to full args JSON + full result.
-  await expect(view.getByTestId("traj-detail-input")).toHaveCount(0);
+  // Tool rows open full args JSON + full result in the inspector.
   await toolRow.click();
-  await expect(view.getByTestId("traj-detail-input")).toContainText('"code": "df.describe()"');
-  await expect(view.getByTestId("traj-detail-output")).toContainText("count  612.0");
-  // Click again to collapse.
-  await toolRow.click();
-  await expect(view.getByTestId("traj-detail-input")).toHaveCount(0);
+  await inspector.getByTestId("traj-tab-preview").click();
+  await expect(inspector.getByTestId("traj-detail-input")).toContainText('"code": "df.describe()"');
+  await expect(inspector.getByTestId("traj-detail-output")).toContainText("count  612.0");
 
   // Error rows carry the red accent class.
   await expect(view.getByTestId("traj-row-tool").nth(1)).toHaveClass(/error/);
@@ -67,13 +83,34 @@ test("trajectory tab renders turns, expandable tool rows, usage lines, and stats
   await view.getByPlaceholder("Search events").fill("");
   await expect(view.getByText("Turn 1", { exact: true })).toBeVisible();
 
-  // Switching back restores the chat thread.
-  await page.getByTestId("thread-tab-chat").click();
-  await expect(view).toHaveCount(0);
+  // Closing the modal restores the chat thread.
+  await page.getByTestId("trajectory-overlay").locator(".ps-close").click();
+  await expect(page.getByTestId("trajectory-overlay")).toHaveCount(0);
   await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
 });
 
-test("trajectory tab shows the empty state when a session has no turns", async ({ page }) => {
+test("Escape immediately after opening the trajectory modal closes only that layer", async ({ page }) => {
+  await enterApp(page);
+  await page.locator("#composer-input").fill("analyze ESR1");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+
+  await page.getByTestId("trajectory-topbar").click();
+  await expect(page.getByTestId("trajectory-overlay")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("trajectory-overlay")).toHaveCount(0);
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+});
+
+test("/trajectory slash command opens the inspector", async ({ page }) => {
+  await enterApp(page);
+  await page.locator("#composer-input").fill("/trajectory");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByTestId("trajectory-overlay")).toBeVisible();
+  await expect(page.locator("#composer-input")).toHaveValue("");
+});
+
+test("trajectory modal shows the empty state when a session has no turns", async ({ page }) => {
   await enterApp(page);
   await page.evaluate(() => {
     (window as any).__trajectorySnapshot = {
@@ -93,6 +130,6 @@ test("trajectory tab shows the empty state when a session has no turns", async (
       },
     };
   });
-  await page.getByTestId("thread-tab-trajectory").click();
-  await expect(page.getByTestId("trajectory-view")).toContainText("No trajectory yet");
+  const view = await openTrajectory(page);
+  await expect(view).toContainText("No trajectory yet");
 });
