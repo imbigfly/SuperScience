@@ -373,6 +373,64 @@ class KernelWorkerTests(unittest.TestCase):
             finally:
                 self._close(worker)
 
+    def test_write_intent_without_a_write_is_not_reported(self):
+        # `r+` and a bare `a` carry write intent but change nothing. Opening a
+        # store read-only through such a mode is idiomatic (`h5py.File(p, "a")`).
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "data.h5").write_text("existing", encoding="utf-8")
+            Path(tmp, "run.log").write_text("log\n", encoding="utf-8")
+            worker = self._spawn(cwd=tmp)
+            try:
+                response = self._exec(
+                    worker,
+                    "open('data.h5', 'r+').read()\nopen('run.log', 'a').close()",
+                    rid="intent-only",
+                )
+                self.assertIsNone(response.get("error"), response.get("error"))
+                self.assertEqual(response.get("files_written"), [])
+            finally:
+                self._close(worker)
+
+    def test_write_through_an_intent_mode_is_still_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "data.h5").write_text("existing", encoding="utf-8")
+            Path(tmp, "run.log").write_text("log\n", encoding="utf-8")
+            worker = self._spawn(cwd=tmp)
+            try:
+                expected = {
+                    self._worker_abspath(worker, "data.h5"),
+                    self._worker_abspath(worker, "run.log"),
+                }
+                response = self._exec(
+                    worker,
+                    "open('data.h5', 'r+').write('mutated')\n"
+                    "open('run.log', 'a').write('more\\n')",
+                    rid="intent-write",
+                )
+                self.assertIsNone(response.get("error"), response.get("error"))
+                self.assertEqual(set(response.get("files_written") or []), expected)
+            finally:
+                self._close(worker)
+
+    def test_same_length_rewrite_is_reported(self):
+        # Size alone cannot see this write; the mtime half of the pre/post
+        # comparison is what keeps the credit.
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "same.csv").write_text("AAAAAAAAAAA", encoding="utf-8")
+            worker = self._spawn(cwd=tmp)
+            try:
+                expected = self._worker_abspath(worker, "same.csv")
+                response = self._exec(
+                    worker,
+                    "open('same.csv', 'w').write('BBBBBBBBBBB')",
+                    rid="same-length",
+                )
+                self.assertIsNone(response.get("error"), response.get("error"))
+                self.assertIn(expected, response.get("files_written") or [])
+                self.assertEqual(Path(tmp, "same.csv").stat().st_size, 11)
+            finally:
+                self._close(worker)
+
 
 if __name__ == "__main__":
     unittest.main()

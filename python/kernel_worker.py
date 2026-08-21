@@ -12,6 +12,9 @@ Response: {"type": "result", "id": "<uuid>", "stdout": "...", "stderr": "...",
            "usage": {"wall_s": 0.0, "cpu_s": 0.0, "rss_kb": 0},
            "files_written": ["<abs path>", ...]  # omitted if unobserved/truncated}
 
+`files_written` lists the files this cell actually changed, not the ones it
+opened for writing; see `_WriteObserver`.
+
 This is a Windows-friendly port of the upstream wisp-science
 `kernels/kernel_worker.py`: the POSIX-only `resource`, `/proc`, and
 delivered-SIGINT discipline are dropped. RSS comes from `psutil` when
@@ -24,6 +27,7 @@ from collections import deque
 import io
 import json
 import os
+import stat
 import sys
 import time
 import traceback
@@ -61,6 +65,21 @@ def _open_has_write_intent(mode, flags) -> bool:
     return False
 
 
+def _file_state(path):
+    """`(size, mtime_ns)` of a regular file, or None when it is not one.
+
+    Sampled twice per candidate path — once when the audit event fires and
+    once after the cell — so an unchanged pair proves the bytes never moved.
+    """
+    try:
+        info = os.stat(path)
+    except Exception:
+        return None
+    if not stat.S_ISREG(info.st_mode):
+        return None
+    return (info.st_size, info.st_mtime_ns)
+
+
 def _is_bytecode_cache(path) -> bool:
     """True for anything under a `__pycache__` directory.
 
@@ -76,41 +95,52 @@ def _is_bytecode_cache(path) -> bool:
 
 
 class _WriteObserver:
-    """Collect paths this interpreter opened for writing during one cell.
+    """Collect the paths this interpreter changed during one cell.
 
     Audit hooks cannot be unregistered, so per-cell collection is toggled
     with begin() / finish(). The hook body is wrapped in a broad
     try/except and returns immediately while collection is off: a raise
     would propagate into arbitrary user code, including C-extension I/O.
+
+    The `open` audit event carries write *intent*, not proof of a write, and
+    it fires before the OS call completes. So each candidate's pre-open state
+    is sampled when the event arrives and compared again in finish(): a cell
+    that opens a file `'r+'` or `'a'` and writes nothing must not be credited
+    with it (`h5py.File(p, "a")` is the idiomatic way to open a store you
+    then only read).
     """
 
     def __init__(self):
         self._active = False
         self._paths = []
-        self._seen = set()
+        self._before = {}
         self._truncated = False
 
     def begin(self):
         self._active = True
         self._paths = []
-        self._seen = set()
+        self._before = {}
         self._truncated = False
 
     def finish(self):
         self._active = False
         if self._truncated:
             self._paths = []
-            self._seen = set()
+            self._before = {}
             return None
         out = []
         for path in self._paths:
             try:
-                if os.path.isfile(path):
-                    out.append(path)
+                after = _file_state(path)
+                # Gone or never created (a failed open fires the event too),
+                # or byte-for-byte the file we saw before the open.
+                if after is None or after == self._before[path]:
+                    continue
+                out.append(path)
             except Exception:
                 pass
         self._paths = []
-        self._seen = set()
+        self._before = {}
         return out
 
     def _note(self, path):
@@ -128,7 +158,7 @@ class _WriteObserver:
             resolved.encode("utf-8", "strict")
         except Exception:
             return
-        if resolved in self._seen:
+        if resolved in self._before:
             return
         # Filtered before the cap so paths that can never be reported do not
         # evict the ones that can.
@@ -137,7 +167,7 @@ class _WriteObserver:
         if len(self._paths) >= MAX_REPORTED_WRITES:
             self._truncated = True
             return
-        self._seen.add(resolved)
+        self._before[resolved] = _file_state(resolved)
         self._paths.append(resolved)
 
     def hook(self, event, args):
