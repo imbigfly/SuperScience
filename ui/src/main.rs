@@ -13182,7 +13182,7 @@ fn App() -> impl IntoView {
                                                 None
                                             };
                                             view! {
-                                                <div class="rp-view">
+                                                <div class="rp-view" data-preview-kind=cur.kind>
                                                     <div class="rp-view-head">
                                                         <span class=format!("rp-badge {}", cur.kind)>{cur.kind.to_string()}</span>
                                                         <span class="rp-view-name">{cur.name.clone()}</span>

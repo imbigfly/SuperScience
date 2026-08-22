@@ -410,6 +410,16 @@ button.run-status:hover { filter:brightness(0.96); }
 .rp-view-head .icon-btn { flex-shrink: 0; }
 .rp-view-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .rp-path { margin: 0; font-family: var(--font-mono); font-size: 11px; word-break: break-all; }
+/* Keep DOCX chrome available while the document scrolls. The explicit flex
+   chain gives the renderer a bounded viewport without returning to the #274
+   failure mode where a tall document was clipped instead of scrollable. */
+.rp-view[data-preview-kind="docx"] { overflow: hidden; }
+.rp-view[data-preview-kind="docx"] > :is(.rp-view-head, .rp-path) { flex: 0 0 auto; }
+.rp-view[data-preview-kind="docx"] > .rp-file-preview,
+.rp-view[data-preview-kind="docx"] > .rp-file-preview > .rp-heavy {
+  display: flex; flex: 1 1 auto; min-height: 0; flex-direction: column;
+}
+.rp-view[data-preview-kind="docx"] .rp-docx { flex: 1 1 auto; min-height: 0; overflow: auto; }
 /* Type labels stay mono + quiet; only tabular data keeps a clay accent. */
 .rp-badge {
   font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
