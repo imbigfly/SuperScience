@@ -16,9 +16,41 @@ Agent tools
 | Session | Browser | Login state | Port |
 |---|---|---|---|
 | `shared` | User's existing Chrome/Edge profile | Daily cookies and extensions | 18765 |
-| `workspace` | System Chrome launched with `%APPDATA%/science.wisp-science/browser-workspace` | Clean until the user signs in there | 18766 |
+| `workspace` | Chrome-family build launched with `%APPDATA%/science.wisp-science/browser-workspace` | Clean until the user signs in there | 18766 |
 
 Both can be connected at once. If they are, tools must pass `session`.
+
+### Workspace mode needs a build that still loads unpacked extensions
+
+The workspace window is launched with `--load-extension` pointed at a copy
+of `browser-extension/` whose `session_config.js` targets port 18766.
+**Official Google Chrome removed that flag in version 137** and now only
+logs `--load-extension is not allowed in Google Chrome, ignoring`, so the
+window opens with no Wisp extension. Chromium and Chrome for Testing keep
+the flag.
+
+So `resolve_browser()` prefers a build that honors the flag (Chromium,
+Chrome for Testing, or whatever `WISP_WORKSPACE_BROWSER` points at) and
+falls back to branded Chrome only because releases older than 137 still
+work. `start_workspace` then **waits up to 20 s for the workspace
+extension to connect**; if it never does it closes the window and fails
+with `WORKSPACE_EXTENSION_BLOCKED` explaining the flag removal and the
+shared-session alternative. It never reports a spawned process as ready,
+which used to leave the agent driving a blank `about:blank` window (#952).
+
+Shared mode is unaffected: the user loads the extension once from
+`chrome://extensions` in the browser they already use.
+
+### When a connected extension is not a usable session
+
+The extension popup only reports whether its own socket is open, so it can
+read *Connected to Wisp* while Wisp reports `connected=false`.
+`browser_setup` therefore names the cause instead of only the symptom:
+
+| Field | Meaning |
+|---|---|
+| `refused_connection` | A client reached a bridge port and was refused — a foreign extension id, or another loopback bridge on the port. Carries the observed `origin`, the `expected_origin`, and the handshake error. |
+| `reload_required` | A connected extension is below `protocol_version` 2 or reported no capabilities. Chrome never auto-updates an unpacked extension, so the user must Reload it from `extension_path`. |
 
 ## What the extension does
 
@@ -36,7 +68,8 @@ The extension never writes project directories and never returns large base64 fi
 - Multiplexes two WebSocket listeners
 - Browser Task Lease (`last_session` + explicit `session`)
 - Copies staged files into the project and hashes SHA-256
-- Starts/stops the workspace Chrome window
+- Starts/stops the workspace browser window and verifies it connected
+- Records the last refused connection so an unclaimed extension has a reason
 - ChatGPT one-shot send/wait/read on an already-logged-in tab
 
 Playwright is not used. The user's daily Chrome User Data directory is never passed as `--user-data-dir`.
