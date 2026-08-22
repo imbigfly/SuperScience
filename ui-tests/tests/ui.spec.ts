@@ -7365,15 +7365,23 @@ test("DOCX artifacts render offline with headings, tables, and equations", async
   // The wrapping preview carries data-file-path so P2 selection/annotate works here too.
   await expect(page.locator('.rp-file-preview[data-file-path*="manuscript.docx"]')).toBeVisible();
 
-  // #274: a tall docx must be scrollable in the right pane (not trapped by a
-  // fixed-height .rp-docx). The .rp-view container owns the scroll.
+  // #274/#951: a tall docx must remain scrollable without carrying the preview
+  // header and its close action out of view. The document owns the scroll while
+  // the surrounding .rp-view stays fixed.
   const view = page.locator(".rp-view");
+  await expect(view).toHaveAttribute("data-preview-kind", "docx");
+  const closePreview = view.getByRole("button", { name: "Close preview" });
+  await expect(closePreview).toBeVisible();
   await docx.locator(".docx-wrapper").evaluate((el) => {
     (el as HTMLElement).style.minHeight = "4000px";
   });
-  await expect.poll(() => view.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeGreaterThan(100);
-  await view.evaluate((el) => { el.scrollTop = 500; });
-  await expect.poll(() => view.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+  await expect.poll(() => docx.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeGreaterThan(100);
+  await docx.evaluate((el) => { el.scrollTop = 500; });
+  await expect.poll(() => docx.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+  await expect.poll(() => view.evaluate((el) => el.scrollTop)).toBe(0);
+  await expect(closePreview).toBeVisible();
+  await closePreview.click();
+  await expect(view).toHaveCount(0);
 });
 
 test("DOCX opened from the Files browser scrolls inside the modal (#274)", async ({ page }) => {
