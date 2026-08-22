@@ -6,6 +6,7 @@ pub const EXTENSION_STALE: &str = "EXTENSION_STALE";
 pub const SESSION_REQUIRED: &str = "SESSION_REQUIRED";
 pub const USER_CONTROLLING: &str = "USER_CONTROLLING";
 pub const ASSET_BLOCKED: &str = "ASSET_BLOCKED";
+pub const WORKSPACE_EXTENSION_BLOCKED: &str = "WORKSPACE_EXTENSION_BLOCKED";
 
 pub fn structured(code: &str, message: &str, retryable: bool) -> String {
     json!({
