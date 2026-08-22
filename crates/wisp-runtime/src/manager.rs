@@ -607,9 +607,11 @@ impl RuntimeLauncher for LocalRuntimeLauncher {
                 )
             }
             RuntimeLanguage::R => {
-                let rscript = find_rscript().ok_or_else(|| {
-                    anyhow!("Rscript not found on PATH; install R and add Rscript to PATH")
-                })?;
+                let rscript = find_rscript()
+                    .map(|path| crate::direct_rscript(&path))
+                    .ok_or_else(|| {
+                        anyhow!("Rscript not found on PATH; install R and add Rscript to PATH")
+                    })?;
                 let worker = self
                     .r_worker
                     .as_ref()
