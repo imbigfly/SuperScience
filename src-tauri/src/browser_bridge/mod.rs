@@ -45,9 +45,13 @@ const EXTENSION_ORIGIN: &str = "chrome-extension://gnkjgagleagkgdlkkcianolobfdoo
 const BROWSER_DISCONNECTED_CODE: &str = "browser_extension_disconnected";
 const BROWSER_DISCONNECTED_MARKER: &str = "WISP_BROWSER_DISCONNECTED";
 const DISCONNECTED_ASSISTANT_INSTRUCTION: &str = "Live web retrieval is unavailable. Do not answer live, latest, current, or URL-specific questions from prior knowledge. Tell the user this turn contains no live web retrieval, relay the install steps, and wait until status is connected. Only continue from memory if they explicitly ask for a knowledge-only answer.";
+const STALE_ASSISTANT_INSTRUCTION: &str = "A connected extension is older than the protocol this build needs, so parts of the browser toolset will fail. Tell the user which session needs it, have them open chrome://extensions and Reload Wisp Real Browser Bridge from extension_path, and do not claim the newer tools exist.";
 const DEFAULT_TIMEOUT_MS: u64 = 15_000;
 const MAX_TIMEOUT_MS: u64 = 60_000;
 const AUTO_LAUNCH_WAIT: Duration = Duration::from_secs(15);
+/// How long `start_workspace` waits for the launched browser's extension to
+/// reach the workspace port before declaring the window unusable.
+const WORKSPACE_CONNECT_WAIT: Duration = Duration::from_secs(20);
 const MAX_SCRIPT_BYTES: usize = 64 * 1024;
 const MAX_RESULT_CHARS: usize = 200_000;
 /// Base64 payload ceiling for one screenshot, matching the shared image path's
@@ -88,12 +92,23 @@ struct SessionState {
     meta: SessionMeta,
 }
 
+/// A client that reached a bridge port but was never claimed as the Wisp
+/// extension. Kept so `browser_setup` can say *why* the extension popup shows
+/// "Connected to Wisp" while Wisp reports `connected=false`.
+#[derive(Clone, Debug)]
+struct RefusedConnection {
+    session: String,
+    origin: Option<String>,
+    reason: String,
+}
+
 #[derive(Default)]
 struct BridgeState {
     sessions: HashMap<String, SessionState>,
     last_session: Option<String>,
     startup_error: Option<String>,
     workspace_pid: Option<u32>,
+    last_refusal: Option<RefusedConnection>,
 }
 
 pub struct BrowserBridge {
@@ -142,6 +157,30 @@ fn session_summary(state: &BridgeState, name: &str) -> Value {
         "paused": meta.map(|meta| meta.paused).unwrap_or(false),
         "tabs": slot.map(|session| session.tabs.len()).unwrap_or(0),
         "reload_required": reload_required
+    })
+}
+
+/// Explain a refused connection in the terms the user sees: the popup says
+/// connected, Wisp says it is not.
+fn refusal_summary(refusal: Option<&RefusedConnection>) -> Value {
+    let Some(refusal) = refusal else {
+        return Value::Null;
+    };
+    let session = &refusal.session;
+    let explanation = match refusal.origin.as_deref() {
+        Some(origin) if !origin.is_empty() => format!(
+            "An extension at {origin} reached the {session} port and Wisp refused it, because this bridge only accepts {EXTENSION_ORIGIN}. Its own popup can still read Connected to Wisp while Wisp reports connected=false. Load the bundled extension from extension_path (a repacked or third-party copy gets a different id), and remove any other loopback bridge extension."
+        ),
+        _ => format!(
+            "A client reached the {session} port without completing the Wisp extension handshake, so no session was claimed and Wisp reports connected=false. Another browser bridge or a plain HTTP client is probably using this port; stop it, then reload the Wisp extension."
+        ),
+    };
+    json!({
+        "session": session,
+        "origin": refusal.origin,
+        "expected_origin": EXTENSION_ORIGIN,
+        "reason": refusal.reason,
+        "explanation": explanation
     })
 }
 
@@ -285,11 +324,6 @@ impl BrowserBridge {
         } else {
             "The running Wisp build has no verified bundled extension path. Do not invent a path or claim the extension exists."
         };
-        let assistant_instruction = if live_retrieval {
-            path_instruction.to_string()
-        } else {
-            format!("{DISCONNECTED_ASSISTANT_INSTRUCTION} {path_instruction}")
-        };
         let connected_tabs = ["shared", "workspace"]
             .into_iter()
             .filter_map(|name| state.sessions.get(name))
@@ -297,6 +331,14 @@ impl BrowserBridge {
             .sum::<usize>();
         let shared = session_summary(&state, "shared");
         let workspace = session_summary(&state, "workspace");
+        let reload_required = [&shared, &workspace]
+            .into_iter()
+            .any(|session| session["reload_required"] == Value::Bool(true));
+        let assistant_instruction = match (live_retrieval, reload_required) {
+            (true, false) => path_instruction.to_string(),
+            (true, true) => format!("{STALE_ASSISTANT_INSTRUCTION} {path_instruction}"),
+            (false, _) => format!("{DISCONNECTED_ASSISTANT_INSTRUCTION} {path_instruction}"),
+        };
         let bundled_extension_version = bundled_manifest_version(&self.extension_dir);
         let reported_extension_version = state
             .sessions
@@ -319,6 +361,8 @@ impl BrowserBridge {
             "bundled_extension_version": bundled_extension_version,
             "workspace_endpoint": format!("ws://{WORKSPACE_ADDR}"),
             "required_protocol": REQUIRED_PROTOCOL,
+            "reload_required": reload_required,
+            "refused_connection": refusal_summary(state.last_refusal.as_ref()),
             "workspace": workspace::status_json(workspace_connected, workspace_running),
             "sessions": {
                 "shared": shared,
@@ -380,20 +424,7 @@ impl BrowserBridge {
         self: Arc<Self>,
         stream: TcpStream,
     ) -> Result<(), tokio_tungstenite::tungstenite::Error> {
-        let socket = accept_hdr_async(stream, |request: &Request, response: Response| {
-            let origin = request
-                .headers()
-                .get("origin")
-                .and_then(|value| value.to_str().ok());
-            if allowed_extension_origin(origin) {
-                Ok(response)
-            } else {
-                Err(forbidden_response())
-            }
-        })
-        .await?;
-        self.serve_connection_on(socket, "shared".into()).await;
-        Ok(())
+        self.accept_connection_on(stream, "shared".into()).await
     }
 
     async fn accept_connection_on(
@@ -401,18 +432,40 @@ impl BrowserBridge {
         stream: TcpStream,
         session: String,
     ) -> Result<(), tokio_tungstenite::tungstenite::Error> {
-        let socket = accept_hdr_async(stream, |request: &Request, response: Response| {
+        // The handshake callback is synchronous, so the refused origin is parked
+        // here and folded into bridge state once the await returns. Without it a
+        // rejected extension is only a log line and the user is told nothing but
+        // `connected=false` (#952).
+        let refused: Arc<std::sync::Mutex<Option<String>>> = Arc::default();
+        let seen = refused.clone();
+        let handshake = accept_hdr_async(stream, move |request: &Request, response: Response| {
             let origin = request
                 .headers()
                 .get("origin")
-                .and_then(|value| value.to_str().ok());
-            if allowed_extension_origin(origin) {
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string);
+            if allowed_extension_origin(origin.as_deref()) {
                 Ok(response)
             } else {
+                if let Ok(mut slot) = seen.lock() {
+                    *slot = Some(origin.unwrap_or_default());
+                }
                 Err(forbidden_response())
             }
         })
-        .await?;
+        .await;
+        let socket = match handshake {
+            Ok(socket) => socket,
+            Err(error) => {
+                let origin = refused.lock().ok().and_then(|slot| slot.clone());
+                self.state.lock().await.last_refusal = Some(RefusedConnection {
+                    session,
+                    origin,
+                    reason: error.to_string(),
+                });
+                return Err(error);
+            }
+        };
         self.serve_connection_on(socket, session).await;
         Ok(())
     }
@@ -762,35 +815,87 @@ impl BrowserBridge {
     }
 
     async fn start_workspace(&self) -> Result<Value, String> {
-        let source = PathBuf::from(self.verified_extension_path().ok_or_else(|| {
+        let extension_path = self.verified_extension_path().ok_or_else(|| {
             "bundled browser-extension path is not available; cannot materialize workspace copy"
                 .to_string()
-        })?);
-        let extension = workspace::materialize_extension(&source)?;
-        let child = workspace::launch_chrome(&workspace::profile_dir(), &extension)?;
-        let pid = child.id();
-        std::mem::forget(child);
+        })?;
+        let extension = workspace::materialize_extension(Path::new(&extension_path))?;
+        self.start_workspace_with(
+            workspace::resolve_browser()?,
+            &extension_path,
+            &extension,
+            WORKSPACE_CONNECT_WAIT,
+            |browser, profile, extension| {
+                let child = workspace::launch_browser(browser, profile, extension)?;
+                let pid = child.id();
+                std::mem::forget(child);
+                Ok(pid)
+            },
+            workspace::terminate,
+        )
+        .await
+    }
+
+    /// Launch the workspace browser and only report success once its extension
+    /// has actually connected. Chrome 137+ ignores `--load-extension`, so
+    /// reporting the spawned process as ready left the agent driving a blank
+    /// window that could never answer (#952).
+    async fn start_workspace_with<L, T>(
+        &self,
+        browser: workspace::WorkspaceBrowser,
+        extension_path: &str,
+        extension: &Path,
+        wait: Duration,
+        launch: L,
+        terminate: T,
+    ) -> Result<Value, String>
+    where
+        L: FnOnce(&workspace::WorkspaceBrowser, &Path, &Path) -> Result<u32, String>,
+        T: FnOnce(u32),
+    {
+        let pid = launch(&browser, &workspace::profile_dir(), extension)?;
         self.state.lock().await.workspace_pid = Some(pid);
-        Ok(workspace::status_json(false, true))
+        if self.wait_for_session("workspace", wait).await {
+            return Ok(workspace::status_json(true, true));
+        }
+        self.state.lock().await.workspace_pid = None;
+        terminate(pid);
+        Err(errors::structured(
+            errors::WORKSPACE_EXTENSION_BLOCKED,
+            &workspace::extension_blocked_message(&browser, extension_path, wait),
+            false,
+        ))
     }
 
     async fn stop_workspace(&self) -> Result<Value, String> {
         let pid = self.state.lock().await.workspace_pid.take();
         if let Some(pid) = pid {
-            #[cfg(windows)]
-            {
-                let _ = std::process::Command::new("taskkill")
-                    .args(["/PID", &pid.to_string(), "/T", "/F"])
-                    .status();
-            }
-            #[cfg(not(windows))]
-            {
-                let _ = std::process::Command::new("kill")
-                    .args(["-TERM", &pid.to_string()])
-                    .status();
-            }
+            workspace::terminate(pid);
         }
         Ok(workspace::status_json(false, false))
+    }
+
+    async fn wait_for_session(&self, session: &str, wait: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            if self.session_connected(session).await {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    async fn session_connected(&self, session: &str) -> bool {
+        self.state
+            .lock()
+            .await
+            .sessions
+            .get(session)
+            .and_then(|slot| slot.client.as_ref())
+            .is_some()
     }
 
     async fn tabs(&self) -> Result<Vec<BrowserTab>, String> {
@@ -1344,11 +1449,11 @@ impl Tool for BrowserSetupTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             self.name(),
-            "Call when the user asks to configure, install, set up, or connect the real browser, and before any live page retrieval. The result is derived from the running Wisp binary's native Tauri resource directory and includes the manual settings required for unattended single and multiple downloads. Copy extension_path character-for-character and never convert it between Windows, WSL, macOS, or Linux. If status is not connected, live_retrieval is false: do not answer live, latest, current, or URL-specific questions from prior knowledge; relay the steps and wait. If extension_path_verified is false, report the missing bundled extension and never invent a path.",
+            "Call when the user asks to configure, install, set up, or connect the real browser, and before any live page retrieval. The result is derived from the running Wisp binary's native Tauri resource directory and includes the manual settings required for unattended single and multiple downloads. Copy extension_path character-for-character and never convert it between Windows, WSL, macOS, or Linux. If status is not connected, live_retrieval is false: do not answer live, latest, current, or URL-specific questions from prior knowledge; relay the steps and wait. If refused_connection is present, relay its explanation: the extension popup can read Connected to Wisp while Wisp refuses that socket. If reload_required is true, have the user reload the extension. If extension_path_verified is false, report the missing bundled extension and never invent a path.",
             json!({
                 "type": "object",
                 "properties": {
-                    "action": { "type": "string", "description": "Optional: start_workspace or stop_workspace" }
+                    "action": { "type": "string", "description": "Optional: start_workspace (returns only once the workspace extension connects, and fails with WORKSPACE_EXTENSION_BLOCKED when the launched browser cannot load it) or stop_workspace" }
                 },
                 "additionalProperties": false
             }),
@@ -2972,6 +3077,122 @@ mod tests {
         assert!(info["code"].is_null());
         assert_eq!(info["extension_path_verified"], false);
         assert_eq!(info["auto_launch_browser"], false);
+    }
+
+    fn fake_browser(loads_unpacked_extensions: bool) -> workspace::WorkspaceBrowser {
+        workspace::WorkspaceBrowser {
+            name: "Google Chrome".into(),
+            path: PathBuf::from("/opt/chrome"),
+            loads_unpacked_extensions,
+        }
+    }
+
+    #[tokio::test]
+    async fn workspace_start_closes_a_window_whose_extension_never_connects() {
+        let bridge = Arc::new(BrowserBridge::new(PathBuf::from("extension")));
+        let terminated = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorder = terminated.clone();
+
+        let error = bridge
+            .start_workspace_with(
+                fake_browser(false),
+                "/opt/wisp/browser-extension",
+                Path::new("/tmp/workspace-extension"),
+                Duration::from_millis(10),
+                |_, _, _| Ok(4242),
+                move |pid| recorder.lock().unwrap().push(pid),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.contains(errors::WORKSPACE_EXTENSION_BLOCKED));
+        assert!(error.contains("--load-extension"));
+        assert!(error.contains("chrome://extensions"));
+        // The doomed about:blank window is closed and forgotten, so a later
+        // stop_workspace cannot kill an unrelated process id.
+        assert_eq!(*terminated.lock().unwrap(), vec![4242]);
+        assert!(bridge.state.lock().await.workspace_pid.is_none());
+    }
+
+    #[tokio::test]
+    async fn workspace_start_reports_ready_only_after_the_extension_connects() {
+        let bridge = Arc::new(BrowserBridge::new(PathBuf::from("extension")));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        bridge.install_client_on(1, tx, "workspace").await;
+
+        let status = bridge
+            .start_workspace_with(
+                fake_browser(true),
+                "/opt/wisp/browser-extension",
+                Path::new("/tmp/workspace-extension"),
+                Duration::from_millis(10),
+                |_, _, _| Ok(4242),
+                |pid| panic!("a connected workspace must not be terminated, got {pid}"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(status["connected"], true);
+        assert_eq!(status["process_running"], true);
+        assert_eq!(bridge.state.lock().await.workspace_pid, Some(4242));
+    }
+
+    #[test]
+    fn refused_connection_explains_why_a_connected_popup_is_not_claimed() {
+        assert!(refusal_summary(None).is_null());
+
+        let foreign = refusal_summary(Some(&RefusedConnection {
+            session: "shared".into(),
+            origin: Some("chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
+            reason: "HTTP error: 403 Forbidden".into(),
+        }));
+        assert_eq!(foreign["session"], "shared");
+        assert_eq!(foreign["expected_origin"], EXTENSION_ORIGIN);
+        assert_eq!(foreign["reason"], "HTTP error: 403 Forbidden");
+        let explanation = foreign["explanation"].as_str().unwrap();
+        assert!(explanation.contains("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+        assert!(explanation.contains("Connected to Wisp"));
+
+        let unfinished = refusal_summary(Some(&RefusedConnection {
+            session: "workspace".into(),
+            origin: None,
+            reason: "WebSocket protocol error: Handshake not finished".into(),
+        }));
+        assert!(unfinished["explanation"]
+            .as_str()
+            .unwrap()
+            .contains("without completing the Wisp extension handshake"));
+    }
+
+    #[tokio::test]
+    async fn setup_names_the_refusal_and_the_stale_reload_instead_of_only_connected_false() {
+        let bridge = Arc::new(BrowserBridge::new(PathBuf::from("extension")));
+        bridge.state.lock().await.last_refusal = Some(RefusedConnection {
+            session: "shared".into(),
+            origin: Some("chrome-extension://other".into()),
+            reason: "HTTP error: 403 Forbidden".into(),
+        });
+        let info = bridge.setup_info().await;
+        assert_eq!(
+            info["refused_connection"]["origin"],
+            "chrome-extension://other"
+        );
+        assert_eq!(info["reload_required"], false);
+
+        // A protocol-1 extension connects and its popup reads Connected, so the
+        // status must name the reload rather than looking healthy.
+        let (tx, _rx) = mpsc::unbounded_channel();
+        bridge.install_client(1, tx).await;
+        bridge
+            .handle_text(1, r#"{"type":"ext_ready","protocol_version":1,"tabs":[]}"#)
+            .await;
+        let info = bridge.setup_info().await;
+        assert_eq!(info["reload_required"], true);
+        assert_eq!(info["sessions"]["shared"]["reload_required"], true);
+        assert!(info["assistant_instruction"]
+            .as_str()
+            .unwrap()
+            .contains("Reload Wisp Real Browser Bridge"));
     }
 
     #[test]
