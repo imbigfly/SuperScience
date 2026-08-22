@@ -146,6 +146,42 @@ Agent 读写项目文件、执行 shell，并按需加载 Skills（`SKILL.md`）
   <a href="https://github.com/chewice"><img src="https://avatars.githubusercontent.com/u/244145152?v=4&amp;s=96" width="64" height="64" alt="@chewice" title="@chewice"></a>
   <a href="https://github.com/XuuChen"><img src="https://avatars.githubusercontent.com/u/99383234?v=4&amp;s=96" width="64" height="64" alt="@XuuChen" title="@XuuChen"></a>
   <a href="https://github.com/shengxinzhuan"><img src="https://avatars.githubusercontent.com/u/54225560?v=4&amp;s=96" width="64" height="64" alt="@shengxinzhuan" title="@shengxinzhuan"></a>
+  <a href="https://github.com/c020627"><img src="https://avatars.githubusercontent.com/u/251123242?v=4&amp;s=96" width="64" height="64" alt="@c020627" title="@c020627"></a>
+  <a href="https://github.com/chenhd3"><img src="https://avatars.githubusercontent.com/u/52345106?v=4&amp;s=96" width="64" height="64" alt="@chenhd3" title="@chenhd3"></a>
+  <a href="https://github.com/ChrisLou-bioinfo"><img src="https://avatars.githubusercontent.com/u/34942834?v=4&amp;s=96" width="64" height="64" alt="@ChrisLou-bioinfo" title="@ChrisLou-bioinfo"></a>
+  <a href="https://github.com/Emberwhirl"><img src="https://avatars.githubusercontent.com/u/5317953?v=4&amp;s=96" width="64" height="64" alt="@Emberwhirl" title="@Emberwhirl"></a>
+  <a href="https://github.com/entpyf"><img src="https://avatars.githubusercontent.com/u/125380093?v=4&amp;s=96" width="64" height="64" alt="@entpyf" title="@entpyf"></a>
+  <a href="https://github.com/georgeatparallel"><img src="https://avatars.githubusercontent.com/u/297992784?v=4&amp;s=96" width="64" height="64" alt="@georgeatparallel" title="@georgeatparallel"></a>
+  <a href="https://github.com/HanWang-kui"><img src="https://avatars.githubusercontent.com/u/306124623?v=4&amp;s=96" width="64" height="64" alt="@HanWang-kui" title="@HanWang-kui"></a>
+  <a href="https://github.com/hero199409"><img src="https://avatars.githubusercontent.com/u/296349483?v=4&amp;s=96" width="64" height="64" alt="@hero199409" title="@hero199409"></a>
+  <a href="https://github.com/hi-fei-cool"><img src="https://avatars.githubusercontent.com/u/167007368?v=4&amp;s=96" width="64" height="64" alt="@hi-fei-cool" title="@hi-fei-cool"></a>
+  <a href="https://github.com/Hongweili0424"><img src="https://avatars.githubusercontent.com/u/139341349?v=4&amp;s=96" width="64" height="64" alt="@Hongweili0424" title="@Hongweili0424"></a>
+  <a href="https://github.com/hufanglq"><img src="https://avatars.githubusercontent.com/u/10824450?v=4&amp;s=96" width="64" height="64" alt="@hufanglq" title="@hufanglq"></a>
+  <a href="https://github.com/JohnnyChen1113"><img src="https://avatars.githubusercontent.com/u/30077595?v=4&amp;s=96" width="64" height="64" alt="@JohnnyChen1113" title="@JohnnyChen1113"></a>
+  <a href="https://github.com/jxshi"><img src="https://avatars.githubusercontent.com/u/28937112?v=4&amp;s=96" width="64" height="64" alt="@jxshi" title="@jxshi"></a>
+  <a href="https://github.com/knifer510"><img src="https://avatars.githubusercontent.com/u/37789525?v=4&amp;s=96" width="64" height="64" alt="@knifer510" title="@knifer510"></a>
+  <a href="https://github.com/Kururu1799"><img src="https://avatars.githubusercontent.com/u/64822570?v=4&amp;s=96" width="64" height="64" alt="@Kururu1799" title="@Kururu1799"></a>
+  <a href="https://github.com/Lin-medical"><img src="https://avatars.githubusercontent.com/u/309001021?v=4&amp;s=96" width="64" height="64" alt="@Lin-medical" title="@Lin-medical"></a>
+  <a href="https://github.com/liufahui005"><img src="https://avatars.githubusercontent.com/u/188657823?v=4&amp;s=96" width="64" height="64" alt="@liufahui005" title="@liufahui005"></a>
+  <a href="https://github.com/LiuXiao-888"><img src="https://avatars.githubusercontent.com/u/286878566?v=4&amp;s=96" width="64" height="64" alt="@LiuXiao-888" title="@LiuXiao-888"></a>
+  <a href="https://github.com/mayunyu925"><img src="https://avatars.githubusercontent.com/u/256124565?v=4&amp;s=96" width="64" height="64" alt="@mayunyu925" title="@mayunyu925"></a>
+  <a href="https://github.com/mugpeng"><img src="https://avatars.githubusercontent.com/u/52995448?v=4&amp;s=96" width="64" height="64" alt="@mugpeng" title="@mugpeng"></a>
+  <a href="https://github.com/pilaobanmust-sketch"><img src="https://avatars.githubusercontent.com/u/269459169?v=4&amp;s=96" width="64" height="64" alt="@pilaobanmust-sketch" title="@pilaobanmust-sketch"></a>
+  <a href="https://github.com/portos-wang"><img src="https://avatars.githubusercontent.com/u/246403081?v=4&amp;s=96" width="64" height="64" alt="@portos-wang" title="@portos-wang"></a>
+  <a href="https://github.com/qneurolab"><img src="https://avatars.githubusercontent.com/u/69098252?v=4&amp;s=96" width="64" height="64" alt="@qneurolab" title="@qneurolab"></a>
+  <a href="https://github.com/ryys1122"><img src="https://avatars.githubusercontent.com/u/8609374?v=4&amp;s=96" width="64" height="64" alt="@ryys1122" title="@ryys1122"></a>
+  <a href="https://github.com/Sanhang-learn"><img src="https://avatars.githubusercontent.com/u/175394997?v=4&amp;s=96" width="64" height="64" alt="@Sanhang-learn" title="@Sanhang-learn"></a>
+  <a href="https://github.com/shevenlee"><img src="https://avatars.githubusercontent.com/u/49136350?v=4&amp;s=96" width="64" height="64" alt="@shevenlee" title="@shevenlee"></a>
+  <a href="https://github.com/Shipeng-Guo"><img src="https://avatars.githubusercontent.com/u/16771195?v=4&amp;s=96" width="64" height="64" alt="@Shipeng-Guo" title="@Shipeng-Guo"></a>
+  <a href="https://github.com/xiaochuheying"><img src="https://avatars.githubusercontent.com/u/304300062?v=4&amp;s=96" width="64" height="64" alt="@xiaochuheying" title="@xiaochuheying"></a>
+  <a href="https://github.com/xwttracy-source"><img src="https://avatars.githubusercontent.com/u/243696678?v=4&amp;s=96" width="64" height="64" alt="@xwttracy-source" title="@xwttracy-source"></a>
+  <a href="https://github.com/yeungyuenming"><img src="https://avatars.githubusercontent.com/u/231188244?v=4&amp;s=96" width="64" height="64" alt="@yeungyuenming" title="@yeungyuenming"></a>
+  <a href="https://github.com/yikeshu0611"><img src="https://avatars.githubusercontent.com/u/33260177?v=4&amp;s=96" width="64" height="64" alt="@yikeshu0611" title="@yikeshu0611"></a>
+  <a href="https://github.com/Zac-lzh"><img src="https://avatars.githubusercontent.com/u/223252975?v=4&amp;s=96" width="64" height="64" alt="@Zac-lzh" title="@Zac-lzh"></a>
+  <a href="https://github.com/zhaoliang0302"><img src="https://avatars.githubusercontent.com/u/42333702?v=4&amp;s=96" width="64" height="64" alt="@zhaoliang0302" title="@zhaoliang0302"></a>
+  <a href="https://github.com/zhuifeng1991"><img src="https://avatars.githubusercontent.com/u/186464554?v=4&amp;s=96" width="64" height="64" alt="@zhuifeng1991" title="@zhuifeng1991"></a>
+  <a href="https://github.com/Zulity"><img src="https://avatars.githubusercontent.com/u/33241990?v=4&amp;s=96" width="64" height="64" alt="@Zulity" title="@Zulity"></a>
+  <a href="https://github.com/zuolan1999-jpg"><img src="https://avatars.githubusercontent.com/u/293331524?v=4&amp;s=96" width="64" height="64" alt="@zuolan1999-jpg" title="@zuolan1999-jpg"></a>
 </p>
 
 Windows 代码签名由 [SignPath.io](https://signpath.io) 提供，证书由
