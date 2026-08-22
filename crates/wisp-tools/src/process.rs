@@ -327,7 +327,11 @@ impl ProcessTree {
 
 impl Drop for ProcessTree {
     fn drop(&mut self) {
-        let _ = self.terminate_forcefully();
+        // Drop routinely runs after the direct child has been reaped -- an
+        // interpreter that exited on its own, an abandoned launch -- so this
+        // must be the checked variant. Signalling a numeric process-group id
+        // that is already free could reach an unrelated process.
+        let _ = self.terminate_if_running();
     }
 }
 
