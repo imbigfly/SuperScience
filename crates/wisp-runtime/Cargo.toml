@@ -17,3 +17,7 @@ wisp-llm = { workspace = true }
 wisp-tools = { workspace = true }
 wisp-paths = { workspace = true }
 dunce = { workspace = true }
+
+[dev-dependencies]
+# test-util enables tokio::time::pause so stop-budget tests skip real waits.
+tokio = { workspace = true, features = ["test-util"] }

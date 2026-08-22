@@ -16,6 +16,13 @@ pub const PROTOCOL_VERSION: u32 = 1;
 pub const MAX_CODE_BYTES: usize = 1024 * 1024;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_WORKER_STDERR_BYTES: usize = 32 * 1024;
+/// Stopping a worker is bounded by these three budgets in sequence. Every step
+/// has a way to overrun on a real host: a worker can ignore stdin EOF, a
+/// wrapper process can outlive its own kill, and a descendant that inherited
+/// the stderr pipe can hold its write end open indefinitely.
+const WORKER_EXIT_GRACE: Duration = Duration::from_secs(2);
+const WORKER_KILL_WAIT: Duration = Duration::from_secs(2);
+const WORKER_STDERR_DRAIN: Duration = Duration::from_millis(500);
 
 type WorkerStderrTail = Arc<Mutex<Vec<u8>>>;
 
@@ -94,7 +101,10 @@ struct RawObjects {
 
 pub struct KernelClient {
     child: Child,
-    stdin: ChildStdin,
+    /// Held as `Option` so shutdown can drop the handle. Closing the write end
+    /// is the only way the worker ever sees stdin EOF: tokio's
+    /// `ChildStdin::shutdown` is a no-op on both Unix and Windows.
+    stdin: Option<ChildStdin>,
     stdout: BufReader<ChildStdout>,
     stderr_tail: WorkerStderrTail,
     stderr_task: Option<JoinHandle<()>>,
@@ -168,16 +178,16 @@ impl KernelClient {
         let ready = match read_ready(&mut stdout, expected_language, STARTUP_TIMEOUT).await {
             Ok(ready) => ready,
             Err(error) => {
-                let _ = child.kill().await;
-                let status = child.wait().await.ok();
-                let _ = stderr_task.await;
+                drop(stdin);
+                let status = kill_worker(&mut child).await.ok();
+                drain_stderr(stderr_task).await;
                 let detail = worker_failure_detail(status.as_ref(), &stderr_tail).await;
                 return Err(anyhow!("kernel worker handshake: {error}; {detail}"));
             }
         };
         Ok(Self {
             child,
-            stdin,
+            stdin: Some(stdin),
             stdout,
             stderr_tail,
             stderr_task: Some(stderr_task),
@@ -203,10 +213,8 @@ impl KernelClient {
             let detail = worker_failure_detail(Some(&status), &self.stderr_tail).await;
             bail!("kernel worker exited before execution request '{id}'; {detail}");
         }
-        let request = serde_json::json!({ "type": "execute", "id": id, "code": code });
-        self.stdin.write_all(request.to_string().as_bytes()).await?;
-        self.stdin.write_all(b"\n").await?;
-        self.stdin.flush().await?;
+        self.send(serde_json::json!({ "type": "execute", "id": id, "code": code }))
+            .await?;
         match read_response(&mut self.stdout, id, output).await {
             Ok(response) => Ok(response),
             Err(error) => {
@@ -224,10 +232,8 @@ impl KernelClient {
             let detail = worker_failure_detail(Some(&status), &self.stderr_tail).await;
             bail!("kernel worker exited before inspection request '{id}'; {detail}");
         }
-        let request = serde_json::json!({ "type": "inspect", "id": id });
-        self.stdin.write_all(request.to_string().as_bytes()).await?;
-        self.stdin.write_all(b"\n").await?;
-        self.stdin.flush().await?;
+        self.send(serde_json::json!({ "type": "inspect", "id": id }))
+            .await?;
         match read_objects(&mut self.stdout, id).await {
             Ok(objects) => Ok(objects),
             Err(error) => {
@@ -239,19 +245,28 @@ impl KernelClient {
         }
     }
 
-    async fn shutdown_worker(&mut self) -> Result<()> {
-        let _ = self.stdin.shutdown().await;
-        match tokio::time::timeout(Duration::from_millis(750), self.child.wait()).await {
-            Ok(status) => {
-                status?;
-            }
-            Err(_) => {
-                self.child.kill().await?;
-                let _ = self.child.wait().await?;
-            }
-        }
-        self.finish_stderr_capture().await;
+    async fn send(&mut self, request: serde_json::Value) -> Result<()> {
+        let stdin = self
+            .stdin
+            .as_mut()
+            .ok_or_else(|| anyhow!("kernel worker stdin is already closed"))?;
+        stdin.write_all(request.to_string().as_bytes()).await?;
+        stdin.write_all(b"\n").await?;
+        stdin.flush().await?;
         Ok(())
+    }
+
+    /// Stop the worker within a bounded budget. Dropping stdin gives the worker
+    /// EOF so it can exit on its own and take its own descendants with it;
+    /// anything slower is killed and reaped under a deadline.
+    async fn shutdown_worker(&mut self) -> Result<()> {
+        drop(self.stdin.take());
+        let stopped = match tokio::time::timeout(WORKER_EXIT_GRACE, self.child.wait()).await {
+            Ok(status) => status.map(|_| ()).map_err(anyhow::Error::from),
+            Err(_) => kill_worker(&mut self.child).await.map(|_| ()),
+        };
+        self.finish_stderr_capture().await;
+        stopped
     }
 
     async fn failure_detail(&mut self, action: &str) -> String {
@@ -268,8 +283,32 @@ impl KernelClient {
 
     async fn finish_stderr_capture(&mut self) {
         if let Some(task) = self.stderr_task.take() {
-            let _ = task.await;
+            drain_stderr(task).await;
         }
+    }
+}
+
+/// Kill the direct child and reap it under a deadline. This cannot reach
+/// grandchildren: on Windows `Rscript.exe` is a wrapper that re-launches
+/// `bin\x64\Rscript.exe` through `cmd.exe`, and only the wrapper dies here.
+async fn kill_worker(child: &mut Child) -> Result<std::process::ExitStatus> {
+    child.start_kill()?;
+    tokio::time::timeout(WORKER_KILL_WAIT, child.wait())
+        .await
+        .map_err(|_| anyhow!("kernel worker did not exit within {WORKER_KILL_WAIT:?} of kill"))?
+        .map_err(Into::into)
+}
+
+/// Collect whatever stderr the worker already produced, then stop waiting. The
+/// write end of that pipe is inherited by every descendant the worker started,
+/// so EOF can arrive long after the worker itself is gone — or never.
+async fn drain_stderr(task: JoinHandle<()>) {
+    let abort = task.abort_handle();
+    if tokio::time::timeout(WORKER_STDERR_DRAIN, task)
+        .await
+        .is_err()
+    {
+        abort.abort();
     }
 }
 
@@ -608,6 +647,74 @@ mod tests {
         assert!(detail.contains("closed protocol stdout"), "{detail}");
         assert!(detail.contains("native runtime crash"), "{detail}");
         assert!(detail.contains("23"), "{detail}");
+    }
+
+    const READY_FRAME: &str =
+        r#"{"type":"ready","protocol":1,"language":"python","pid":1,"version":"test"}"#;
+
+    /// A worker that completes its handshake and then behaves like `tail`.
+    #[cfg(unix)]
+    fn fake_worker(tail: &str) -> Vec<OsString> {
+        vec![
+            OsString::from("-c"),
+            OsString::from(format!("printf '%s\\n' '{READY_FRAME}'; {tail}")),
+        ]
+    }
+
+    /// Dropping the handle is the only thing that closes the pipe: tokio's
+    /// `ChildStdin::poll_shutdown` returns `Ready(Ok(()))` without touching the
+    /// file descriptor on both Unix and Windows, so a worker waiting on stdin
+    /// used to be killed on every stop instead of exiting on its own.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn closing_stdin_lets_a_worker_exit_before_the_kill_deadline() {
+        let mut client = KernelClient::spawn_command(
+            Path::new("sh"),
+            &fake_worker("cat > /dev/null"),
+            &[],
+            None,
+            "python",
+        )
+        .await
+        .unwrap();
+
+        let started = std::time::Instant::now();
+        client.shutdown().await.unwrap();
+        assert!(
+            started.elapsed() < WORKER_EXIT_GRACE,
+            "worker should exit on stdin EOF rather than wait out the grace period"
+        );
+    }
+
+    /// On Windows `Rscript.exe` is a wrapper that re-launches
+    /// `bin\x64\Rscript.exe` through `cmd.exe`, so killing the direct child
+    /// leaves a grandchild holding the inherited stderr pipe and its EOF never
+    /// arrives (#941). A shell process tree reproduces that shape portably.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_is_bounded_when_a_descendant_holds_the_stderr_pipe_open() {
+        let mut client = KernelClient::spawn_command(
+            Path::new("sh"),
+            &fake_worker("sleep 30 & sleep 30"),
+            &[],
+            None,
+            "python",
+        )
+        .await
+        .unwrap();
+
+        let budget = WORKER_EXIT_GRACE + WORKER_KILL_WAIT + WORKER_STDERR_DRAIN;
+        tokio::time::timeout(budget + Duration::from_secs(5), client.shutdown())
+            .await
+            .expect("shutdown must not wait for a surviving descendant")
+            .unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stderr_drain_gives_up_on_a_reader_that_never_reaches_eof() {
+        let started = tokio::time::Instant::now();
+        drain_stderr(tokio::spawn(std::future::pending())).await;
+        assert!(started.elapsed() >= WORKER_STDERR_DRAIN);
     }
 
     #[test]
