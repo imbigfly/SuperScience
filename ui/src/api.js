@@ -1924,6 +1924,220 @@ function injectMcpAppCsp(html, resourceMeta) {
   return `<!doctype html><html><head>${tag}</head><body>${html}</body></html>`;
 }
 
+function injectMotifWispBridge(html) {
+  const script = `<script>
+(() => {
+  const reply = (method, params) => parent.postMessage({ jsonrpc: "2.0", method, params }, "*");
+  const activeRecord = () => {
+    try { return typeof window.motifGetActiveRecord === "function" ? window.motifGetActiveRecord() : null; }
+    catch { return null; }
+  };
+  const recordSequence = (record) => typeof record?.seq === "string"
+    ? record.seq.toUpperCase()
+    : typeof record?.sequence === "string"
+      ? record.sequence.toUpperCase()
+      : "";
+  const coordinateNumber = (value) => Number(String(value || "").replace(/[^0-9]/g, ""));
+  const sequenceRange = (record, start, end, wrap = false) => {
+    const source = recordSequence(record);
+    if (!start || !end || start > source.length || end > source.length) return "";
+    return wrap || start > end
+      ? source.slice(start - 1) + source.slice(0, end)
+      : source.slice(start - 1, end);
+  };
+  const renderedSelection = (record) => {
+    const label = document.querySelector(
+      ".motif-cs-selection-bar:not([data-empty='true']) .motif-cs-selection-name",
+    )?.textContent?.trim() || "";
+    const match = label.match(/^([0-9][0-9,. ]*)-([0-9][0-9,. ]*)( wrap)? \\(([0-9][0-9,. ]*)\\)$/);
+    if (!match) return null;
+    const start = coordinateNumber(match[1]);
+    const end = coordinateNumber(match[2]);
+    const length = coordinateNumber(match[4]);
+    const sequence = sequenceRange(record, start, end, Boolean(match[3]));
+    return sequence.length === length ? { start, end, strand: "forward", sequence } : null;
+  };
+  const featureSelection = (record) => {
+    const label = document.querySelector(
+      ".motif-cs-selection-bar:not([data-empty='true']) .motif-cs-selection-name",
+    )?.textContent?.trim() || "";
+    const labelMatch = label.match(/^(.*?)\s+([0-9][0-9,. ]*)-([0-9][0-9,. ]*)(?:\s+wrap)?$/);
+    const annotations = Array.isArray(record?.annotations)
+      ? record.annotations
+      : Array.isArray(record?.features) ? record.features : [];
+    const selectedNode = document.querySelector(
+      ".motif-pm-feature[aria-pressed='true'][data-feature-id], .motif-cs-feature-block[aria-pressed='true']",
+    );
+    const selectedId = selectedNode?.getAttribute("data-feature-id") || "";
+    let feature = selectedId
+      ? annotations.find((annotation) => String(annotation?.id || "") === selectedId)
+      : null;
+    if (!feature && labelMatch) {
+      const start = coordinateNumber(labelMatch[2]);
+      const end = coordinateNumber(labelMatch[3]);
+      const name = labelMatch[1].trim();
+      feature = annotations.find((annotation) => (
+        Number(annotation?.start) + 1 === start
+        && Number(annotation?.end) === end
+        && String(annotation?.name || "").trim() === name
+      ));
+    }
+    if (!feature) return null;
+    const start = Number(feature.start) + 1;
+    const end = Number(feature.end);
+    const sequence = sequenceRange(record, start, end);
+    if (!sequence) return null;
+    return {
+      start,
+      end,
+      strand: Number(feature.strand) === -1 ? "reverse" : "forward",
+      sequence,
+      featureName: String(feature.name || "").trim() || undefined,
+    };
+  };
+  const nativeSelection = (record) => {
+    const source = recordSequence(record);
+    const raw = String(getSelection()?.toString() || "");
+    const sequence = raw.replace(/[^A-Za-z*.-]/g, "").toUpperCase();
+    if (!source || !sequence) return null;
+    const offset = source.indexOf(sequence);
+    return offset < 0 ? null : { start: offset + 1, end: offset + sequence.length, strand: "forward", sequence };
+  };
+  let lastNativeSelection = null;
+  let selectionLengthFrame = 0;
+  const updateSelectionLength = () => {
+    selectionLengthFrame = 0;
+    const bar = document.querySelector(".motif-cs-selection-bar");
+    if (!bar) return;
+    const record = activeRecord();
+    const recordId = String(record?.id || "");
+    const selection = renderedSelection(record)
+      || featureSelection(record)
+      || (bar.matches(":not([data-empty='true'])")
+        ? null
+        : nativeSelection(record)
+          || (lastNativeSelection?.recordId === recordId ? lastNativeSelection : null));
+    let badge = bar.querySelector("[data-wisp-motif-selection-length]");
+    if (!selection?.sequence) {
+      badge?.remove();
+      return;
+    }
+    const length = Array.from(selection.sequence).length;
+    const label = length.toLocaleString() + " bp";
+    if (!badge) {
+      badge = document.createElement("span");
+      badge.setAttribute("data-wisp-motif-selection-length", "");
+      badge.style.cssText = "margin-left:auto;padding-left:10px;white-space:nowrap;font-weight:700;font-variant-numeric:tabular-nums;color:currentColor;pointer-events:none";
+      bar.appendChild(badge);
+    }
+    if (badge.textContent !== label) badge.textContent = label;
+    badge.setAttribute("aria-label", "Selected sequence length: " + label);
+  };
+  const scheduleSelectionLengthUpdate = () => {
+    if (selectionLengthFrame) return;
+    selectionLengthFrame = requestAnimationFrame(updateSelectionLength);
+  };
+  const rememberNativeSelection = () => {
+    const record = activeRecord();
+    const selection = nativeSelection(record);
+    if (selection) lastNativeSelection = { recordId: String(record?.id || ""), ...selection };
+    scheduleSelectionLengthUpdate();
+  };
+  document.addEventListener("selectionchange", rememberNativeSelection);
+  document.addEventListener("pointerup", rememberNativeSelection, true);
+  document.addEventListener("keyup", rememberNativeSelection, true);
+  const scrollSelectedFeatureIntoView = () => {
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const block = document.querySelector(".motif-cs-feature-block[aria-pressed='true']");
+      const pane = block?.closest(".motif-cs-sequence-column");
+      if (!block || !pane) return;
+      const blockRect = block.getBoundingClientRect();
+      const paneRect = pane.getBoundingClientRect();
+      pane.scrollTop = Math.max(0, pane.scrollTop + blockRect.top - paneRect.top
+        - Math.max(0, (pane.clientHeight - blockRect.height) / 2));
+    }));
+  };
+  const scheduleFeatureFocus = (target) => {
+    if (!(target instanceof Element) || !target.closest(".motif-pm-feature[data-feature-id]")) return;
+    lastNativeSelection = null;
+    scrollSelectedFeatureIntoView();
+  };
+  document.addEventListener("click", (event) => scheduleFeatureFocus(event.target), true);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") scheduleFeatureFocus(event.target);
+  }, true);
+  const featureFocusObserver = new MutationObserver(() => {
+    if (document.querySelector(".motif-cs-feature-block[aria-pressed='true']")) {
+      scrollSelectedFeatureIntoView();
+    }
+    scheduleSelectionLengthUpdate();
+  });
+  featureFocusObserver.observe(document.body, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    attributeFilter: ["aria-pressed"],
+  });
+  scheduleSelectionLengthUpdate();
+  addEventListener("message", (event) => {
+    const message = event.data || {};
+    if (message.jsonrpc !== "2.0") return;
+    if (message.method === "wisp/motif-add-records") {
+      try {
+        if (typeof window.motifAddRecords !== "function") throw new Error("Motif record API is not ready.");
+        const records = Array.isArray(message.params?.records) ? message.params.records : [];
+        window.motifAddRecords(records);
+        reply("wisp/notifications/motif-records-added", { requestId: message.params?.requestId, count: records.length });
+      } catch (error) {
+        reply("wisp/notifications/motif-bridge-error", { requestId: message.params?.requestId, message: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    if (message.method === "wisp/motif-get-selection") {
+      try {
+        const record = activeRecord();
+        const recordId = String(record?.id || "");
+        const selection = renderedSelection(record)
+          || featureSelection(record)
+          || (document.querySelector(".motif-cs-selection-bar:not([data-empty='true'])")
+            ? null
+            : nativeSelection(record)
+              || (lastNativeSelection?.recordId === recordId ? lastNativeSelection : null));
+        if (!record || !selection) throw new Error("Select a sequence range in Motif first.");
+        reply("wisp/notifications/motif-selection", {
+          requestId: message.params?.requestId,
+          recordName: String(record.name || record.id || "Motif record"),
+          recordId,
+          molecule: String(record.type || record.molecule || "dna"),
+          start: selection.start,
+          end: selection.end,
+          strand: selection.strand || "forward",
+          sequence: selection.sequence,
+          featureName: selection.featureName,
+        });
+      } catch (error) {
+        reply("wisp/notifications/motif-bridge-error", { requestId: message.params?.requestId, message: error instanceof Error ? error.message : String(error) });
+      }
+    }
+  });
+  let readyAttempts = 0;
+  const announceReady = () => {
+    if (typeof window.motifGetActiveRecord === "function") {
+      reply("wisp/notifications/motif-bridge-ready", {});
+      return;
+    }
+    readyAttempts += 1;
+    if (readyAttempts < 200) setTimeout(announceReady, 50);
+  };
+  announceReady();
+})();
+</script>`;
+  // Motif bundles may contain literal `</body>` text inside minified scripts.
+  // Never splice the document with a regex: HTML parsers accept a trailing
+  // script after </html> and place it in the document body without corrupting
+  // any of Motif's original script boundaries.
+  return `${html}${script}`;
+}
+
 function ensureMcpAppParkingRoot() {
   if (mcpAppParkingRoot?.isConnected) return mcpAppParkingRoot;
   const root = document.createElement("div");
@@ -1977,6 +2191,8 @@ function createMcpAppInstance(instanceId, payloadJson) {
     teardownTimer: null,
     resizeObserver: null,
     onMessage: null,
+    motifRequestId: 0,
+    motifRequests: new Map(),
   };
   const post = (message) => frame.contentWindow?.postMessage(message, "*");
   const clearModelContext = () => invoke("update_mcp_app_context", {
@@ -2038,6 +2254,27 @@ function createMcpAppInstance(instanceId, payloadJson) {
   instance.onMessage = (event) => {
     if (event.source !== frame.contentWindow || !event.data || event.data.jsonrpc !== "2.0") return;
     const message = event.data;
+    if (message.method?.startsWith("wisp/notifications/motif-")) {
+      if (message.method === "wisp/notifications/motif-bridge-ready") {
+        if (!instance.initialized) {
+          instance.initialized = true;
+          sendData();
+          sendHostContext();
+        }
+        return;
+      }
+      const requestId = message.params?.requestId;
+      const pending = instance.motifRequests.get(requestId);
+      if (pending) {
+        instance.motifRequests.delete(requestId);
+        if (message.method === "wisp/notifications/motif-bridge-error") {
+          pending.reject(new Error(message.params?.message || "Motif bridge failed."));
+        } else {
+          pending.resolve(message.params || {});
+        }
+      }
+      return;
+    }
     if (message.method === "ui/initialize" && message.id != null) {
       const hostCapabilities = {
         sandbox: { csp: payload?.resource?._meta?.ui?.csp || payload?.resource?._meta?.csp || {} },
@@ -2159,7 +2396,10 @@ function createMcpAppInstance(instanceId, payloadJson) {
   instance.requestTeardown = requestTeardown;
   instance.sendHostContext = sendHostContext;
   window.addEventListener("message", instance.onMessage);
-  frame.srcdoc = injectMcpAppCsp(html, payload?.resource?._meta);
+  const bridgedHtml = payload?.tool?.name === "motif_open_workbench"
+    ? injectMotifWispBridge(html)
+    : html;
+  frame.srcdoc = injectMcpAppCsp(bridgedHtml, payload?.resource?._meta);
   mcpAppInstances.set(instanceId, instance);
   return instance;
 }
@@ -2199,6 +2439,294 @@ export function park_mcp_app(instanceId) {
   instance.resizeObserver?.disconnect();
   instance.target = null;
   ensureMcpAppParkingRoot().appendChild(instance.frame);
+}
+
+/** Read one explicitly selected local sequence file and load it into the live
+ * Motif instance through the MCP connection that opened the workbench. */
+const SNAPGENE_FEATURE_TYPES = Object.freeze({
+  cds: "cds",
+  gene: "gene",
+  promoter: "promoter",
+  terminator: "terminator",
+  rbs: "rbs",
+  rep_origin: "origin",
+  origin: "origin",
+  primer_bind: "primer_bind",
+  protein_bind: "regulatory",
+  regulatory: "regulatory",
+  enhancer: "enhancer",
+  mrna: "mRNA",
+  rrna: "rRNA",
+  trna: "tRNA",
+  ncrna: "ncRNA",
+  repeat_region: "repeat_region",
+  sig_peptide: "sig_peptide",
+  mat_peptide: "mat_peptide",
+  transit_peptide: "transit_peptide",
+  intron: "intron",
+  exon: "exon",
+  polya_signal: "polyA_signal",
+  misc_feature: "misc_feature",
+});
+
+function snapGeneFeatureType(value) {
+  const key = String(value || "misc_feature").trim().toLowerCase();
+  return SNAPGENE_FEATURE_TYPES[key] || "custom";
+}
+
+function snapGenePlainText(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (!/[<&]/.test(text)) return text.slice(0, 16_384);
+  const document = new DOMParser().parseFromString(text, "text/html");
+  return (document.body?.textContent || text.replace(/<[^>]*>/g, " "))
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 16_384);
+}
+
+function snapGeneFeatureMetadata(feature, originalType) {
+  const metadata = Object.create(null);
+  if (originalType) metadata.snapGeneType = originalType;
+  for (const qualifier of feature.getElementsByTagName("Q")) {
+    const name = qualifier.getAttribute("name")?.trim();
+    if (!name || name === "__proto__" || name === "constructor" || name === "prototype") continue;
+    const values = [];
+    for (const value of qualifier.getElementsByTagName("V")) {
+      const raw = value.getAttribute("text")
+        ?? value.getAttribute("predef")
+        ?? value.getAttribute("int")
+        ?? value.getAttribute("real")
+        ?? value.getAttribute("bool")
+        ?? value.textContent;
+      const normalized = snapGenePlainText(raw);
+      if (normalized) values.push(normalized);
+    }
+    if (values.length > 0) metadata[name] = values.length === 1 ? values[0] : values;
+  }
+  return metadata;
+}
+
+function snapGeneSegment(range, sequenceLength, strand) {
+  const match = String(range || "").match(/^\s*(\d+)\s*-\s*(\d+)\s*$/);
+  if (!match) return [];
+  const oneBasedStart = Number(match[1]);
+  const oneBasedEnd = Number(match[2]);
+  if (!Number.isSafeInteger(oneBasedStart) || !Number.isSafeInteger(oneBasedEnd)
+      || oneBasedStart < 1 || oneBasedEnd < 1
+      || oneBasedStart > sequenceLength || oneBasedEnd > sequenceLength) return [];
+  if (oneBasedStart <= oneBasedEnd) {
+    return [{ start: oneBasedStart - 1, end: oneBasedEnd, strand }];
+  }
+  // Circular features may cross coordinate 1. Motif accepts split subranges.
+  return [
+    { start: oneBasedStart - 1, end: sequenceLength, strand },
+    { start: 0, end: oneBasedEnd, strand },
+  ];
+}
+
+function parseSnapGeneFeatureXml(packet, sequenceLength) {
+  let xml;
+  try { xml = new TextDecoder("utf-8", { fatal: true }).decode(packet).replace(/^\uFEFF/, "").trim(); }
+  catch { return null; }
+  // Compressed legacy packets are skipped when the file also carries the
+  // modern XML packet. Treating compressed bytes as XML would invent data.
+  if (!xml.startsWith("<")) return null;
+  const document = new DOMParser().parseFromString(xml, "application/xml");
+  if (document.querySelector("parsererror")) return null;
+  const annotations = [];
+  const features = document.getElementsByTagName("Feature");
+  for (let index = 0; index < features.length && index < 10_000; index += 1) {
+    const feature = features[index];
+    const directionality = feature.getAttribute("directionality");
+    const strand = directionality === "2" ? -1 : directionality === "1" ? 1 : 0;
+    const subRanges = [];
+    let color = null;
+    for (const segment of feature.getElementsByTagName("Segment")) {
+      subRanges.push(...snapGeneSegment(segment.getAttribute("range"), sequenceLength, strand));
+      color ||= segment.getAttribute("color")?.trim() || null;
+    }
+    if (subRanges.length === 0) continue;
+    const originalType = feature.getAttribute("type")?.trim() || "misc_feature";
+    annotations.push({
+      id: `snapgene-feature-${index + 1}`,
+      name: (feature.getAttribute("name")?.trim() || `Feature ${index + 1}`).slice(0, 512),
+      type: snapGeneFeatureType(originalType),
+      start: Math.min(...subRanges.map((segment) => segment.start)),
+      end: Math.max(...subRanges.map((segment) => segment.end)),
+      strand,
+      ...(color ? { color } : {}),
+      metadata: snapGeneFeatureMetadata(feature, originalType),
+      ...(subRanges.length > 1 ? { subRanges } : {}),
+    });
+  }
+  return annotations;
+}
+
+function parseSnapGeneDna(input, filename) {
+  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const decoder = new TextDecoder("ascii", { fatal: true });
+  let offset = 0;
+  let sawCookie = false;
+  let sequence = null;
+  let circular = false;
+  const modernFeaturePackets = [];
+  const legacyFeaturePackets = [];
+  while (offset < bytes.length) {
+    if (bytes.length - offset < 5) throw new Error("The SnapGene .dna file has a truncated packet header.");
+    const type = bytes[offset];
+    const length = view.getUint32(offset + 1, false);
+    offset += 5;
+    if (length > bytes.length - offset) throw new Error("The SnapGene .dna file has a truncated packet.");
+    const packet = bytes.subarray(offset, offset + length);
+    offset += length;
+    if (type === 0x09) {
+      if (length < 14 || decoder.decode(packet.subarray(0, 8)) !== "SnapGene") {
+        throw new Error("The selected .dna file is not a valid SnapGene file.");
+      }
+      sawCookie = true;
+    } else if (type === 0x00) {
+      if (length < 2) throw new Error("The SnapGene .dna file has no sequence data.");
+      circular = (packet[0] & 0x01) !== 0;
+      const sequenceOffset = packet.length > 1 && packet[1] === 0x6e ? 2 : 1;
+      sequence = decoder.decode(packet.subarray(sequenceOffset)).toUpperCase();
+    } else if (type === 0x0a) {
+      modernFeaturePackets.push(packet);
+    } else if (type === 0x07) {
+      legacyFeaturePackets.push(packet);
+    }
+  }
+  if (!sawCookie || sequence == null) throw new Error("The selected .dna file has no SnapGene DNA sequence packet.");
+  if (!/^[ACGTRYSWKMBDHVNU]+$/.test(sequence)) {
+    throw new Error("The SnapGene sequence contains unsupported DNA symbols.");
+  }
+  if (sequence.length > 2_000_000) throw new Error("Motif DNA imports are limited to 2,000,000 bases.");
+  let annotations = null;
+  for (const packet of [...modernFeaturePackets, ...legacyFeaturePackets]) {
+    const parsed = parseSnapGeneFeatureXml(packet, sequence.length);
+    if (parsed !== null) {
+      annotations = parsed;
+      if (parsed.length > 0) break;
+    }
+  }
+  const name = filename.replace(/\.dna$/i, "").trim() || "SnapGene sequence";
+  return {
+    records: [{
+      name,
+      type: "dna",
+      topology: circular ? "circular" : "linear",
+      sequence,
+      annotations: annotations || [],
+    }],
+  };
+}
+
+function motifArgumentsForBytes(bytes, filename) {
+  if (/\.dna$/i.test(filename)) return { payload: parseSnapGeneDna(bytes, filename) };
+  if (bytes.byteLength > 2_000_000) throw new Error("Motif text imports are limited to 2,000,000 bytes.");
+  let content;
+  try { content = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+  catch { throw new Error("This is a binary file. Use SnapGene .dna or a supported text sequence format."); }
+  if (!content.trim()) throw new Error("The selected DNA file is empty.");
+  if (content.includes("\0")) throw new Error("This is a binary file. Use SnapGene .dna or a supported text sequence format.");
+  return { content, filename };
+}
+
+async function callMotifOpen(instance, motifArgs) {
+  const result = await invoke_strict("call_mcp_app_tool", {
+    instanceId: instance.id,
+    name: "motif_open_workbench",
+    arguments: motifArgs,
+  });
+  if (result?.isError) {
+    const message = result.content?.find((item) => item?.type === "text")?.text;
+    throw new Error(message || "Motif rejected the selected DNA file.");
+  }
+  return result;
+}
+
+function motifBridgeRequest(instance, method, params = {}) {
+  return new Promise((resolve, reject) => {
+    const requestId = ++instance.motifRequestId;
+    instance.motifRequests.set(requestId, { resolve, reject });
+    instance.frame.contentWindow?.postMessage({
+      jsonrpc: "2.0",
+      method,
+      params: { ...params, requestId },
+    }, "*");
+    window.setTimeout(() => {
+      if (instance.motifRequests.delete(requestId)) reject(new Error("Motif did not respond in time."));
+    }, 5000);
+  });
+}
+
+export async function import_motif_dna_file(instanceId) {
+  const instance = mcpAppInstances.get(instanceId);
+  if (!instance?.initialized || !instance.frame.contentWindow) {
+    throw new Error("The Motif workbench is not ready.");
+  }
+  if (instance.payload?.tool?.name !== "motif_open_workbench") {
+    throw new Error("Local DNA import is only available in the Motif workbench.");
+  }
+
+  const file = await new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".dna,.fa,.fasta,.fna,.ffn,.faa,.frn,.gb,.gbk,.genbank,.txt,.seq,.json,text/plain,application/json";
+    input.style.display = "none";
+    const finish = (selected) => {
+      input.remove();
+      resolve(selected || null);
+    };
+    input.addEventListener("change", () => finish(input.files?.[0]), { once: true });
+    input.addEventListener("cancel", () => finish(null), { once: true });
+    document.body.appendChild(input);
+    input.click();
+  });
+  if (!file) return { imported: false, cancelled: true };
+  if (file.size > 32 * 1024 * 1024) throw new Error("The selected DNA file exceeds the 32 MiB import limit.");
+
+  const motifArgs = motifArgumentsForBytes(
+    new Uint8Array(await file.arrayBuffer()),
+    file.name,
+  );
+
+  const result = await callMotifOpen(instance, motifArgs);
+  instance.frame.contentWindow.postMessage({
+    jsonrpc: "2.0",
+    method: "ui/notifications/tool-result",
+    params: result || { content: [] },
+  }, "*");
+  return {
+    imported: true,
+    filename: file.name,
+    recordCount: result?.structuredContent?.recordCount ?? 0,
+  };
+}
+
+/** Parse a project file with Motif's MCP tool, then append its records to the
+ * already-open workbench without replacing the current inventory. */
+export async function add_workspace_file_to_motif(instanceId, path) {
+  const instance = mcpAppInstances.get(instanceId);
+  if (!instance?.initialized || instance.payload?.tool?.name !== "motif_open_workbench") {
+    throw new Error("Open Motif in the current conversation before adding a project file.");
+  }
+  const filename = String(path).split(/[\\/]/).pop() || "sequence";
+  const bytes = await previewBytes({ path, maxBytes: 32 * 1024 * 1024 });
+  const result = await callMotifOpen(instance, motifArgumentsForBytes(bytes, filename));
+  const records = result?.structuredContent?.payload?.records;
+  if (!Array.isArray(records) || records.length === 0) throw new Error("Motif did not return any DNA records.");
+  await motifBridgeRequest(instance, "wisp/motif-add-records", { records });
+  return { imported: true, filename, recordCount: records.length };
+}
+
+export async function request_motif_selection(instanceId) {
+  const instance = mcpAppInstances.get(instanceId);
+  if (!instance?.initialized || instance.payload?.tool?.name !== "motif_open_workbench") {
+    throw new Error("The Motif workbench is not ready.");
+  }
+  return await motifBridgeRequest(instance, "wisp/motif-get-selection");
 }
 
 /** Close a center-tab MCP App and give it a bounded graceful teardown window. */

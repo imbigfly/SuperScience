@@ -49,6 +49,15 @@ extern "C" {
     pub(crate) fn mount_mcp_app(instance_id: &str, el_id: &str, payload_json: &str) -> bool;
     #[wasm_bindgen(js_name = park_mcp_app)]
     pub(crate) fn park_mcp_app(instance_id: &str);
+    #[wasm_bindgen(catch, js_name = import_motif_dna_file)]
+    pub(crate) async fn import_motif_dna_file(instance_id: &str) -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(catch, js_name = add_workspace_file_to_motif)]
+    pub(crate) async fn add_workspace_file_to_motif(
+        instance_id: &str,
+        path: &str,
+    ) -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(catch, js_name = request_motif_selection)]
+    pub(crate) async fn request_motif_selection(instance_id: &str) -> Result<JsValue, JsValue>;
     #[wasm_bindgen(js_name = close_mcp_app)]
     pub(crate) fn close_mcp_app(instance_id: &str);
     #[wasm_bindgen(js_name = pasted_image_count)]

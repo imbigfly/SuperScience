@@ -124,6 +124,46 @@ guessing MCP tools from its display name. The acceptance checks are:
    under `.wisp/plugin-artifacts/`, and that file opens in Wisp's artifact
    preview.
 
+When the live Motif workbench is open, its host toolbar also provides **Load
+DNA file**. The browser picker can select a SnapGene `.dna`, FASTA, GenBank,
+raw-sequence, or Motif JSON file from anywhere the user can access; the file does not need
+to be copied into the Wisp project first. Wisp reads only the explicitly
+selected file and sends its bounded text content through the existing
+`motif_open_workbench` MCP connection. SnapGene packets are parsed locally;
+the DNA sequence, name, topology, and modern SnapGene feature annotations
+(names, types, ranges, direction, colors, segments, and qualifiers) are sent to
+Motif. Features therefore remain visible on the sequence and plasmid map instead
+of being reduced to an unannotated sequence. Malformed or other
+unknown binary files fail instead of being interpreted as protein. Binary AB1/ABI traces continue to use
+Motif's own **Add Entry -> Choose files** importer.
+
+Supported sequence files in the project Files pane also expose **Add to
+Motif**. With a live Motif workbench in the current conversation, Wisp parses
+the file through `motif_open_workbench` and appends the returned records via
+Motif's workspace API, preserving the existing inventory. Without a live
+workbench, Wisp attaches the file and prepares an instruction to open Motif and
+add it, rather than silently dropping the action.
+
+The Motif host toolbar provides **Add selection to chat**. Wisp asks the
+sandboxed workbench for the browser's highlighted sequence text, verifies that
+it is an exact substring of Motif's active record, and calculates one-based
+coordinates. The composer receives both a visible reference card and a
+structured text block containing record identity, coordinates, strand,
+molecule type, and exact sequence. Highlighted UI text that does not match the
+active record fails closed; Wisp never guesses sequence coordinates.
+
+Clicking an annotated feature on Motif's plasmid map also scrolls the sequence
+pane to that feature. **Add selection to chat** resolves the selected feature
+by its annotation ID before considering browser text selection, and includes
+the feature name, full coordinates, strand, and exact genomic sequence. This
+prevents a stale two-base browser selection from replacing a map feature.
+
+The Motif selection bar shows the selected sequence length in base pairs as
+soon as a range or annotated feature is selected. The same deterministic
+length is included in the composer reference card and structured chat context;
+it is calculated locally from the selected sequence and does not require a
+model call.
+
 Run this acceptance test natively on Windows as well. Wisp keeps canonical
 containment checks but passes ordinary drive-letter paths to Node MCP entrypoints;
 Windows verbatim (`\\?\`) paths are not valid Node entry-script arguments.
