@@ -2205,7 +2205,10 @@ async fn update_mcp_app_context(
 }
 
 /// Hard ceiling on a single MCP App `tools/call` argument JSON blob.
-const MAX_MCP_APP_ARGUMENT_BYTES: usize = 256 * 1024;
+// Live scientific viewers can legitimately receive bounded sequence payloads
+// (Motif caps text input at 2,000,000 bytes). Keep this below the result cap
+// while allowing the host's explicit local-file import path.
+const MAX_MCP_APP_ARGUMENT_BYTES: usize = 3 * 1024 * 1024;
 /// Hard ceiling on a single MCP App `tools/call` result JSON blob.
 const MAX_MCP_APP_RESULT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_MCP_APP_TOOL_NAME_BYTES: usize = 256;

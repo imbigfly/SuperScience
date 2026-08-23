@@ -69,6 +69,15 @@
 .center-file-preview[data-preview-kind="fasta"] .rp-fasta-wrap { flex: 1 1 auto; min-height: 0; max-height: none; }
 .center-file-preview.center-mcp-app-preview { display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; padding: 0; }
 .center-file-preview.center-mcp-app-preview .center-file-head { position: static; margin: 0; }
+.center-mcp-app-shell { min-width: 0; min-height: 0; width: 100%; height: 100%; display: grid; grid-template-rows: minmax(0, 1fr); overflow: hidden; }
+.center-mcp-app-shell.has-toolbar { grid-template-rows: auto minmax(0, 1fr); }
+.center-mcp-app-toolbar { min-width: 0; display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-bottom: 1px solid var(--border); background: var(--bg-elev); }
+.center-mcp-import { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border: 1px solid var(--accent); border-radius: var(--radius-xs); background: color-mix(in srgb, var(--accent) 8%, var(--bg-elev)); color: var(--accent); font-size: 12px; font-weight: 600; cursor: pointer; }
+.center-mcp-import:disabled { cursor: wait; opacity: .65; }
+.center-mcp-import svg { width: 15px; height: 15px; }
+.center-mcp-import-hint, .center-mcp-import-status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: 11px; }
+.center-mcp-import-status { margin-left: auto; color: var(--ok); }
+.center-mcp-import-status.fail { color: var(--err); }
 .center-mcp-app { min-width: 0; min-height: 0; width: 100%; height: 100%; overflow: hidden; background: #fff; }
 .center-file-preview[data-preview-kind="docx"] { padding: 0; }
 .center-file-preview[data-preview-kind="docx"] .rp-docx { flex: 1 1 auto; min-height: 0; overflow: auto; }

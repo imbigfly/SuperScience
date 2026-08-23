@@ -33,7 +33,8 @@ use app_overlays::{
     UpdateCheckOverlay, UpdateCheckOverlayState,
 };
 use bindings::{
-    attach_chat_autoscroll, cancel_saved_marks_apply, clear_selection, close_mcp_app,
+    add_workspace_file_to_motif, attach_chat_autoscroll, cancel_saved_marks_apply,
+    clear_selection, close_mcp_app,
     force_chat_bottom, invoke, invoke_checked, is_mac, is_windows, jump_chat_to_item,
     jump_chat_to_user, listen, listen_current_window, listen_native_file_drop,
     native_drop_in_composer, open_external_url, pasted_image_count, preserve_chat_prepend_position,
@@ -321,6 +322,7 @@ fn App() -> impl IntoView {
     });
     let input = create_rw_signal(String::new());
     let attachments = create_rw_signal::<Vec<ComposerAttachment>>(vec![]);
+    let motif_selection = create_rw_signal(None::<MotifSelection>);
     let uploading = create_rw_signal(false);
     let remote_file_uploading = create_rw_signal(false);
     let files_drag_over = create_rw_signal(false);
@@ -3531,6 +3533,7 @@ fn App() -> impl IntoView {
             queue_seq.set(qid);
             input.set(String::new());
             attachments.set(vec![]);
+            motif_selection.set(None);
             composer_references.set(vec![]);
             composer_quotes.set(vec![]);
             picker_mode.set(None);
@@ -3579,6 +3582,7 @@ fn App() -> impl IntoView {
         };
         input.set(String::new());
         attachments.set(vec![]);
+        motif_selection.set(None);
         composer_references.set(vec![]);
         composer_quotes.set(vec![]);
         picker_mode.set(None);
@@ -7350,6 +7354,36 @@ fn App() -> impl IntoView {
                 focus_composer();
                 return;
             }
+            if action == "addWorkspaceFileToMotif" {
+                if let Some(instance_id) = active_motif_instance(&mcp_apps.get_untracked()) {
+                    spawn_local(async move {
+                        match add_workspace_file_to_motif(&instance_id, &payload).await {
+                            Ok(_) => show_toast(&tf(
+                                locale.get_untracked(),
+                                "motif.added_file",
+                                &[("name", payload.rsplit(['/', '\\']).next().unwrap_or(&payload))],
+                            )),
+                            Err(error) => show_warning_toast(&js_error_text(error)),
+                        }
+                    });
+                } else {
+                    let _ = attach_ready_path(attachments, payload.clone());
+                    let filename = payload.rsplit(['/', '\\']).next().unwrap_or(&payload);
+                    input.update(|draft| {
+                        if !draft.trim().is_empty() {
+                            draft.push_str("\n\n");
+                        }
+                        draft.push_str(&tf(
+                            locale.get_untracked(),
+                            "motif.open_and_add_prompt",
+                            &[("name", filename)],
+                        ));
+                    });
+                    show_warning_toast(&t(locale.get_untracked(), "motif.open_first"));
+                    focus_composer();
+                }
+                return;
+            }
             if action == "registerWorkspaceArtifact" {
                 spawn_local(async move {
                     let arg = to_value(&serde_json::json!({
@@ -9978,7 +10012,21 @@ fn App() -> impl IntoView {
                         </div>
                         {if is_mcp_app {
                             mcp_apps.get().get(&path).cloned().map(|payload_json| view! {
-                                <McpAppPreview instance_id=path.clone() payload_json=payload_json />
+                                <McpAppPreview
+                                    instance_id=path.clone()
+                                    payload_json=payload_json
+                                    on_selection=Callback::new(move |selection: MotifSelection| {
+                                        let block = selection.composer_text();
+                                        input.update(|draft| {
+                                            if !draft.trim().is_empty() {
+                                                draft.push_str("\n\n");
+                                            }
+                                            draft.push_str(&block);
+                                        });
+                                        motif_selection.set(Some(selection));
+                                        focus_composer();
+                                    })
+                                />
                             }).into_view()
                         } else {
                             view! {
@@ -11294,6 +11342,29 @@ fn App() -> impl IntoView {
                                     on:click=move |_| feedback_context.set(None)>{compose_icon("close")}</button>
                             </div>
                         </div>
+                    })}
+                    {move || motif_selection.get().map(|selection| {
+                        let selection_label = selection.feature_name.as_deref()
+                            .filter(|name| !name.trim().is_empty())
+                            .map(|name| format!("{} · {name}", selection.record_name.clone()))
+                            .unwrap_or_else(|| selection.record_name.clone());
+                        view! { <div class="composer-attachments composer-reference-chips" data-testid="motif-selection-reference">
+                            <div class="composer-attachment-row composer-reference-card motif-selection">
+                                <span class="composer-attachment-icon">{compose_icon("dna")}</span>
+                                <span class="composer-attachment-copy">
+                                    <span class="composer-attachment ready">{selection_label}</span>
+                                    <span class="composer-attachment-meta">{format!("{}-{} · {} bp", selection.start, selection.end, selection.length_bp())}</span>
+                                </span>
+                                <button type="button" class="composer-attachment-remove"
+                                    title=move || t(locale.get(), "composer.remove_attachment")
+                                    aria-label=move || t(locale.get(), "composer.remove_attachment")
+                                    on:click=move |_| {
+                                        let block = selection.composer_text();
+                                        input.update(|draft| *draft = draft.replace(&block, "").trim().to_string());
+                                        motif_selection.set(None);
+                                    }>{compose_icon("close")}</button>
+                            </div>
+                        </div> }
                     })}
                     {move || (!attachments.get().is_empty()).then(|| view! {
                         <div class="composer-attachments">
