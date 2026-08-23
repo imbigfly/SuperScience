@@ -27,10 +27,11 @@ use agent_workflows::{
     agent_workflows_panel, refresh_agent_resources, refresh_agent_workflows, AgentPanelState,
 };
 use app_overlays::{
-    ContextRecoveryOverlay, ContextRecoveryOverlayState, ExternalLinkConfirm, ProjectExportPrompt,
-    ProjectExportPromptState, ProjectTransferOverlay, ProjectTransferOverlayState,
-    SshConnectivityOverlay, SshConnectivityOverlayState, TurnMemoryOverlay, TurnMemoryOverlayState,
-    UpdateCheckOverlay, UpdateCheckOverlayState,
+    advance_browser_tab_cleanup, present_browser_tab_cleanup, BrowserTabCleanupOverlay,
+    BrowserTabCleanupOverlayState, ContextRecoveryOverlay, ContextRecoveryOverlayState,
+    ExternalLinkConfirm, ProjectExportPrompt, ProjectExportPromptState, ProjectTransferOverlay,
+    ProjectTransferOverlayState, SshConnectivityOverlay, SshConnectivityOverlayState,
+    TurnMemoryOverlay, TurnMemoryOverlayState, UpdateCheckOverlay, UpdateCheckOverlayState,
 };
 use bindings::{
     add_workspace_file_to_motif, attach_chat_autoscroll, cancel_saved_marks_apply,
@@ -831,6 +832,11 @@ fn App() -> impl IntoView {
     // Live web retrieval failed because the Chrome extension is disconnected.
     // Root-owned so Escape can dismiss it without first focusing the banner.
     let browser_offline_notice = create_rw_signal::<Option<BrowserOfflineNotice>>(None);
+    let browser_tab_cleanup = create_rw_signal(None::<BrowserTabCleanupPrompt>);
+    let browser_tab_cleanup_queue = create_rw_signal(Vec::<BrowserTabCleanupPrompt>::new());
+    let browser_tab_cleanup_selected = create_rw_signal(HashSet::<(String, i64)>::new());
+    let browser_tab_cleanup_busy = create_rw_signal(false);
+    let browser_tab_cleanup_error = create_rw_signal(None::<String>);
     // "不再提醒更新" opt-out; loaded on startup, mirrored by the settings toggle.
     let update_check_enabled = create_rw_signal(true);
     // Set when a send fails because no API key is configured, so the status bar
@@ -3131,6 +3137,47 @@ fn App() -> impl IntoView {
     std::mem::forget(confirm_cb);
     spawn_local(async move {
         let _ = listen("confirm-request", &confirm_js).await;
+    });
+
+    let browser_cleanup_pending = browser_tab_cleanup;
+    let browser_cleanup_queue = browser_tab_cleanup_queue;
+    let browser_cleanup_selected = browser_tab_cleanup_selected;
+    let browser_cleanup_error = browser_tab_cleanup_error;
+    let browser_cleanup_cb = Closure::wrap(Box::new(move |payload: JsValue| {
+        if let Ok(prompt) = serde_wasm_bindgen::from_value::<BrowserTabCleanupPrompt>(payload) {
+            present_browser_tab_cleanup(
+                browser_cleanup_pending,
+                browser_cleanup_queue,
+                browser_cleanup_selected,
+                browser_cleanup_error,
+                prompt,
+            );
+        }
+    }) as Box<dyn FnMut(JsValue)>);
+    let browser_cleanup_js = browser_cleanup_cb
+        .as_ref()
+        .unchecked_ref::<js_sys::Function>()
+        .clone();
+    std::mem::forget(browser_cleanup_cb);
+    spawn_local(async move {
+        let _ = listen("browser-tab-cleanup", &browser_cleanup_js).await;
+        if let Ok(value) =
+            invoke_checked("list_pending_browser_tab_cleanups", JsValue::UNDEFINED).await
+        {
+            if let Ok(prompts) =
+                serde_wasm_bindgen::from_value::<Vec<BrowserTabCleanupPrompt>>(value)
+            {
+                for prompt in prompts {
+                    present_browser_tab_cleanup(
+                        browser_cleanup_pending,
+                        browser_cleanup_queue,
+                        browser_cleanup_selected,
+                        browser_cleanup_error,
+                        prompt,
+                    );
+                }
+            }
+        }
     });
     let acp_permission_items = items;
     let acp_permission_active = active_session;
@@ -7816,6 +7863,26 @@ fn App() -> impl IntoView {
             external_link_confirm.set(None);
             return;
         }
+        if browser_tab_cleanup.get().is_some() {
+            ev.prevent_default();
+            if !browser_tab_cleanup_busy.get() {
+                if let Some(prompt) = browser_tab_cleanup.get_untracked() {
+                    let turn_id = prompt.turn_id.clone();
+                    spawn_local(async move {
+                        let arg = to_value(&serde_json::json!({ "turnId": turn_id })).unwrap();
+                        let _ = invoke_checked("dismiss_browser_tab_cleanup", arg).await;
+                    });
+                }
+                advance_browser_tab_cleanup(
+                    browser_tab_cleanup,
+                    browser_tab_cleanup_queue,
+                    browser_tab_cleanup_selected,
+                    browser_tab_cleanup_error,
+                    browser_tab_cleanup_busy,
+                );
+            }
+            return;
+        }
         if turn_memory_proposal.get().is_some() {
             ev.prevent_default();
             if !turn_memory_busy.get() {
@@ -9464,6 +9531,63 @@ fn App() -> impl IntoView {
         />
         <ProjectTransferOverlay state=ProjectTransferOverlayState { locale, project_transfer } />
         <ExternalLinkConfirm locale=locale pending=external_link_confirm />
+        <BrowserTabCleanupOverlay
+            state=BrowserTabCleanupOverlayState {
+                locale,
+                pending: browser_tab_cleanup,
+                selected: browser_tab_cleanup_selected,
+                busy: browser_tab_cleanup_busy,
+                error: browser_tab_cleanup_error,
+            }
+            on_keep=Callback::new(move |_| {
+                if browser_tab_cleanup_busy.get_untracked() {
+                    return;
+                }
+                let Some(prompt) = browser_tab_cleanup.get_untracked() else {
+                    return;
+                };
+                browser_tab_cleanup_busy.set(true);
+                spawn_local(async move {
+                    let arg = to_value(&serde_json::json!({ "turnId": prompt.turn_id })).unwrap();
+                    let _ = invoke_checked("dismiss_browser_tab_cleanup", arg).await;
+                    advance_browser_tab_cleanup(
+                        browser_tab_cleanup,
+                        browser_tab_cleanup_queue,
+                        browser_tab_cleanup_selected,
+                        browser_tab_cleanup_error,
+                        browser_tab_cleanup_busy,
+                    );
+                });
+            })
+            on_close=Callback::new(move |tabs: Vec<BrowserTabCleanupItem>| {
+                if browser_tab_cleanup_busy.get_untracked() {
+                    return;
+                }
+                let Some(prompt) = browser_tab_cleanup.get_untracked() else {
+                    return;
+                };
+                browser_tab_cleanup_busy.set(true);
+                spawn_local(async move {
+                    let arg = to_value(&serde_json::json!({
+                        "turnId": prompt.turn_id,
+                        "tabs": tabs,
+                    })).unwrap();
+                    match invoke_checked("confirm_browser_tab_cleanup", arg).await {
+                        Ok(_) => advance_browser_tab_cleanup(
+                            browser_tab_cleanup,
+                            browser_tab_cleanup_queue,
+                            browser_tab_cleanup_selected,
+                            browser_tab_cleanup_error,
+                            browser_tab_cleanup_busy,
+                        ),
+                        Err(err) => {
+                            browser_tab_cleanup_busy.set(false);
+                            browser_tab_cleanup_error.set(Some(js_error_text(err)));
+                        }
+                    }
+                });
+            })
+        />
         <TurnMemoryOverlay
             state=TurnMemoryOverlayState {
                 locale,

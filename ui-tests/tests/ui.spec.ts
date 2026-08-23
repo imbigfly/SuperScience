@@ -9366,6 +9366,76 @@ test("browser URL filters persist block and prefer hosts", async ({ page }) => {
   await expect(page.getByTestId("browser-block-list")).toContainText("No blocked hosts.");
 });
 
+test("browser auto-close tabs setting persists", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Browser");
+  const autoClose = page.getByTestId("browser-auto-close-tabs");
+  await expect(autoClose).not.toBeChecked();
+  await autoClose.locator("..").click();
+  await expect(autoClose).toBeChecked();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".settings-page")).toHaveCount(0);
+
+  await openSettingsSection(page, "Browser");
+  await expect(page.getByTestId("browser-auto-close-tabs")).toBeChecked();
+});
+
+test("browser tab cleanup confirms selected tabs and Escape keeps them", async ({ page }) => {
+  await enterApp(page);
+  const prompt = {
+    turn_id: "turn-ui",
+    frame_id: "s1",
+    tabs: [
+      { session: "shared", tab_id: 11, url: "https://keep.example/paper", title: "Keep me", initial_url: "https://keep.example" },
+      { session: "shared", tab_id: 12, url: "https://close.example/paper", title: "Close me", initial_url: "https://close.example" },
+    ],
+  };
+  await emitTauriEvent(page, "browser-tab-cleanup", prompt);
+  const dialog = page.getByTestId("browser-tab-cleanup");
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("This turn opened 2 tabs");
+  await expect(page.getByTestId("browser-tab-cleanup-check-11")).toBeChecked();
+  await expect(page.getByTestId("browser-tab-cleanup-check-12")).toBeChecked();
+  await page.getByTestId("browser-tab-cleanup-check-11").uncheck();
+  await page.getByTestId("browser-tab-cleanup-close").click();
+  await expect(dialog).toHaveCount(0);
+  await expect.poll(async () => page.evaluate(() => {
+    const call = ((window as any).__skillInvokeLog ?? []).find((c: any) => c.cmd === "confirm_browser_tab_cleanup");
+    if (!call) return null;
+    const args = call.args instanceof Map ? Object.fromEntries(call.args) : (call.args ?? {});
+    const tabs = Array.isArray(args.tabs) ? args.tabs.map((tab: any) => tab instanceof Map ? Object.fromEntries(tab) : tab) : [];
+    return { turnId: args.turnId, tabIds: tabs.map((tab: any) => tab.tab_id) };
+  })).toEqual({ turnId: "turn-ui", tabIds: [12] });
+
+  await emitTauriEvent(page, "browser-tab-cleanup", {
+    ...prompt,
+    turn_id: "turn-escape",
+  });
+  await expect(page.getByTestId("browser-tab-cleanup")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("browser-tab-cleanup")).toHaveCount(0);
+  await expect.poll(async () => page.evaluate(() =>
+    ((window as any).__skillInvokeLog ?? []).some((c: any) => c.cmd === "dismiss_browser_tab_cleanup")
+  )).toBe(true);
+});
+
+test("browser tab cleanup Escape closes only the overlay while settings stay open", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Browser");
+  await expect(page.getByTestId("browser-url-filters")).toBeVisible();
+  await emitTauriEvent(page, "browser-tab-cleanup", {
+    turn_id: "turn-settings",
+    frame_id: "s1",
+    tabs: [
+      { session: "shared", tab_id: 7, url: "https://example.com", title: "Example", initial_url: "https://example.com" },
+    ],
+  });
+  await expect(page.getByTestId("browser-tab-cleanup")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("browser-tab-cleanup")).toHaveCount(0);
+  await expect(page.getByTestId("browser-url-filters")).toBeVisible();
+});
+
 test("chat stays pinned to the bottom while streaming a long reply (#61)", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("SCROLLTEST");

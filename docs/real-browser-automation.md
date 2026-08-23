@@ -45,6 +45,15 @@ Wisp starts that installed browser with the existing user profile so the
 unpacked extension can reconnect. Turn the setting off to keep Wisp from
 launching a browser.
 
+**Settings → Browser → Automatically close browser tabs** is off by default.
+Wisp records tabs it created during the current turn (by `tab_id`, including
+after in-tab navigation) and never includes tabs that were already open.
+When the setting is on, those tabs are closed when the turn ends (completed,
+stopped, or failed). When it is off, a confirmation lists them, all selected
+by default; uncheck any to keep, then close the rest or keep all. If the
+extension is disconnected at the end of the turn, the pending list is kept
+until it reconnects.
+
 The banner describes the answer on screen, not the session. It is derived from
 the browser tool results of the latest turn only, and a single successful
 `web_scan`, `web_open_tab`, `web_execute_js`, or `web_screenshot` clears it: the

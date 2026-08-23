@@ -2602,6 +2602,8 @@ struct TauriOutput {
     /// same scope are not foreign to each other when disambiguating
     /// concurrent workspace writes (#911).
     provenance_scope: String,
+    /// Per-send_message id used to attribute real-browser tabs to this turn.
+    turn_id: String,
 }
 
 impl TauriOutput {
@@ -3012,6 +3014,12 @@ impl Output for TauriOutput {
     }
     fn provenance_scope(&self) -> Option<String> {
         Some(self.provenance_scope.clone())
+    }
+    fn turn_id(&self) -> Option<&str> {
+        Some(self.turn_id.as_str())
+    }
+    fn frame_id(&self) -> Option<&str> {
+        Some(self.frame_id.as_str())
     }
     fn preflight_local_execution(&self, source: &str) -> Result<(), String> {
         match &self.exploration_isolation {
@@ -6739,6 +6747,11 @@ pub fn run() {
             browser_url_filters::set_browser_url_filters,
             browser_url_filters::get_browser_auto_launch,
             browser_url_filters::set_browser_auto_launch,
+            browser_url_filters::get_browser_auto_close_tabs,
+            browser_url_filters::set_browser_auto_close_tabs,
+            browser_bridge::list_pending_browser_tab_cleanups,
+            browser_bridge::confirm_browser_tab_cleanup,
+            browser_bridge::dismiss_browser_tab_cleanup,
             settings_commands::get_settings,
             settings_commands::set_settings,
             configure::get_appearance_prefs,

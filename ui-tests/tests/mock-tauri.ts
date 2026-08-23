@@ -512,6 +512,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   let sessionSpecialists: Record<string, string> = {};
   let mockBrowserUrlFilters = { block: [] as { host: string; reason?: string }[], prefer: [] as { host: string; reason?: string }[] };
   let mockBrowserAutoLaunch = true;
+  let mockBrowserAutoCloseTabs = false;
+  let mockPendingBrowserTabCleanups: any[] = [];
   let mockQuickActions = [{
     id: "literature_research",
     name: "Research literature",
@@ -2563,6 +2565,23 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           case "set_browser_auto_launch":
             mockBrowserAutoLaunch = Boolean(arg("enabled"));
             return mockBrowserAutoLaunch;
+          case "get_browser_auto_close_tabs":
+            return mockBrowserAutoCloseTabs;
+          case "set_browser_auto_close_tabs":
+            mockBrowserAutoCloseTabs = Boolean(arg("enabled"));
+            return mockBrowserAutoCloseTabs;
+          case "list_pending_browser_tab_cleanups":
+            return mockPendingBrowserTabCleanups;
+          case "confirm_browser_tab_cleanup": {
+            const turnId = String(arg("turnId") ?? "");
+            mockPendingBrowserTabCleanups = mockPendingBrowserTabCleanups.filter((row: any) => row.turn_id !== turnId);
+            return (arg("tabs") ?? []).map((tab: any) => Number(tab.tab_id)).filter((id: number) => Number.isInteger(id));
+          }
+          case "dismiss_browser_tab_cleanup": {
+            const turnId = String(arg("turnId") ?? "");
+            mockPendingBrowserTabCleanups = mockPendingBrowserTabCleanups.filter((row: any) => row.turn_id !== turnId);
+            return null;
+          }
           case "set_browser_url_filters": {
             const next = plain(arg("filters") ?? {});
             mockBrowserUrlFilters = {
