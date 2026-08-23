@@ -1937,6 +1937,10 @@ button.stop:disabled { opacity: .6; cursor: default; }
 .traj-split {
   flex: 1 1 auto; min-height: 0;
   display: grid; grid-template-columns: 1fr;
+  /* minmax(0, 1fr) pins the row to the split's own height. With an implicit
+     auto row a long inspector grows the row past the modal and gets clipped
+     instead of scrolling. */
+  grid-template-rows: minmax(0, 1fr);
   border: 1px solid var(--border); border-radius: var(--radius-sm);
   overflow: hidden;
   background: var(--bg-elev);
@@ -1961,6 +1965,9 @@ button.stop:disabled { opacity: .6; cursor: default; }
 }
 .traj-inspector {
   min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
   display: flex; flex-direction: column;
   border-left: 1px solid var(--border);
   background: var(--bg-app);

@@ -23,6 +23,59 @@ async function openTrajectory(page: Page) {
   return overlay.getByTestId("trajectory-view");
 }
 
+async function runOneTurn(page: Page) {
+  await enterApp(page);
+  await page.locator("#composer-input").fill("analyze ESR1");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
+}
+
+// A 20-turn session: tall enough that the list has to scroll.
+async function seedTallTrajectory(page: Page) {
+  await page.evaluate(() => {
+    const cell = (kind: string, summary: string, index: number, extra: Record<string, unknown> = {}) => ({
+      kind,
+      summary,
+      detail_input: kind === "tool" ? `{"n":${index}}` : null,
+      detail_output: summary,
+      ok: kind === "tool" ? true : null,
+      is_error: false,
+      ts: 1755000000000 + index * 1000,
+      duration_ms: kind === "tool" ? 200 : 50,
+      usage: null,
+      ...extra,
+    });
+    const turns = Array.from({ length: 20 }, (_, i) => {
+      const n = i + 1;
+      return {
+        index: n,
+        started_at: 1755000000000 + n * 4000,
+        cells: [
+          cell("user", `User turn ${n}`, n),
+          cell("assistant", `Assistant turn ${n}`, n),
+          cell("tool", `late_tool_${n}`, n),
+        ],
+      };
+    });
+    (window as any).__trajectorySnapshot = {
+      frame_id: "",
+      model: "deepseek-v4-pro",
+      turns,
+      stats: {
+        turns: 20,
+        steps: 40,
+        llm_ms: 1000,
+        tool_ms: 4000,
+        input_tokens: 1000,
+        output_tokens: 1000,
+        cached_input_tokens: 0,
+        cache_hit_pct: null,
+        tokens_per_sec: 10,
+      },
+    };
+  });
+}
+
 test("trajectory modal renders turns, inspector tabs, usage lines, and stats", async ({ page }) => {
   await enterApp(page);
   await page.locator("#composer-input").fill("analyze ESR1");
@@ -147,52 +200,8 @@ test("trajectory modal shows the empty state when a session has no turns", async
 });
 
 test("clicking a Gantt segment selects that event and scrolls it to the top of the list", async ({ page }) => {
-  await enterApp(page);
-  await page.locator("#composer-input").fill("analyze ESR1");
-  await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible({ timeout: 10_000 });
-  await page.evaluate(() => {
-    const cell = (kind: string, summary: string, index: number, extra: Record<string, unknown> = {}) => ({
-      kind,
-      summary,
-      detail_input: kind === "tool" ? `{"n":${index}}` : null,
-      detail_output: summary,
-      ok: kind === "tool" ? true : null,
-      is_error: false,
-      ts: 1755000000000 + index * 1000,
-      duration_ms: kind === "tool" ? 200 : 50,
-      usage: null,
-      ...extra,
-    });
-    const turns = Array.from({ length: 20 }, (_, i) => {
-      const n = i + 1;
-      return {
-        index: n,
-        started_at: 1755000000000 + n * 4000,
-        cells: [
-          cell("user", `User turn ${n}`, n),
-          cell("assistant", `Assistant turn ${n}`, n),
-          cell("tool", `late_tool_${n}`, n),
-        ],
-      };
-    });
-    (window as any).__trajectorySnapshot = {
-      frame_id: "",
-      model: "deepseek-v4-pro",
-      turns,
-      stats: {
-        turns: 20,
-        steps: 40,
-        llm_ms: 1000,
-        tool_ms: 4000,
-        input_tokens: 1000,
-        output_tokens: 1000,
-        cached_input_tokens: 0,
-        cache_hit_pct: null,
-        tokens_per_sec: 10,
-      },
-    };
-  });
+  await runOneTurn(page);
+  await seedTallTrajectory(page);
   const view = await openTrajectory(page);
   const list = view.getByTestId("traj-list");
   await expect(list.getByText("User turn 1", { exact: true })).toBeVisible();
@@ -209,4 +218,102 @@ test("clicking a Gantt segment selects that event and scrolls it to the top of t
       return rowBox.y - listBox.y;
     })
     .toBeLessThan(72);
+});
+
+test("selecting a row leaves the list scrolled where the reader left it", async ({ page }) => {
+  await runOneTurn(page);
+  await seedTallTrajectory(page);
+  const view = await openTrajectory(page);
+  const list = view.getByTestId("traj-list");
+  await expect(list.getByText("User turn 1", { exact: true })).toBeVisible();
+
+  // Scroll down to the newest turn, then click one of its rows: the list must
+  // not snap back to turn 1. `scrollIntoView` honours the row's
+  // `scroll-margin-top`, so the row clears the sticky turn header and
+  // Playwright's own actionability scroll is a no-op.
+  const latest = list.locator('[data-traj-key="20:2"]');
+  await latest.evaluate((el) => el.scrollIntoView({ block: "start" }));
+  expect(await list.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+
+  // Where the row sits inside the list viewport, which is what the reader
+  // actually perceives. Row heights change slightly when the inspector opens
+  // or closes, so raw scrollTop drifts by a few pixels even when nothing moved.
+  const rowOffset = async () => {
+    const listBox = (await list.boundingBox())!;
+    const rowBox = (await latest.boundingBox())!;
+    return rowBox.y - listBox.y;
+  };
+  const before = await rowOffset();
+
+  await latest.click();
+  await expect(latest).toHaveClass(/selected/);
+  await expect(view.getByTestId("traj-meta-source")).toHaveText("Tool");
+  await page.waitForTimeout(250);
+  expect(Math.abs((await rowOffset()) - before)).toBeLessThanOrEqual(12);
+
+  // Closing the inspector must not throw the reader back to the top either.
+  await view.getByTestId("traj-inspector-close").click();
+  await expect(view.getByTestId("traj-inspector")).toHaveCount(0);
+  await page.waitForTimeout(250);
+  expect(Math.abs((await rowOffset()) - before)).toBeLessThanOrEqual(12);
+});
+
+test("the inspector scrolls when a call has more content than fits", async ({ page }) => {
+  await runOneTurn(page);
+  await page.evaluate(() => {
+    const long = Array.from({ length: 300 }, (_, i) => `web_scan result line ${i}`).join("\n");
+    (window as any).__trajectorySnapshot = {
+      frame_id: "",
+      model: "deepseek-v4-pro",
+      turns: [
+        {
+          index: 1,
+          started_at: 1755000000000,
+          cells: [
+            {
+              kind: "tool",
+              summary: "web_scan · long result",
+              detail_input: '{"url":"https://example.org"}',
+              detail_output: long,
+              ok: true,
+              is_error: false,
+              ts: 1755000000000,
+              duration_ms: 200,
+              usage: null,
+            },
+          ],
+        },
+      ],
+      stats: {
+        turns: 1,
+        steps: 1,
+        llm_ms: 0,
+        tool_ms: 200,
+        input_tokens: 0,
+        output_tokens: 0,
+        cached_input_tokens: 0,
+        cache_hit_pct: null,
+        tokens_per_sec: null,
+      },
+    };
+  });
+
+  const view = await openTrajectory(page);
+  const inspector = view.getByTestId("traj-inspector");
+  await inspector.getByTestId("traj-tab-preview").click();
+  await expect(inspector.getByTestId("traj-detail-output")).toContainText("web_scan result line 299");
+
+  // The overflow belongs to the inspector body: it stays inside the split
+  // instead of growing past it, and it scrolls all the way to the last line.
+  const splitBox = (await view.getByTestId("traj-split").boundingBox())!;
+  const body = inspector.locator(".traj-inspector-body");
+  const bodyBox = (await body.boundingBox())!;
+  expect(bodyBox.y + bodyBox.height).toBeLessThanOrEqual(splitBox.y + splitBox.height + 1);
+
+  const scrolled = await body.evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+    return { top: el.scrollTop, overflow: el.scrollHeight - el.clientHeight };
+  });
+  expect(scrolled.overflow).toBeGreaterThan(0);
+  expect(scrolled.top).toBe(scrolled.overflow);
 });
