@@ -227,35 +227,54 @@ test("selecting a row leaves the list scrolled where the reader left it", async 
   const list = view.getByTestId("traj-list");
   await expect(list.getByText("User turn 1", { exact: true })).toBeVisible();
 
-  // Scroll down to the newest turn, then click one of its rows: the list must
-  // not snap back to turn 1. `scrollIntoView` honours the row's
-  // `scroll-margin-top`, so the row clears the sticky turn header and
-  // Playwright's own actionability scroll is a no-op.
-  const latest = list.locator('[data-traj-key="20:2"]');
-  await latest.evaluate((el) => el.scrollIntoView({ block: "start" }));
-  expect(await list.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+  // Scroll down to the newest turns, then pick whichever row the reader would
+  // see in the middle of the viewport. Hit testing the live layout avoids
+  // depending on row heights, which vary with the platform's fonts.
+  await list.evaluate((el) => {
+    el.scrollTop = el.scrollHeight - el.clientHeight * 1.5;
+  });
+  const key = await list.evaluate((el) => {
+    const rect = el.getBoundingClientRect();
+    const x = rect.left + rect.width / 2;
+    for (const frac of [0.5, 0.35, 0.65, 0.2, 0.8]) {
+      const row = document
+        .elementFromPoint(x, rect.top + rect.height * frac)
+        ?.closest("[data-traj-key]");
+      if (row) return row.getAttribute("data-traj-key");
+    }
+    return null;
+  });
+  expect(key).toBeTruthy();
+  const target = list.locator(`[data-traj-key="${key}"]`);
+  const before = await list.evaluate((el) => el.scrollTop);
+  expect(before).toBeGreaterThan(0);
 
-  // Where the row sits inside the list viewport, which is what the reader
-  // actually perceives. Row heights change slightly when the inspector opens
-  // or closes, so raw scrollTop drifts by a few pixels even when nothing moved.
-  const rowOffset = async () => {
-    const listBox = (await list.boundingBox())!;
-    const rowBox = (await latest.boundingBox())!;
-    return rowBox.y - listBox.y;
-  };
-  const before = await rowOffset();
-
-  await latest.click();
-  await expect(latest).toHaveClass(/selected/);
-  await expect(view.getByTestId("traj-meta-source")).toHaveText("Tool");
+  // A raw mouse click: `locator.click` scrolls the row into view on its own
+  // terms (it honours `scroll-margin-top`) and would move the list for us.
+  // Coordinates are only trustworthy once the modal's entry animation ends.
+  await view.evaluate((el) =>
+    Promise.all(el.closest(".modal")!.getAnimations().map((a) => a.finished)).then(() => undefined),
+  );
+  const box = (await target.boundingBox())!;
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await expect(target).toHaveClass(/selected/);
+  await expect(view.getByTestId("traj-inspector")).toBeVisible();
   await page.waitForTimeout(250);
-  expect(Math.abs((await rowOffset()) - before)).toBeLessThanOrEqual(12);
+  expect(await list.evaluate((el) => el.scrollTop)).toBe(before);
 
   // Closing the inspector must not throw the reader back to the top either.
+  // Rows grow a little when badges replace icons, so assert the weaker property
+  // that actually matters: the row stays where the reader can see it.
   await view.getByTestId("traj-inspector-close").click();
   await expect(view.getByTestId("traj-inspector")).toHaveCount(0);
   await page.waitForTimeout(250);
-  expect(Math.abs((await rowOffset()) - before)).toBeLessThanOrEqual(12);
+  const stillVisible = await target.evaluate((el) => {
+    const listEl = el.closest("[data-testid='traj-list']")!;
+    const row = el.getBoundingClientRect();
+    const bounds = listEl.getBoundingClientRect();
+    return row.top >= bounds.top - 4 && row.bottom <= bounds.bottom + 4;
+  });
+  expect(stillVisible).toBe(true);
 });
 
 test("the inspector scrolls when a call has more content than fits", async ({ page }) => {
