@@ -112,25 +112,26 @@ Pass `question` to say what to read out of it, e.g.
 It goes through the configured vision model, so `web_scan` stays the cheaper
 default — screenshot when you need eyes, not for every step.
 
-## Tab hygiene — track what you open, offer to close it
+## Tab hygiene — the app tracks what you open
 
-Browsing tasks (searching papers, opening a dozen results) leave the user
-with a pile of tabs to close by hand. So:
+Browsing tasks (searching papers, opening a dozen results) used to leave the
+user with a pile of tabs. **Do not ask in chat whether to close them.** The
+desktop records every tab `web_open_tab` (and tab-create commands) opened in
+this turn, including after URL changes, and never includes tabs that were
+already open.
 
-1. Every `web_open_tab` returns `tab.id`. **Keep a running list of the ids
-   you opened in this task**, in your own message text — e.g. after a batch
-   write `opened tabs: 1234, 1235, 1236`. `{"cmd":"tabs"}` cannot tell you
-   which tabs are yours, only what exists.
-2. When the task is done, before your final answer, **ask the user**:
-   name the count and offer to close them, e.g. *"我为这次检索开了 6 个标签
-   页，需要我关掉吗？"* Do not close anything without a yes.
-3. On a yes, close them in one call:
-   `{"cmd":"tabs","method":"close","tabIds":[1234,1235,1236]}`. Report
-   `closed`; ids already gone are skipped silently.
+- If Settings → Browser has **Automatically close browser tabs** on
+  (`browser_setup.auto_close_tabs=true`), the app closes this turn's tabs
+  when the turn ends. Do not also close them yourself unless the user asks
+  mid-task.
+- If that setting is off, the app shows a confirmation after the turn
+  (default: close all this-turn tabs; the user can uncheck pages to keep).
+- You may still close a tab **mid-task** with
+  `{"cmd":"tabs","method":"close","tabIds":[...]}` if a later step does not
+  need it, or if the user explicitly asks now.
 
 Close **only ids you opened yourself**. Tabs the user had open, or ones
-they opened during the task, are theirs — never include them, and never
-close a tab mid-task that later steps still need.
+they opened during the task, are theirs.
 
 ## Stop conditions (do not automate through these)
 

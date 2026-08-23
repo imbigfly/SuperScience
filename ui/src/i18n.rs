@@ -1272,6 +1272,14 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "browser.auto_launch") => Some("Open browser automatically"),
         (Locale::En, "browser.auto_launch_hint") => Some("When a browser tool needs Chrome/Chromium and it isn't running, start it so the Wisp extension can reconnect. Uses your existing profile, not a temporary automation browser."),
         (Locale::En, "browser.auto_launch_saved") => Some("Browser launch setting saved."),
+        (Locale::En, "browser.auto_close_tabs") => Some("Automatically close browser tabs"),
+        (Locale::En, "browser.auto_close_tabs_hint") => Some("When a conversation turn ends, close tabs Wisp opened during that turn. Tabs you already had open are left alone."),
+        (Locale::En, "browser.auto_close_tabs_saved") => Some("Browser tab cleanup setting saved."),
+        (Locale::En, "browser.cleanup.title") => Some("Close tabs Wisp opened?"),
+        (Locale::En, "browser.cleanup.body") => Some("This turn opened {n} tabs. Selected tabs will be closed. Uncheck any you want to keep."),
+        (Locale::En, "browser.cleanup.close") => Some("Close selected"),
+        (Locale::En, "browser.cleanup.keep") => Some("Keep all"),
+        (Locale::En, "browser.cleanup.error") => Some("Could not close the selected tabs. The extension may be disconnected."),
         (Locale::En, "browser.offline.eyebrow") => Some("No live retrieval"),
         (Locale::En, "browser.offline.title") => Some("This answer has no live web results"),
         (Locale::En, "browser.offline.body") => Some("The browser extension is not connected. This reply is based only on the model's existing knowledge."),
@@ -3686,6 +3694,14 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "browser.auto_launch") => Some("自动打开浏览器"),
         (Locale::Zh, "browser.auto_launch_hint") => Some("使用浏览器工具时，如果 Chrome/Chromium 没有在运行，就启动它，让已安装的 Wisp 扩展重新连上。使用你现有的用户资料，不会另开一套自动化浏览器。"),
         (Locale::Zh, "browser.auto_launch_saved") => Some("浏览器启动设置已保存。"),
+        (Locale::Zh, "browser.auto_close_tabs") => Some("自动关闭浏览器标签页"),
+        (Locale::Zh, "browser.auto_close_tabs_hint") => Some("一轮对话结束后，关闭本轮 Wisp 打开的标签页。你原来就已经打开的标签页不会动。"),
+        (Locale::Zh, "browser.auto_close_tabs_saved") => Some("浏览器标签页清理设置已保存。"),
+        (Locale::Zh, "browser.cleanup.title") => Some("关闭本轮打开的标签页？"),
+        (Locale::Zh, "browser.cleanup.body") => Some("本轮 Wisp 打开了 {n} 个标签页，默认将全部关闭。你可以取消选择需要保留的页面。"),
+        (Locale::Zh, "browser.cleanup.close") => Some("关闭所选"),
+        (Locale::Zh, "browser.cleanup.keep") => Some("全部保留"),
+        (Locale::Zh, "browser.cleanup.error") => Some("无法关闭所选标签页。浏览器扩展可能已断开。"),
         (Locale::Zh, "browser.offline.eyebrow") => Some("未联网检索"),
         (Locale::Zh, "browser.offline.title") => Some("本次回答未包含任何联网检索结果"),
         (Locale::Zh, "browser.offline.body") => Some("浏览器扩展未连接。该回答仅基于模型已有知识，不是实时检索结果。"),
@@ -5499,6 +5515,23 @@ mod queue_label_tests {
         assert_eq!(t(Locale::Zh, "context_usage.dock"), "停靠面板");
         assert_eq!(t(Locale::En, "context_usage.resize"), "Resize panel");
         assert_eq!(t(Locale::Zh, "context_usage.resize"), "调整面板大小");
+    }
+
+    #[test]
+    fn browser_tab_cleanup_labels_exist_in_both_locales() {
+        assert_eq!(
+            t(Locale::En, "browser.auto_close_tabs"),
+            "Automatically close browser tabs"
+        );
+        assert_eq!(t(Locale::Zh, "browser.auto_close_tabs"), "自动关闭浏览器标签页");
+        assert_eq!(
+            tf(Locale::En, "browser.cleanup.body", &[("n", "18")]),
+            "This turn opened 18 tabs. Selected tabs will be closed. Uncheck any you want to keep."
+        );
+        assert_eq!(
+            tf(Locale::Zh, "browser.cleanup.body", &[("n", "18")]),
+            "本轮 Wisp 打开了 18 个标签页，默认将全部关闭。你可以取消选择需要保留的页面。"
+        );
     }
 }
 

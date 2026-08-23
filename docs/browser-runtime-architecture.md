@@ -69,6 +69,7 @@ The extension never writes project directories and never returns large base64 fi
 - Browser Task Lease (`last_session` + explicit `session`)
 - Copies staged files into the project and hashes SHA-256
 - Starts/stops the workspace browser window and verifies it connected
+- Per-turn ledger of tabs Wisp created (`web_open_tab` / tab-create), closed at turn end or confirmed in the UI
 - Records the last refused connection so an unclaimed extension has a reason
 - ChatGPT one-shot send/wait/read on an already-logged-in tab
 

@@ -1674,6 +1674,30 @@ pub struct BrowserUrlFilters {
     pub prefer: Vec<BrowserUrlFilterRule>,
 }
 
+/// One tab Wisp opened during a conversation turn, offered for cleanup.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserTabCleanupItem {
+    #[serde(default)]
+    pub session: String,
+    pub tab_id: i64,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub initial_url: String,
+}
+
+/// Prompt to close tabs Wisp opened in one turn. `tab_id` stays valid across
+/// in-tab navigations; only this turn's ids are included.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserTabCleanupPrompt {
+    pub turn_id: String,
+    pub frame_id: String,
+    #[serde(default)]
+    pub tabs: Vec<BrowserTabCleanupItem>,
+}
+
 fn default_sync_backend() -> String {
     "relay".into()
 }

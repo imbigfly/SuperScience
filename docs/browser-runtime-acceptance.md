@@ -9,3 +9,5 @@ Use a Wisp build that bundles extension **0.3.0**. Reload the unpacked extension
 5. In an already-logged-in ChatGPT tab: `web_agent_send` → `web_agent_wait` → `web_agent_read` returns the assistant text. Captcha/login pages stop for the user.
 
 Popup **Pause control** must fail later automations with `USER_CONTROLLING`.
+
+6. Open several tabs with `web_open_tab` in one turn. With **Settings → Browser → Automatically close browser tabs** off, the turn-end dialog lists only those tabs (not ones already open). Unchecking one and confirming closes the rest. Enabling the setting closes this turn's tabs without a dialog.
