@@ -588,6 +588,7 @@ pub(crate) fn TrajectoryView(
     let tab = create_rw_signal(InspectorTab::Summary);
     let jump_seq = create_rw_signal(0u32);
     let jump_target = create_rw_signal(None::<String>);
+    let search = move || query.get().trim().to_lowercase();
 
     create_effect(move |_| {
         let _tick = jump_seq.get();
@@ -602,10 +603,9 @@ pub(crate) fn TrajectoryView(
     });
 
     create_effect(move |_| {
-        let q = query.get().trim().to_lowercase();
         let snap = snapshot.get();
         let live_cells = live.get();
-        let keys: Vec<String> = visible_rows(&snap, &live_cells, &q)
+        let keys: Vec<String> = visible_rows(&snap, &live_cells, &search())
             .into_iter()
             .map(|(key, _, _)| key)
             .collect();
@@ -618,6 +618,226 @@ pub(crate) fn TrajectoryView(
         }
         selected.set(keys.first().cloned());
     });
+
+    // The list body, the Gantt, and the inspector each track their own inputs.
+    // Selection must never invalidate the list body: re-rendering it would
+    // recreate the scroll container and send the reader back to turn 1.
+    let is_empty = create_memo(move |_| {
+        snapshot.with(|snap| snap.as_ref().map_or(0, |s| s.turns.len())) == 0
+            && live.with(|cells| cells.is_empty())
+    });
+    let selected_cell = create_memo(move |_| {
+        let key = selected.get()?;
+        let snap = snapshot.get();
+        let live_cells = live.get();
+        visible_rows(&snap, &live_cells, &search())
+            .into_iter()
+            .find(|(candidate, _, _)| *candidate == key)
+            .map(|(_, turn, cell)| (turn, cell.clone()))
+    });
+
+    let gantt = move || {
+        let loc = locale.get();
+        let snap = snapshot.get();
+        let live_cells = live.get();
+        let rows = visible_rows(&snap, &live_cells, &search());
+        let segs = gantt_segments(axis.get(), &rows);
+        (!segs.is_empty()).then(|| {
+            let lanes = ["input", "model", "tools"];
+            view! {
+                <div class="traj-gantt" data-testid="traj-gantt">
+                    {lanes.into_iter().map(|lane| {
+                        let lane_segs: Vec<GanttSeg> = segs.iter().filter(|seg| seg.lane == lane).cloned().collect();
+                        let label_key = match lane {
+                            "input" => "trajectory.legend.input",
+                            "model" => "trajectory.legend.model",
+                            _ => "trajectory.legend.tools",
+                        };
+                        view! {
+                            <div class="traj-gantt-lane">
+                                <span class="traj-gantt-label">{t(loc, label_key)}</span>
+                                <div class="traj-gantt-track">
+                                    {lane_segs.into_iter().map(|seg| {
+                                        let key = seg.key.clone();
+                                        let select_key = key.clone();
+                                        let active_key = key.clone();
+                                        view! {
+                                            <button type="button" class=format!("traj-gantt-seg {}", seg.lane)
+                                                class:selected=move || selected.get().as_deref() == Some(active_key.as_str())
+                                                style=format!("left:{:.2}%;width:{:.2}%", seg.left_pct, seg.width_pct)
+                                                data-testid="traj-gantt-seg"
+                                                data-traj-key=key.clone()
+                                                aria-label=key.clone()
+                                                on:click=move |_| {
+                                                    selected.set(Some(select_key.clone()));
+                                                    inspector_open.set(true);
+                                                    jump_target.set(Some(select_key.clone()));
+                                                    jump_seq.update(|n| *n = n.saturating_add(1));
+                                                }>
+                                            </button>
+                                        }
+                                    }).collect_view()}
+                                </div>
+                            </div>
+                        }
+                    }).collect_view()}
+                </div>
+            }
+        })
+    };
+
+    let list_body = move || {
+        let loc = locale.get();
+        let q = search();
+        let snap = snapshot.get();
+        let live_cells = live.get();
+        let running = busy.get();
+        let turns = snap.as_ref().map(|s| s.turns.len()).unwrap_or(0);
+        let mut any_visible = false;
+        let turn_views = snap
+            .as_ref()
+            .map(|s| {
+                s.turns
+                    .iter()
+                    .filter_map(|turn| {
+                        let cells: Vec<(usize, &TrajectoryCellDto)> = turn
+                            .cells
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, cell)| cell_matches(cell, &q))
+                            .collect();
+                        if cells.is_empty() {
+                            return None;
+                        }
+                        any_visible = true;
+                        let running_turn = running && turn.index as usize == turns;
+                        let timing = turn_timing(&turn.cells);
+                        Some(view! {
+                            <section class="traj-turn">
+                                <div class="traj-turn-head">
+                                    <span>{tf(loc, "trajectory.turn", &[("n", &turn.index.to_string())])}</span>
+                                    {running_turn.then(|| view! {
+                                        <span class="traj-running">{t(loc, "trajectory.running")}</span>
+                                    })}
+                                </div>
+                                {timing.map(|(input_ms, model_ms, tool_ms)| view! {
+                                    <div class="traj-bar">
+                                        {(input_ms > 0).then(|| view! {
+                                            <div class="traj-bar-seg input" style=format!("flex-grow:{input_ms}")></div>
+                                        })}
+                                        {(model_ms > 0).then(|| view! {
+                                            <div class="traj-bar-seg model" style=format!("flex-grow:{model_ms}")></div>
+                                        })}
+                                        {(tool_ms > 0).then(|| view! {
+                                            <div class="traj-bar-seg tools" style=format!("flex-grow:{tool_ms}")></div>
+                                        })}
+                                    </div>
+                                })}
+                                <div class="traj-rows">
+                                    {cells.into_iter().map(|(ci, cell)| {
+                                        let key = format!("{}:{ci}", turn.index);
+                                        view! {
+                                            <TrajectoryCellRow
+                                                cell=cell.clone()
+                                                cell_key=key
+                                                selected=selected
+                                                inspector_open=inspector_open />
+                                        }
+                                    }).collect_view()}
+                                </div>
+                            </section>
+                        })
+                    })
+                    .collect_view()
+            })
+            .unwrap_or_default();
+        let live_view = (!live_cells.is_empty()).then(|| {
+            let next_turn = turns as i64 + 1;
+            let visible: Vec<(usize, &TrajectoryCellDto)> = live_cells
+                .iter()
+                .enumerate()
+                .filter(|(_, cell)| cell_matches(cell, &q))
+                .collect();
+            view! {
+                <section class="traj-turn live" data-testid="traj-live-turn">
+                    <div class="traj-turn-head">
+                        <span>{tf(loc, "trajectory.turn", &[("n", &next_turn.to_string())])}</span>
+                        <span class="traj-running">{t(loc, "trajectory.running")}</span>
+                    </div>
+                    <div class="traj-rows">
+                        {visible.into_iter().map(|(ci, cell)| {
+                            let key = format!("live:{ci}");
+                            view! {
+                                <TrajectoryCellRow
+                                    cell=cell.clone()
+                                    cell_key=key
+                                    selected=selected
+                                    inspector_open=inspector_open />
+                            }
+                        }).collect_view()}
+                    </div>
+                </section>
+            }
+        });
+        let no_match = (!any_visible && !q.is_empty() && live_cells.is_empty())
+            .then(|| view! { <div class="trajectory-empty">{t(loc, "trajectory.no_match")}</div> });
+        view! {
+            {turn_views}
+            {live_view}
+            {no_match}
+        }
+    };
+
+    let inspector = move || {
+        if !inspector_open.get() {
+            return None;
+        }
+        let loc = locale.get();
+        let view = match selected_cell.get() {
+            Some((turn, cell)) => {
+                let live_selected = selected
+                    .get()
+                    .is_some_and(|key| key.starts_with("live:"));
+                view! {
+                    <TrajectoryInspector
+                        cell=cell
+                        turn=turn
+                        running=busy.get() && live_selected
+                        tab=tab
+                        inspector_open=inspector_open />
+                }
+                .into_view()
+            }
+            None => view! {
+                <div class="traj-inspector traj-inspector-empty" data-testid="traj-inspector">
+                    <div class="traj-inspector-head">
+                        <span class="traj-inspector-title">{t(loc, "trajectory.select_event")}</span>
+                        <button type="button" class="ps-close" data-testid="traj-inspector-close"
+                            title=t(loc, "trajectory.close_inspector")
+                            aria-label=t(loc, "trajectory.close_inspector")
+                            on:click=move |_| inspector_open.set(false)>
+                            {compose_icon("close")}
+                        </button>
+                    </div>
+                </div>
+            }
+            .into_view(),
+        };
+        Some(view)
+    };
+
+    let footer = move || {
+        let loc = locale.get();
+        snapshot.with(|snap| {
+            snap.as_ref().map(|s| {
+                view! {
+                    <div class="trajectory-footer" data-testid="trajectory-footer">
+                        {stats_line(loc, &s.stats)}
+                    </div>
+                }
+            })
+        })
+    };
 
     view! {
         <div class="trajectory" data-testid="trajectory-view">
@@ -657,196 +877,18 @@ pub(crate) fn TrajectoryView(
                 </div>
             </div>
             {move || {
-                let loc = locale.get();
-                let q = query.get().trim().to_lowercase();
-                let snap = snapshot.get();
-                let live_cells = live.get();
-                let running = busy.get();
-                let axis_now = axis.get();
-                let turns = snap.as_ref().map(|s| s.turns.len()).unwrap_or(0);
-                if turns == 0 && live_cells.is_empty() {
+                if is_empty.get() {
                     return view! {
-                        <div class="trajectory-empty">{t(loc, "trajectory.empty")}</div>
+                        <div class="trajectory-empty">
+                            {move || t(locale.get(), "trajectory.empty")}
+                        </div>
                     }.into_view();
                 }
-                let rows = visible_rows(&snap, &live_cells, &q);
-                let segs = gantt_segments(axis_now, &rows);
-                let selected_key = selected.get();
-                let selected_cell = selected_key.as_ref().and_then(|key| {
-                    rows.iter().find(|(k, _, _)| k == key).map(|(_, turn, cell)| (*turn, (*cell).clone()))
-                });
-                let lanes = ["input", "model", "tools"];
-                let gantt = (!segs.is_empty()).then(|| {
-                    view! {
-                        <div class="traj-gantt" data-testid="traj-gantt">
-                            {lanes.into_iter().map(|lane| {
-                                let lane_segs: Vec<GanttSeg> = segs.iter().filter(|seg| seg.lane == lane).cloned().collect();
-                                let label_key = match lane {
-                                    "input" => "trajectory.legend.input",
-                                    "model" => "trajectory.legend.model",
-                                    _ => "trajectory.legend.tools",
-                                };
-                                view! {
-                                    <div class="traj-gantt-lane">
-                                        <span class="traj-gantt-label">{t(loc, label_key)}</span>
-                                        <div class="traj-gantt-track">
-                                            {lane_segs.into_iter().map(|seg| {
-                                                let key = seg.key.clone();
-                                                let select_key = key.clone();
-                                                let active_key = key.clone();
-                                                view! {
-                                                    <button type="button" class=format!("traj-gantt-seg {}", seg.lane)
-                                                        class:selected=move || selected.get().as_deref() == Some(active_key.as_str())
-                                                        style=format!("left:{:.2}%;width:{:.2}%", seg.left_pct, seg.width_pct)
-                                                        data-testid="traj-gantt-seg"
-                                                        data-traj-key=key.clone()
-                                                        aria-label=key.clone()
-                                                        on:click=move |_| {
-                                                            selected.set(Some(select_key.clone()));
-                                                            inspector_open.set(true);
-                                                            jump_target.set(Some(select_key.clone()));
-                                                            jump_seq.update(|n| *n = n.saturating_add(1));
-                                                        }>
-                                                    </button>
-                                                }
-                                            }).collect_view()}
-                                        </div>
-                                    </div>
-                                }
-                            }).collect_view()}
-                        </div>
-                    }
-                });
-                let mut any_visible = false;
-                let turn_views = snap
-                    .as_ref()
-                    .map(|s| {
-                        s.turns
-                            .iter()
-                            .filter_map(|turn| {
-                                let cells: Vec<(usize, &TrajectoryCellDto)> = turn
-                                    .cells
-                                    .iter()
-                                    .enumerate()
-                                    .filter(|(_, cell)| cell_matches(cell, &q))
-                                    .collect();
-                                if cells.is_empty() {
-                                    return None;
-                                }
-                                any_visible = true;
-                                let running_turn = running && turn.index as usize == turns;
-                                let timing = turn_timing(&turn.cells);
-                                Some(view! {
-                                    <section class="traj-turn">
-                                        <div class="traj-turn-head">
-                                            <span>{tf(loc, "trajectory.turn", &[("n", &turn.index.to_string())])}</span>
-                                            {running_turn.then(|| view! {
-                                                <span class="traj-running">{t(loc, "trajectory.running")}</span>
-                                            })}
-                                        </div>
-                                        {timing.map(|(input_ms, model_ms, tool_ms)| view! {
-                                            <div class="traj-bar">
-                                                {(input_ms > 0).then(|| view! {
-                                                    <div class="traj-bar-seg input" style=format!("flex-grow:{input_ms}")></div>
-                                                })}
-                                                {(model_ms > 0).then(|| view! {
-                                                    <div class="traj-bar-seg model" style=format!("flex-grow:{model_ms}")></div>
-                                                })}
-                                                {(tool_ms > 0).then(|| view! {
-                                                    <div class="traj-bar-seg tools" style=format!("flex-grow:{tool_ms}")></div>
-                                                })}
-                                            </div>
-                                        })}
-                                        <div class="traj-rows">
-                                            {cells.into_iter().map(|(ci, cell)| {
-                                                let key = format!("{}:{ci}", turn.index);
-                                                view! {
-                                                    <TrajectoryCellRow
-                                                        cell=cell.clone()
-                                                        cell_key=key
-                                                        selected=selected
-                                                        inspector_open=inspector_open />
-                                                }
-                                            }).collect_view()}
-                                        </div>
-                                    </section>
-                                })
-                            })
-                            .collect_view()
-                    })
-                    .unwrap_or_default();
-                let live_view = (!live_cells.is_empty()).then(|| {
-                    let next_turn = turns as i64 + 1;
-                    let visible: Vec<(usize, &TrajectoryCellDto)> = live_cells
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, cell)| cell_matches(cell, &q))
-                        .collect();
-                    view! {
-                        <section class="traj-turn live" data-testid="traj-live-turn">
-                            <div class="traj-turn-head">
-                                <span>{tf(loc, "trajectory.turn", &[("n", &next_turn.to_string())])}</span>
-                                <span class="traj-running">{t(loc, "trajectory.running")}</span>
-                            </div>
-                            <div class="traj-rows">
-                                {visible.into_iter().map(|(ci, cell)| {
-                                    let key = format!("live:{ci}");
-                                    view! {
-                                        <TrajectoryCellRow
-                                            cell=cell.clone()
-                                            cell_key=key
-                                            selected=selected
-                                            inspector_open=inspector_open />
-                                    }
-                                }).collect_view()}
-                            </div>
-                        </section>
-                    }
-                });
-                let inspector = inspector_open.get().then(|| match selected_cell {
-                    Some((turn, cell)) => {
-                        let live_selected = selected_key.as_deref().is_some_and(|k| k.starts_with("live:"));
-                        view! {
-                            <TrajectoryInspector
-                                cell=cell
-                                turn=turn
-                                running=running && live_selected
-                                tab=tab
-                                inspector_open=inspector_open />
-                        }.into_view()
-                    }
-                    None => view! {
-                        <div class="traj-inspector traj-inspector-empty" data-testid="traj-inspector">
-                            <div class="traj-inspector-head">
-                                <span class="traj-inspector-title">{t(loc, "trajectory.select_event")}</span>
-                                <button type="button" class="ps-close" data-testid="traj-inspector-close"
-                                    title=t(loc, "trajectory.close_inspector")
-                                    aria-label=t(loc, "trajectory.close_inspector")
-                                    on:click=move |_| inspector_open.set(false)>
-                                    {compose_icon("close")}
-                                </button>
-                            </div>
-                        </div>
-                    }.into_view(),
-                });
-                let footer = snap.as_ref().map(|s| {
-                    view! {
-                        <div class="trajectory-footer" data-testid="trajectory-footer">
-                            {stats_line(loc, &s.stats)}
-                        </div>
-                    }
-                });
-                let no_match = (!any_visible && !q.is_empty() && live_cells.is_empty()).then(|| {
-                    view! { <div class="trajectory-empty">{t(loc, "trajectory.no_match")}</div> }
-                });
                 view! {
                     {gantt}
-                    <div class="traj-split" class:is-open=inspector_open.get() data-testid="traj-split">
-                        <div class="traj-list" data-testid="traj-list">
-                            {turn_views}
-                            {live_view}
-                            {no_match}
-                        </div>
+                    <div class="traj-split" class:is-open=move || inspector_open.get()
+                        data-testid="traj-split">
+                        <div class="traj-list" data-testid="traj-list">{list_body}</div>
                         {inspector}
                     </div>
                     {footer}
