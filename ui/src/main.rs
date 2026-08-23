@@ -55,7 +55,7 @@ use library::{refresh_library, refresh_session_library, HighlightsPane, LibraryS
 use notebook::{collect_notebook_cells, NotebookCache, NotebookView};
 use overlays::{
     AddHostOverlay, CapabilitiesOverlay, OnboardingOverlay, RunReviewModal, RunReviewOverlay,
-    RuntimeInterpreterOverlay, ShareOverlay, StoragePrefsOverlay,
+    RuntimeInterpreterOverlay, RuntimeSetupPanel, ShareOverlay, StoragePrefsOverlay,
 };
 use pet::{PetDesktop, PetOverlay};
 use project_landing::{ProjectLanding, ProjectLandingState};
@@ -149,6 +149,36 @@ fn session_highlight_count(session: Option<String>, items: &[LibraryItemSummary]
         .iter()
         .filter(|item| item.kind == "text" && item.source_session_id == session)
         .count()
+}
+
+/// The chat shell sits behind the projects landing. Window-level overlays
+/// (login, onboarding, share, …) render as siblings so they stay visible
+/// without un-hiding this shell.
+fn landing_hides_app_shell(
+    show_projects: bool,
+    scratch_open: bool,
+    show_settings: bool,
+    has_modal_artifact: bool,
+) -> bool {
+    show_projects && !scratch_open && !show_settings && !has_modal_artifact
+}
+
+#[cfg(test)]
+mod landing_shell_tests {
+    use super::landing_hides_app_shell;
+
+    #[test]
+    fn landing_keeps_shell_hidden_for_window_overlays() {
+        assert!(landing_hides_app_shell(true, false, false, false));
+    }
+
+    #[test]
+    fn scratch_settings_and_artifact_unhide_shell() {
+        assert!(!landing_hides_app_shell(true, true, false, false));
+        assert!(!landing_hides_app_shell(true, false, true, false));
+        assert!(!landing_hides_app_shell(true, false, false, true));
+        assert!(!landing_hides_app_shell(false, false, false, false));
+    }
 }
 
 fn max_right_pane_width(sidebar_open: bool, sidebar_width: f64) -> f64 {
@@ -1380,6 +1410,10 @@ fn App() -> impl IntoView {
     let caps = create_rw_signal::<Option<Capabilities>>(None);
     let bootstrap = create_rw_signal::<Option<BootstrapStatus>>(None);
     let show_onboarding = create_rw_signal(false);
+    let show_runtime_setup = create_rw_signal(false);
+    let runtime_setup_collapsed = create_rw_signal(false);
+    let runtime_provision = create_rw_signal::<Option<RuntimeProvisionState>>(None);
+    let runtime_setup_sci_key = create_rw_signal(String::new());
 
     create_effect(move |_| {
         if file_source.get() != "local" {
@@ -1420,14 +1454,12 @@ fn App() -> impl IntoView {
     // "change this" request must edit.
     let composer_quotes = create_rw_signal::<Vec<ComposerQuote>>(vec![]);
     let close_scratch = Callback::new(move |_: ()| {
-        spawn_local(async move {
-            let _ = invoke("close_scratch_chat", JsValue::UNDEFINED).await;
-            scratch_open.set(false);
-            items.set(vec![]);
-            active_session.set(None);
-            show_right.set(false);
-            center_file.set(None);
-        });
+        scratch_open.set(false);
+        show_projects.set(true);
+        items.set(vec![]);
+        active_session.set(None);
+        show_right.set(false);
+        center_file.set(None);
     });
     let open_scratch = Callback::new(move |_: ()| {
         if demo_mode.get_untracked() {
@@ -1435,18 +1467,21 @@ fn App() -> impl IntoView {
         }
         command_palette_open.set(false);
         action_palette_open.set(false);
+        attachments.set(vec![]);
+        composer_references.set(vec![]);
+        composer_quotes.set(vec![]);
         spawn_local(async move {
-            let v = invoke("start_scratch_chat", JsValue::UNDEFINED).await;
-            let Ok(info) = serde_wasm_bindgen::from_value::<ScratchChatInfo>(v) else {
-                status.set(send_failed(locale.get(), ""));
-                return;
+            let id = match invoke_new_session().await {
+                Ok(id) => id,
+                Err(error) => {
+                    status.set(send_failed(locale.get(), &error));
+                    return;
+                }
             };
             scratch_open.set(true);
-            active_session.set(Some(info.session_id));
+            show_projects.set(false);
+            active_session.set(Some(id));
             items.set(vec![]);
-            attachments.set(vec![]);
-            composer_references.set(vec![]);
-            composer_quotes.set(vec![]);
             show_sidebar.set(false);
             show_right.set(false);
             center_file.set(None);
@@ -1989,6 +2024,14 @@ fn App() -> impl IntoView {
         if let Ok(s) = serde_wasm_bindgen::from_value::<OnboardingState>(v) {
             if s.show {
                 show_onboarding.set(true);
+            } else if let Ok(provision) = serde_wasm_bindgen::from_value::<RuntimeProvisionState>(
+                invoke("get_runtime_provision_state", JsValue::UNDEFINED).await,
+            ) {
+                runtime_provision.set(Some(provision.clone()));
+                if provision.show {
+                    show_runtime_setup.set(true);
+                    runtime_setup_collapsed.set(false);
+                }
             }
         }
         let b = invoke("get_bootstrap_status", JsValue::UNDEFINED).await;
@@ -2038,6 +2081,47 @@ fn App() -> impl IntoView {
         bootstrap_js.forget();
         spawn_local(async move {
             let _ = listen("bootstrap-status", &bootstrap_fn).await;
+        });
+    }
+    {
+        let provision_js = Closure::<dyn Fn(JsValue)>::new(move |event: JsValue| {
+            if let Ok(payload) = js_sys::Reflect::get(&event, &JsValue::from_str("payload")) {
+                if let Ok(progress) =
+                    serde_wasm_bindgen::from_value::<RuntimeProvisionProgress>(payload)
+                {
+                    runtime_provision.update(|current| {
+                        let mut next = current.clone().unwrap_or(RuntimeProvisionState {
+                            show: true,
+                            done: false,
+                            running: progress.running,
+                            items: vec![],
+                        });
+                        next.running = progress.running;
+                        next.items = progress.items.clone();
+                        if !progress.running
+                            && progress
+                                .items
+                                .iter()
+                                .filter(|item| item.id != "sci_key")
+                                .all(|item| {
+                                    matches!(item.status.as_str(), "ready" | "passed")
+                                })
+                        {
+                            next.done = true;
+                            next.show = false;
+                        }
+                        *current = Some(next);
+                    });
+                }
+            }
+        });
+        let provision_fn = provision_js
+            .as_ref()
+            .unchecked_ref::<js_sys::Function>()
+            .clone();
+        provision_js.forget();
+        spawn_local(async move {
+            let _ = listen("runtime-provision-progress", &provision_fn).await;
         });
     }
 
@@ -4833,90 +4917,6 @@ fn App() -> impl IntoView {
         });
     };
 
-    let start_env_setup = {
-        let items = items;
-        let running = running;
-        let status = status;
-        let locale = locale;
-        let show_capabilities = show_capabilities;
-        let active_session = active_session;
-        let sel_artifact = sel_artifact;
-        let right_tab = right_tab;
-        let models = models;
-        move |_| {
-            if demo_mode.get_untracked() || busy.get() {
-                return;
-            }
-            show_capabilities.set(false);
-            attachments.set(vec![]);
-            sel_artifact.set(0);
-            right_tab.set(RightTab::Artifacts);
-            let text: String = t(locale.get(), "caps.env_setup_prompt").into();
-            let turn_model = active_model_label(&models.get());
-            items.set(vec![
-                ChatItem::User(text.clone()),
-                ChatItem::Assistant {
-                    text: String::new(),
-                    model: turn_model,
-                    resources: Vec::new(),
-                },
-            ]);
-            force_chat_bottom();
-            spawn_local(async move {
-                // Fresh frame for the setup turn; route events to it.
-                let id = match invoke_new_session().await {
-                    Ok(id) => id,
-                    Err(error) => {
-                        status.set(send_failed(locale.get(), &error));
-                        return;
-                    }
-                };
-                active_session.set(Some(id.clone()));
-                running.update(|r| {
-                    r.insert(id.clone());
-                });
-                refresh_session_history();
-                let arg = to_value(&SendMessageArgs {
-                    session_id: Some(id.clone()),
-                    message: text,
-                    attachments: vec![],
-                    references: vec![],
-                    resume: false,
-                    acp_agent_id: None,
-                    guide: None,
-                    replace: None,
-                })
-                .unwrap();
-                match invoke_checked("send_message", arg).await {
-                    // The awaited command resolving is the reliable turn-complete
-                    // signal; clear `running` here so a dropped `Done` broadcast
-                    // can't pin the session on "运行中" (#34).
-                    Ok(_) => {
-                        running.update(|r| {
-                            r.remove(&id);
-                        });
-                        refresh_session_history();
-                    }
-                    Err(err) => {
-                        let loc = locale.get();
-                        let raw = js_error_text(err);
-                        if raw.contains(NO_API_KEY_MARK) {
-                            needs_api_key.set(true);
-                        }
-                        status.set(tf(
-                            loc,
-                            "status.send_failed",
-                            &[("msg", &localize_backend(loc, &raw))],
-                        ));
-                        running.update(|r| {
-                            r.clear();
-                        });
-                    }
-                }
-            });
-        }
-    };
-
     let start_issue_report = {
         let items = items;
         let locale = locale;
@@ -6139,6 +6139,15 @@ fn App() -> impl IntoView {
         show_onboarding.set(false);
         spawn_local(async move {
             let _ = invoke("dismiss_onboarding", JsValue::UNDEFINED).await;
+            if let Ok(provision) = serde_wasm_bindgen::from_value::<RuntimeProvisionState>(
+                invoke("get_runtime_provision_state", JsValue::UNDEFINED).await,
+            ) {
+                runtime_provision.set(Some(provision.clone()));
+                if provision.show {
+                    show_runtime_setup.set(true);
+                    runtime_setup_collapsed.set(false);
+                }
+            }
         });
     });
     let dismiss_onboard = move |_| dismiss_onboarding.call(());
@@ -7713,6 +7722,11 @@ fn App() -> impl IntoView {
             dismiss_onboarding.call(());
             return;
         }
+        if show_runtime_setup.get() && !runtime_setup_collapsed.get() {
+            ev.prevent_default();
+            runtime_setup_collapsed.set(true);
+            return;
+        }
         if show_library.get() {
             ev.prevent_default();
             show_library.set(false);
@@ -8277,6 +8291,18 @@ fn App() -> impl IntoView {
         })
     };
 
+    let open_runtime_setup = Callback::new(move |_: ()| {
+        show_runtime_setup.set(true);
+        runtime_setup_collapsed.set(false);
+        spawn_local(async move {
+            if let Ok(next) = serde_wasm_bindgen::from_value::<RuntimeProvisionState>(
+                invoke("get_runtime_provision_state", JsValue::UNDEFINED).await,
+            ) {
+                runtime_provision.set(Some(next));
+            }
+        });
+    });
+
     let on_capability_action = capability_launch::install(capability_launch::CapabilityLaunchCtx {
         locale,
         busy,
@@ -8306,6 +8332,7 @@ fn App() -> impl IntoView {
         refresh_session_history: Callback::new(move |_| refresh_session_history()),
         open_settings: Callback::new(move |section| open_settings_fn(section)),
         open_project: open_project_transition,
+        open_runtime_setup,
     });
 
     // Dedicated project window (#52): enter through the same serialized,
@@ -9234,6 +9261,7 @@ fn App() -> impl IntoView {
             open_project_export=open_project_export
             on_capability_action=on_capability_action
         />
+        <UserCenterOverlay locale=locale show=show_user_center session=tctoken_session />
         <SessionImportModal
             locale=locale
             open=show_session_import
@@ -9295,9 +9323,12 @@ fn App() -> impl IntoView {
         <div class="app"
             class:app-entering=move || app_shell_entering.get()
             class:scratch-mode=move || scratch_open.get()
-            // Onboarding lives in this shell, so hiding it on the projects
-            // landing swallowed the first-run overlay entirely.
-            class:app-hidden=move || show_projects.get() && !scratch_open.get() && !show_settings.get() && !show_onboarding.get() && modal_artifact.get().is_none()
+            class:app-hidden=move || landing_hides_app_shell(
+                show_projects.get(),
+                scratch_open.get(),
+                show_settings.get(),
+                modal_artifact.get().is_some(),
+            )
             on:contextmenu=on_context_menu>
         <Sidebar
             state=SidebarState {
@@ -14639,16 +14670,6 @@ fn App() -> impl IntoView {
                 approval_pending=approval_pending activity=pet_activity show_projects=show_projects
                 show_settings=show_settings center_file_open=center_file_open />
         })}
-
-
-
-        <AddHostOverlay
-            locale=locale show_add_host=show_add_host host_alias=host_alias host_hostname=host_hostname
-            host_notes=host_notes host_user=host_user host_port=host_port host_identity=host_identity
-            host_auth_method=host_auth_method host_password=host_password host_has_password=host_has_password
-            editing_host_alias=editing_host_alias
-            ssh_hosts=ssh_hosts execution_contexts=execution_contexts
-        />
         <ContextDetailsOverlay
             modal=context_details_modal runtime_environment=runtime_environment
             runtime_environment_pinned=runtime_environment_pinned
@@ -14669,6 +14690,14 @@ fn App() -> impl IntoView {
                 locale=locale states=runtime_object_states runtimes=runtime_infos
                 selection_popup=selection_popup />
         })}
+        </div>
+        <AddHostOverlay
+            locale=locale show_add_host=show_add_host host_alias=host_alias host_hostname=host_hostname
+            host_notes=host_notes host_user=host_user host_port=host_port host_identity=host_identity
+            host_auth_method=host_auth_method host_password=host_password host_has_password=host_has_password
+            editing_host_alias=editing_host_alias
+            ssh_hosts=ssh_hosts execution_contexts=execution_contexts
+        />
         <RuntimeInterpreterOverlay
             locale=locale form=runtime_interpreter_form execution_contexts=execution_contexts
             runtimes=runtime_infos
@@ -14682,9 +14711,15 @@ fn App() -> impl IntoView {
         <CapabilitiesOverlay
             locale=locale show_capabilities=show_capabilities
             bootstrap=bootstrap caps=caps busy=busy open_settings_section=open_capability_settings
-            start_env_setup=Callback::new(start_env_setup)
+            open_runtime_setup=Callback::new(move |_| open_runtime_setup.call(()))
         />
-        <UserCenterOverlay locale=locale show=show_user_center session=tctoken_session />
+        <RuntimeSetupPanel
+            locale=locale
+            visible=show_runtime_setup
+            collapsed=runtime_setup_collapsed
+            state=runtime_provision
+            sci_key=runtime_setup_sci_key
+        />
         <OnboardingOverlay
             locale=locale show_onboarding=show_onboarding
             dismiss_onboard=Callback::new(dismiss_onboard)
@@ -14697,7 +14732,6 @@ fn App() -> impl IntoView {
             on_new_session=new_session_context_recovery
         />
         <ContextMenuPortal menu=ctx_menu.read_only() set_menu=ctx_menu.write_only() on_pick=on_ctx_pick />
-        </div>
     }
 }
 

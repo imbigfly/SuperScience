@@ -10,7 +10,8 @@ type ActionKind =
   | "settings"
   | "panel"
   | "demo"
-  | "newchat";
+  | "newchat"
+  | "runtime";
 
 type Cap = {
   id: string;
@@ -51,7 +52,7 @@ const CATALOG: Cap[] = [
   { id: "journal-prescreen", group: "效率工具", title: "论文预审", kind: "guided", skill: "journal-prescreen", turns: ["预审一篇临床论著，目标《中华内科杂志》。", "先列你会对照的须知条目。", "标出 2 个格式问题并给改法。"] },
   { id: "handwriting-extract", group: "效率工具", title: "手写数据提取", kind: "guided", skill: "handwriting-extract", turns: ["识别两张手写 CRF 照片成 CSV。", "先说明如何标存疑格子。", "给出输出路径约定。"] },
   { id: "topic-coach", group: "效率工具", title: "选题引导", kind: "guided", skill: "topic-coach", turns: ["我有一份回顾性队列，想投中华系列。", "先列资料盘点要问什么。", "给 3 个选题候选的评分维度。"] },
-  { id: "env-setup", group: "数据清洗", title: "配置本机环境", kind: "guided", skill: "local-env-setup", turns: ["检查本机 Python / uv / Node 是否就绪。", "先列检查项。", "缺什么时给安装建议。"] },
+  { id: "env-setup", group: "数据清洗", title: "配置本机环境", kind: "runtime", turns: ["打开本机环境准备面板", "确认未新开聊天", "收起后面板芯片仍在"] },
   { id: "nature-statistics", group: "研究实施与数据分析", title: "统计报告审核", kind: "guided", skill: "nature-statistics", turns: ["两组小鼠体重做 t 检验，n=8。", "先判断前提假设。", "给出 R 代码提纲。"] },
   { id: "knowledge-graph", group: "选题与立项", title: "文本知识图谱", kind: "guided", skill: "knowledge-graph", turns: ["从这段抽图谱：ESR1 抑制后 TNF 通路上调。", "先列实体类型。", "给出 3 条三元组。"] },
   { id: "stats-analysis", group: "研究实施与数据分析", title: "统计建模与检验", kind: "guided", turns: ["生存分析，终点 OS，协变量年龄和分期。", "先选模型。", "写出公式。"] },
@@ -168,7 +169,7 @@ function scoreResult(kind: ActionKind, rec: Record<string, unknown>): { interact
   } else if (kind === "toggle") {
     if (rec.toggleOk) interact += 60; else notes.push("开关未响应");
     reply = rec.toggleOk ? 80 : 30;
-  } else if (kind === "settings" || kind === "panel" || kind === "demo") {
+  } else if (kind === "settings" || kind === "panel" || kind === "demo" || kind === "runtime") {
     if (rec.surfaceOk) interact += 60; else notes.push("未打开预期界面");
     reply = rec.surfaceOk ? 75 : 25;
   }
@@ -266,6 +267,13 @@ test("full capability click-through with three dialogue rounds", async ({ page }
       } else if (cap.kind === "panel") {
         rec.surfaceOk = !(await page.getByTestId("capability-scene").isVisible().catch(() => false))
           || await page.locator(".right-panel, .graph-panel, [data-testid='files-panel'], [data-testid='agents-panel']").first().isVisible().catch(() => false);
+        rec.rounds = 3;
+        rec.turns = cap.turns.map((text) => ({ role: "操作", text }));
+        await page.keyboard.press("Escape");
+      } else if (cap.kind === "runtime") {
+        rec.surfaceOk = await page.getByTestId("runtime-setup-panel").isVisible().catch(() => false);
+        rec.sessionOpened = (await page.locator(".msg.user").count()) > 0;
+        rec.skillOk = !rec.sessionOpened;
         rec.rounds = 3;
         rec.turns = cap.turns.map((text) => ({ role: "操作", text }));
         await page.keyboard.press("Escape");

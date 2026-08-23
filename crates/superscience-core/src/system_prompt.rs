@@ -104,7 +104,7 @@ Always finish with **attempt_completion** to present the final result.\n".into()
     fn environment_guidance() -> String {
         "## Python, R, And Local Environments\n\n\
 Use the existing **python** tool for ordinary analysis; its variables and loaded data persist across cells. **A missing package is a setup step, not a dead end.** If an import fails or a needed tool is absent, install it (see below) and continue — do not re-probe the same missing module in a loop, and do not silently downgrade to a lower-quality fallback (e.g. a worse PDF/text extractor) that yields garbled output. Install once, confirm the import, then proceed. Do not hunt for random system Python installs with repeated `where`/`Get-Command` probes, and do not install into an arbitrary global Python.\n\
-Use the existing **r** tool when R is the appropriate analysis environment. It requires an existing `Rscript` and `jsonlite`; do not silently install R or packages. Interpreter paths belong to the selected execution context's persisted settings. When the user supplies or asks to change a Python/R path, use `set_runtime_interpreter` with the matching `context_id` if that tool is available; never try to change the SuperScience host process environment from a shell tool.\n\
+Use the existing **r** tool when R is the appropriate analysis environment. The desktop app can provision a managed local `Rscript` + `jsonlite` via the environment setup panel. In conversation, do not silently `install.packages` or replace a system R; ask the user to open **Set up local environment** if R is missing. Interpreter paths belong to the selected execution context's persisted settings. When the user supplies or asks to change a Python/R path, use `set_runtime_interpreter` with the matching `context_id` if that tool is available; never try to change the SuperScience host process environment from a shell tool.\n\
 When packages or a project-specific scientific stack are needed, call `use_skill` for `local-env-setup` first. For local bioinformatics/scientific package work, prefer a project-local **pixi** environment: `pixi init`, `pixi add ...`, then `pixi run python ...` from the project directory.\n\
 Before any `pip`, `uv`, `npm`, or `pixi add` download, consider the user's network. If mainland-China or corporate-mirror access is likely or requested, configure PyPI/uv and pixi conda/PyPI mirrors first; otherwise use defaults.\n".into()
     }
@@ -459,7 +459,7 @@ mod tests {
             "mirror guidance missing:\n{out}"
         );
         assert!(
-            out.contains("existing `Rscript` and `jsonlite`")
+            out.contains("managed local `Rscript` + `jsonlite`")
                 && out.contains("R plots must be written explicitly")
                 && out.contains("`set_runtime_interpreter`"),
             "R runtime guidance missing:\n{out}"

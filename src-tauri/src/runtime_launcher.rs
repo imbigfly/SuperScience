@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 use superscience_runtime::{
-    find_rscript, KernelClient, LaunchedRuntime, PythonEnv, RuntimeKey, RuntimeLanguage,
+    find_rscript_for_app, KernelClient, LaunchedRuntime, PythonEnv, RuntimeKey, RuntimeLanguage,
     RuntimeLauncher, RuntimeMetadata, PROTOCOL_VERSION,
 };
 use tauri::State;
@@ -185,7 +185,11 @@ impl RuntimeLauncher for TauriRuntimeLauncher {
                 &self.python_worker,
                 "python",
             ),
-            RuntimeLanguage::R => (resolve_r_interpreter(&context)?, &self.r_worker, "r"),
+            RuntimeLanguage::R => (
+                resolve_r_interpreter(&context, &self.app_data)?,
+                &self.r_worker,
+                "r",
+            ),
         };
         if !worker.is_file() {
             return Err(anyhow!(
@@ -321,7 +325,10 @@ fn resolve_python_interpreter(
     ))
 }
 
-fn resolve_r_interpreter(context: &superscience_store::ExecutionContext) -> Result<String> {
+fn resolve_r_interpreter(
+    context: &superscience_store::ExecutionContext,
+    app_data: &Path,
+) -> Result<String> {
     let config = json_object(&context.config_json, "execution context config")?;
     let capabilities = json_object(&context.capabilities_json, "execution context capabilities")?;
     if let Some(interpreter) = first_string(&config, &["rscript_executable", "rscript_path"])? {
@@ -333,7 +340,7 @@ fn resolve_r_interpreter(context: &superscience_store::ExecutionContext) -> Resu
         return Ok(interpreter);
     }
     if context.kind == superscience_store::ExecutionContextKind::Local {
-        return find_rscript()
+        return find_rscript_for_app(app_data)
             .map(|path| path.to_string_lossy().into_owned())
             .ok_or_else(|| {
                 anyhow!(
@@ -711,7 +718,7 @@ mod tests {
             "rscript_executable": r"C:\Program Files\R\bin\Rscript.exe"
         })
         .to_string();
-        let rscript = resolve_r_interpreter(&context).unwrap();
+        let rscript = resolve_r_interpreter(&context, Path::new("unused")).unwrap();
         let command = build_attached_command(
             &context,
             RuntimeLanguage::R,
@@ -793,7 +800,7 @@ mod tests {
             "r_jsonlite": true
         })
         .to_string();
-        let rscript = resolve_r_interpreter(&wsl).unwrap();
+        let rscript = resolve_r_interpreter(&wsl, Path::new("unused")).unwrap();
         let r_command = build_attached_command(
             &wsl,
             RuntimeLanguage::R,
@@ -819,7 +826,7 @@ mod tests {
             "r_jsonlite": false
         })
         .to_string();
-        let error = resolve_r_interpreter(&context).unwrap_err();
+        let error = resolve_r_interpreter(&context, Path::new("unused")).unwrap_err();
         assert!(error.to_string().contains("jsonlite"));
         assert!(error.to_string().contains("install"));
 
@@ -828,9 +835,28 @@ mod tests {
         })
         .to_string();
         assert_eq!(
-            resolve_r_interpreter(&context).unwrap(),
+            resolve_r_interpreter(&context, Path::new("unused")).unwrap(),
             "/opt/project-R/bin/Rscript"
         );
+    }
+
+    #[test]
+    fn local_r_falls_back_to_app_managed_rscript() {
+        let dir =
+            std::env::temp_dir().join(format!("superscience-managed-r-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("r").join("bin")).unwrap();
+        let rscript = dir.join("r").join("bin").join("Rscript");
+        std::fs::write(&rscript, b"").unwrap();
+        let context = superscience_store::ExecutionContext::new("local", "Local").unwrap();
+        // If the host already has Rscript on PATH this still succeeds; the
+        // managed tree is only required when PATH discovery misses.
+        let resolved = resolve_r_interpreter(&context, &dir);
+        if superscience_runtime::find_rscript().is_none() {
+            assert_eq!(resolved.unwrap(), rscript.to_string_lossy());
+        } else {
+            assert!(resolved.is_ok());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

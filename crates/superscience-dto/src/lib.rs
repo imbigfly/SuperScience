@@ -3193,6 +3193,12 @@ pub struct BootstrapStatus {
     pub node_ok: bool,
     pub sci_ok: bool,
     pub pixi_ok: bool,
+    #[serde(default)]
+    pub r_ok: bool,
+    #[serde(default)]
+    pub officecli_ok: bool,
+    #[serde(default)]
+    pub sci_key_ok: bool,
     pub app_version: String,
     #[serde(default)]
     pub os: String,
@@ -3203,6 +3209,35 @@ pub struct BootstrapStatus {
     #[serde(default)]
     pub startup: String,
     pub errors: Vec<String>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct ProvisionItem {
+    pub id: String,
+    pub status: String,
+    #[serde(default)]
+    pub detail: String,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeProvisionState {
+    pub show: bool,
+    pub done: bool,
+    pub running: bool,
+    pub items: Vec<ProvisionItem>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeProvisionProgress {
+    pub items: Vec<ProvisionItem>,
+    pub running: bool,
+    #[serde(default)]
+    pub current_id: String,
+    #[serde(default)]
+    pub phase: String,
+    #[serde(default)]
+    pub received: u64,
+    pub total: Option<u64>,
 }
 
 #[derive(Deserialize, Clone)]

@@ -57,3 +57,90 @@
 @media (prefers-reduced-motion: reduce) {
   .ctx-menu { animation: none; }
 }
+
+/* ---------- Runtime setup (non-modal corner panel) ---------- */
+.runtime-setup-panel {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 40;
+  width: min(400px, calc(100vw - 32px));
+  max-height: min(72vh, 560px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  pointer-events: auto;
+}
+.runtime-setup-panel h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+}
+.runtime-setup-copy {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+.runtime-setup-body {
+  padding: 14px 14px 12px;
+  overflow: auto;
+  min-height: 0;
+}
+.runtime-setup-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.runtime-setup-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: var(--radius-xs);
+  background: var(--bg-input);
+  font-size: 12px;
+}
+.runtime-setup-item-name { font-weight: 550; color: var(--text); }
+.runtime-setup-item-status { color: var(--text-faint); white-space: nowrap; }
+.runtime-setup-item.is-installing .runtime-setup-item-status { color: var(--accent, var(--text)); }
+.runtime-setup-item.is-passed .runtime-setup-item-status,
+.runtime-setup-item.is-ready .runtime-setup-item-status { color: var(--ok, #2f8a4b); }
+.runtime-setup-item.is-failed .runtime-setup-item-status { color: var(--err); }
+.runtime-setup-sci-key {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.runtime-setup-sci-key input {
+  flex: 1;
+  min-width: 0;
+}
+.runtime-setup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.runtime-setup-chip {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 40;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 12px;
+  box-shadow: var(--shadow);
+  cursor: pointer;
+}

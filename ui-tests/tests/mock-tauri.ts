@@ -156,6 +156,26 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   const mockBrowserRestore = query.get("mockBrowserRestore") === "1";
   const mockOAuthPending = query.get("mockOAuthPending") === "1";
   const mockOnboarding = query.get("mockOnboarding") === "1";
+  const mockRuntimeProvision = query.get("mockRuntimeProvision");
+  let runtimeProvisionDone =
+    mockRuntimeProvision === "0" || (mockRuntimeProvision !== "1" && !mockOnboarding);
+  let runtimeProvisionRunning = false;
+  const runtimeProvisionItems = () => [
+    { id: "uv", status: "pending", detail: "" },
+    { id: "python", status: "pending", detail: "" },
+    { id: "r", status: "pending", detail: "" },
+    { id: "node", status: "pending", detail: "" },
+    { id: "sci", status: "pending", detail: "" },
+    { id: "pixi", status: "pending", detail: "" },
+    { id: "officecli", status: "pending", detail: "" },
+    { id: "sci_key", status: "needs_user", detail: "" },
+  ];
+  const runtimeProvisionState = () => ({
+    show: !runtimeProvisionDone,
+    done: runtimeProvisionDone,
+    running: runtimeProvisionRunning,
+    items: runtimeProvisionItems(),
+  });
   const mockSyncUnconfigured = query.get("mockSyncUnconfigured") === "1";
   const mockExplorationFlow = query.get("mockExplorations") === "1";
   const mockOtherExplorationSession = query.get("mockOtherExplorationSession") === "1";
@@ -3581,6 +3601,33 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           }
           case "get_onboarding_state":
             return mockOnboarding ? { show: true, has_api_key: false } : { show: false, has_api_key: true };
+          case "get_runtime_provision_state":
+            return runtimeProvisionState();
+          case "start_runtime_provision":
+            runtimeProvisionRunning = true;
+            setTimeout(() => {
+              runtimeProvisionRunning = false;
+              emit("runtime-provision-progress", {
+                items: runtimeProvisionItems().map((item) =>
+                  item.id === "sci_key" ? item : { ...item, status: "passed" },
+                ),
+                running: true,
+                current_id: "uv",
+                phase: "install",
+                received: 0,
+                total: null,
+              });
+            }, 20);
+            return null;
+          case "cancel_runtime_provision":
+            runtimeProvisionRunning = false;
+            return null;
+          case "dismiss_runtime_provision":
+            runtimeProvisionDone = true;
+            runtimeProvisionRunning = false;
+            return null;
+          case "save_runtime_provision_sci_key":
+            return runtimeProvisionState();
           case "get_capabilities":
             return {
               skills,
@@ -5598,6 +5645,12 @@ export function parallelMock(): void {
             "Generate a literature landscape visualization",
           ];
           case "get_onboarding_state": return { show: false, has_api_key: true };
+          case "get_runtime_provision_state": return { show: false, done: true, running: false, items: [] };
+          case "start_runtime_provision":
+          case "cancel_runtime_provision":
+          case "dismiss_runtime_provision":
+          case "save_runtime_provision_sci_key":
+            return { show: false, done: true, running: false, items: [] };
           case "get_capabilities": return { skills: [], mcp_servers: [], memory_files: [], project };
           case "list_approval_grants": return [];
           case "list_dir": return [];

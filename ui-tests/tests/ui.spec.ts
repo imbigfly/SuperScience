@@ -8154,6 +8154,8 @@ test("one DeepSeek Base URL can save Responses and Anthropic protocol models", a
 test("onboarding shows three value cards and dismisses on Get started", async ({ page }) => {
   await page.goto("/?mockOnboarding=1");
   await expect(page.getByTestId("onboard-overlay")).toBeVisible();
+  await expect(page.locator(".projects-screen")).toBeVisible();
+  await expect(page.locator(".app")).toHaveClass(/app-hidden/);
   await expect(page.getByTestId("onboard-card-1")).toContainText("I never touch your data.");
   await expect(page.getByTestId("onboard-card-1")).toContainText("Everything runs on your laptop");
   await expect(page.getByTestId("onboard-card-2")).toContainText("I do the grunt work.");
@@ -8170,6 +8172,75 @@ test("Escape dismisses onboarding without moving focus inside", async ({ page })
   await expect(page.getByTestId("onboard-overlay")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("onboard-overlay")).toHaveCount(0);
+});
+
+test("runtime setup panel appears after welcome and does not lock the app", async ({ page }) => {
+  test.setTimeout(90_000);
+  await page.goto("/?mockOnboarding=1");
+  await expect(page.getByTestId("onboard-overlay")).toBeVisible({ timeout: 60_000 });
+  await page.getByTestId("onboard-start").click();
+  await expect(page.getByTestId("onboard-overlay")).toHaveCount(0);
+  await expect(page.getByTestId("runtime-setup-panel")).toBeVisible();
+  await expect(page.getByTestId("runtime-setup-why")).toBeVisible();
+  await expect(page.getByTestId("runtime-setup-skip")).toBeVisible();
+  await expect(page.getByTestId("capability-scene")).toBeVisible();
+  await page.getByTestId("capability-scene").click();
+  await expect(page.getByTestId("runtime-setup-panel")).toBeVisible();
+});
+
+test("runtime setup skip persists and does not auto-open again", async ({ page }) => {
+  await page.goto("/?mockOnboarding=1");
+  await expect(page.getByTestId("onboard-overlay")).toBeVisible();
+  await page.getByTestId("onboard-start").click();
+  await expect(page.getByTestId("runtime-setup-panel")).toBeVisible();
+  await page.getByTestId("runtime-setup-skip").click();
+  await expect(page.getByTestId("runtime-setup-panel")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() =>
+    ((window as any).__skillInvokeLog ?? []).some((c: any) => c.cmd === "dismiss_runtime_provision")
+  )).toBe(true);
+  await page.goto("/");
+  await expect(page.getByTestId("runtime-setup-panel")).toHaveCount(0);
+  await expect(page.getByTestId("runtime-setup-chip")).toHaveCount(0);
+});
+
+test("Escape collapses runtime setup without skipping", async ({ page }) => {
+  await page.goto("/?mockOnboarding=1");
+  await expect(page.getByTestId("onboard-overlay")).toBeVisible();
+  await page.getByTestId("onboard-start").click();
+  await expect(page.getByTestId("runtime-setup-panel")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("runtime-setup-panel")).toHaveCount(0);
+  await expect(page.getByTestId("runtime-setup-chip")).toBeVisible();
+  await expect.poll(() => page.evaluate(() =>
+    ((window as any).__skillInvokeLog ?? []).some((c: any) => c.cmd === "dismiss_runtime_provision")
+  )).toBe(false);
+  await expect(page.getByTestId("capability-scene")).toBeVisible();
+});
+
+test("env-setup tile reopens the same runtime panel without a new chat", async ({ page }) => {
+  await page.goto("/?mockRuntimeProvision=1");
+  await expect(page.getByTestId("runtime-setup-panel")).toBeVisible();
+  await expect(page.getByTestId("capability-scene")).toBeVisible();
+  await page.getByTestId("runtime-setup-collapse").click();
+  await expect(page.getByTestId("runtime-setup-chip")).toBeVisible();
+  await page.getByRole("tab", { name: "Data cleaning" }).click();
+  await page.getByTestId("cap-tile-env-setup").click();
+  await expect(page.getByTestId("runtime-setup-panel")).toBeVisible();
+  await expect(page.locator(".msg.user")).toHaveCount(0);
+});
+
+test("runtime setup stays open while using other capabilities", async ({ page }) => {
+  await page.goto("/?mockRuntimeProvision=1");
+  await expect(page.getByTestId("runtime-setup-panel")).toBeVisible();
+  await page.getByTestId("runtime-setup-start").click();
+  await expect.poll(() => page.evaluate(() =>
+    ((window as any).__skillInvokeLog ?? []).some((c: any) => c.cmd === "start_runtime_provision")
+  )).toBe(true);
+  await page.getByRole("tab", { name: "Topic & proposal" }).click();
+  await expect(page.getByTestId("runtime-setup-panel")).toBeVisible();
+  await page.locator(".proj-card-main").first().click();
+  await expect(newSessionButton(page)).toBeVisible();
+  await expect(page.getByTestId("runtime-setup-panel")).toBeVisible();
 });
 
 test("API access on xAI suggests grok chat and imagine image", async ({ page }) => {
@@ -10387,6 +10458,7 @@ test("scratch chat opens from landing and closes on Escape", async ({ page }) =>
   await page.goto("/");
   await expect(page.locator(".projects-screen")).toBeVisible();
   await page.getByRole("button", { name: "Scratch chat" }).click();
+  await expect.poll(async () => (await invokeArgsList(page, "new_session")).length).toBeGreaterThan(0);
   await expect(page.locator(".app.scratch-mode")).toBeVisible();
   await expect(page.locator(".scratch-title")).toHaveText("Scratch chat");
   // Scratch chrome is title + close only — inbox/terminal/panel stay project-scoped.

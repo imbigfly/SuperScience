@@ -86,6 +86,7 @@ mod run_context;
 mod runtime_commands;
 mod runtime_config_tool;
 mod runtime_launcher;
+mod runtime_provision;
 mod scheduler;
 mod scratch_commands;
 mod seed;
@@ -2075,6 +2076,9 @@ struct BootstrapStatus {
     npm_ok: bool,
     sci_ok: bool,
     pixi_ok: bool,
+    r_ok: bool,
+    officecli_ok: bool,
+    sci_key_ok: bool,
     app_version: String,
     os: String,
     arch: String,
@@ -6575,6 +6579,11 @@ pub fn run() {
             app_commands::get_onboarding_state,
             app_commands::dismiss_onboarding,
             app_commands::get_bootstrap_status,
+            runtime_provision::get_runtime_provision_state,
+            runtime_provision::start_runtime_provision,
+            runtime_provision::cancel_runtime_provision,
+            runtime_provision::dismiss_runtime_provision,
+            runtime_provision::save_runtime_provision_sci_key,
             app_updates::check_for_updates,
             app_updates::download_update,
             app_updates::install_update,

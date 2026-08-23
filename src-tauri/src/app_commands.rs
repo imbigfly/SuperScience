@@ -475,6 +475,9 @@ pub(super) fn initial_bootstrap(workspace: &std::path::Path, skills: usize) -> B
         npm_ok: superscience_runtime::PythonEnv::find_npm().is_some(),
         sci_ok: superscience_runtime::PythonEnv::find_sci().is_some(),
         pixi_ok: superscience_runtime::PythonEnv::find_pixi().is_some(),
+        r_ok: superscience_runtime::find_rscript().is_some(),
+        officecli_ok: superscience_runtime::PythonEnv::find_officecli().is_some(),
+        sci_key_ok: false,
         app_version: env!("CARGO_PKG_VERSION").into(),
         os: std::env::consts::OS.into(),
         arch: std::env::consts::ARCH.into(),
@@ -511,6 +514,16 @@ pub(super) fn initial_bootstrap(workspace: &std::path::Path, skills: usize) -> B
         status.errors.push(
             "pixi not found on PATH; optional for local bioinformatics multi-env workflows.".into(),
         );
+    }
+    if superscience_runtime::find_rscript().is_none() {
+        status
+            .errors
+            .push("Rscript not found; the persistent r tool needs R and jsonlite.".into());
+    }
+    if !status.officecli_ok {
+        status
+            .errors
+            .push("officecli not found; Word / Excel / PowerPoint skills need it.".into());
     }
     if superscience_paths::bio_tools_dir().is_none() {
         status

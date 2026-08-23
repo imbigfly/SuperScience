@@ -4,7 +4,8 @@ use crate::app_support::{
     share_png_width, show_toast, ShareExportFormat, ShareHtmlRow, ShareHtmlTheme, ShareMessage,
     ShareRole,
 };
-use crate::bindings::{invoke_checked, render_share_png, snapshot_share_theme};
+use crate::bindings::{invoke, invoke_checked, render_share_png, snapshot_share_theme};
+use wasm_bindgen::JsValue;
 use crate::dto::*;
 use crate::i18n::{brand_product_name, localize_backend, t, tf, Locale};
 use crate::text::{dom_value, event_target_value, file_kind, format_bytes};
@@ -1167,7 +1168,7 @@ pub(super) fn CapabilitiesOverlay(
     caps: RwSignal<Option<Capabilities>>,
     busy: RwSignal<bool>,
     open_settings_section: Callback<String>,
-    start_env_setup: Callback<web_sys::MouseEvent>,
+    open_runtime_setup: Callback<web_sys::MouseEvent>,
 ) -> impl IntoView {
     move || {
         show_capabilities.get().then(|| view! {
@@ -1258,8 +1259,8 @@ pub(super) fn CapabilitiesOverlay(
                 <button on:click=move |_| show_capabilities.set(false)>
                     {move || t(locale.get(), "caps.close")}
                 </button>
-                {move || bootstrap.get().filter(|b| !b.python_initializing && (!b.python_ok || !b.uv_ok || !b.node_ok || !b.sci_ok || !b.pixi_ok)).map(|_| view! {
-                    <button class="primary" disabled=move || busy.get() on:click=move |ev| start_env_setup.call(ev)>
+                {move || bootstrap.get().filter(|b| !b.python_initializing && (!b.python_ok || !b.uv_ok || !b.node_ok || !b.sci_ok || !b.pixi_ok || !b.r_ok || !b.officecli_ok)).map(|_| view! {
+                    <button class="primary" disabled=move || busy.get() on:click=move |ev| open_runtime_setup.call(ev)>
                         {move || t(locale.get(), "caps.setup_env")}
                     </button>
                 })}
@@ -1309,6 +1310,186 @@ pub(super) fn OnboardingOverlay(
             .into_view()
         })
     }
+}
+
+fn provision_item_label(locale: Locale, id: &str) -> String {
+    t(locale, &format!("runtime_setup.item.{id}"))
+}
+
+fn provision_status_label(locale: Locale, status: &str) -> String {
+    t(locale, &format!("runtime_setup.status.{status}"))
+}
+
+fn provision_counts(items: &[ProvisionItem]) -> (usize, usize) {
+    let auto: Vec<_> = items
+        .iter()
+        .filter(|item| item.id != "sci_key")
+        .collect();
+    let done = auto
+        .iter()
+        .filter(|item| matches!(item.status.as_str(), "ready" | "passed"))
+        .count();
+    (done, auto.len())
+}
+
+#[component]
+pub(super) fn RuntimeSetupPanel(
+    locale: RwSignal<Locale>,
+    visible: RwSignal<bool>,
+    collapsed: RwSignal<bool>,
+    state: RwSignal<Option<RuntimeProvisionState>>,
+    sci_key: RwSignal<String>,
+) -> impl IntoView {
+    crate::window_capture_escape(move || {
+        if !visible.get_untracked() || collapsed.get_untracked() {
+            return false;
+        }
+        collapsed.set(true);
+        true
+    });
+    let start = move |_| {
+        spawn_local(async move {
+            let _ = invoke("start_runtime_provision", JsValue::UNDEFINED).await;
+            if let Ok(next) =
+                serde_wasm_bindgen::from_value::<RuntimeProvisionState>(
+                    invoke("get_runtime_provision_state", JsValue::UNDEFINED).await,
+                )
+            {
+                state.set(Some(next));
+            }
+        });
+    };
+    let skip = move |_| {
+        spawn_local(async move {
+            let _ = invoke("dismiss_runtime_provision", JsValue::UNDEFINED).await;
+            visible.set(false);
+        });
+    };
+    let cancel = move |_| {
+        spawn_local(async move {
+            let _ = invoke("cancel_runtime_provision", JsValue::UNDEFINED).await;
+        });
+    };
+    let save_key = move |_| {
+        let value = sci_key.get();
+        spawn_local(async move {
+            if let Ok(arg) = to_value(&serde_json::json!({ "value": value })) {
+                if let Ok(next) = serde_wasm_bindgen::from_value::<RuntimeProvisionState>(
+                    invoke("save_runtime_provision_sci_key", arg).await,
+                ) {
+                    state.set(Some(next));
+                    sci_key.set(String::new());
+                }
+            }
+        });
+    };
+
+    move || {
+        if !visible.get() {
+            return ().into_view();
+        }
+        let loc = locale.get();
+        let snapshot = state.get();
+        let running = snapshot.as_ref().is_some_and(|s| s.running);
+        let items = snapshot
+            .as_ref()
+            .map(|s| s.items.clone())
+            .unwrap_or_default();
+        let (done, total) = provision_counts(&items);
+        let all_ready = total > 0 && done == total;
+        if collapsed.get() {
+            let chip = if running {
+                tf(
+                    loc,
+                    "runtime_setup.chip.preparing",
+                    &[("done", &done.to_string()), ("total", &total.to_string())],
+                )
+            } else if all_ready {
+                t(loc, "runtime_setup.chip.ready")
+            } else {
+                t(loc, "runtime_setup.chip.incomplete")
+            };
+            return view! {
+                <button type="button" class="runtime-setup-chip"
+                    data-testid="runtime-setup-chip"
+                    on:click=move |_| collapsed.set(false)>
+                    {chip}
+                </button>
+            }
+            .into_view();
+        }
+        view! {
+            <aside class="runtime-setup-panel" data-testid="runtime-setup-panel">
+                <div class="runtime-setup-body">
+                    <h2>{t(loc, "runtime_setup.title")}</h2>
+                    <p class="runtime-setup-copy" data-testid="runtime-setup-why">
+                        {t(loc, "runtime_setup.why")}
+                    </p>
+                    <p class="runtime-setup-copy">{t(loc, "runtime_setup.scope")}</p>
+                    <p class="runtime-setup-copy">{t(loc, "runtime_setup.skip_hint")}</p>
+                    <ul class="runtime-setup-list" data-testid="runtime-setup-list">
+                        {items.into_iter().map(|item| {
+                            let class = format!("runtime-setup-item is-{}", item.status);
+                            view! {
+                                <li class=class data-testid=format!("runtime-setup-item-{}", item.id)>
+                                    <span class="runtime-setup-item-name">
+                                        {provision_item_label(loc, &item.id)}
+                                    </span>
+                                    <span class="runtime-setup-item-status">
+                                        {provision_status_label(loc, &item.status)}
+                                    </span>
+                                </li>
+                            }
+                        }).collect_view()}
+                    </ul>
+                    {items_has_sci_key_prompt(state.get()).then(|| view! {
+                        <div class="runtime-setup-sci-key">
+                            <input type="password"
+                                prop:value=move || sci_key.get()
+                                placeholder=t(loc, "runtime_setup.sci_key_placeholder")
+                                data-testid="runtime-setup-sci-key"
+                                on:input=move |ev| sci_key.set(event_target_value(&ev)) />
+                            <button type="button" on:click=save_key>
+                                {t(loc, "runtime_setup.sci_key_save")}
+                            </button>
+                        </div>
+                    })}
+                    <div class="runtime-setup-actions">
+                        {(!running).then(|| view! {
+                            <button type="button" class="primary"
+                                data-testid="runtime-setup-start" on:click=start>
+                                {t(loc, "runtime_setup.start")}
+                            </button>
+                        })}
+                        {running.then(|| view! {
+                            <button type="button" data-testid="runtime-setup-cancel" on:click=cancel>
+                                {t(loc, "runtime_setup.cancel")}
+                            </button>
+                        })}
+                        <button type="button" data-testid="runtime-setup-skip" on:click=skip>
+                            {t(loc, "runtime_setup.skip")}
+                        </button>
+                        <button type="button" data-testid="runtime-setup-collapse"
+                            on:click=move |_| collapsed.set(true)>
+                            {t(loc, "runtime_setup.collapse")}
+                        </button>
+                    </div>
+                </div>
+            </aside>
+        }
+        .into_view()
+    }
+}
+
+fn items_has_sci_key_prompt(state: Option<RuntimeProvisionState>) -> bool {
+    state
+        .and_then(|s| {
+            s.items
+                .into_iter()
+                .find(|item| item.id == "sci_key")
+                .map(|item| item.status == "needs_user")
+        })
+        .unwrap_or(false)
 }
 
 #[cfg(test)]

@@ -1762,6 +1762,25 @@ fn python_bootstrap_success_marks_initialization_complete() {
 }
 
 #[test]
+fn initial_bootstrap_reports_r_and_officecli_gaps() {
+    let status = crate::app_commands::initial_bootstrap(std::path::Path::new("/tmp/workspace"), 3);
+    assert!(
+        status.r_ok
+            || status
+                .errors
+                .iter()
+                .any(|error| error.contains("Rscript not found"))
+    );
+    assert!(
+        status.officecli_ok
+            || status
+                .errors
+                .iter()
+                .any(|error| error.contains("officecli not found"))
+    );
+}
+
+#[test]
 fn python_bootstrap_failure_is_reported_after_initialization() {
     let mut status =
         crate::app_commands::initial_bootstrap(std::path::Path::new("/tmp/workspace"), 3);

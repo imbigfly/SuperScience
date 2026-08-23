@@ -48,6 +48,14 @@ impl PythonEnv {
         which::which("pixi").ok()
     }
 
+    /// Locate `officecli` on PATH (or via `OFFICECLI_PATH` env).
+    pub fn find_officecli() -> Option<PathBuf> {
+        if let Ok(p) = std::env::var("OFFICECLI_PATH") {
+            return Some(PathBuf::from(p));
+        }
+        which::which("officecli").ok()
+    }
+
     /// Python interpreter inside the venv (`Scripts\python.exe` on Windows).
     pub fn python(&self) -> PathBuf {
         if cfg!(target_os = "windows") {
@@ -135,6 +143,48 @@ pub fn find_rscript() -> Option<PathBuf> {
     rscript_common_install_candidates()
         .into_iter()
         .find(|path| path.is_file())
+}
+
+/// App-managed R tree under `app_data/r/`.
+pub struct REnv {
+    pub root: PathBuf,
+}
+
+impl REnv {
+    pub fn managed(app_data: &Path) -> Self {
+        Self {
+            root: app_data.join("r"),
+        }
+    }
+
+    /// `Rscript` inside the managed tree, if a previous provision wrote one.
+    pub fn rscript(&self) -> Option<PathBuf> {
+        managed_rscript_candidates(&self.root)
+            .into_iter()
+            .find(|path| path.is_file())
+    }
+}
+
+fn managed_rscript_candidates(root: &Path) -> Vec<PathBuf> {
+    let mut candidates = vec![
+        root.join("bin").join("Rscript"),
+        root.join("bin").join("Rscript.exe"),
+    ];
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if path.is_dir() {
+                candidates.push(path.join("bin").join("Rscript"));
+                candidates.push(path.join("bin").join("Rscript.exe"));
+            }
+        }
+    }
+    candidates
+}
+
+/// PATH / well-known installs first, then the app-managed tree.
+pub fn find_rscript_for_app(app_data: &Path) -> Option<PathBuf> {
+    find_rscript().or_else(|| REnv::managed(app_data).rscript())
 }
 
 /// Candidate `Rscript` paths in well-known install locations, most preferred
@@ -277,5 +327,24 @@ mod tests {
         assert!(candidates.iter().all(|path| path.is_absolute()));
         #[cfg(not(target_os = "windows"))]
         assert_eq!(candidates[0], PathBuf::from("/usr/local/bin/Rscript"));
+    }
+
+    #[test]
+    fn managed_rscript_prefers_bin_then_versioned_trees() {
+        let root = std::env::temp_dir().join(format!(
+            "superscience-r-env-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("R-4.5.2").join("bin")).unwrap();
+        std::fs::write(root.join("R-4.5.2").join("bin").join("Rscript"), b"").unwrap();
+        let found = REnv { root: root.clone() }.rscript();
+        assert_eq!(
+            found,
+            Some(root.join("R-4.5.2").join("bin").join("Rscript"))
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

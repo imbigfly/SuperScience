@@ -215,6 +215,8 @@ pub(crate) enum CapabilityAction {
     ComingSoon,
     /// Switch-primary tile: no click-to-activate chat/settings action.
     None,
+    /// Open the non-modal local environment setup panel.
+    OpenRuntimeSetup,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -813,19 +815,19 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
                 "先盘点你已有的数据和资料，再给出几个对准目标期刊的选题候选，并评一下下一步该做什么。",
             ),
         ),
-        skill_tile(
-            "env-setup",
-            CapabilityGroup::DataCleaning,
-            "caps.tile.env_setup.title",
-            "caps.tile.env_setup.blurb",
-            "caps.env_setup_prompt",
-            "local-env-setup",
-            "gear",
-            help(
-                "It checks this computer for Python, uv, Node, and sci, then tells you what to install so local tools can run.",
-                "检查这台电脑有没有 Python、uv、Node、sci，缺什么就告诉你怎么装，好让本地工具能跑。",
+        CapabilityTile {
+            id: "env-setup",
+            group: CapabilityGroup::DataCleaning,
+            title_key: "caps.tile.env_setup.title",
+            blurb_key: "caps.tile.env_setup.blurb",
+            help: help(
+                "It checks this computer for Python, R, Node, sci, pixi, and officecli, then installs what is missing in the background.",
+                "检查这台电脑有没有 Python、R、Node、sci、pixi、officecli，缺的在后台装好。",
             ),
-        ),
+            icon: "gear",
+            action: CapabilityAction::OpenRuntimeSetup,
+            toggle: None,
+        },
         // —— 研究实施与数据分析；知识图谱 / 生物库归选题 ——
         skill_tile(
             "nature-statistics",
@@ -1263,7 +1265,9 @@ pub(crate) fn title_key_for_capability_action(action: &CapabilityAction) -> Opti
                 _ => false,
             })
             .map(|tile| tile.title_key),
-        CapabilityAction::InstallThenGuided { .. } | CapabilityAction::NewChat => {
+        CapabilityAction::InstallThenGuided { .. }
+        | CapabilityAction::NewChat
+        | CapabilityAction::OpenRuntimeSetup => {
             capability_catalog()
                 .iter()
                 .find(|tile| tile.action == *action)
@@ -1430,12 +1434,8 @@ mod tests {
             .find(|t| t.id == "env-setup")
             .expect("env-setup tile");
         match env.action {
-            CapabilityAction::GuidedChat {
-                skill: Some("local-env-setup"),
-                specialist: None,
-                prompt_key: "caps.env_setup_prompt",
-            } => {}
-            other => panic!("expected GuidedChat with local-env-setup skill, got {other:?}"),
+            CapabilityAction::OpenRuntimeSetup => {}
+            other => panic!("expected OpenRuntimeSetup, got {other:?}"),
         }
         assert_eq!(env.group, CapabilityGroup::DataCleaning);
         assert_eq!(env_setup_capability_action(), env.action);

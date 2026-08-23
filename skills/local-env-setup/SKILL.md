@@ -7,6 +7,8 @@ tags: bootstrap, uv, python, node, npm, pixi, scimaster, mirror, china, install,
 
 # Local runtime setup
 
+**Desktop path first.** SuperScience's first-run / capability panel **Prepare this computer** probes this machine and installs missing uv/Python, R+jsonlite, Node/`sci`, pixi, and officecli in the background. Point the user at that panel when it is available. This skill is the fallback for proxy, permission, or installer failures — not the default installer.
+
 superscience needs three **independent** local toolchains:
 
 | Layer | Tools | Purpose |
