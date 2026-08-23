@@ -34,7 +34,7 @@ use wisp_tools::{Approval, ImageData, Tool, ToolEnv, ToolResult};
 
 use crate::browser_url_filters::{self, BrowserUrlFilters};
 
-mod chatgpt;
+mod chat_site;
 mod errors;
 mod workspace;
 
@@ -814,6 +814,16 @@ impl BrowserBridge {
         Ok(session_name)
     }
 
+    async fn require_chat_capability(&self, session: Option<&str>) -> Result<String, String> {
+        match self.require_capability(session, "chat_turn").await {
+            Ok(name) => Ok(name),
+            Err(chat_error) => match self.require_capability(session, "chatgpt_turn").await {
+                Ok(name) => Ok(name),
+                Err(_) => Err(chat_error),
+            },
+        }
+    }
+
     async fn start_workspace(&self) -> Result<Value, String> {
         let extension_path = self.verified_extension_path().ok_or_else(|| {
             "bundled browser-extension path is not available; cannot materialize workspace copy"
@@ -1308,21 +1318,60 @@ fn render_json(value: &Value) -> String {
     clipped
 }
 
-/// Exact-host check so `https://chatgpt.com.evil.com/` or a `chatgpt.com`
-/// substring in the path/query never passes as an official ChatGPT tab.
-fn is_chatgpt_url(url: &str) -> bool {
-    let Ok(parsed) = url::Url::parse(url) else {
-        return false;
-    };
-    if parsed.scheme() != "https" {
-        return false;
+fn chat_tab(
+    tabs: &[BrowserTab],
+    requested: Option<i64>,
+) -> Result<(i64, chat_site::ChatSite), String> {
+    if tabs.is_empty() {
+        return Err(format!(
+            "no HTTP(S) tabs are available for web_agent_*. Open {} and sign in first.",
+            chat_site::supported_sites_help()
+        ));
     }
-    let Some(host) = parsed.host_str() else {
-        return false;
+    let tab = if let Some(tab_id) = requested {
+        tabs.iter().find(|tab| tab.id == tab_id).ok_or_else(|| {
+            format!("browser tab {tab_id} is not available; call web_scan with tabs_only=true")
+        })?
+    } else {
+        tabs.iter()
+            .find(|tab| tab.active && chat_site::detect(&tab.url).is_some())
+            .or_else(|| {
+                tabs.iter()
+                    .find(|tab| chat_site::detect(&tab.url).is_some())
+            })
+            .ok_or_else(|| {
+                format!(
+                    "web_agent_* needs an already-open signed-in tab at {}",
+                    chat_site::supported_sites_help()
+                )
+            })?
     };
-    let host = host.to_ascii_lowercase();
-    let host = host.strip_prefix("www.").unwrap_or(&host);
-    matches!(host, "chatgpt.com" | "chat.openai.com")
+    let Some(site) = chat_site::detect(&tab.url) else {
+        return Err(format!(
+            "web_agent_* supports {} — this tab is not one of those chat sites",
+            chat_site::supported_sites_help()
+        ));
+    };
+    Ok((tab.id, site))
+}
+
+struct ChatTurn {
+    session: Option<String>,
+    tab_id: i64,
+    site: chat_site::ChatSite,
+}
+
+async fn begin_chat_turn(bridge: &BrowserBridge, args: &Value) -> Result<ChatTurn, String> {
+    let session = session_arg(args)?;
+    bridge.require_chat_capability(session.as_deref()).await?;
+    let requested = tab_id_arg(args)?;
+    let tabs = bridge.tabs_on(session.as_deref()).await?;
+    let (tab_id, site) = chat_tab(&tabs, requested)?;
+    Ok(ChatTurn {
+        session,
+        tab_id,
+        site,
+    })
 }
 
 /// Resolve a user-supplied project-relative path. Rejects absolute paths and
@@ -1345,27 +1394,6 @@ fn project_relative_path(root: &Path, rel: &str) -> Result<PathBuf, String> {
         ));
     }
     Ok(root.join(path))
-}
-
-fn chatgpt_tab_error(tabs: &[BrowserTab], requested: Option<i64>) -> Result<i64, String> {
-    if tabs.is_empty() {
-        return Err("no HTTP(S) tabs are available for ChatGPT one-shot".into());
-    }
-    let tab = if let Some(tab_id) = requested {
-        tabs.iter().find(|tab| tab.id == tab_id).ok_or_else(|| {
-            format!("browser tab {tab_id} is not available; call web_scan with tabs_only=true")
-        })?
-    } else {
-        tabs.iter()
-            .find(|tab| is_chatgpt_url(&tab.url))
-            .or_else(|| tabs.iter().find(|tab| tab.active))
-            .or_else(|| tabs.first())
-            .ok_or_else(|| "no browser tab is selected".to_string())?
-    };
-    if !is_chatgpt_url(&tab.url) {
-        return Err("web_agent_* currently supports only an already-open chatgpt.com tab".into());
-    }
-    Ok(tab.id)
 }
 
 fn human_verification_handoff(page: &Value) -> Option<Value> {
@@ -2139,7 +2167,7 @@ impl Tool for WebAgentSendTool {
         "web_agent_send"
     }
     fn schema(&self) -> ToolSchema {
-        ToolSchema::new(self.name(), "Send one prompt to the ChatGPT web composer in the selected real-browser session. Requires an already-logged-in chatgpt.com tab. Does not type passwords. session is required when both browsers are connected.", json!({
+        ToolSchema::new(self.name(), "Send one prompt to a signed-in in-browser chat composer (ChatGPT, Gemini, or Google AI Mode). Requires an already-open tab at chatgpt.com, gemini.google.com, or google.com/search?udm=50. Does not type passwords. session is required when both browsers are connected.", json!({
             "type": "object",
             "properties": {
                 "prompt": { "type": "string" },
@@ -2154,7 +2182,7 @@ impl Tool for WebAgentSendTool {
     }
     fn preview(&self, args: &Value) -> String {
         format!(
-            "send ChatGPT prompt: {}",
+            "send in-browser chat prompt: {}",
             args.get("prompt")
                 .and_then(Value::as_str)
                 .unwrap_or("")
@@ -2164,17 +2192,10 @@ impl Tool for WebAgentSendTool {
         )
     }
     async fn run(&self, args: &Value, _env: &dyn ToolEnv) -> ToolResult {
-        let session = match session_arg(args) {
-            Ok(v) => v,
-            Err(e) => return ToolResult::fail(e),
+        let turn = match begin_chat_turn(&self.bridge, args).await {
+            Ok(turn) => turn,
+            Err(error) => return ToolResult::fail(error),
         };
-        if let Err(error) = self
-            .bridge
-            .require_capability(session.as_deref(), "chatgpt_turn")
-            .await
-        {
-            return ToolResult::fail(error);
-        }
         let Some(prompt) = args
             .get("prompt")
             .and_then(Value::as_str)
@@ -2182,24 +2203,12 @@ impl Tool for WebAgentSendTool {
         else {
             return ToolResult::fail("prompt is required");
         };
-        let requested = match tab_id_arg(args) {
-            Ok(v) => v,
-            Err(e) => return ToolResult::fail(e),
-        };
-        let tabs = match self.bridge.tabs_on(session.as_deref()).await {
-            Ok(tabs) => tabs,
-            Err(error) => return ToolResult::fail(error),
-        };
-        let tab_id = match chatgpt_tab_error(&tabs, requested) {
-            Ok(tab_id) => Some(tab_id),
-            Err(error) => return ToolResult::fail(error),
-        };
         let ready = match self
             .bridge
             .execute_on(
-                session.as_deref(),
-                tab_id,
-                &chatgpt::ready_script(),
+                turn.session.as_deref(),
+                Some(turn.tab_id),
+                &chat_site::ready_script(),
                 Duration::from_millis(DEFAULT_TIMEOUT_MS),
             )
             .await
@@ -2209,15 +2218,16 @@ impl Tool for WebAgentSendTool {
         };
         if let Some(blocked) = ready.value.get("blocked").and_then(Value::as_str) {
             return ToolResult::fail(format!(
-                "ChatGPT page is blocked ({blocked}). Complete login or captcha in the visible tab, then retry."
+                "{} page is blocked ({blocked}). Complete login or captcha in the visible tab, then retry.",
+                turn.site.label()
             ));
         }
         let fill = match self
             .bridge
             .execute_on(
-                session.as_deref(),
-                tab_id,
-                &chatgpt::send_script(prompt),
+                turn.session.as_deref(),
+                Some(turn.tab_id),
+                &chat_site::send_script(prompt),
                 Duration::from_millis(DEFAULT_TIMEOUT_MS),
             )
             .await
@@ -2228,9 +2238,9 @@ impl Tool for WebAgentSendTool {
         let sent = match self
             .bridge
             .execute_on(
-                session.as_deref(),
-                tab_id,
-                &chatgpt::click_send_script(),
+                turn.session.as_deref(),
+                Some(turn.tab_id),
+                &chat_site::click_send_script(),
                 Duration::from_millis(DEFAULT_TIMEOUT_MS),
             )
             .await
@@ -2238,9 +2248,13 @@ impl Tool for WebAgentSendTool {
             Ok(v) => v,
             Err(e) => return ToolResult::fail(e),
         };
-        ToolResult::ok(render_json(
-            &json!({ "prompt": prompt, "filled": fill.value, "sent": sent.value, "tab_id": sent.tab_id }),
-        ))
+        ToolResult::ok(render_json(&json!({
+            "site": turn.site.as_str(),
+            "prompt": prompt,
+            "filled": fill.value,
+            "sent": sent.value,
+            "tab_id": sent.tab_id
+        })))
     }
 }
 
@@ -2260,7 +2274,7 @@ impl Tool for WebAgentWaitTool {
         "web_agent_wait"
     }
     fn schema(&self) -> ToolSchema {
-        ToolSchema::new(self.name(), "Wait until the ChatGPT web turn looks complete (stop control gone / assistant text stable). Uses the Wait Engine, not document.complete.", json!({
+        ToolSchema::new(self.name(), "Wait until the in-browser chat turn looks complete (stop control gone / assistant text stable). Works on ChatGPT, Gemini, and Google AI Mode. Uses the Wait Engine, not document.complete.", json!({
             "type": "object",
             "properties": {
                 "session": { "type": "string" },
@@ -2273,30 +2287,11 @@ impl Tool for WebAgentWaitTool {
         Approval::Ask
     }
     fn preview(&self, _args: &Value) -> String {
-        "wait for ChatGPT web reply".into()
+        "wait for in-browser chat reply".into()
     }
     async fn run(&self, args: &Value, _env: &dyn ToolEnv) -> ToolResult {
-        let session = match session_arg(args) {
-            Ok(v) => v,
-            Err(e) => return ToolResult::fail(e),
-        };
-        if let Err(error) = self
-            .bridge
-            .require_capability(session.as_deref(), "chatgpt_turn")
-            .await
-        {
-            return ToolResult::fail(error);
-        }
-        let requested = match tab_id_arg(args) {
-            Ok(v) => v,
-            Err(e) => return ToolResult::fail(e),
-        };
-        let tabs = match self.bridge.tabs_on(session.as_deref()).await {
-            Ok(tabs) => tabs,
-            Err(error) => return ToolResult::fail(error),
-        };
-        let tab_id = match chatgpt_tab_error(&tabs, requested) {
-            Ok(tab_id) => Some(tab_id),
+        let turn = match begin_chat_turn(&self.bridge, args).await {
+            Ok(turn) => turn,
             Err(error) => return ToolResult::fail(error),
         };
         let timeout_ms = args
@@ -2305,14 +2300,17 @@ impl Tool for WebAgentWaitTool {
             .unwrap_or(45_000)
             .clamp(1, MAX_TIMEOUT_MS);
         let started = std::time::Instant::now();
-        let command =
-            json!({ "cmd": "wait", "spec": chatgpt::wait_spec(), "timeoutMs": timeout_ms })
-                .to_string();
+        let command = json!({
+            "cmd": "wait",
+            "spec": turn.site.wait_spec(),
+            "timeoutMs": timeout_ms
+        })
+        .to_string();
         match self
             .bridge
             .execute_on(
-                session.as_deref(),
-                tab_id,
+                turn.session.as_deref(),
+                Some(turn.tab_id),
                 &command,
                 Duration::from_millis(timeout_ms),
             )
@@ -2320,6 +2318,7 @@ impl Tool for WebAgentWaitTool {
         {
             Ok(v) => ToolResult::ok(render_json(&merge_ready_wait(
                 json!({
+                    "site": turn.site.as_str(),
                     "tab_id": v.tab_id,
                     "result": v.value,
                     "elapsed_ms": started.elapsed().as_millis() as u64,
@@ -2351,7 +2350,7 @@ impl Tool for WebAgentReadTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             self.name(),
-            "Read the latest ChatGPT web assistant turn as {answer_text, citations, status}.",
+            "Read the latest in-browser chat assistant turn (ChatGPT, Gemini, or Google AI Mode) as {answer_text, citations, status, site}.",
             json!({
                 "type": "object",
                 "properties": {
@@ -2365,45 +2364,27 @@ impl Tool for WebAgentReadTool {
         Approval::Ask
     }
     fn preview(&self, _args: &Value) -> String {
-        "read last ChatGPT web answer".into()
+        "read last in-browser chat answer".into()
     }
     async fn run(&self, args: &Value, _env: &dyn ToolEnv) -> ToolResult {
-        let session = match session_arg(args) {
-            Ok(v) => v,
-            Err(e) => return ToolResult::fail(e),
-        };
-        if let Err(error) = self
-            .bridge
-            .require_capability(session.as_deref(), "chatgpt_turn")
-            .await
-        {
-            return ToolResult::fail(error);
-        }
-        let requested = match tab_id_arg(args) {
-            Ok(v) => v,
-            Err(e) => return ToolResult::fail(e),
-        };
-        let tabs = match self.bridge.tabs_on(session.as_deref()).await {
-            Ok(tabs) => tabs,
-            Err(error) => return ToolResult::fail(error),
-        };
-        let tab_id = match chatgpt_tab_error(&tabs, requested) {
-            Ok(tab_id) => Some(tab_id),
+        let turn = match begin_chat_turn(&self.bridge, args).await {
+            Ok(turn) => turn,
             Err(error) => return ToolResult::fail(error),
         };
         match self
             .bridge
             .execute_on(
-                session.as_deref(),
-                tab_id,
-                &chatgpt::read_script(),
+                turn.session.as_deref(),
+                Some(turn.tab_id),
+                &chat_site::read_script(),
                 Duration::from_millis(DEFAULT_TIMEOUT_MS),
             )
             .await
         {
             Ok(v) => {
-                let mut parsed = chatgpt::parse_read(&v.value);
+                let mut parsed = chat_site::parse_read(&v.value);
                 parsed["tab_id"] = json!(v.tab_id);
+                parsed["site"] = json!(turn.site.as_str());
                 parsed["prompt"] = Value::Null;
                 parsed["elapsed_ms"] = json!(0);
                 ToolResult::ok(render_json(&merge_ready_wait(parsed, v.ready, v.wait)))
@@ -2898,6 +2879,7 @@ mod tests {
                 "scan_page.test.mjs",
                 "tab_ops.test.mjs",
                 "wait_engine.test.mjs",
+                "chat_adapter.test.mjs",
             ])
             .current_dir(&dir)
             .output()
@@ -3015,22 +2997,42 @@ mod tests {
         assert!(result.content.contains("EXTENSION_STALE"));
     }
 
+    fn tab(id: i64, url: &str, active: bool) -> BrowserTab {
+        BrowserTab {
+            id,
+            url: url.into(),
+            title: url.into(),
+            active,
+            window_id: None,
+        }
+    }
+
     #[test]
-    fn chatgpt_url_helper_accepts_official_hosts_only() {
-        assert!(is_chatgpt_url("https://chatgpt.com/"));
-        assert!(is_chatgpt_url("https://www.chatgpt.com/"));
-        assert!(is_chatgpt_url("https://chat.openai.com/c/abc"));
-        assert!(is_chatgpt_url("https://CHATGPT.com/c/abc"));
-        assert!(!is_chatgpt_url("https://example.com/chatgpt"));
-        // Host suffix/lookalike bypasses must fail: web_agent_* would otherwise
-        // fill prompts into a phishing page.
-        assert!(!is_chatgpt_url("https://chatgpt.com.evil.com/"));
-        assert!(!is_chatgpt_url("https://evilchatgpt.com/"));
-        assert!(!is_chatgpt_url("https://evil.com/?next=chatgpt.com"));
-        assert!(!is_chatgpt_url("https://evil.com/chat.openai.com"));
-        assert!(!is_chatgpt_url("http://chatgpt.com/"));
-        assert!(!is_chatgpt_url("javascript:alert('chatgpt.com')"));
-        assert!(!is_chatgpt_url("not a url chatgpt.com"));
+    fn chat_tab_picks_supported_sites_and_rejects_lookalikes() {
+        let chatgpt = tab(1, "https://chatgpt.com/c/1", false);
+        let gemini = tab(2, "https://gemini.google.com/app", true);
+        let google_ai = tab(3, "https://www.google.com/search?udm=50&q=rna", false);
+        let other = tab(4, "https://example.com", true);
+        let (id, site) = chat_tab(&[chatgpt.clone(), gemini.clone()], None).unwrap();
+        assert_eq!(id, 2);
+        assert_eq!(site, chat_site::ChatSite::Gemini);
+        let (id, site) = chat_tab(&[chatgpt.clone(), other.clone()], None).unwrap();
+        assert_eq!(id, 1);
+        assert_eq!(site, chat_site::ChatSite::ChatGpt);
+        let (id, site) = chat_tab(&[google_ai.clone(), other.clone()], Some(3)).unwrap();
+        assert_eq!(id, 3);
+        assert_eq!(site, chat_site::ChatSite::GoogleAi);
+        assert!(chat_tab(&[other.clone()], None)
+            .unwrap_err()
+            .contains("chatgpt.com"));
+        assert!(chat_tab(&[other.clone()], Some(4))
+            .unwrap_err()
+            .contains("not one of those chat sites"));
+        assert!(
+            chat_tab(&[tab(9, "https://chatgpt.com.evil.com/", true)], None)
+                .unwrap_err()
+                .contains("chatgpt.com")
+        );
     }
 
     #[test]

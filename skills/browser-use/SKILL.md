@@ -26,8 +26,9 @@ message, do not retry `start_workspace`, do not claim any workspace page
 was opened or read, and get the shared session working instead.
 
 For figures/code extraction use `web_scan` with `mode: "article"` then
-`web_save_assets`. For ChatGPT web one-shot use `web_agent_send`,
-`web_agent_wait`, `web_agent_read` on an already-logged-in tab.
+`web_save_assets`. For an already-logged-in in-browser chat (ChatGPT,
+Gemini, or Google AI Mode at `google.com/search?udm=50`) use
+`web_agent_send`, `web_agent_wait`, `web_agent_read` on that tab.
 
 Every `web_scan` and `web_execute_js` call needs the user's approval by
 design. Do not treat that as a bug to route around.
@@ -98,6 +99,22 @@ relay the install steps only if that call fails too.
 
 Prefer plain JS. Reach for `cmd:cdp` only when a page blocks synthetic
 events or you truly need trusted input.
+
+## In-browser chat — `web_agent_send` / `web_agent_wait` / `web_agent_read`
+
+Use these on an **already signed-in** tab. They are not a new Wisp agent;
+they drive the chat composer in the user's Chrome.
+
+Supported tabs (HTTPS, exact host, no lookalikes):
+
+- ChatGPT: `chatgpt.com` / `chat.openai.com`
+- Gemini: `gemini.google.com`
+- Google AI Mode: `google.com/search?udm=50` (plain Google Search without
+  `udm=50` is refused)
+
+Flow: `web_agent_send {prompt}` → `web_agent_wait` → `web_agent_read`. The
+read result is `{answer_text, citations, status, site}`. If the page is
+login or CAPTCHA, stop and let the user finish it in that tab.
 
 ## Seeing the page — `web_screenshot`
 

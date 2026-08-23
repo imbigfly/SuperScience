@@ -133,6 +133,11 @@ These settings must be changed manually because internal settings pages such as
   for document `complete` before capturing. It captures the viewport only;
   scroll with `web_execute_js` to reach content below the fold. It needs a
   vision-capable model configured in **Settings → Models**, like `view_image`.
+- `web_agent_send` / `web_agent_wait` / `web_agent_read`: one-shot send, wait,
+  and read against an already-logged-in in-browser chat tab. Supported HTTPS
+  hosts are `chatgpt.com` / `chat.openai.com`, `gemini.google.com`, and
+  `google.com` with `udm=50` (Google AI Mode). Login and CAPTCHA pages stop
+  for the user; Wisp does not type passwords or bypass those gates.
 
 Both tools normally require at least one Wisp approval. The approval can be
 granted once, for the session, for the project, or globally through the existing
