@@ -28,12 +28,12 @@ use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{accept_hdr_async, WebSocketStream};
 use uuid::Uuid;
+use wisp_dto::{BrowserTabCleanupItem, BrowserTabCleanupPrompt};
 use wisp_llm::ToolSchema;
 use wisp_store::Store;
 use wisp_tools::{Approval, ImageData, Tool, ToolEnv, ToolResult};
 
 use crate::browser_url_filters::{self, BrowserUrlFilters};
-use wisp_dto::{BrowserTabCleanupItem, BrowserTabCleanupPrompt};
 
 mod chatgpt;
 mod errors;
