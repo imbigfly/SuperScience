@@ -7891,6 +7891,13 @@ fn App() -> impl IntoView {
             }
             return;
         }
+        // The model switch confirm renders above the export/link/memory
+        // dialogs and everything below; Escape cancels the switch only.
+        if model_switch_confirm.get().is_some() {
+            ev.prevent_default();
+            model_switch_confirm.set(None);
+            return;
+        }
         if project_export_prompt.get().is_some() {
             ev.prevent_default();
             project_export_prompt.set(None);
