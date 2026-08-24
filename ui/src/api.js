@@ -2209,7 +2209,7 @@ function createMcpAppInstance(instanceId, payloadJson) {
     timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     platform: "desktop",
     userAgent: `wisp-science/${wispAppVersion}`,
-    toolInfo: { tool: payload.tool || {} },
+    toolInfo: { tool: instance.payload.tool || {} },
   });
   const sendHostContext = () => {
     if (!instance.initialized || !instance.target) return;
@@ -2221,8 +2221,8 @@ function createMcpAppInstance(instanceId, payloadJson) {
   };
   const sendData = () => {
     if (!instance.initialized) return;
-    post({ jsonrpc: "2.0", method: "ui/notifications/tool-input", params: { arguments: payload.arguments || {} } });
-    post({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: payload.result || { content: [] } });
+    post({ jsonrpc: "2.0", method: "ui/notifications/tool-input", params: { arguments: instance.payload.arguments || {} } });
+    post({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: instance.payload.result || { content: [] } });
   };
   const cleanup = () => {
     if (instance.teardownTimer != null) window.clearTimeout(instance.teardownTimer);
@@ -2277,7 +2277,7 @@ function createMcpAppInstance(instanceId, payloadJson) {
     }
     if (message.method === "ui/initialize" && message.id != null) {
       const hostCapabilities = {
-        sandbox: { csp: payload?.resource?._meta?.ui?.csp || payload?.resource?._meta?.csp || {} },
+        sandbox: { csp: instance.payload?.resource?._meta?.ui?.csp || instance.payload?.resource?._meta?.csp || {} },
         updateModelContext: { text: {} },
       };
       // Only advertise serverTools when this instance still has a live host
@@ -2395,6 +2395,7 @@ function createMcpAppInstance(instanceId, payloadJson) {
   };
   instance.requestTeardown = requestTeardown;
   instance.sendHostContext = sendHostContext;
+  instance.sendData = sendData;
   window.addEventListener("message", instance.onMessage);
   const bridgedHtml = payload?.tool?.name === "motif_open_workbench"
     ? injectMotifWispBridge(html)
@@ -2402,6 +2403,11 @@ function createMcpAppInstance(instanceId, payloadJson) {
   frame.srcdoc = injectMcpAppCsp(bridgedHtml, payload?.resource?._meta);
   mcpAppInstances.set(instanceId, instance);
   return instance;
+}
+
+function mcpAppDocumentKey(payload) {
+  const uri = String(payload?.resource?.uri || "").split(/[?#]/, 1)[0];
+  return `${uri}\n${payload?.resource?.text || ""}`;
 }
 
 /** Mount one MCP App inside a host-owned center pane. The app keeps an opaque
@@ -2412,13 +2418,28 @@ export function mount_mcp_app(instanceId, elId, payloadJson) {
   if (!target) return false;
   let instance = mcpAppInstances.get(instanceId);
   if (instance && instance.payloadJson !== payloadJson) {
-    void invoke("update_mcp_app_context", {
-      instanceId,
-      appName: instance.appName,
-      context: {},
-    });
-    instance.requestTeardown("replaced by a newer MCP App presentation");
-    instance = null;
+    const nextPayload = typeof payloadJson === "string" ? JSON.parse(payloadJson) : payloadJson;
+    if (mcpAppDocumentKey(instance.payload) === mcpAppDocumentKey(nextPayload)) {
+      instance.payload = nextPayload;
+      instance.payloadJson = typeof payloadJson === "string" ? payloadJson : JSON.stringify(payloadJson);
+      instance.appName = mcpAppTitle(nextPayload);
+      instance.frame.title = instance.appName;
+      instance.sendData();
+      instance.sendHostContext();
+    } else {
+      void invoke("update_mcp_app_context", {
+        instanceId,
+        appName: instance.appName,
+        context: {},
+      });
+      // Detach first so the old iframe's cleanup does not revoke the host
+      // bridge the newer presentation just registered under this same id.
+      if (mcpAppInstances.get(instanceId) === instance) {
+        mcpAppInstances.delete(instanceId);
+      }
+      instance.requestTeardown("replaced by a newer MCP App presentation");
+      instance = null;
+    }
   }
   instance ||= createMcpAppInstance(instanceId, payloadJson);
   if (!instance) return false;

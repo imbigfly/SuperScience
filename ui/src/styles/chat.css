@@ -8,9 +8,10 @@
 }
 .center-tabs { display: flex; align-items: center; gap: 4px; min-width: 0; overflow-x: auto; flex: 1 1 auto; scrollbar-width: none; box-sizing: border-box; }
 .center-tabs::-webkit-scrollbar { display: none; }
-.center-tab-wrap { position: relative; display: flex; min-width: 0; flex: 0 0 auto; border-radius: var(--radius-xs); }
-.center-tab { min-width: 108px; max-width: 220px; height: 32px; padding: 0 30px 0 12px; border: 1px solid transparent; border-radius: var(--radius-xs); background: transparent; color: var(--text-muted); font: inherit; font-size: 12px; font-weight: 500; cursor: pointer; transition: background .16s ease, border-color .16s ease, color .16s ease, box-shadow .2s ease; }
-.center-tabs > .center-tab { min-width: min(260px, 42cqw); max-width: min(520px, 52cqw); padding: 0 14px; color: var(--text-faint); }
+.center-tab-wrap { position: relative; display: flex; min-width: 72px; max-width: 220px; flex: 1 1 140px; border-radius: var(--radius-xs); }
+.center-tab { min-width: 0; max-width: 220px; height: 32px; padding: 0 30px 0 12px; border: 1px solid transparent; border-radius: var(--radius-xs); background: transparent; color: var(--text-muted); font: inherit; font-size: 12px; font-weight: 500; cursor: pointer; transition: background .16s ease, border-color .16s ease, color .16s ease, box-shadow .2s ease; }
+.center-tab-wrap .center-tab { width: 100%; max-width: none; }
+.center-tabs > .center-tab { min-width: 0; max-width: min(280px, 36cqw); flex: 1 1 160px; padding: 0 14px; color: var(--text-faint); }
 .center-tab:hover { background: var(--surface-hover); color: var(--text); }
 .center-tab.active { border-color: var(--border-active); background: var(--bg-elev); color: var(--text); box-shadow: var(--shadow-sm); }
 .center-tab-label { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: -.005em; }

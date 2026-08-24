@@ -2159,30 +2159,25 @@ fn App() -> impl IntoView {
     let show_right_cb = show_right;
     let mcp_apps_cb = mcp_apps;
     let show_mcp_app = Callback::new(
-        move |(frame_id, presentation_id, payload, replace): (
-            String,
-            String,
-            serde_json::Value,
-            bool,
-        )| {
-            let instance_id = mcp_app_instance_id(&frame_id, &presentation_id, &payload);
+        move |(frame_id, payload, replace): (String, serde_json::Value, bool)| {
+            let instance_id = mcp_app_instance_id(&frame_id, &payload);
             if !replace && mcp_apps_cb.with_untracked(|apps| apps.contains_key(&instance_id)) {
                 return;
             }
             let Ok(payload_json) = serde_json::to_string(&payload) else {
                 return;
             };
-            let tab = CenterFileTab::new(
-                instance_id.clone(),
-                mcp_app_title(&payload),
-                "mcp_app".into(),
-            );
+            let title = mcp_app_title(&payload);
             mcp_apps_cb.update(|apps| {
                 apps.insert(instance_id.clone(), payload_json);
             });
             center_files_cb.update(|files| {
                 if !files.iter().any(|file| file.path == instance_id) {
-                    files.push(tab);
+                    files.push(CenterFileTab::new(
+                        instance_id.clone(),
+                        title,
+                        "mcp_app".into(),
+                    ));
                 }
             });
             center_file_cb.set(Some(instance_id));
@@ -2606,7 +2601,7 @@ fn App() -> impl IntoView {
             }
             AgentEvent::ToolPresentation {
                 frame_id,
-                presentation_id,
+                presentation_id: _,
                 presentation_kind,
                 payload,
             } => {
@@ -2629,7 +2624,7 @@ fn App() -> impl IntoView {
                 } else if presentation_kind == "mcp_app"
                     && active_cb.get_untracked().as_deref() == Some(frame_id.as_str())
                 {
-                    show_mcp_app.call((frame_id, presentation_id, payload, true));
+                    show_mcp_app.call((frame_id, payload, true));
                 }
             }
             AgentEvent::Usage {
@@ -5400,12 +5395,7 @@ fn App() -> impl IntoView {
                     );
                     for presentation in presentations {
                         if presentation.presentation_kind == "mcp_app" {
-                            show_mcp_app.call((
-                                id.clone(),
-                                presentation.presentation_id,
-                                presentation.payload,
-                                false,
-                            ));
+                            show_mcp_app.call((id.clone(), presentation.payload, false));
                         }
                     }
                     restore_chat_session_scroll(&id);
@@ -9795,6 +9785,11 @@ fn App() -> impl IntoView {
                 })}
                 <div class="center-tabs" role="tablist">
                     <button type="button" class="center-tab" class:active=move || center_file.get().is_none()
+                        title=move || if demo_mode.get() {
+                            t(locale.get(), "projects.example").into()
+                        } else {
+                            center_conversation_title.get()
+                        }
                         on:click=move |_| center_file.set(None)>
                         <span class="center-tab-label">{move || if demo_mode.get() {
                             t(locale.get(), "projects.example").into()
@@ -9813,7 +9808,7 @@ fn App() -> impl IntoView {
                             view! {
                                 <div class="center-tab-wrap">
                                     <button type="button" class="center-tab" class:active=move || center_file.get().as_ref() == Some(&path)
-                                        title=path.clone() data-center-path=path.clone()
+                                        title=label.clone() data-center-path=path.clone()
                                         on:click=move |_| center_file.set(Some(select_path.clone()))>
                                         <span class="center-tab-label">{label}</span>
                                     </button>
