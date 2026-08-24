@@ -401,6 +401,19 @@ Project-specific pixi, conda, virtualenv, or `renv` profiles are future environm
 selection work. A v1 user may explicitly configure the interpreter from such an
 environment.
 
+An explicitly configured interpreter must actually be launchable. When it lives
+inside a conda-style prefix — a directory containing `conda-meta`, which conda,
+mamba, and pixi all write — the worker is launched with that prefix on its own
+`PATH`. On Windows an interpreter's shared libraries live in the prefix rather than
+beside the executable, so without this a conda-forge `Rscript.exe` exits with
+`STATUS_DLL_NOT_FOUND`, or faults on a mismatched library found elsewhere on `PATH`.
+This is the launched child's environment only; the host environment is never
+modified, and remote contexts keep whatever their own shell provides.
+
+On Windows, `<R>\bin\Rscript.exe` is an architecture shim that re-launches
+`<R>\bin\x64\Rscript.exe` through `cmd.exe`. Local launches resolve to the real
+binary so the interpreter is the app's direct child.
+
 ## 11. Worker protocol
 
 Python and R use one versioned, newline-delimited JSON protocol over stdio. Reusing

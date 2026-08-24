@@ -1,6 +1,7 @@
 //! uv-managed Python environment provisioning.
 
 use anyhow::{anyhow, Result};
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -168,6 +169,84 @@ fn windows_direct_rscript(configured: &str, exists: impl Fn(&Path) -> bool) -> O
         .into_iter()
         .map(|arch| format!("{directory}{arch}{separator}{name}"))
         .find(|candidate| exists(Path::new(candidate)))
+}
+
+/// Environment a child needs to run an interpreter that lives inside a
+/// conda-style prefix (conda, mamba, or pixi), or empty when it does not.
+///
+/// Only the child's `PATH` is set; the host environment is never modified. On
+/// Windows an interpreter's shared libraries live in the prefix rather than
+/// beside the executable, so without this a conda-forge `Rscript.exe` exits
+/// immediately with `STATUS_DLL_NOT_FOUND` (`0xC0000135`), or picks up a
+/// mismatched DLL from an unrelated `PATH` entry and faults (#941).
+pub fn conda_prefix_envs(interpreter: &Path) -> Vec<(String, String)> {
+    let Some(prefix) = conda_prefix(interpreter) else {
+        return Vec::new();
+    };
+    let entries = prefix_path_entries(&prefix, cfg!(target_os = "windows"));
+    let path = prepend_path(&entries, std::env::var_os("PATH").as_deref());
+    vec![("PATH".into(), path.to_string_lossy().into_owned())]
+}
+
+/// Nearest ancestor of `interpreter` that is a conda-style environment prefix.
+/// `conda-meta` is written by conda, mamba, and pixi alike, so it identifies a
+/// prefix exactly instead of guessing from directory names.
+fn conda_prefix(interpreter: &Path) -> Option<PathBuf> {
+    interpreter
+        .ancestors()
+        .skip(1)
+        .find(|directory| directory.join("conda-meta").is_dir())
+        .map(Path::to_path_buf)
+}
+
+/// Directories a conda-style prefix contributes to `PATH`, in the order conda's
+/// own activation uses them. The Windows entries are spelled out rather than
+/// joined through `Path`, so the layout stays unit-testable on any host.
+fn prefix_path_entries(prefix: &Path, windows: bool) -> Vec<PathBuf> {
+    if !windows {
+        return vec![prefix.join("bin")];
+    }
+    let prefix = prefix.to_string_lossy();
+    std::iter::once(prefix.to_string())
+        .chain(
+            [
+                r"Library\mingw-w64\bin",
+                r"Library\usr\bin",
+                r"Library\bin",
+                "Scripts",
+                "bin",
+            ]
+            .into_iter()
+            .map(|entry| format!(r"{prefix}\{entry}")),
+        )
+        .map(PathBuf::from)
+        .collect()
+}
+
+fn prepend_path(entries: &[PathBuf], current: Option<&OsStr>) -> OsString {
+    let inherited = current.filter(|value| !value.is_empty());
+    let mut path = OsString::new();
+    for entry in entries {
+        if !path.is_empty() {
+            path.push(path_separator());
+        }
+        path.push(entry);
+    }
+    if let Some(inherited) = inherited {
+        if !path.is_empty() {
+            path.push(path_separator());
+        }
+        path.push(inherited);
+    }
+    path
+}
+
+fn path_separator() -> &'static str {
+    if cfg!(target_os = "windows") {
+        ";"
+    } else {
+        ":"
+    }
 }
 
 /// Candidate `Rscript` paths in well-known install locations, most preferred
@@ -346,6 +425,88 @@ mod tests {
 
         // A bare command has no directory to rewrite.
         assert_eq!(windows_direct_rscript("Rscript", |_| true), None);
+    }
+
+    /// A pixi env is a conda prefix, and `conda-meta` is what says so. Walking
+    /// up from the interpreter is what lets a saved
+    /// `.pixi/envs/default/lib/R/bin/x64/Rscript.exe` find its own DLLs.
+    #[test]
+    fn conda_prefix_is_found_from_a_nested_interpreter_path() {
+        let root = std::env::temp_dir().join(format!("wisp-conda-{}", uuid::Uuid::new_v4()));
+        let prefix = root.join(".pixi").join("envs").join("default");
+        let bin = prefix.join("lib").join("R").join("bin").join("x64");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(prefix.join("conda-meta")).unwrap();
+        let interpreter = bin.join("Rscript.exe");
+
+        assert_eq!(conda_prefix(&interpreter), Some(prefix.clone()));
+        // The prefix directory itself is never its own parent match.
+        assert_eq!(conda_prefix(&prefix), None);
+
+        // A plain system install is not a prefix and must be left alone.
+        let system = root.join("R-4.5.3").join("bin").join("x64");
+        std::fs::create_dir_all(&system).unwrap();
+        assert_eq!(conda_prefix(&system.join("Rscript.exe")), None);
+        assert!(conda_prefix_envs(&system.join("Rscript.exe")).is_empty());
+
+        let envs = conda_prefix_envs(&interpreter);
+        assert_eq!(envs.len(), 1);
+        assert_eq!(envs[0].0, "PATH");
+        let expected = prefix_path_entries(&prefix, cfg!(target_os = "windows"))[0]
+            .to_string_lossy()
+            .into_owned();
+        assert!(envs[0].1.starts_with(&expected), "{}", envs[0].1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Windows resolves an executable's shared libraries through PATH, and a
+    /// conda-forge prefix keeps them under `Library`. Missing these is what
+    /// makes a pixi `Rscript.exe` exit with 0xC0000135.
+    #[test]
+    fn windows_prefix_contributes_the_library_directories_conda_activates() {
+        let prefix = Path::new(r"E:\plot\.pixi\envs\default");
+        let entries = prefix_path_entries(prefix, true)
+            .iter()
+            .map(|entry| entry.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            entries,
+            [
+                r"E:\plot\.pixi\envs\default",
+                r"E:\plot\.pixi\envs\default\Library\mingw-w64\bin",
+                r"E:\plot\.pixi\envs\default\Library\usr\bin",
+                r"E:\plot\.pixi\envs\default\Library\bin",
+                r"E:\plot\.pixi\envs\default\Scripts",
+                r"E:\plot\.pixi\envs\default\bin",
+            ]
+        );
+        assert_eq!(
+            prefix_path_entries(Path::new("/opt/conda/envs/research"), false),
+            [PathBuf::from("/opt/conda/envs/research/bin")]
+        );
+    }
+
+    /// The prefix must win over whatever the host happens to have on PATH: a
+    /// mismatched DLL found first is the 0xC0000005 variant of the same bug.
+    #[test]
+    fn prefix_entries_are_prepended_and_never_drop_the_inherited_path() {
+        let entries = [PathBuf::from("/opt/conda/bin"), PathBuf::from("/opt/extra")];
+        let separator = path_separator();
+        assert_eq!(
+            prepend_path(&entries, Some(OsStr::new("/usr/bin"))),
+            OsString::from(format!(
+                "/opt/conda/bin{separator}/opt/extra{separator}/usr/bin"
+            ))
+        );
+        assert_eq!(
+            prepend_path(&entries, None),
+            OsString::from(format!("/opt/conda/bin{separator}/opt/extra"))
+        );
+        assert_eq!(
+            prepend_path(&entries, Some(OsStr::new(""))),
+            OsString::from(format!("/opt/conda/bin{separator}/opt/extra"))
+        );
+        assert_eq!(prepend_path(&[], Some(OsStr::new("/usr/bin"))), "/usr/bin");
     }
 
     #[test]

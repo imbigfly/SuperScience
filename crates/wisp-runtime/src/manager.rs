@@ -602,7 +602,7 @@ impl RuntimeLauncher for LocalRuntimeLauncher {
                 (
                     python,
                     vec![self.python_worker.as_os_str().to_os_string()],
-                    self.envs.as_slice(),
+                    self.envs.clone(),
                     "python",
                 )
             }
@@ -622,19 +622,20 @@ impl RuntimeLauncher for LocalRuntimeLauncher {
                         worker.display()
                     ));
                 }
+                let envs = crate::conda_prefix_envs(&rscript);
                 (
                     rscript,
                     vec![
                         OsString::from("--vanilla"),
                         worker.as_os_str().to_os_string(),
                     ],
-                    &[][..],
+                    envs,
                     "r",
                 )
             }
         };
         let client =
-            KernelClient::spawn_command(&interpreter, &args, envs, Some(cwd), language).await?;
+            KernelClient::spawn_command(&interpreter, &args, &envs, Some(cwd), language).await?;
         let ready = client.ready().clone();
         Ok(LaunchedRuntime::new(
             Box::new(client),
