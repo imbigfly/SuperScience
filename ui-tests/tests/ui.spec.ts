@@ -934,6 +934,35 @@ test("switching HTTP models confirms cache invalidation", async ({ page }) => {
   await expect(page.locator(".model-picker-label")).toHaveText("opus-4.8");
 });
 
+test("model switch confirm consumes Escape before the right pane", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("bind this conversation model");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  await expect(page.locator(".rightpane")).toBeVisible();
+
+  await page.locator(".model-picker-btn").click();
+  const opusOption = page.getByRole("button", { name: /opus-4\.8/ });
+  await expect(opusOption).toBeVisible();
+  await opusOption.evaluate((element: HTMLElement) => element.click());
+  const modal = page.getByTestId("model-switch-confirm");
+  await expect(modal).toBeVisible();
+
+  // Root-owned confirm participates in the window Escape stack without focus:
+  // one press cancels only the switch, leaving the right pane open and the
+  // session model untouched.
+  await page.keyboard.press("Escape");
+  await expect(modal).toHaveCount(0);
+  await expect(page.locator(".rightpane")).toBeVisible();
+  await expect.poll(() => lastInvokeArgs(page, "set_active_model")).toBeNull();
+  await expect(page.locator(".model-picker-label")).toHaveText("deepseek-v4-pro");
+
+  // The next press reaches the parent layer.
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".rightpane")).toBeHidden();
+});
+
 test("switching to a text-only model confirms historical images will be ignored", async ({ page }) => {
   await enterApp(page, "/?mockTextOnlyModel=1");
 
