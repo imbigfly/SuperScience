@@ -74,21 +74,22 @@ pub(crate) fn mcp_app_title(payload: &serde_json::Value) -> String {
         .to_string()
 }
 
-pub(crate) fn mcp_app_instance_id(
-    frame_id: &str,
-    presentation_id: &str,
-    payload: &serde_json::Value,
-) -> String {
-    let identity = (!presentation_id.is_empty())
-        .then_some(presentation_id)
-        .or_else(|| {
-            payload
-                .pointer("/resource/uri")
-                .or_else(|| payload.pointer("/tool/name"))
-                .and_then(serde_json::Value::as_str)
-        })
+pub(crate) fn mcp_app_identity(payload: &serde_json::Value) -> &str {
+    let raw = payload
+        .pointer("/resource/uri")
+        .or_else(|| payload.pointer("/tool/name"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
         .unwrap_or("app");
-    format!("mcp-app:{frame_id}:{identity}")
+    raw.split_once(['?', '#'])
+        .map(|(base, _)| base)
+        .filter(|base| !base.is_empty())
+        .unwrap_or(raw)
+}
+
+pub(crate) fn mcp_app_instance_id(frame_id: &str, payload: &serde_json::Value) -> String {
+    format!("mcp-app:{frame_id}:{}", mcp_app_identity(payload))
 }
 
 #[component]
@@ -188,6 +189,42 @@ mod tests {
             "tool": { "name": "motif_create_workbench_artifact" }
         })));
         assert!(!supports_host_dna_import(&serde_json::json!({})));
+    }
+
+    #[test]
+    fn mcp_app_instance_id_reuses_resource_uri_not_presentation() {
+        let open = serde_json::json!({
+            "tool": { "name": "figure_open", "title": "Open Scientific Figure Library" },
+            "resource": { "uri": "ui://figure/library.html" },
+        });
+        let search = serde_json::json!({
+            "tool": { "name": "figure_search", "title": "Search scientific figure templates" },
+            "resource": { "uri": "ui://figure/library.html?q=survival#hits" },
+        });
+        assert_eq!(
+            mcp_app_instance_id("sess-1", &open),
+            "mcp-app:sess-1:ui://figure/library.html"
+        );
+        assert_eq!(
+            mcp_app_instance_id("sess-1", &search),
+            mcp_app_instance_id("sess-1", &open)
+        );
+        assert_ne!(
+            mcp_app_instance_id("sess-a", &open),
+            mcp_app_instance_id("sess-b", &open)
+        );
+    }
+
+    #[test]
+    fn mcp_app_instance_id_falls_back_to_tool_name() {
+        assert_eq!(
+            mcp_app_instance_id("sess-1", &serde_json::json!({ "tool": { "name": "open_app" } })),
+            "mcp-app:sess-1:open_app"
+        );
+        assert_eq!(
+            mcp_app_instance_id("sess-1", &serde_json::json!({})),
+            "mcp-app:sess-1:app"
+        );
     }
 
     #[test]

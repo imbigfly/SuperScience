@@ -10388,6 +10388,77 @@ test("live MCP App tools/call reaches the host without a new agent turn", async 
   expect((await invokeArgsList(page, "send_message")).length).toBe(sendsBefore);
 });
 
+test("repeated MCP App presentations reuse one center tab", async ({ page }) => {
+  await enterApp(page);
+  const appHtml = (state: string) =>
+    `<!doctype html><html><body><div id="state">${state}</div></body></html>`;
+  await composer(page).fill("open the figure library");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "send_message")).not.toBeNull();
+  const frameId = String((await lastInvokeArgs(page, "send_message")).sessionId);
+
+  await emitTauriEvent(page, "agent", {
+    kind: "ToolPresentation",
+    frame_id: frameId,
+    presentation_id: "open-1",
+    presentation_kind: "mcp_app",
+    payload: {
+      tool: { name: "figure_open", title: "Open Scientific Figure Library" },
+      arguments: {},
+      result: { content: [] },
+      resource: { uri: "ui://figure/library.html", text: appHtml("catalog"), _meta: {} },
+    },
+  });
+
+  const figureTab = page.locator(
+    `.center-tab[data-center-path="mcp-app:${frameId}:ui://figure/library.html"]`,
+  );
+  await expect(figureTab).toHaveCount(1);
+  await expect(figureTab).toContainText("Open Scientific Figure Library");
+  await expect(figureTab).toHaveAttribute("title", "Open Scientific Figure Library");
+  await expect(page.frameLocator('iframe[title="Open Scientific Figure Library"]').locator("#state"))
+    .toHaveText("catalog");
+
+  await emitTauriEvent(page, "agent", {
+    kind: "ToolPresentation",
+    frame_id: frameId,
+    presentation_id: "search-2",
+    presentation_kind: "mcp_app",
+    payload: {
+      tool: { name: "figure_search", title: "Search scientific figure templates" },
+      arguments: { q: "survival" },
+      result: { content: [] },
+      resource: {
+        uri: "ui://figure/library.html?q=survival#hits",
+        text: appHtml("survival"),
+        _meta: {},
+      },
+    },
+  });
+
+  await expect(page.locator('.center-tab[data-center-path^="mcp-app:"]')).toHaveCount(1);
+  await expect(figureTab).toContainText("Open Scientific Figure Library");
+  await expect(page.frameLocator('iframe[title="Search scientific figure templates"]').locator("#state"))
+    .toHaveText("survival");
+
+  await emitTauriEvent(page, "agent", {
+    kind: "ToolPresentation",
+    frame_id: frameId,
+    presentation_id: "motif-3",
+    presentation_kind: "mcp_app",
+    payload: {
+      tool: { name: "motif_open_workbench", title: "Motif workbench" },
+      arguments: {},
+      result: { content: [] },
+      resource: { uri: "ui://motif/workbench.html", text: appHtml("motif"), _meta: {} },
+    },
+  });
+
+  await expect(page.locator('.center-tab[data-center-path^="mcp-app:"]')).toHaveCount(2);
+  await expect(page.locator('.center-tab[data-center-path$="ui://motif/workbench.html"]'))
+    .toContainText("Motif workbench");
+});
+
 test("reopening a saved session restores its MCP App workbench", async ({ page }) => {
   const openSavedSession = async () => {
     await page.locator(".proj-card-main").first().click();

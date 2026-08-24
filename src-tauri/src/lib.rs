@@ -2808,10 +2808,11 @@ impl Output for TauriOutput {
         let presentation_id = Uuid::new_v4().to_string();
         if kind == "mcp_app" && !payload.is_null() {
             if let Some(server) = server {
-                // The frontend derives the instance id from the same frame id
-                // and presentation id (ui/src/mcp_app.rs), so the host-side
-                // bridge stays keyed exactly like the mounted iframe.
-                let instance_id = format!("mcp-app:{}:{}", self.frame_id, presentation_id);
+                // Same formula as ui/src/mcp_app.rs: resource URI (or tool
+                // name), not the unique presentation UUID, so a later Open/
+                // Search of the same app replaces the live bridge instead of
+                // stacking another center tab.
+                let instance_id = mcp_app_instance_id(&self.frame_id, payload);
                 self.app.state::<AppState>().register_mcp_app_bridge(
                     instance_id,
                     McpAppToolBridge {

@@ -307,6 +307,54 @@ fn mcp_app_instance_id_carries_its_session() {
 }
 
 #[test]
+fn mcp_app_instance_id_reuses_resource_uri_across_presentations() {
+    let open = serde_json::json!({
+        "tool": { "name": "figure_open", "title": "Open Scientific Figure Library" },
+        "resource": { "uri": "ui://figure/library.html" },
+    });
+    let search = serde_json::json!({
+        "tool": { "name": "figure_search", "title": "Search scientific figure templates" },
+        "resource": { "uri": "ui://figure/library.html?q=survival#hits" },
+    });
+    assert_eq!(
+        super::mcp_app_instance_id("session-a", &open),
+        "mcp-app:session-a:ui://figure/library.html"
+    );
+    assert_eq!(
+        super::mcp_app_instance_id("session-a", &search),
+        super::mcp_app_instance_id("session-a", &open)
+    );
+    assert_eq!(
+        super::mcp_app_identity(&serde_json::json!({ "tool": { "name": "open_app" } })),
+        "open_app"
+    );
+}
+
+#[test]
+fn replacing_an_mcp_app_bridge_keeps_one_instance() {
+    let bridges = super::McpAppBridges::default();
+    let instance_id = super::mcp_app_instance_id(
+        "session-a",
+        &serde_json::json!({
+            "resource": { "uri": "ui://figure/library.html" },
+            "tool": { "name": "figure_open" },
+        }),
+    );
+    bridges.register(
+        instance_id.clone(),
+        fake_app_bridge("session-a", "figure-library", "figure_open"),
+    );
+    bridges.register(
+        instance_id.clone(),
+        fake_app_bridge("session-a", "figure-library", "figure_search"),
+    );
+    let bridge = bridges.get(&instance_id).unwrap();
+    assert_eq!(bridge.server.connector_id(), "figure-library");
+    assert!(bridge.server.visible_to_app("figure_search"));
+    assert!(!bridge.server.visible_to_app("figure_open"));
+}
+
+#[test]
 fn image_helper_loads_supported_extension_for_model_input() {
     let root = std::env::temp_dir().join(format!("wisp_message_images_{}", uuid::Uuid::new_v4()));
     let uploads = root.join("uploads");
