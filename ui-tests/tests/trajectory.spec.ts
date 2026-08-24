@@ -162,7 +162,7 @@ test("trajectory modal renders turns, inspector tabs, usage lines, and stats", a
   await expect(view.getByTestId("traj-inspector")).toBeVisible();
 
   // Closing the modal restores the chat thread.
-  await page.getByTestId("trajectory-overlay").locator(".ps-head .ps-close").click();
+  await page.getByTestId("trajectory-close").click();
   await expect(page.getByTestId("trajectory-overlay")).toHaveCount(0);
   await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
 });

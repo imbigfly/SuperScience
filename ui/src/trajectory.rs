@@ -970,7 +970,7 @@ pub(crate) fn TrajectoryOverlay(
                                     on:click=export>
                                     {compose_icon("download")}
                                 </button>
-                                <button type="button" class="ps-close"
+                                <button type="button" class="ps-close" data-testid="trajectory-close"
                                     title=move || t(locale.get(), "trajectory.close")
                                     aria-label=move || t(locale.get(), "trajectory.close")
                                     on:click=move |_| open.set(false)>
