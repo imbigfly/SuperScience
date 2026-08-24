@@ -185,7 +185,7 @@ impl RuntimeLauncher for TauriRuntimeLauncher {
                 &self.python_worker,
                 "python",
             ),
-            RuntimeLanguage::R => (resolve_r_interpreter(&context)?, &self.r_worker, "r"),
+            RuntimeLanguage::R => (local_direct_rscript(&context)?, &self.r_worker, "r"),
         };
         if !worker.is_file() {
             return Err(anyhow!(
@@ -346,6 +346,19 @@ fn resolve_r_interpreter(context: &wisp_store::ExecutionContext) -> Result<Strin
         "Rscript interpreter is unknown for {}; probe the context or configure rscript_executable",
         context.id
     ))
+}
+
+/// Resolve the configured `Rscript`, then on a local Windows context launch the
+/// real binary behind the `bin\Rscript.exe` architecture shim. Remote contexts
+/// keep the configured path: their filesystem layout is not ours to inspect.
+fn local_direct_rscript(context: &wisp_store::ExecutionContext) -> Result<String> {
+    let configured = resolve_r_interpreter(context)?;
+    if context.kind != wisp_store::ExecutionContextKind::Local {
+        return Ok(configured);
+    }
+    Ok(wisp_runtime::direct_rscript(Path::new(&configured))
+        .to_string_lossy()
+        .into_owned())
 }
 
 fn ensure_jsonlite_available(

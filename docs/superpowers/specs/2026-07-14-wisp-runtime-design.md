@@ -229,6 +229,10 @@ Lifecycle rules:
   explicitly.
 - Stop/restart is destructive to in-memory state and must be represented as such in
   the UI.
+- A stop owns the worker's whole process tree, not just the direct child. An
+  interpreter is often a launcher — Windows `Rscript.exe` re-launches
+  `bin\x64\Rscript.exe` through `cmd.exe` — so the real interpreter and anything a
+  cell started in the background go away with it.
 
 Unlike the current `KernelClient`, the manager must retain the child handle rather
 than intentionally forgetting it. Process cleanup and status detection require an
@@ -645,7 +649,11 @@ artifacts, not hidden runtime checkpoints.
   silently claiming old state survived. Lazy start applies to missing runtimes, not
   dead generations.
 - SSH disconnect is terminal in v1.
-- Application shutdown closes stdin, waits briefly, then kills attached processes.
+- Stopping a runtime closes stdin so the worker can exit on its own, then kills it,
+  then terminates its whole process tree. Every step has a deadline, and the total
+  budget for one stop request is shared across the runtimes it covers: a worker that
+  refuses to exit must never block an Agent turn, a project switch, or app exit.
+  Stopping therefore also reclaims a background process a cell left running.
 - Arbitrary Python/R execution continues to use the existing approval system.
 - Code travels over inherited local/WSL/SSH stdio, not an unauthenticated listening
   port.

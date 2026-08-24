@@ -137,6 +137,39 @@ pub fn find_rscript() -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
+/// Resolve the `Rscript` binary that should actually be spawned.
+///
+/// On Windows `<R>\bin\Rscript.exe` is an architecture shim that re-launches
+/// `<R>\bin\x64\Rscript.exe` through `cmd.exe`. Launching the real binary keeps
+/// the interpreter as our own direct child, so its pid, exit status, and
+/// termination are all observable instead of belonging to the shim (#941).
+/// Anything that is not that shim is returned unchanged.
+pub fn direct_rscript(configured: &Path) -> PathBuf {
+    if !cfg!(target_os = "windows") {
+        return configured.to_path_buf();
+    }
+    configured
+        .to_str()
+        .and_then(|path| windows_direct_rscript(path, |candidate| candidate.is_file()))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| configured.to_path_buf())
+}
+
+/// Insert the architecture directory into `...\bin\Rscript.exe`, or `None` when
+/// no such binary exists. Splits on the separator itself rather than going
+/// through `Path`, so Windows layouts stay unit-testable on any host.
+fn windows_direct_rscript(configured: &str, exists: impl Fn(&Path) -> bool) -> Option<String> {
+    let separator = configured.rfind(['\\', '/'])?;
+    let (directory, name) = configured.split_at(separator + 1);
+    let separator = &configured[separator..separator + 1];
+    // `bin\x64\Rscript.exe` is already the real binary; only `bin\` is a shim,
+    // so a nested `x64\x64` candidate never exists and leaves it untouched.
+    ["x64", "i386"]
+        .into_iter()
+        .map(|arch| format!("{directory}{arch}{separator}{name}"))
+        .find(|candidate| exists(Path::new(candidate)))
+}
+
 /// Candidate `Rscript` paths in well-known install locations, most preferred
 /// first. Kept separate from `find_rscript` so the ordering stays testable
 /// without touching the host filesystem layout.
@@ -268,6 +301,51 @@ mod tests {
             names,
             ["R-4.10.0", "R-4.5.2", "R-4.3.2", "R-3.6.3", "unrelated"]
         );
+    }
+
+    /// `bin\Rscript.exe` only ever launches the architecture subdirectory, so
+    /// resolving it up front keeps the interpreter as our direct child.
+    #[test]
+    fn windows_rscript_shim_resolves_to_the_architecture_binary() {
+        let shim = r"C:\Program Files\R\R-4.5.3\bin\Rscript.exe";
+        let x64 = r"C:\Program Files\R\R-4.5.3\bin\x64\Rscript.exe";
+        assert_eq!(
+            windows_direct_rscript(shim, |path| path == Path::new(x64)).as_deref(),
+            Some(x64)
+        );
+
+        // A 32-bit-only install exposes i386 instead.
+        let i386 = r"C:\Program Files\R\R-4.5.3\bin\i386\Rscript.exe";
+        assert_eq!(
+            windows_direct_rscript(shim, |path| path == Path::new(i386)).as_deref(),
+            Some(i386)
+        );
+
+        // Pixi and conda prefixes nest R under lib\R and behave the same way.
+        let pixi = r"E:\plot\.pixi\envs\default\lib\R\bin\Rscript.exe";
+        assert_eq!(
+            windows_direct_rscript(pixi, |_| true).as_deref(),
+            Some(r"E:\plot\.pixi\envs\default\lib\R\bin\x64\Rscript.exe")
+        );
+    }
+
+    #[test]
+    fn windows_rscript_resolution_declines_when_there_is_nothing_to_rewrite() {
+        // Already the architecture binary: no nested x64\x64 exists.
+        let x64 = r"E:\plot\.pixi\envs\default\lib\R\bin\x64\Rscript.exe";
+        assert_eq!(
+            windows_direct_rscript(x64, |path| path == Path::new(x64)),
+            None
+        );
+
+        // No architecture subdirectory at all: keep what the user configured.
+        assert_eq!(
+            windows_direct_rscript(r"D:\R\bin\Rscript.exe", |_| false),
+            None
+        );
+
+        // A bare command has no directory to rewrite.
+        assert_eq!(windows_direct_rscript("Rscript", |_| true), None);
     }
 
     #[test]

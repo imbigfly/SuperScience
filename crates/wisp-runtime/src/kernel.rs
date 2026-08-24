@@ -11,6 +11,7 @@ use tokio::{
     sync::Mutex,
     task::JoinHandle,
 };
+use wisp_tools::process::ProcessTree;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const MAX_CODE_BYTES: usize = 1024 * 1024;
@@ -108,6 +109,11 @@ pub struct KernelClient {
     stdout: BufReader<ChildStdout>,
     stderr_tail: WorkerStderrTail,
     stderr_task: Option<JoinHandle<()>>,
+    /// Termination boundary covering the worker and everything it starts. An
+    /// interpreter is frequently a launcher rather than the real process:
+    /// Windows `Rscript.exe` re-launches `bin\x64\Rscript.exe` through
+    /// `cmd.exe`, and any cell can spawn background children of its own.
+    process_tree: ProcessTree,
     ready: KernelReady,
 }
 
@@ -157,10 +163,15 @@ impl KernelClient {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
-        wisp_tools::process::hide_console_async(&mut cmd);
+        // Sets CREATE_NO_WINDOW itself, so this replaces `hide_console_async`.
+        ProcessTree::configure(&mut cmd);
         let mut child = cmd
             .spawn()
             .map_err(|error| anyhow!("spawn runtime transport {}: {error}", program.display()))?;
+        let process_tree = ProcessTree::attach(&child).map_err(|error| {
+            let _ = child.start_kill();
+            anyhow!("attach runtime worker process tree: {error}")
+        })?;
         let stdin = child
             .stdin
             .take()
@@ -179,7 +190,7 @@ impl KernelClient {
             Ok(ready) => ready,
             Err(error) => {
                 drop(stdin);
-                let status = kill_worker(&mut child).await.ok();
+                let status = kill_worker(&mut child, &process_tree).await.ok();
                 drain_stderr(stderr_task).await;
                 let detail = worker_failure_detail(status.as_ref(), &stderr_tail).await;
                 return Err(anyhow!("kernel worker handshake: {error}; {detail}"));
@@ -191,6 +202,7 @@ impl KernelClient {
             stdout,
             stderr_tail,
             stderr_task: Some(stderr_task),
+            process_tree,
             ready,
         })
     }
@@ -256,15 +268,19 @@ impl KernelClient {
         Ok(())
     }
 
-    /// Stop the worker within a bounded budget. Dropping stdin gives the worker
-    /// EOF so it can exit on its own and take its own descendants with it;
-    /// anything slower is killed and reaped under a deadline.
+    /// Stop the worker within a bounded budget. Dropping stdin gives it EOF so
+    /// it can exit on its own; anything slower is killed. Either way the stop
+    /// reclaims the whole tree, so neither a launcher's real interpreter nor a
+    /// background process some cell started can outlive the runtime.
     async fn shutdown_worker(&mut self) -> Result<()> {
         drop(self.stdin.take());
         let stopped = match tokio::time::timeout(WORKER_EXIT_GRACE, self.child.wait()).await {
             Ok(status) => status.map(|_| ()).map_err(anyhow::Error::from),
-            Err(_) => kill_worker(&mut self.child).await.map(|_| ()),
+            Err(_) => kill_worker(&mut self.child, &self.process_tree)
+                .await
+                .map(|_| ()),
         };
+        let _ = self.process_tree.terminate_if_running();
         self.finish_stderr_capture().await;
         stopped
     }
@@ -288,11 +304,15 @@ impl KernelClient {
     }
 }
 
-/// Kill the direct child and reap it under a deadline. This cannot reach
-/// grandchildren: on Windows `Rscript.exe` is a wrapper that re-launches
-/// `bin\x64\Rscript.exe` through `cmd.exe`, and only the wrapper dies here.
-async fn kill_worker(child: &mut Child) -> Result<std::process::ExitStatus> {
-    child.start_kill()?;
+/// Terminate the worker's whole process tree, then reap the direct child under
+/// a deadline. Killing only the direct child would leave the real interpreter
+/// running whenever it was started through a launcher: on Windows
+/// `Rscript.exe` re-launches `bin\x64\Rscript.exe` through `cmd.exe`.
+///
+/// The tree is signalled before the child is reaped, which is what keeps a
+/// freed Unix process-group id from being signalled after reuse.
+async fn kill_worker(child: &mut Child, tree: &ProcessTree) -> Result<std::process::ExitStatus> {
+    tree.terminate_forcefully()?;
     tokio::time::timeout(WORKER_KILL_WAIT, child.wait())
         .await
         .map_err(|_| anyhow!("kernel worker did not exit within {WORKER_KILL_WAIT:?} of kill"))?
@@ -686,30 +706,10 @@ mod tests {
         );
     }
 
-    /// On Windows `Rscript.exe` is a wrapper that re-launches
-    /// `bin\x64\Rscript.exe` through `cmd.exe`, so killing the direct child
-    /// leaves a grandchild holding the inherited stderr pipe and its EOF never
-    /// arrives (#941). A shell process tree reproduces that shape portably.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn shutdown_is_bounded_when_a_descendant_holds_the_stderr_pipe_open() {
-        let mut client = KernelClient::spawn_command(
-            Path::new("sh"),
-            &fake_worker("sleep 30 & sleep 30"),
-            &[],
-            None,
-            "python",
-        )
-        .await
-        .unwrap();
-
-        let budget = WORKER_EXIT_GRACE + WORKER_KILL_WAIT + WORKER_STDERR_DRAIN;
-        tokio::time::timeout(budget + Duration::from_secs(5), client.shutdown())
-            .await
-            .expect("shutdown must not wait for a surviving descendant")
-            .unwrap();
-    }
-
+    /// Descendants inherit the stderr pipe, so its EOF can arrive long after
+    /// the worker is gone. `tests/worker_process_tree.rs` covers the process
+    /// tree itself on every OS; this only pins the drain budget, which is the
+    /// backstop for a descendant that escapes the termination boundary.
     #[tokio::test(start_paused = true)]
     async fn stderr_drain_gives_up_on_a_reader_that_never_reaches_eof() {
         let started = tokio::time::Instant::now();
