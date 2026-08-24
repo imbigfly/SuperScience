@@ -104,6 +104,7 @@ mod ssh_master;
 mod storage_prefs;
 mod terminal_sessions;
 mod trajectory;
+mod trajectory_export;
 mod turn_memory;
 mod turn_undo;
 mod video_generation_tool;
@@ -6717,6 +6718,7 @@ pub fn run() {
             publication_freeze::freeze_publication_revision,
             session_commands::load_session,
             session_commands::load_session_trajectory,
+            trajectory_export::export_session_trajectory,
             session_commands::rewind_session,
             turn_undo::preview_turn_undo,
             turn_undo::undo_turn,

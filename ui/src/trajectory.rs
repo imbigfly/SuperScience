@@ -1,11 +1,15 @@
-use crate::app_support::compose_icon;
+use crate::app_support::{
+    compose_icon, js_error_text, show_toast, show_warning_toast,
+};
+use crate::bindings::invoke_checked;
 use crate::chat_render::fmt_tokens;
 use crate::dto::{
     TrajectoryCellDto, TrajectorySnapshotDto, TrajectoryStatsDto, TrajectoryUsageDto,
 };
-use crate::i18n::{t, tf, use_locale, Locale};
+use crate::i18n::{localize_backend, t, tf, use_locale, Locale};
 use crate::text::{event_target_value, format_duration_ms};
 use leptos::*;
+use serde_wasm_bindgen::to_value;
 use wasm_bindgen::JsCast;
 
 /// Session-level Gantt scale, matching the DeepSeek session-log axis.
@@ -905,8 +909,46 @@ pub(crate) fn TrajectoryOverlay(
     snapshot: RwSignal<Option<TrajectorySnapshotDto>>,
     live: RwSignal<Vec<TrajectoryCellDto>>,
     busy: RwSignal<bool>,
+    session_id: RwSignal<Option<String>>,
 ) -> impl IntoView {
     let locale = use_locale();
+    let export = move |_| {
+        let loc = locale.get_untracked();
+        let Some(frame_id) = session_id
+            .get_untracked()
+            .filter(|id| !id.is_empty())
+            .or_else(|| {
+                snapshot
+                    .get_untracked()
+                    .map(|snap| snap.frame_id)
+                    .filter(|id| !id.is_empty())
+            })
+        else {
+            return;
+        };
+        spawn_local(async move {
+            let args = to_value(&serde_json::json!({
+                "frameId": frame_id,
+                "locale": loc.code(),
+            }))
+            .unwrap();
+            match invoke_checked("export_session_trajectory", args).await {
+                Ok(value) => {
+                    if let Some(path) = value.as_string().filter(|path| !path.is_empty()) {
+                        show_toast(&tf(
+                            locale.get_untracked(),
+                            "trajectory.export_saved",
+                            &[("path", &path)],
+                        ));
+                    }
+                }
+                Err(error) => show_warning_toast(&localize_backend(
+                    locale.get_untracked(),
+                    &js_error_text(error),
+                )),
+            }
+        });
+    };
     move || {
         open.get().then(move || {
             view! {
@@ -915,12 +957,26 @@ pub(crate) fn TrajectoryOverlay(
                         aria-labelledby="trajectory-modal-title">
                         <div class="ps-head">
                             <h2 id="trajectory-modal-title">{move || t(locale.get(), "trajectory.title")}</h2>
-                            <button type="button" class="ps-close"
-                                title=move || t(locale.get(), "trajectory.close")
-                                aria-label=move || t(locale.get(), "trajectory.close")
-                                on:click=move |_| open.set(false)>
-                                {compose_icon("close")}
-                            </button>
+                            <div class="traj-head-actions">
+                                <button type="button" class="ps-close" data-testid="trajectory-export"
+                                    title=move || t(locale.get(), "trajectory.export")
+                                    aria-label=move || t(locale.get(), "trajectory.export")
+                                    disabled=move || session_id.with(|id| {
+                                        id.as_ref().map_or(true, |value| value.is_empty())
+                                            && snapshot.with(|snap| {
+                                                snap.as_ref().map_or(true, |s| s.frame_id.is_empty())
+                                            })
+                                    })
+                                    on:click=export>
+                                    {compose_icon("download")}
+                                </button>
+                                <button type="button" class="ps-close" data-testid="trajectory-close"
+                                    title=move || t(locale.get(), "trajectory.close")
+                                    aria-label=move || t(locale.get(), "trajectory.close")
+                                    on:click=move |_| open.set(false)>
+                                    {compose_icon("close")}
+                                </button>
+                            </div>
                         </div>
                         <TrajectoryView snapshot=snapshot live=live busy=busy />
                     </div>

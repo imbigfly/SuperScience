@@ -4109,6 +4109,12 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           }
           case "export_session":
             return "/mock/export.zip";
+          case "export_session_trajectory":
+            if ((window as any).__trajectoryExportCancel) return null;
+            if ((window as any).__trajectoryExportError) {
+              throw new Error(String((window as any).__trajectoryExportError));
+            }
+            return "/mock/wisp-trajectory.html";
           case "save_share_image":
             return "/mock/wisp-share.png";
           case "save_share_html":
@@ -5674,6 +5680,9 @@ export function parallelMock(): void {
           case "read_file": return { path: "x", mime: "text/plain", text: "", base64: null };
           case "missing_files": return [];
           case "export_session": return "/mock/export.zip";
+          case "export_session_trajectory":
+            if ((window as any).__trajectoryExportCancel) return null;
+            return "/mock/wisp-trajectory.html";
           case "import_session_archive": return {
             frame_id: "imported-frame", status: "imported",
             message_count: 3, artifact_count: 0, missing_artifacts: [],

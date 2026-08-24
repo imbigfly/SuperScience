@@ -1832,6 +1832,8 @@ button.stop:disabled { opacity: .6; cursor: default; }
   flex: 0 0 auto;
   padding: 14px 16px 10px;
 }
+.traj-modal .traj-head-actions { display: flex; align-items: center; gap: 2px; }
+.traj-modal .traj-head-actions svg { width: 16px; height: 16px; }
 .trajectory {
   --traj-user: var(--info);
   --traj-user-soft: var(--info-soft);
