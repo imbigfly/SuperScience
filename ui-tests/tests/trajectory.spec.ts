@@ -23,6 +23,19 @@ async function openTrajectory(page: Page) {
   return overlay.getByTestId("trajectory-view");
 }
 
+async function lastInvokeArgs(page: Page, cmd: string) {
+  return page.evaluate((name) => {
+    const plain = (value: any): any => {
+      if (value instanceof Map) return Object.fromEntries([...value].map(([k, v]) => [k, plain(v)]));
+      if (Array.isArray(value)) return value.map(plain);
+      if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, plain(v)]));
+      return value;
+    };
+    const calls = ((window as any).__skillInvokeLog ?? []).filter((c: any) => c.cmd === name);
+    return plain(calls.at(-1)?.args ?? null);
+  }, cmd);
+}
+
 async function runOneTurn(page: Page) {
   await enterApp(page);
   await page.locator("#composer-input").fill("analyze ESR1");
@@ -335,4 +348,43 @@ test("the inspector scrolls when a call has more content than fits", async ({ pa
   });
   expect(scrolled.overflow).toBeGreaterThan(0);
   expect(scrolled.top).toBe(scrolled.overflow);
+});
+
+test("trajectory title bar exports HTML from the backend, not the search filter", async ({ page }) => {
+  await runOneTurn(page);
+  const view = await openTrajectory(page);
+  const exportBtn = page.getByTestId("trajectory-export");
+  await expect(exportBtn).toBeVisible();
+  await expect(exportBtn).toHaveAttribute("aria-label", "Export HTML");
+
+  await view.getByPlaceholder("Search events").fill("volcano");
+  await expect(view.getByText("Turn 1", { exact: true })).toHaveCount(0);
+  await expect(view.getByText("Turn 2", { exact: true })).toBeVisible();
+
+  await exportBtn.click();
+  await expect.poll(() => lastInvokeArgs(page, "export_session_trajectory")).toMatchObject({
+    frameId: expect.any(String),
+    locale: "en",
+  });
+  const args = await lastInvokeArgs(page, "export_session_trajectory");
+  expect(String(args.frameId)).not.toHaveLength(0);
+  expect(args).not.toHaveProperty("query");
+  expect(args).not.toHaveProperty("html");
+  await expect(page.locator("#copy-toast")).toContainText("/mock/wisp-trajectory.html");
+  await expect(page.getByTestId("trajectory-overlay")).toBeVisible();
+});
+
+test("cancelling the trajectory HTML save dialog does not toast", async ({ page }) => {
+  await runOneTurn(page);
+  await page.evaluate(() => {
+    (window as any).__trajectoryExportCancel = true;
+  });
+  await openTrajectory(page);
+  await page.getByTestId("trajectory-export").click();
+  await expect.poll(() => lastInvokeArgs(page, "export_session_trajectory")).toMatchObject({
+    locale: "en",
+  });
+  await expect(page.locator("#copy-toast")).toHaveCount(0);
+  await expect(page.locator(".copy-toast-warning")).toHaveCount(0);
+  await expect(page.getByTestId("trajectory-overlay")).toBeVisible();
 });

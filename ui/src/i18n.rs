@@ -1964,6 +1964,9 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "trajectory.stats.cache_hit") => Some("cache hit {pct}%"),
         (Locale::En, "trajectory.stats.input") => Some("in {tokens} tok"),
         (Locale::En, "trajectory.stats.output") => Some("out {tokens} tok"),
+        (Locale::En, "trajectory.export") => Some("Export HTML"),
+        (Locale::En, "trajectory.export_saved") => Some("Trajectory saved to {path}"),
+        (Locale::En, "trajectory.export_failed") => Some("Could not export trajectory"),
         (Locale::En, "chat.resume") => Some("Resume"),
         (Locale::En, "chat.context_auto_compacted") => Some("Context automatically compacted"),
         (Locale::En, "chat.auto_continued") => Some("Output limit reached; automatically continued ({count}/{limit})"),
@@ -4391,6 +4394,9 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "trajectory.stats.cache_hit") => Some("缓存命中 {pct}%"),
         (Locale::Zh, "trajectory.stats.input") => Some("输入 {tokens} tok"),
         (Locale::Zh, "trajectory.stats.output") => Some("输出 {tokens} tok"),
+        (Locale::Zh, "trajectory.export") => Some("导出 HTML"),
+        (Locale::Zh, "trajectory.export_saved") => Some("轨迹已保存到 {path}"),
+        (Locale::Zh, "trajectory.export_failed") => Some("无法导出轨迹"),
         (Locale::Zh, "chat.resume") => Some("继续执行"),
         (Locale::Zh, "chat.context_auto_compacted") => Some("上下文已自动压缩"),
         (Locale::Zh, "chat.auto_continued") => Some("输出达到上限，已自动继续（{count}/{limit}）"),
@@ -5551,6 +5557,20 @@ mod queue_label_tests {
         assert_eq!(
             tf(Locale::Zh, "browser.cleanup.body", &[("n", "18")]),
             "本轮 Wisp 打开了 18 个标签页，默认将全部关闭。你可以取消选择需要保留的页面。"
+        );
+    }
+
+    #[test]
+    fn trajectory_export_labels_exist_in_both_locales() {
+        assert_eq!(t(Locale::En, "trajectory.export"), "Export HTML");
+        assert_eq!(t(Locale::Zh, "trajectory.export"), "导出 HTML");
+        assert_eq!(
+            tf(Locale::En, "trajectory.export_saved", &[("path", "/tmp/a.html")]),
+            "Trajectory saved to /tmp/a.html"
+        );
+        assert_eq!(
+            tf(Locale::Zh, "trajectory.export_saved", &[("path", "/tmp/a.html")]),
+            "轨迹已保存到 /tmp/a.html"
         );
     }
 }

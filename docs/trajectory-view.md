@@ -44,6 +44,14 @@ results stay reachable in full.
 
 A search box at the top filters rows by their summary and detail text.
 
+The title bar **Export HTML** action opens the native save dialog and writes
+a self-contained HTML document of the complete persisted trajectory: session
+id, model, aggregate stats, a Gantt timeline, and every turn's full user
+input, assistant reply, tool arguments/results, status, duration, timestamps,
+and token usage. Search filters, the selected row, and inspector tabs do not
+change what is exported — the backend reloads the message log and UI-event
+stream. Cancelling the dialog does nothing.
+
 The footer line aggregates the whole session:
 turns · steps | LLM time · tool time | output tokens/sec | cache hit rate |
 total input/output tokens.
@@ -55,6 +63,8 @@ and results, which the live chat view truncates for display) and the persisted
 UI-event stream (per-round token usage and tool durations). While a turn is
 still running, the modal shows lightweight live rows with client-side
 timestamps; when the turn finishes, the exact backend snapshot replaces them.
+HTML export always rereads that persisted snapshot, so an in-flight live turn
+appears only after it has been stored.
 
 Timestamps come from the `created_at` column on `session_ui_events`; events
 persisted before this column existed simply render without timing.

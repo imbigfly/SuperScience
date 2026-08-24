@@ -15127,6 +15127,7 @@ fn App() -> impl IntoView {
             snapshot=trajectory_snapshot
             live=trajectory_live
             busy=busy
+            session_id=active_session
         />
         <CapabilitiesOverlay
             locale=locale show_capabilities=show_capabilities
