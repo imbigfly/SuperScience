@@ -817,7 +817,9 @@ impl Store {
     /// automatic compaction). Only the `messages` rows are rewritten — the
     /// session_ui_events visual transcript keeps the full history on purpose.
     /// Resource links and turn undo anchor to message seqs, which a rewrite
-    /// invalidates, so they are dropped too. Deletes and inserts share one
+    /// invalidates, so they are dropped too. Remapping `turn_file_undo` onto
+    /// the rewritten seqs would need a stable turn/message id (known #973
+    /// limitation); do not expand that here. Deletes and inserts share one
     /// write transaction: an interruption mid-replace leaves the previous
     /// transcript fully intact instead of an emptied or half-written frame.
     pub async fn replace_messages(&self, frame_id: &str, msgs: &[Message]) -> Result<()> {
@@ -878,6 +880,19 @@ impl Store {
     pub async fn message_count(&self, frame_id: &str) -> Result<i64> {
         Ok(
             sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE frame_id=?")
+                .bind(frame_id)
+                .fetch_one(&self.pool)
+                .await?,
+        )
+    }
+
+    /// Durable seq cursor for a frame: `COALESCE(MAX(seq), 0)`.
+    ///
+    /// This is the source of truth for `last_seq` recovery. Do not use
+    /// `messages.len()` or `COUNT(*)` — gaps make those diverge from `MAX(seq)`.
+    pub async fn max_message_seq(&self, frame_id: &str) -> Result<i64> {
+        Ok(
+            sqlx::query_scalar("SELECT COALESCE(MAX(seq),0) FROM messages WHERE frame_id=?")
                 .bind(frame_id)
                 .fetch_one(&self.pool)
                 .await?,
@@ -955,6 +970,8 @@ async fn replace_message_rows(
         .bind(frame_id)
         .execute(&mut **tx)
         .await?;
+    // #973/#978: undo rows key off pre-compaction seqs. Mapping them onto the
+    // rewritten 1..n seqs needs a stable turn/message id; wipe instead.
     sqlx::query("DELETE FROM turn_file_undo WHERE frame_id=?")
         .bind(frame_id)
         .execute(&mut **tx)
@@ -1323,11 +1340,7 @@ impl Store {
         .bind(start_seq)
         .fetch_one(&self.pool)
         .await?;
-        let latest_seq: i64 =
-            sqlx::query_scalar("SELECT COALESCE(MAX(seq),0) FROM messages WHERE frame_id=?")
-                .bind(frame_id)
-                .fetch_one(&self.pool)
-                .await?;
+        let latest_seq = self.max_message_seq(frame_id).await?;
 
         let start_event_seq: i64 = sqlx::query_scalar(
             "SELECT COALESCE(MAX(seq),0) FROM session_ui_events WHERE frame_id=? \

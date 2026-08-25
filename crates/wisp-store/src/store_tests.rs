@@ -2439,6 +2439,34 @@ async fn transcript_pages_keep_complete_user_turns_and_matching_events() {
 }
 
 #[tokio::test]
+async fn max_message_seq_uses_max_not_count_when_seqs_have_gaps() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_store_max_seq_gap_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    assert_eq!(store.max_message_seq("f").await.unwrap(), 0);
+    store
+        .append_message("f", 1, &Message::user("first"))
+        .await
+        .unwrap();
+    store
+        .append_message("f", 3, &Message::assistant("third"))
+        .await
+        .unwrap();
+    assert_eq!(store.message_count("f").await.unwrap(), 2);
+    assert_eq!(store.max_message_seq("f").await.unwrap(), 3);
+    let page = store
+        .load_session_transcript_page("f", None, 20)
+        .await
+        .unwrap();
+    assert_eq!(page.latest_seq, 3);
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[tokio::test]
 async fn recent_turn_preview_messages_are_turn_and_content_bounded() {
     let tmp = std::env::temp_dir().join(format!(
         "wisp_store_recent_turns_{}.sqlite",

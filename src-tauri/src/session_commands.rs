@@ -918,7 +918,7 @@ pub(super) async fn rewind_session(
         .await
         .map_err(|e| format!("{e}"))?;
     if let Some(rt) = state.sessions.lock().await.get(&frame_id) {
-        rt.set_last_seq(keep as i64);
+        rt.sync_last_seq_from_store(&state.store, &frame_id).await?;
     }
     Ok(())
 }
@@ -1244,6 +1244,7 @@ pub(super) async fn load_session(
         state.set_active_frame(window.label(), Some(id.clone()));
         let _ = state.store.mark_frame_seen(&id).await;
         if let Some(rt) = state.sessions.lock().await.get(&id).cloned() {
+            // latest_seq is COALESCE(MAX(seq),0) from this page load.
             rt.set_last_seq(page.latest_seq);
         }
     }
