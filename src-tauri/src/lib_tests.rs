@@ -100,10 +100,10 @@ fn mcp_app_tool_confirm_payload_parses_and_keys_a_grant() {
     let (tool, preview) = super::parse_confirm_payload(message);
     assert_eq!(tool, "figure_preview_exact");
     assert_eq!(preview, "");
-    let key = super::mcp_app_approval_grant_key("figure-library", "figure_preview_exact");
+    let key = super::mcp_app_approval_grant_key("figure-library", "figure_preview_exact").unwrap();
     assert_eq!(key.kind, "mcp_app_tool");
     assert_eq!(key.target, "figure-library:figure_preview_exact");
-    let other = super::mcp_app_approval_grant_key("other-server", "figure_preview_exact");
+    let other = super::mcp_app_approval_grant_key("other-server", "figure_preview_exact").unwrap();
     assert_ne!(key, other);
     // Agent Always-allow grants stay tool-name scoped and do not match App grants.
     let agent = super::approval_grant_key("Run tool 'figure_preview_exact'?").unwrap();
@@ -113,11 +113,27 @@ fn mcp_app_tool_confirm_payload_parses_and_keys_a_grant() {
     assert_eq!(tool, "python");
 }
 
+#[test]
+fn mcp_app_approval_grant_key_separates_bundled_connectors() {
+    assert!(super::mcp_app_approval_grant_key("", "echo").is_none());
+    assert!(super::mcp_app_approval_grant_key("   ", "echo").is_none());
+    let dev =
+        super::mcp_app_approval_grant_key(super::BUNDLED_DEV_MCP_CONNECTOR_ID, "echo").unwrap();
+    let bio =
+        super::mcp_app_approval_grant_key(super::BUNDLED_BIO_MCP_CONNECTOR_ID, "echo").unwrap();
+    assert_eq!(dev.target, "dev-mcp:echo");
+    assert_eq!(bio.target, "mcp_bio:echo");
+    assert_ne!(dev, bio);
+    assert_ne!(dev.target, "_:echo");
+    assert_ne!(bio.target, "_:echo");
+}
+
 /// One MCP server behind an App bridge: answers only its own tool and reports
 /// which connector served the call, so a crossed route is visible in the result.
 struct FakeAppServer {
     connector_id: String,
     tool: String,
+    delay: Option<std::time::Duration>,
 }
 
 #[async_trait::async_trait]
@@ -148,6 +164,9 @@ impl wisp_tools::McpAppServer for FakeAppServer {
         if name != self.tool {
             return Err(format!("tool '{name}' is not on this server"));
         }
+        if let Some(delay) = self.delay {
+            tokio::time::sleep(delay).await;
+        }
         Ok(serde_json::json!({
             "content": [],
             "structuredContent": { "servedBy": self.connector_id },
@@ -162,6 +181,7 @@ fn fake_app_bridge(frame_id: &str, connector_id: &str, tool: &str) -> super::Mcp
         server: Arc::new(FakeAppServer {
             connector_id: connector_id.into(),
             tool: tool.into(),
+            delay: None,
         }),
         limiter: super::McpAppCallLimiter::with_limits(1, 8, std::time::Duration::from_secs(10)),
     }
@@ -216,6 +236,39 @@ async fn parallel_mcp_app_instances_keep_separate_bridges() {
     assert!(bridges.get(motif).is_some());
     bridges.remove_for_frame("session-b");
     assert!(bridges.get(motif).is_none());
+}
+
+#[tokio::test]
+async fn mcp_app_host_timeout_fails_only_the_call() {
+    let server = FakeAppServer {
+        connector_id: "figure-library".into(),
+        tool: "figure_preview_exact".into(),
+        delay: Some(std::time::Duration::from_millis(80)),
+    };
+    let error = super::invoke_mcp_app_server_tool(
+        &server,
+        "figure_preview_exact",
+        &serde_json::json!({}),
+        std::time::Duration::from_millis(15),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.contains("timed out after"));
+
+    let fast = FakeAppServer {
+        connector_id: "figure-library".into(),
+        tool: "figure_preview_exact".into(),
+        delay: None,
+    };
+    let result = super::invoke_mcp_app_server_tool(
+        &fast,
+        "figure_preview_exact",
+        &serde_json::json!({}),
+        std::time::Duration::from_millis(50),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["structuredContent"]["servedBy"], "figure-library");
 }
 
 #[test]

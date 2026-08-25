@@ -18,7 +18,7 @@ fn main() -> ExitCode {
         .enable_all()
         .build()
         .expect("test runtime");
-    match runtime.block_on(concurrent_stdio_calls_keep_matching_ids()) {
+    match runtime.block_on(run_stdio_transport_regressions()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("stdio concurrent MCP transport failed: {error}");
@@ -91,6 +91,11 @@ fn fake_echo_server() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+async fn run_stdio_transport_regressions() -> Result<(), String> {
+    concurrent_stdio_calls_keep_matching_ids().await?;
+    cancelled_isolated_call_leaves_connection_usable().await
+}
+
 async fn concurrent_stdio_calls_keep_matching_ids() -> Result<(), String> {
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let args = vec![ECHO_ARG.to_string()];
@@ -119,6 +124,42 @@ async fn concurrent_stdio_calls_keep_matching_ids() -> Result<(), String> {
         != Some(&json!("fast"))
     {
         return Err(format!("fast call received {:?}", fast.structured_content));
+    }
+    client.shutdown().await.map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+async fn cancelled_isolated_call_leaves_connection_usable() -> Result<(), String> {
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let args = vec![ECHO_ARG.to_string()];
+    let client = McpClient::launch(&executable.to_string_lossy(), &args)
+        .await
+        .map_err(|error| error.to_string())?;
+    let hang_args = json!({ "token": "hang", "delay_ms": 400 });
+    let hang = client.tool_call_rich_isolated("echo", &hang_args);
+    if tokio::time::timeout(Duration::from_millis(60), hang)
+        .await
+        .is_ok()
+    {
+        let _ = client.shutdown().await;
+        return Err("isolated call returned before the host timeout".into());
+    }
+    let recovered_args = json!({ "token": "recovered" });
+    let recovered = client
+        .tool_call_rich_isolated("echo", &recovered_args)
+        .await
+        .map_err(|error| error.to_string())?;
+    if recovered
+        .structured_content
+        .as_ref()
+        .and_then(|value| value.get("token"))
+        != Some(&json!("recovered"))
+    {
+        let _ = client.shutdown().await;
+        return Err(format!(
+            "connection unusable after isolated cancel: {:?}",
+            recovered.structured_content
+        ));
     }
     client.shutdown().await.map_err(|error| error.to_string())?;
     Ok(())

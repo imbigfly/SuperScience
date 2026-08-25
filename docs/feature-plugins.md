@@ -61,7 +61,9 @@ restored when that conversation is reopened, including after Wisp restarts.
 While that live App is still bound to the MCP server that presented it, Wisp
 advertises `hostCapabilities.serverTools` and forwards standard `tools/call`
 requests to the same server (same-server tools only, including app-only helpers
-that never enter the agent catalog). Restored Apps that no longer have the
+that never enter the agent catalog). Each App call has a 30s host timeout that
+fails only that request; it does not inherit the 120s transport timeout and
+does not tear down a stdio MCP process. Restored Apps that no longer have the
 original connection do not get that capability and keep using
 `ui/update-model-context`.
 
@@ -88,10 +90,15 @@ rather than its entire workspace.
 - MCP Apps receive structured tool input/results in a script-only, opaque-origin
   iframe. Network origins are restricted to the resource's declared CSP. A live
   App may call tools on the same MCP server through the host (`tools/call`);
-  those calls use the existing approval policy, are keyed by connector + tool,
-  and cannot reach another server. Apps may also update the next model turn's
-  bounded text/JSON context. Wisp does not grant external links, downloads,
-  forms, camera, microphone, or geolocation.
+  those calls use the existing approval policy, are keyed by connector + tool
+  (bundled `dev-mcp` and `mcp_bio` use those stable ids; an empty id is not
+  collapsed to `_`), time out after 30s without tearing down the MCP process,
+  and cannot reach another server. Arguments are checked against a JSON Schema
+  subset (`type`, `required`, `properties`, `additionalProperties: false`,
+  `items`, `enum`, numeric bounds, `pattern`). Combinators such as `oneOf` /
+  `anyOf` / `allOf` are not evaluated. Apps may also update the next model
+  turn's bounded text/JSON context. Wisp does not grant external links,
+  downloads, forms, camera, microphone, or geolocation.
 - Embedded `text/html` MCP resources are materialized under
   `.wisp/plugin-artifacts/` and opened through Wisp's sandboxed HTML preview.
 

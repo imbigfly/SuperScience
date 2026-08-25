@@ -196,7 +196,7 @@ impl McpAppServer for McpAppServerHandle {
             .upgrade()
             .ok_or_else(|| "the MCP server connection for this App is closed")?;
         let result = client
-            .tool_call_rich(name, arguments)
+            .tool_call_rich_isolated(name, arguments)
             .await
             .map_err(|error| error.to_string())?;
         serde_json::to_value(&result).map_err(|error| format!("serialize MCP tool result: {error}"))
@@ -204,17 +204,17 @@ impl McpAppServer for McpAppServerHandle {
 }
 
 /// Lightweight MCP `inputSchema` check: object type, `required`, property
-/// types, and `additionalProperties: false`. Unknown keywords are ignored so
-/// a host can fail closed on the common cases without a full JSON Schema crate.
+/// types, `additionalProperties: false`, `items`, `enum`, numeric bounds
+/// (`minimum` / `maximum` / `exclusiveMinimum` / `exclusiveMaximum`), and
+/// `pattern`. Combinators (`oneOf` / `anyOf` / `allOf` / `not`) are not
+/// evaluated. Unknown keywords are ignored so a host can fail closed on the
+/// common cases without a full JSON Schema crate.
 pub fn validate_tool_arguments(schema: &Value, arguments: &Value) -> Result<(), String> {
     validate_against_schema(schema, arguments, "arguments")
 }
 
 fn validate_against_schema(schema: &Value, value: &Value, path: &str) -> Result<(), String> {
-    if schema.get("type").is_none()
-        && schema.get("properties").is_none()
-        && schema.get("required").is_none()
-    {
+    if !schema.is_object() {
         return Ok(());
     }
     if let Some(type_constraint) = schema.get("type") {
@@ -222,6 +222,13 @@ fn validate_against_schema(schema: &Value, value: &Value, path: &str) -> Result<
             return Err(format!("{path} does not match the tool input schema"));
         }
     }
+    if let Some(enum_values) = schema.get("enum").and_then(Value::as_array) {
+        if !enum_values.iter().any(|allowed| allowed == value) {
+            return Err(format!("{path} is not one of the allowed values"));
+        }
+    }
+    validate_numeric_bounds(schema, value, path)?;
+    validate_pattern(schema, value, path)?;
     if let Some(object) = value.as_object() {
         if let Some(required) = schema.get("required").and_then(Value::as_array) {
             for name in required.iter().filter_map(Value::as_str) {
@@ -254,6 +261,67 @@ fn validate_against_schema(schema: &Value, value: &Value, path: &str) -> Result<
         }
     }
     Ok(())
+}
+
+fn json_number_as_f64(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(number) => number.as_f64(),
+        _ => None,
+    }
+}
+
+fn validate_numeric_bounds(schema: &Value, value: &Value, path: &str) -> Result<(), String> {
+    let Some(number) = json_number_as_f64(value) else {
+        return Ok(());
+    };
+    if let Some(min) = schema.get("minimum").and_then(json_number_as_f64) {
+        let exclusive = schema.get("exclusiveMinimum") == Some(&Value::Bool(true));
+        if exclusive && number <= min {
+            return Err(format!("{path} must be greater than {min}"));
+        }
+        if !exclusive && number < min {
+            return Err(format!("{path} must be at least {min}"));
+        }
+    }
+    if let Some(excl_min) = schema.get("exclusiveMinimum").and_then(json_number_as_f64) {
+        if number <= excl_min {
+            return Err(format!("{path} must be greater than {excl_min}"));
+        }
+    }
+    if let Some(max) = schema.get("maximum").and_then(json_number_as_f64) {
+        let exclusive = schema.get("exclusiveMaximum") == Some(&Value::Bool(true));
+        if exclusive && number >= max {
+            return Err(format!("{path} must be less than {max}"));
+        }
+        if !exclusive && number > max {
+            return Err(format!("{path} must be at most {max}"));
+        }
+    }
+    if let Some(excl_max) = schema.get("exclusiveMaximum").and_then(json_number_as_f64) {
+        if number >= excl_max {
+            return Err(format!("{path} must be less than {excl_max}"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_pattern(schema: &Value, value: &Value, path: &str) -> Result<(), String> {
+    let Some(pattern) = schema.get("pattern").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    let Some(text) = value.as_str() else {
+        return Ok(());
+    };
+    let regex = regex::RegexBuilder::new(pattern)
+        .size_limit(1 << 20)
+        .dfa_size_limit(1 << 20)
+        .build()
+        .map_err(|_| format!("{path} has an invalid pattern constraint"))?;
+    if regex.is_match(text) {
+        Ok(())
+    } else {
+        Err(format!("{path} does not match the required pattern"))
+    }
 }
 
 fn value_matches_type(value: &Value, type_constraint: &Value) -> bool {
@@ -613,5 +681,77 @@ mod tests {
         let extra =
             validate_tool_arguments(&schema, &json!({ "token": "ok", "nope": true })).unwrap_err();
         assert!(extra.contains("nope"));
+    }
+
+    #[test]
+    fn tool_argument_schema_rejects_enum_bounds_and_pattern() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "kind": { "enum": ["alpha", "beta"] },
+                "count": { "type": "integer", "minimum": 1, "maximum": 3 },
+                "score": {
+                    "type": "number",
+                    "exclusiveMinimum": 0.0,
+                    "exclusiveMaximum": 1.0
+                },
+                "draft_count": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "exclusiveMinimum": true,
+                    "maximum": 10,
+                    "exclusiveMaximum": true
+                },
+                "id": { "type": "string", "pattern": "^[a-z]+-[0-9]+$" }
+            },
+            "required": ["kind"]
+        });
+        validate_tool_arguments(
+            &schema,
+            &json!({
+                "kind": "alpha",
+                "count": 2,
+                "score": 0.5,
+                "draft_count": 1,
+                "id": "seq-12"
+            }),
+        )
+        .unwrap();
+        let bad_enum = validate_tool_arguments(&schema, &json!({ "kind": "gamma" })).unwrap_err();
+        assert!(bad_enum.contains("allowed values"));
+        let low =
+            validate_tool_arguments(&schema, &json!({ "kind": "alpha", "count": 0 })).unwrap_err();
+        assert!(low.contains("at least"));
+        let high =
+            validate_tool_arguments(&schema, &json!({ "kind": "alpha", "count": 4 })).unwrap_err();
+        assert!(high.contains("at most"));
+        let excl_low = validate_tool_arguments(&schema, &json!({ "kind": "alpha", "score": 0.0 }))
+            .unwrap_err();
+        assert!(excl_low.contains("greater than"));
+        let excl_high = validate_tool_arguments(&schema, &json!({ "kind": "alpha", "score": 1.0 }))
+            .unwrap_err();
+        assert!(excl_high.contains("less than"));
+        let draft_low =
+            validate_tool_arguments(&schema, &json!({ "kind": "alpha", "draft_count": 0 }))
+                .unwrap_err();
+        assert!(draft_low.contains("greater than"));
+        let draft_high =
+            validate_tool_arguments(&schema, &json!({ "kind": "alpha", "draft_count": 10 }))
+                .unwrap_err();
+        assert!(draft_high.contains("less than"));
+        let pattern = validate_tool_arguments(&schema, &json!({ "kind": "alpha", "id": "SEQ-12" }))
+            .unwrap_err();
+        assert!(pattern.contains("pattern"));
+        let enum_only = json!({ "enum": [1, 2] });
+        validate_tool_arguments(&enum_only, &json!(2)).unwrap();
+        assert!(validate_tool_arguments(&enum_only, &json!(3))
+            .unwrap_err()
+            .contains("allowed values"));
+        let combinators = json!({
+            "oneOf": [{ "type": "string" }, { "type": "number" }],
+            "anyOf": [{ "const": "nope" }],
+            "allOf": [{ "type": "null" }]
+        });
+        validate_tool_arguments(&combinators, &json!({ "ignored": true })).unwrap();
     }
 }
