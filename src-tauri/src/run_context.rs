@@ -3386,6 +3386,8 @@ async fn record_run_outcome(
 }
 
 /// Keep `run_id`'s lifecycle lease alive until `operation` completes.
+/// Renew runs on its own task so a store write inside `operation` is not
+/// paused while another connection tries to renew (that deadlocks SQLite).
 /// Renew failure is a hard error so a long harvest cannot outlive its owner.
 async fn with_run_lifecycle_lease<T>(
     store: &wisp_store::Store,
@@ -3393,20 +3395,40 @@ async fn with_run_lifecycle_lease<T>(
     owner_id: &str,
     operation: impl std::future::Future<Output = Result<T, String>>,
 ) -> Result<T, String> {
+    let store = store.clone();
+    let run_id = run_id.to_string();
+    let owner_id = owner_id.to_string();
+    let mut renew = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(harvest_remote::harvest_lease_interval());
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            harvest_remote::require_lease_renewed(
+                store
+                    .renew_run_lifecycle(&run_id, &owner_id, ACTIVE_LEASE_SECS)
+                    .await
+                    .map_err(|e| e.to_string())?,
+            )?;
+        }
+        #[allow(unreachable_code)]
+        Ok::<(), String>(())
+    });
     tokio::pin!(operation);
-    let mut interval = tokio::time::interval(harvest_remote::harvest_lease_interval());
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    interval.tick().await;
-    loop {
-        tokio::select! {
-            result = &mut operation => return result,
-            _ = interval.tick() => {
-                harvest_remote::require_lease_renewed(
-                    store
-                        .renew_run_lifecycle(run_id, owner_id, ACTIVE_LEASE_SECS)
-                        .await
-                        .map_err(|e| e.to_string())?,
-                )?;
+    tokio::select! {
+        result = &mut operation => {
+            renew.abort();
+            let _ = renew.await;
+            result
+        }
+        renew_result = &mut renew => {
+            match renew_result {
+                Ok(Err(error)) => Err(error),
+                Ok(Ok(())) => Err("Run lifecycle lease renewer exited".into()),
+                Err(join) if join.is_cancelled() => {
+                    Err("Run lifecycle lease renewer cancelled".into())
+                }
+                Err(join) => Err(join.to_string()),
             }
         }
     }
