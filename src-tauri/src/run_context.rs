@@ -25,8 +25,8 @@ use remote::{cancel_payload, launch_payload, poll_payload, prepare_payload};
 use remote::{
     cancel_remote, checked_output, ensure_remote_started, permanent_remote_start_error,
     poll_remote, prepare_remote, remote_poll_interval, remote_poll_interval_for,
-    remote_terminal_status, resolve_input_paths, ssh_script_command, PrepareRemote, RemoteCancel,
-    RemotePollState,
+    remote_terminal_status, resolve_input_paths, ssh_dedicated_script_command, ssh_script_command,
+    PrepareRemote, RemoteCancel, RemotePollState,
 };
 #[cfg(test)]
 use remote::{parse_input_progress, remote_poll_delay_secs};
@@ -2715,35 +2715,41 @@ async fn finish_remote_run(
     status: wisp_store::RunStatus,
     exit_code: Option<i64>,
 ) -> Result<(), String> {
-    if status == wisp_store::RunStatus::Succeeded && !remote.output_specs.is_empty() {
-        if let Some(frame_id) = remote.frame_id.as_deref() {
-            match harvest_finished_remote(store, runner, owner_id, remote, frame_id).await {
-                Ok(()) => {
-                    store
-                        .mark_run_harvested(&remote.run_id)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                }
-                Err(error) => {
-                    store
-                        .record_run_poll_owned(
-                            &remote.run_id,
-                            owner_id,
-                            None,
-                            None,
-                            Some(&format!("remote artifact registration failed: {error}")),
-                        )
-                        .await
-                        .map_err(|e| e.to_string())?;
+    with_run_lifecycle_lease(store, &remote.run_id, owner_id, async {
+        if status == wisp_store::RunStatus::Succeeded && !remote.output_specs.is_empty() {
+            if let Some(frame_id) = remote.frame_id.as_deref() {
+                match harvest_finished_remote(store, runner, owner_id, remote, frame_id).await {
+                    Ok(()) => {
+                        store
+                            .mark_run_harvested(&remote.run_id)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                    }
+                    Err(error) => {
+                        store
+                            .record_run_poll_owned(
+                                &remote.run_id,
+                                owner_id,
+                                None,
+                                None,
+                                Some(&format!("remote artifact registration failed: {error}")),
+                            )
+                            .await
+                            .map_err(|e| e.to_string())?;
+                    }
                 }
             }
         }
-    }
-    let _ = store
-        .finish_active_run_owned(&remote.run_id, owner_id, status, exit_code)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
+        harvest_remote::require_owned_finish(
+            store
+                .finish_active_run_owned(&remote.run_id, owner_id, status, exit_code)
+                .await
+                .map_err(|e| e.to_string())?,
+            "Run",
+        )?;
+        Ok(())
+    })
+    .await
 }
 
 /// Register a succeeded detached Run's declared outputs: local globs for
@@ -2756,6 +2762,14 @@ async fn harvest_finished_remote(
     remote: &RemoteRun,
     frame_id: &str,
 ) -> Result<(), String> {
+    let harvested_at = store
+        .get_run(&remote.run_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .and_then(|run| run.harvested_at);
+    if harvest_remote::skip_auto_harvest(harvested_at) {
+        return Ok(());
+    }
     let fallback = PathBuf::from(".");
     if remote.handle.is_local_detached() {
         let references: Vec<_> = remote
@@ -3367,6 +3381,55 @@ async fn record_run_outcome(
                 stderr_tail: Some(stderr_tail),
                 remote_workdir: None,
             })
+        }
+    }
+}
+
+/// Keep `run_id`'s lifecycle lease alive until `operation` completes.
+/// Renew runs on its own task so a store write inside `operation` is not
+/// paused while another connection tries to renew (that deadlocks SQLite).
+/// Renew failure is a hard error so a long harvest cannot outlive its owner.
+async fn with_run_lifecycle_lease<T>(
+    store: &wisp_store::Store,
+    run_id: &str,
+    owner_id: &str,
+    operation: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    let store = store.clone();
+    let run_id = run_id.to_string();
+    let owner_id = owner_id.to_string();
+    let mut renew = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(harvest_remote::harvest_lease_interval());
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            harvest_remote::require_lease_renewed(
+                store
+                    .renew_run_lifecycle(&run_id, &owner_id, ACTIVE_LEASE_SECS)
+                    .await
+                    .map_err(|e| e.to_string())?,
+            )?;
+        }
+        #[allow(unreachable_code)]
+        Ok::<(), String>(())
+    });
+    tokio::pin!(operation);
+    tokio::select! {
+        result = &mut operation => {
+            renew.abort();
+            let _ = renew.await;
+            result
+        }
+        renew_result = &mut renew => {
+            match renew_result {
+                Ok(Err(error)) => Err(error),
+                Ok(Ok(())) => Err("Run lifecycle lease renewer exited".into()),
+                Err(join) if join.is_cancelled() => {
+                    Err("Run lifecycle lease renewer cancelled".into())
+                }
+                Err(join) => Err(join.to_string()),
+            }
         }
     }
 }

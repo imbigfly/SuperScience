@@ -59,8 +59,33 @@ pub(super) fn ssh_script_command(
     label: &str,
     payload: String,
 ) -> Result<RunCommand, String> {
+    ssh_script_command_inner(connection, label, payload, false)
+}
+
+/// Long harvest RPCs (collect) must not occupy the shared per-host master slot.
+/// `sh -s --` is the existing dedicated-session shape in `eligible_payload`:
+/// stdin is present and the trailing remote command is not exactly `sh -s`, so
+/// ProcessRunRunner spawns a private ssh process.
+pub(super) fn ssh_dedicated_script_command(
+    connection: &crate::ssh_hosts::SshConnection,
+    label: &str,
+    payload: String,
+) -> Result<RunCommand, String> {
+    ssh_script_command_inner(connection, label, payload, true)
+}
+
+fn ssh_script_command_inner(
+    connection: &crate::ssh_hosts::SshConnection,
+    label: &str,
+    payload: String,
+    dedicated: bool,
+) -> Result<RunCommand, String> {
     let mut args = connection.ssh_args()?;
-    args.push("sh -s".into());
+    args.push(if dedicated {
+        "sh -s --".into()
+    } else {
+        "sh -s".into()
+    });
     Ok(RunCommand {
         context_id: format!("ssh:{}", connection.alias),
         program: "ssh".into(),

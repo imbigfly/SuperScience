@@ -4,8 +4,8 @@
 //! outputs are transferred and recorded, never the full remote file inventory.
 
 use super::{
-    checked_output, ssh_script_command, transfer_progress, RemoteRun, RemoteRunHandle,
-    RunCommandRunner, REMOTE_RPC_TIMEOUT,
+    checked_output, ssh_dedicated_script_command, ssh_script_command, transfer_progress,
+    with_run_lifecycle_lease, RemoteRun, RemoteRunHandle, RunCommandRunner, REMOTE_RPC_TIMEOUT,
 };
 use crate::harvest::{HarvestedArtifact, OutputResidency, OutputSpec};
 use sha2::{Digest, Sha256};
@@ -35,6 +35,32 @@ fn persist_assignment(remote_data_root: &str, run_id: &str) -> String {
 
 const COLLECT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const PULL_TIMEOUT: Duration = Duration::from_secs(4 * 60 * 60);
+
+/// Automatic harvest must not collect/transfer again once outputs are registered.
+pub(super) fn skip_auto_harvest(harvested_at: Option<i64>) -> bool {
+    wisp_store::skip_auto_harvest(harvested_at)
+}
+
+/// `renew_run_lifecycle` returning false is a hard error for long harvest work.
+pub(super) fn require_lease_renewed(renewed: bool) -> Result<(), String> {
+    wisp_store::require_lifecycle_hold(renewed, "Run lifecycle lease was lost")
+}
+
+/// `finish_active_run_owned` returning false means the owner/lease did not take.
+pub(super) fn require_owned_finish(finished: bool, subject: &str) -> Result<(), String> {
+    wisp_store::require_lifecycle_hold(
+        finished,
+        &format!("{subject} lifecycle lease was lost before finish"),
+    )
+}
+
+pub(super) fn harvest_lease_interval() -> Duration {
+    if cfg!(test) {
+        Duration::from_millis(10)
+    } else {
+        Duration::from_secs(1)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum RemoteOutputKind {
@@ -582,125 +608,134 @@ async fn collect_pull_register(
     )
     .await?;
 
-    let collect = checked_output(
-        "SSH harvest collection",
-        runner
-            .run(
-                ssh_script_command(
-                    connection,
-                    "collect SSH run outputs",
-                    collect_payload(
-                        workdir,
-                        token,
-                        &remote.run_id,
-                        &prefs.remote_data_root,
-                        specs,
-                    ),
-                )?,
-                COLLECT_TIMEOUT,
+    let harvest = async {
+        let collect = checked_output(
+            "SSH harvest collection",
+            runner
+                .run(
+                    ssh_dedicated_script_command(
+                        connection,
+                        "collect SSH run outputs",
+                        collect_payload(
+                            workdir,
+                            token,
+                            &remote.run_id,
+                            &prefs.remote_data_root,
+                            specs,
+                        ),
+                    )?,
+                    COLLECT_TIMEOUT,
+                )
+                .await,
+        )?;
+        let plan = plan_from_manifest(specs, parse_collect_manifest(&collect.stdout)?)?;
+
+        let landing = landing_dir(harvest_root, &prefs.local_results_dir, &remote.run_id);
+        if plan.download_files > 0 {
+            pull_harvest_dir(
+                store,
+                runner,
+                owner_id,
+                remote,
+                connection,
+                workdir,
+                &plan,
+                &landing,
+                renew_parent,
             )
-            .await,
-    )?;
-    let plan = plan_from_manifest(specs, parse_collect_manifest(&collect.stdout)?)?;
+            .await?;
+        }
 
-    let landing = landing_dir(harvest_root, &prefs.local_results_dir, &remote.run_id);
-    if plan.download_files > 0 {
-        pull_harvest_dir(
-            store,
-            runner,
-            owner_id,
-            remote,
-            connection,
-            workdir,
-            &plan,
-            &landing,
-            renew_parent,
-        )
-        .await?;
+        let mut harvested = Vec::new();
+        for entry in &plan.entries {
+            let spec = &remote.output_specs[entry.spec_idx];
+            let artifact = match &entry.kind {
+                RemoteOutputKind::Remote => {
+                    let relative = entry
+                        .path
+                        .split_once(&format!("/artifacts/{}/", remote.run_id))
+                        .map(|(_, rel)| rel)
+                        .unwrap_or(&entry.path);
+                    let logical_key = spec
+                        .logical_key
+                        .clone()
+                        .unwrap_or_else(|| format!("path:{relative}"));
+                    let uri = super::remote_files::ssh_uri_for_remote_path(
+                        &connection.alias,
+                        &entry.path,
+                    );
+                    let artifact = crate::harvest::register_reference_artifact(
+                        store,
+                        &remote.project_id,
+                        frame_id,
+                        &remote.run_id,
+                        &spec.kind,
+                        &uri,
+                        Some(entry.size),
+                        Some(entry.checksum.clone()),
+                        &logical_key,
+                    )
+                    .await?;
+                    ledger_harvest_persist(
+                        store,
+                        &remote.project_id,
+                        &format!("ssh:{}", connection.alias),
+                        &remote.run_id,
+                        &entry.path,
+                        Some(entry.checksum.clone()),
+                        i64::try_from(entry.size).ok(),
+                    )
+                    .await?;
+                    artifact
+                }
+                RemoteOutputKind::File => {
+                    let logical_key = spec
+                        .logical_key
+                        .clone()
+                        .unwrap_or_else(|| format!("path:{}", entry.path));
+                    crate::harvest::register_local_artifact(
+                        store,
+                        &remote.project_id,
+                        frame_id,
+                        &remote.run_id,
+                        &spec.kind,
+                        harvest_root,
+                        &landing.join(&entry.path),
+                        &logical_key,
+                        &entry.path,
+                        entry.size > crate::snapshot_store::DEFAULT_SNAPSHOT_LIMIT,
+                    )
+                    .await?
+                }
+                RemoteOutputKind::Bundle { .. } => {
+                    let logical_key = spec
+                        .logical_key
+                        .clone()
+                        .unwrap_or_else(|| format!("bundle:{}", spec.glob));
+                    crate::harvest::register_local_artifact(
+                        store,
+                        &remote.project_id,
+                        frame_id,
+                        &remote.run_id,
+                        &spec.kind,
+                        harvest_root,
+                        &landing.join("bundles").join(&entry.path),
+                        &logical_key,
+                        &spec.glob,
+                        entry.size > crate::snapshot_store::DEFAULT_SNAPSHOT_LIMIT,
+                    )
+                    .await?
+                }
+            };
+            harvested.push(artifact);
+        }
+        Ok(harvested)
+    };
+    if renew_parent {
+        with_run_lifecycle_lease(store, &remote.run_id, owner_id, harvest).await
+    } else {
+        harvest.await
     }
-
-    let mut harvested = Vec::new();
-    for entry in &plan.entries {
-        let spec = &remote.output_specs[entry.spec_idx];
-        let artifact = match &entry.kind {
-            RemoteOutputKind::Remote => {
-                let relative = entry
-                    .path
-                    .split_once(&format!("/artifacts/{}/", remote.run_id))
-                    .map(|(_, rel)| rel)
-                    .unwrap_or(&entry.path);
-                let logical_key = spec
-                    .logical_key
-                    .clone()
-                    .unwrap_or_else(|| format!("path:{relative}"));
-                let uri =
-                    super::remote_files::ssh_uri_for_remote_path(&connection.alias, &entry.path);
-                let artifact = crate::harvest::register_reference_artifact(
-                    store,
-                    &remote.project_id,
-                    frame_id,
-                    &remote.run_id,
-                    &spec.kind,
-                    &uri,
-                    Some(entry.size),
-                    Some(entry.checksum.clone()),
-                    &logical_key,
-                )
-                .await?;
-                ledger_harvest_persist(
-                    store,
-                    &remote.project_id,
-                    &format!("ssh:{}", connection.alias),
-                    &remote.run_id,
-                    &entry.path,
-                    Some(entry.checksum.clone()),
-                    i64::try_from(entry.size).ok(),
-                )
-                .await?;
-                artifact
-            }
-            RemoteOutputKind::File => {
-                let logical_key = spec
-                    .logical_key
-                    .clone()
-                    .unwrap_or_else(|| format!("path:{}", entry.path));
-                crate::harvest::register_local_artifact(
-                    store,
-                    &remote.project_id,
-                    frame_id,
-                    &remote.run_id,
-                    &spec.kind,
-                    harvest_root,
-                    &landing.join(&entry.path),
-                    &logical_key,
-                    &entry.path,
-                    entry.size > crate::snapshot_store::DEFAULT_SNAPSHOT_LIMIT,
-                )
-                .await?
-            }
-            RemoteOutputKind::Bundle { .. } => {
-                let logical_key = spec
-                    .logical_key
-                    .clone()
-                    .unwrap_or_else(|| format!("bundle:{}", spec.glob));
-                crate::harvest::register_local_artifact(
-                    store,
-                    &remote.project_id,
-                    frame_id,
-                    &remote.run_id,
-                    &spec.kind,
-                    harvest_root,
-                    &landing.join("bundles").join(&entry.path),
-                    &logical_key,
-                    &spec.glob,
-                    entry.size > crate::snapshot_store::DEFAULT_SNAPSHOT_LIMIT,
-                )
-                .await?
-            }
-        };
-        harvested.push(artifact);
-    }
-    Ok(harvested)
 }
 
 async fn ledger_harvest_persist(
@@ -833,9 +868,12 @@ async fn pull_harvest_dir(
         None,
         started,
     );
-    let _ = store
-        .renew_run_lifecycle(&transfer_id, owner_id, super::ACTIVE_LEASE_SECS)
-        .await;
+    require_lease_renewed(
+        store
+            .renew_run_lifecycle(&transfer_id, owner_id, super::ACTIVE_LEASE_SECS)
+            .await
+            .map_err(|e| e.to_string())?,
+    )?;
     let _ = store
         .update_run_progress_owned(&transfer_id, owner_id, &final_progress)
         .await;
@@ -844,9 +882,13 @@ async fn pull_harvest_dir(
             .update_run_output_owned(&transfer_id, owner_id, None, Some(error))
             .await;
     }
-    let _ = store
-        .finish_active_run_owned(&transfer_id, owner_id, status, exit_code)
-        .await;
+    require_owned_finish(
+        store
+            .finish_active_run_owned(&transfer_id, owner_id, status, exit_code)
+            .await
+            .map_err(|e| e.to_string())?,
+        "harvest transfer",
+    )?;
     result
 }
 
@@ -881,27 +923,29 @@ async fn pull_and_verify(
     };
     let pull = runner.run(command, PULL_TIMEOUT);
     tokio::pin!(pull);
-    let mut interval = tokio::time::interval(if cfg!(test) {
-        Duration::from_millis(10)
-    } else {
-        Duration::from_secs(1)
-    });
+    let mut interval = tokio::time::interval(harvest_lease_interval());
     interval.tick().await;
     let output = loop {
         tokio::select! {
             output = &mut pull => break output,
             _ = interval.tick() => {
-                if !store
-                    .renew_run_lifecycle(transfer_id, owner_id, super::ACTIVE_LEASE_SECS)
-                    .await
-                    .map_err(|e| e.to_string())?
-                {
-                    return Err("harvest transfer lifecycle lease expired".into());
-                }
+                require_lease_renewed(
+                    store
+                        .renew_run_lifecycle(transfer_id, owner_id, super::ACTIVE_LEASE_SECS)
+                        .await
+                        .map_err(|e| e.to_string())?,
+                )?;
                 if renew_parent {
-                    let _ = store
-                        .renew_run_lifecycle(&remote.run_id, owner_id, super::ACTIVE_LEASE_SECS)
-                        .await;
+                    require_lease_renewed(
+                        store
+                            .renew_run_lifecycle(
+                                &remote.run_id,
+                                owner_id,
+                                super::ACTIVE_LEASE_SECS,
+                            )
+                            .await
+                            .map_err(|e| e.to_string())?,
+                    )?;
                 }
                 let progress = transfer_progress(
                     "download",
@@ -1483,5 +1527,26 @@ mod tests {
         assert_eq!(dir, Path::new("/proj/remote/gpu/run-1"));
         let dir = landing_dir(Path::new("/proj"), "results/../../etc", "run 1");
         assert_eq!(dir, Path::new("/proj/results/etc/run_1"));
+    }
+
+    #[test]
+    fn skip_auto_harvest_when_already_registered() {
+        assert!(!skip_auto_harvest(None));
+        assert!(skip_auto_harvest(Some(1)));
+    }
+
+    #[test]
+    fn lease_and_finish_helpers_are_hard_errors() {
+        assert!(require_lease_renewed(true).is_ok());
+        assert!(require_lease_renewed(false)
+            .unwrap_err()
+            .contains("lease was lost"));
+        assert!(require_owned_finish(true, "Run").is_ok());
+        assert!(require_owned_finish(false, "Run")
+            .unwrap_err()
+            .contains("lost before finish"));
+        assert!(require_owned_finish(false, "harvest transfer")
+            .unwrap_err()
+            .contains("harvest transfer"));
     }
 }
