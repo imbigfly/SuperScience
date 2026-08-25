@@ -505,7 +505,9 @@ mod session_ctor_tests {
 
     #[test]
     fn require_sqlite_session_messages_fails_closed() {
-        let ok = require_sqlite_session_messages(Ok(vec![wisp_llm::Message::user("from store")]));
+        let loaded: Result<Vec<wisp_llm::Message>, &str> =
+            Ok(vec![wisp_llm::Message::user("from store")]);
+        let ok = require_sqlite_session_messages(loaded);
         assert_eq!(ok.unwrap().len(), 1);
 
         let err = require_sqlite_session_messages::<&str>(Err("disk full")).unwrap_err();
