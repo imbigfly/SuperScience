@@ -39,7 +39,9 @@ shared-session alternative. It never reports a spawned process as ready,
 which used to leave the agent driving a blank `about:blank` window (#952).
 
 Shared mode is unaffected: the user loads the extension once from
-`chrome://extensions` in the browser they already use.
+`chrome://extensions` in the browser they already use. The chat banner's
+**Set up browser** button opens that page and copies the bundled extension
+path.
 
 ### When a connected extension is not a usable session
 

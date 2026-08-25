@@ -6,7 +6,7 @@
       "cwd": "../ui"
     },
     "beforeBuildCommand": {
-      "script": "node sync-vendor.mjs && trunk build --release --dist dist",
+      "script": "node sync-vendor.mjs && trunk build --release --cargo-profile release-wasm --dist dist",
       "cwd": "../ui"
     }
   }

@@ -17,8 +17,10 @@ mod external_session_cache;
 mod global_memories;
 mod library;
 mod lineage;
+pub mod mcp_secrets;
 mod method_search;
 mod models;
+mod persist_seq;
 mod plugins;
 mod project_state_revisions;
 mod project_sync;
@@ -66,6 +68,7 @@ pub use method_search::{
     MethodStrategyStat,
 };
 pub use models::*;
+pub use persist_seq::{join_or_abort_persist, persist_seq_loop, PersistJoinError};
 pub use project_state_revisions::{ProjectStateRevision, ProjectStateRevisionSummary};
 pub use project_sync::ProjectSyncState;
 pub use project_transfer::ProjectTransferStats;

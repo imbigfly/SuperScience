@@ -120,7 +120,17 @@ impl OpenAiProvider {
                             tc
                         })
                         .collect();
-                    let mut o = json!({ "role": "assistant", "content": m.content.as_text() });
+                    let text = m.content.as_text();
+                    // Reasoning-only / interrupted turns persist as empty
+                    // assistant messages and replay as `content: ""`, which
+                    // strict endpoints reject — kimi-k3 400s with "the message
+                    // ... must not be empty" (verified live; DeepSeek
+                    // tolerates it). Nothing replayable is left, so drop the
+                    // turn. Empty text alongside tool_calls is fine on both.
+                    if kept.is_empty() && text.is_empty() {
+                        return None;
+                    }
+                    let mut o = json!({ "role": "assistant", "content": text });
                     if !kept.is_empty() {
                         o["tool_calls"] = serde_json::to_value(&kept).unwrap_or(Value::Null);
                     }
@@ -395,6 +405,34 @@ fn in_band_stream_error(val: &Value) -> Option<LlmError> {
     })
 }
 
+/// Merge one SSE `content` / `reasoning_content` value into the assembled
+/// string. Compatible relays disagree on whether the field is a fragment or
+/// the full snapshot so far; treating snapshots as fragments is O(n²) in both
+/// the assembled text and every live UI event (#985).
+///
+/// Returns the byte offset of the newly appended suffix, or `None` when the
+/// chunk is empty or a duplicate snapshot.
+fn apply_stream_delta(acc: &mut String, incoming: &str) -> Option<usize> {
+    if incoming.is_empty() || incoming == acc.as_str() {
+        return None;
+    }
+    if incoming.starts_with(acc.as_str()) {
+        let start = acc.len();
+        acc.push_str(&incoming[start..]);
+        return (start < acc.len()).then_some(start);
+    }
+    let start = acc.len();
+    acc.push_str(incoming);
+    Some(start)
+}
+
+fn stream_reasoning_delta(delta: &Value) -> Option<&str> {
+    delta
+        .get("reasoning_content")
+        .and_then(|v| v.as_str())
+        .or_else(|| delta.get("reasoning").and_then(|v| v.as_str()))
+}
+
 fn append_stream_content_delta(
     delta: &Value,
     content: &mut String,
@@ -404,22 +442,18 @@ fn append_stream_content_delta(
     // Some compatible endpoints (notably Alibaba/DashScope thinking streams)
     // include `content: ""` beside every non-empty `reasoning_content` delta.
     // Emitting that empty text event breaks an otherwise contiguous reasoning
-    // run into one UI disclosure per token fragment.
-    if let Some(t) = delta
-        .get("content")
-        .and_then(|v| v.as_str())
-        .filter(|t| !t.is_empty())
-    {
-        content.push_str(t);
-        sink.on_text(t);
+    // run into one UI disclosure per token fragment. `apply_stream_delta`
+    // already drops empty strings; keep using it so a snapshot replay of the
+    // same text also stays silent.
+    if let Some(t) = delta.get("content").and_then(|v| v.as_str()) {
+        if let Some(start) = apply_stream_delta(content, t) {
+            sink.on_text(&content[start..]);
+        }
     }
-    if let Some(r) = delta
-        .get("reasoning_content")
-        .and_then(|v| v.as_str())
-        .filter(|r| !r.is_empty())
-    {
-        reasoning.push_str(r);
-        sink.on_reasoning(r);
+    if let Some(r) = stream_reasoning_delta(delta) {
+        if let Some(start) = apply_stream_delta(reasoning, r) {
+            sink.on_reasoning(&reasoning[start..]);
+        }
     }
 }
 
@@ -865,6 +899,85 @@ mod tests {
     }
 
     #[test]
+    fn apply_stream_delta_keeps_true_fragments() {
+        let mut acc = String::new();
+        assert_eq!(apply_stream_delta(&mut acc, "Hel"), Some(0));
+        assert_eq!(apply_stream_delta(&mut acc, "lo"), Some(3));
+        assert_eq!(apply_stream_delta(&mut acc, " world"), Some(5));
+        assert_eq!(acc, "Hello world");
+    }
+
+    #[test]
+    fn apply_stream_delta_collapses_growing_snapshots() {
+        let mut acc = String::new();
+        let mut emitted = String::new();
+        for snap in ["H", "He", "Hel", "Hell", "Hello", "Hello", "Hello!"] {
+            if let Some(start) = apply_stream_delta(&mut acc, snap) {
+                emitted.push_str(&acc[start..]);
+            }
+        }
+        assert_eq!(acc, "Hello!");
+        assert_eq!(emitted, "Hello!");
+    }
+
+    #[test]
+    fn apply_stream_delta_snapshot_replay_is_linear() {
+        let mut acc = String::new();
+        let mut emitted = 0usize;
+        for n in 1..=256 {
+            let snap = "x".repeat(n);
+            if let Some(start) = apply_stream_delta(&mut acc, &snap) {
+                emitted += acc.len() - start;
+            }
+        }
+        assert_eq!(acc.len(), 256);
+        assert_eq!(emitted, 256);
+    }
+
+    #[test]
+    fn append_stream_collapses_cumulative_content_and_reasoning() {
+        let mut content = String::new();
+        let mut reasoning = String::new();
+        let mut sink = RecordingSink::default();
+
+        for delta in [
+            json!({"content": "", "reasoning_content": "think"}),
+            json!({"content": "", "reasoning_content": "think more"}),
+            json!({"content": "Hi", "reasoning_content": "think more"}),
+            json!({"content": "Hi there", "reasoning_content": "think more"}),
+            json!({"content": "Hi there", "reasoning_content": "think more", "reasoning": "ignored"}),
+        ] {
+            append_stream_content_delta(&delta, &mut content, &mut reasoning, &mut sink);
+        }
+
+        assert_eq!(content, "Hi there");
+        assert_eq!(reasoning, "think more");
+        assert_eq!(sink.text, ["Hi", " there"]);
+        assert_eq!(sink.reasoning, ["think", " more"]);
+    }
+
+    #[test]
+    fn append_stream_accepts_qwen_reasoning_field() {
+        let mut content = String::new();
+        let mut reasoning = String::new();
+        let mut sink = RecordingSink::default();
+        append_stream_content_delta(
+            &json!({"reasoning": "step"}),
+            &mut content,
+            &mut reasoning,
+            &mut sink,
+        );
+        append_stream_content_delta(
+            &json!({"reasoning": "step 2"}),
+            &mut content,
+            &mut reasoning,
+            &mut sink,
+        );
+        assert_eq!(reasoning, "step 2");
+        assert_eq!(sink.reasoning, ["step", " 2"]);
+    }
+
+    #[test]
     fn parses_cache_hits_across_providers() {
         // OpenAI / GLM / Moonshot: prompt_tokens_details.cached_tokens.
         let openai = json!({"prompt_tokens": 1000, "completion_tokens": 50,
@@ -984,6 +1097,36 @@ mod tests {
             out[0]["tool_calls"][0]["function"]["arguments"],
             "{\"path\":\"/tmp/x\"}"
         );
+    }
+
+    /// Reasoning-only / interrupted turns persist as empty assistant messages;
+    /// replayed as `content: ""` they 400 on strict endpoints (kimi-k3: "the
+    /// message ... must not be empty", verified live). With nothing
+    /// replayable left, the turn must be dropped.
+    #[test]
+    fn drops_empty_assistant_turn_without_tool_calls() {
+        let msgs = vec![
+            Message::user("hi"),
+            Message::assistant(""),
+            Message::user("continue"),
+        ];
+        let out = OpenAiProvider::sanitize(&msgs);
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|m| m["role"] != "assistant"));
+    }
+
+    /// Empty text alongside tool_calls is accepted by both DeepSeek and kimi
+    /// (verified live), so the call turn stays — only truly empty turns drop.
+    #[test]
+    fn keeps_empty_text_assistant_with_answered_tool_calls() {
+        let mut asst = Message::assistant("");
+        asst.tool_calls = vec![call("a")];
+        let msgs = vec![Message::user("run"), asst, Message::tool("a", "read", "ok")];
+        let out = OpenAiProvider::sanitize(&msgs);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[1]["role"], "assistant");
+        assert_eq!(out[1]["content"], "");
+        assert_eq!(out[1]["tool_calls"].as_array().unwrap().len(), 1);
     }
 
     #[test]

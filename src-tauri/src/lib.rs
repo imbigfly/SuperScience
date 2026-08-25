@@ -52,6 +52,7 @@ mod library_commands;
 mod mcp_bridge;
 pub use mcp_bridge::run_mcp_bridge_cli;
 mod mcp_oauth;
+mod mcp_secrets;
 mod memory_commands;
 mod method_search;
 mod method_search_coordinator;
@@ -624,20 +625,23 @@ enum McpTransport {
         #[serde(default)]
         args: Vec<String>,
         #[serde(default)]
-        env: Vec<(String, String)>,
+        env: Vec<wisp_dto::McpSecretEntry>,
         #[serde(default)]
         cwd: Option<String>,
     },
     Http {
         url: String,
         #[serde(default)]
-        headers: Vec<(String, String)>,
+        headers: Vec<wisp_dto::McpSecretEntry>,
         #[serde(default)]
         auth: McpHttpAuth,
     },
 }
 
 /// A user-configured MCP server connection.
+///
+/// Header/env values are write-only. Persisted JSON and list payloads contain
+/// names and `has_value` only; actual values live in the OS keyring.
 #[derive(Serialize, Deserialize, Clone)]
 struct McpConnection {
     id: String,
@@ -3841,17 +3845,37 @@ fn sync_prompt_section(prompt: &mut String, start: &str, end: &str, section: &st
 }
 
 async fn load_mcp_connections(store: &Store) -> Vec<McpConnection> {
-    store
+    let mut conns = store
         .get_setting("mcp_connections")
         .await
         .ok()
         .flatten()
         .and_then(|s| serde_json::from_str::<Vec<McpConnection>>(&s).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    match mcp_secrets::migrate_loaded(&mut conns) {
+        Ok(true) => {
+            if let Err(error) = save_mcp_connections(store, &conns).await {
+                tracing::warn!("failed to rewrite MCP connections after secret migration: {error}");
+            }
+        }
+        Ok(false) => {}
+        Err(error) => {
+            tracing::warn!("failed to migrate MCP connection secrets: {error}");
+        }
+    }
+    for conn in &mut conns {
+        mcp_secrets::strip_secret_values(conn);
+    }
+    mcp_secrets::refresh_listed_has_value(&mut conns);
+    conns
 }
 
 async fn save_mcp_connections(store: &Store, conns: &[McpConnection]) -> Result<(), String> {
-    let json = serde_json::to_string(conns).map_err(|e| format!("{e}"))?;
+    let mut redacted = conns.to_vec();
+    for conn in &mut redacted {
+        mcp_secrets::strip_secret_values(conn);
+    }
+    let json = serde_json::to_string(&redacted).map_err(|e| format!("{e}"))?;
     store
         .set_setting("mcp_connections", &json)
         .await
@@ -4111,14 +4135,13 @@ fn memory_file_path(memory: &MemoryManager, name: &str) -> Result<std::path::Pat
 
 /// Build an `McpClient` from a user-configured connection. Stdio connections
 /// carry their own command/env/cwd (unrelated to the bundled Python venv).
+/// Header/env values are hydrated from the keyring here and never written back.
 async fn connect_mcp(conn: &McpConnection) -> anyhow::Result<wisp_mcp::McpClient> {
     match &conn.transport {
         McpTransport::Stdio {
-            command,
-            args,
-            env,
-            cwd,
+            command, args, cwd, ..
         } => {
+            let env = mcp_secrets::hydrate_env(conn);
             let mut cmd = tokio::process::Command::new(command);
             cmd.args(args);
             for (k, v) in env {
@@ -4132,10 +4155,13 @@ async fn connect_mcp(conn: &McpConnection) -> anyhow::Result<wisp_mcp::McpClient
             wisp_tools::process::hide_console_async(&mut cmd);
             wisp_mcp::McpClient::launch_with_command(cmd).await
         }
-        McpTransport::Http { url, headers, auth } => match auth {
-            McpHttpAuth::None => wisp_mcp::McpClient::connect_http(url, headers).await,
-            McpHttpAuth::OAuth => mcp_oauth::connect(&conn.id, url, headers).await,
-        },
+        McpTransport::Http { url, auth, .. } => {
+            let headers = mcp_secrets::hydrate_headers(conn);
+            match auth {
+                McpHttpAuth::None => wisp_mcp::McpClient::connect_http(url, &headers).await,
+                McpHttpAuth::OAuth => mcp_oauth::connect(&conn.id, url, &headers).await,
+            }
+        }
     }
 }
 
@@ -5314,6 +5340,10 @@ async fn automatic_review(
                 agent.ctx.clear_runtime_injections();
                 if let Err(error) = correction {
                     tracing::warn!("automatic correction failed for {frame_id}: {error}");
+                    output.emit(AgentEvent::ReviewFailed {
+                        frame_id: frame_id.to_string(),
+                        message: format!("correction turn failed: {error}"),
+                    });
                     report.set_status("unaddressed");
                 } else {
                     match generate_review(state, frame_id, &agent.ctx.messages, Some(cancel)).await
@@ -5325,6 +5355,10 @@ async fn automatic_review(
                             tracing::warn!(
                                 "automatic follow-up review failed for {frame_id}: {error}"
                             );
+                            output.emit(AgentEvent::ReviewFailed {
+                                frame_id: frame_id.to_string(),
+                                message: format!("follow-up review failed: {error}"),
+                            });
                             report.set_status("unaddressed");
                         }
                     }
@@ -5405,6 +5439,13 @@ async fn automatic_review_acp(
                         .await;
                 if let Err(error) = correction {
                     tracing::warn!("automatic ACP correction failed for {frame_id}: {error}");
+                    emit_agent_event(
+                        app,
+                        AgentEvent::ReviewFailed {
+                            frame_id: frame_id.to_string(),
+                            message: format!("correction turn failed: {error}"),
+                        },
+                    );
                     report.set_status("unaddressed");
                 } else {
                     match state.store.load_messages(frame_id).await {
@@ -5417,6 +5458,13 @@ async fn automatic_review_acp(
                                     tracing::warn!(
                                     "automatic ACP follow-up review failed for {frame_id}: {error}"
                                 );
+                                    emit_agent_event(
+                                        app,
+                                        AgentEvent::ReviewFailed {
+                                            frame_id: frame_id.to_string(),
+                                            message: format!("follow-up review failed: {error}"),
+                                        },
+                                    );
                                     report.set_status("unaddressed");
                                 }
                             }
@@ -5424,6 +5472,13 @@ async fn automatic_review_acp(
                         Err(error) => {
                             tracing::warn!(
                                 "load corrected ACP transcript failed for {frame_id}: {error}"
+                            );
+                            emit_agent_event(
+                                app,
+                                AgentEvent::ReviewFailed {
+                                    frame_id: frame_id.to_string(),
+                                    message: format!("load corrected transcript failed: {error}"),
+                                },
                             );
                             report.set_status("unaddressed");
                         }
@@ -6031,6 +6086,78 @@ pub(crate) fn startup_report_summary() -> String {
         .unwrap_or_default()
 }
 
+/// Frontend `ui_heartbeat` timer. Silence on a focused window means the
+/// renderer died; reload recovers because sessions live in SQLite.
+static UI_HEARTBEAT: StdMutex<Option<std::time::Instant>> = StdMutex::new(None);
+static UI_WATCHDOG_LAST_RELOAD: StdMutex<Option<std::time::Instant>> = StdMutex::new(None);
+const UI_HEARTBEAT_STALE: std::time::Duration = std::time::Duration::from_secs(60);
+const UI_WATCHDOG_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(120);
+
+#[tauri::command]
+fn ui_heartbeat() {
+    if let Ok(mut last) = UI_HEARTBEAT.lock() {
+        *last = Some(std::time::Instant::now());
+    }
+}
+
+fn ui_watchdog_requires_reload(
+    secs_since_beat: Option<u64>,
+    secs_since_reload: Option<u64>,
+) -> bool {
+    match secs_since_beat {
+        Some(secs) if secs >= UI_HEARTBEAT_STALE.as_secs() => match secs_since_reload {
+            Some(secs) => secs >= UI_WATCHDOG_COOLDOWN.as_secs(),
+            None => true,
+        },
+        _ => false,
+    }
+}
+
+/// Backgrounded webviews throttle JS timers, so elapsed time is not a death
+/// signal. Refresh the clock while unfocused so a later focus does not look
+/// immediately stale. Leave `None` alone: that means "wait for a real beat".
+fn ui_watchdog_note_unfocused(last_beat: &mut Option<std::time::Instant>) {
+    if last_beat.is_some() {
+        *last_beat = Some(std::time::Instant::now());
+    }
+}
+
+async fn run_ui_watchdog(app: tauri::AppHandle) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        let secs_since_beat = UI_HEARTBEAT
+            .lock()
+            .ok()
+            .and_then(|last| last.map(|instant| instant.elapsed().as_secs()));
+        let secs_since_reload = UI_WATCHDOG_LAST_RELOAD
+            .lock()
+            .ok()
+            .and_then(|last| last.map(|instant| instant.elapsed().as_secs()));
+        if !ui_watchdog_requires_reload(secs_since_beat, secs_since_reload) {
+            continue;
+        }
+        let Some(window) = app.get_webview_window("main") else {
+            continue;
+        };
+        if !window.is_focused().unwrap_or(false) {
+            if let Ok(mut last) = UI_HEARTBEAT.lock() {
+                ui_watchdog_note_unfocused(&mut last);
+            }
+            continue;
+        }
+        tracing::warn!(target: "wisp", secs_since_beat = secs_since_beat.unwrap_or_default(),
+            "main webview stopped heartbeating; reloading to recover the UI");
+        if window.reload().is_ok() {
+            if let Ok(mut last) = UI_WATCHDOG_LAST_RELOAD.lock() {
+                *last = Some(std::time::Instant::now());
+            }
+            if let Ok(mut last) = UI_HEARTBEAT.lock() {
+                *last = None;
+            }
+        }
+    }
+}
+
 /// Windows creates the main WebView2 before `setup` runs but cannot service it
 /// until the event loop pumps messages, so everything `setup` does on the way
 /// to the first paint is time the user spends looking at a blank window. Record
@@ -6305,6 +6432,7 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             let main_builder = main_builder.decorations(false).shadow(true);
             main_builder.build().expect("create main window");
+            tauri::async_runtime::spawn(run_ui_watchdog(app.handle().clone()));
             let mut startup = StartupTimeline::default();
             if let Ok(res) = app.path().resource_dir() {
                 wisp_paths::set_resource_root(res);
@@ -6844,6 +6972,8 @@ pub fn run() {
             app_updates::download_update,
             app_updates::install_update,
             app_commands::open_external_url,
+            app_commands::open_browser_extension_page,
+            ui_heartbeat,
             app_commands::reveal_in_file_manager,
             connector_commands::list_mcp_connections,
             connector_commands::add_mcp_connection,

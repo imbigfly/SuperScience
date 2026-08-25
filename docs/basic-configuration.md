@@ -107,7 +107,7 @@ Wisp 的真实浏览器控制使用当前 Chrome/Chromium 用户资料，不启�
 4. 点击 **加载未打包的扩展程序**，选择 `browser_setup` 返回的 `browser-extension/` 文件夹本身，不要选择里面的单个文件或 ZIP。
 5. 打开扩展弹窗，确认显示 **Connected to Wisp**。更新 Wisp 后，在 `chrome://extensions` 点一次该扩展的 **重新加载**，否则 service worker 可能还是旧文件。
 
-扩展未连接时，Wisp 会在对话中给出醒目提示：本次回答不包含联网检索结果。涉及“最新/实时”或具体网页的请求时，Agent 应暂停并引导你打开浏览器、连上扩展，而不是直接用模型已有知识作答。连接后可点 **连接后重试**。
+扩展未连接时，Wisp 会在对话中给出醒目提示：本次回答不包含联网检索结果。可点横幅上的 **一键安装引导**：会打开浏览器的扩展管理页并复制扩展路径，剩下只需开启开发者模式并「加载已解压的扩展程序」。涉及“最新/实时”或具体网页的请求时，Agent 应暂停并引导你打开浏览器、连上扩展，而不是直接用模型已有知识作答。连接后可点 **连接后重试**。
 
 ![Chrome 加载未打包扩展](assets/basic-configuration/18-browser-extension.png)
 
@@ -246,7 +246,7 @@ Wisp 可以把独立 Codex CLI 或 Claude Code 的 JSONL 会话导入当前项�
 
 ![添加本地 MCP 连接](assets/basic-configuration/10-add-mcp-connection.png)
 
-命令应指向可执行文件，不要把整段 shell 管道塞进字段。环境变量形式的 API Key 应先放入 **设置 → 凭据**；新启动的本地 MCP 进程会继承这些值。
+命令应指向可执行文件，不要把整段 shell 管道塞进字段。连接级环境变量用密码框填写，值只保存在操作系统钥匙串；编辑时留空会保留已保存的值，删掉一行才会清除。共用的 API Key 仍可放在 **设置 → 凭据**，新启动的本地 MCP 进程也会继承这些值。
 
 ### 配置远程 MCP
 
@@ -256,7 +256,7 @@ Wisp 可以把独立 Codex CLI 或 Claude Code 的 JSONL 会话导入当前项�
 https://mcp.notion.com/mcp
 ```
 
-选择 OAuth 后，点击 **测试**或**保存**会在浏览器中打开授权页。OAuth Token 保存在操作系统密钥环中；删除连接会清除对应凭据。连接配置改动对新会话生效。
+选择 OAuth 后，点击 **测试**或**保存**会在浏览器中打开授权页。OAuth Token 和手写的 HTTP 请求头都保存在操作系统密钥环中；删除连接会一并清除。编辑请求头时留空保留原值。连接配置改动对新会话生效。
 
 实时网页搜索可再添加一个远程 URL：`https://search.parallel.ai/mcp`，认证方式选 **无**。Parallel Search MCP 免费，无需账号或 API Key。
 

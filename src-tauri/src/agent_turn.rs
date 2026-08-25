@@ -459,7 +459,7 @@ pub(crate) async fn send_message_inner(
     if guard.is_some()
         && state
             .store
-            .message_count(&frame_id)
+            .max_message_seq(&frame_id)
             .await
             .map_err(|error| error.to_string())?
             > rt.last_seq()
@@ -493,7 +493,9 @@ pub(crate) async fn send_message_inner(
             }
             None => skills,
         };
-        let mut agent = Agent::new(
+        // Desktop history lives in SQLite. Do not hydrate the project-shared
+        // `.wisp/session.json` (CLI leftover / other session) into model context.
+        let mut agent = Agent::new_without_session_file(
             cfg.clone(),
             skills.clone(),
             ap.memory.clone(),
@@ -659,21 +661,18 @@ pub(crate) async fn send_message_inner(
                 frame_id.clone(),
             )));
         }
-        match state.store.load_messages(&frame_id).await {
-            Ok(msgs) => {
-                agent.ctx.messages = msgs;
-                if let Some(message) = agent.ctx.messages.first_mut() {
-                    if let wisp_llm::Content::Text(prompt) = &mut message.content {
-                        ssh_hosts::strip_legacy_compute_section(prompt);
-                    }
-                }
+        let msgs =
+            wisp_core::require_sqlite_session_messages(state.store.load_messages(&frame_id).await)?;
+        agent.ctx.messages = msgs;
+        if let Some(message) = agent.ctx.messages.first_mut() {
+            if let wisp_llm::Content::Text(prompt) = &mut message.content {
+                ssh_hosts::strip_legacy_compute_section(prompt);
             }
-            Err(e) => tracing::warn!("load session from sqlite failed: {e}"),
         }
-        // last_seq is the persisted prefix. Repair after this so the later
-        // incremental flush writes synthetic tool results the same way a
-        // skipped-batch result is persisted (#979).
-        rt.set_last_seq(agent.ctx.messages.len() as i64);
+        // last_seq is durable MAX(seq). Repair after this so the incremental
+        // flush writes synthetic tool results the same way a skipped-batch
+        // result is persisted (#979).
+        rt.sync_last_seq_from_store(&state.store, &frame_id).await?;
         if agent.ctx.repair_unpaired_tool_calls() > 0 {
             tracing::warn!(
                 "repaired unpaired tool_calls in {frame_id} so the provider transcript stays paired"
@@ -755,7 +754,7 @@ pub(crate) async fn send_message_inner(
                     .replace_messages(&frame_id, &agent.ctx.messages)
                     .await
                     .map_err(|e| format!("replace: rolling back the context failed: {e}"))?;
-                rt.set_last_seq(agent.ctx.messages.len() as i64);
+                rt.sync_last_seq_from_store(&state.store, &frame_id).await?;
             }
         }
     }
@@ -776,7 +775,7 @@ pub(crate) async fn send_message_inner(
                     .map_err(|e| {
                         format!("compact: persisting the rewritten context failed: {e}")
                     })?;
-                rt.set_last_seq(agent.ctx.messages.len() as i64);
+                rt.sync_last_seq_from_store(&state.store, &frame_id).await?;
                 let event = AgentEvent::Compaction {
                     frame_id: frame_id.clone(),
                     before,
@@ -885,62 +884,70 @@ pub(crate) async fn send_message_inner(
     //
     // First flush any messages already in the context but not yet persisted
     // (e.g. a system prompt seeded here), so the incremental seq lines up with
-    // what a later reload expects.
+    // what a later reload expects. Stop at the first append failure so later
+    // rows cannot be written after a hole.
     let start_seq = {
         let start = rt.last_seq() as usize;
         if start < agent.ctx.messages.len() {
             let mut seq = rt.last_seq();
             for m in &agent.ctx.messages[start..] {
                 seq += 1;
-                let _ = state.store.append_message(&frame_id, seq, m).await;
+                if let Err(error) = state.store.append_message(&frame_id, seq, m).await {
+                    let _ = rt.sync_last_seq_from_store(&state.store, &frame_id).await;
+                    return Err(format!("incremental persist failed: {error}"));
+                }
             }
-            rt.set_last_seq(agent.ctx.messages.len() as i64);
+            rt.sync_last_seq_from_store(&state.store, &frame_id).await?;
         }
         rt.last_seq()
     };
 
     let (persist_handle, persist_tx) = {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
         let store = state.store.clone();
         let fid = frame_id.clone();
         let resource_root = ap.root.clone();
         let resource_project_id = ap.id.clone();
         let resource_app = app.clone();
         let stamp = model_label.clone();
-        let mut seq = start_seq;
         let handle = tokio::spawn(async move {
-            while let Some(mut msg) = rx.recv().await {
-                if msg.role == wisp_llm::Role::Assistant && msg.model_name.is_none() {
-                    msg.model_name = Some(stamp.clone());
-                }
-                seq += 1;
-                if let Err(e) = store.append_message(&fid, seq, &msg).await {
-                    tracing::warn!("incremental persist seq {seq} failed: {e}");
-                    continue;
-                }
-                if message_uses_resource_bindings(&msg) {
-                    let resources = resource_refs::bind_new_message_resources(
-                        &store,
-                        &resource_root,
-                        &resource_project_id,
-                        &fid,
-                        seq,
-                        &msg.content.as_text(),
-                    )
-                    .await;
-                    if !resources.is_empty() {
-                        emit_agent_event(
-                            &resource_app,
-                            AgentEvent::Resources {
-                                frame_id: fid.clone(),
-                                seq,
-                                resources: resources.iter().map(Into::into).collect(),
-                            },
-                        );
+            wisp_store::persist_seq_loop(start_seq, rx, move |seq, mut msg| {
+                let store = store.clone();
+                let fid = fid.clone();
+                let stamp = stamp.clone();
+                let resource_root = resource_root.clone();
+                let resource_project_id = resource_project_id.clone();
+                let resource_app = resource_app.clone();
+                async move {
+                    if msg.role == wisp_llm::Role::Assistant && msg.model_name.is_none() {
+                        msg.model_name = Some(stamp);
                     }
+                    store.append_message(&fid, seq, &msg).await?;
+                    if message_uses_resource_bindings(&msg) {
+                        let resources = resource_refs::bind_new_message_resources(
+                            &store,
+                            &resource_root,
+                            &resource_project_id,
+                            &fid,
+                            seq,
+                            &msg.content.as_text(),
+                        )
+                        .await;
+                        if !resources.is_empty() {
+                            emit_agent_event(
+                                &resource_app,
+                                AgentEvent::Resources {
+                                    frame_id: fid,
+                                    seq,
+                                    resources: resources.iter().map(Into::into).collect(),
+                                },
+                            );
+                        }
+                    }
+                    Ok::<(), anyhow::Error>(())
                 }
-            }
-            seq
+            })
+            .await
         });
         (handle, tx)
     };
@@ -1142,8 +1149,9 @@ pub(crate) async fn send_message_inner(
     agent.ctx.clear_runtime_injections();
     state.running_turns.lock().await.remove(&frame_id);
 
-    // Close the persist channel and wait for the task to flush; its final seq is
-    // the authoritative persisted count.
+    // Close the persist channel and wait for the task to flush (abort + join on
+    // timeout so a late INSERT cannot race replace/compaction). last_seq then
+    // comes from durable MAX(seq), never from the in-memory message count.
     drop(output);
     // Drain the live coalescer before the direct Done/Error emit below so the
     // final buffered deltas cannot arrive after the turn boundary.
@@ -1159,14 +1167,18 @@ pub(crate) async fn send_message_inner(
     {
         tracing::warn!("UI event persistence did not finish cleanly");
     }
-    match tokio::time::timeout(std::time::Duration::from_secs(5), persist_handle).await {
-        Ok(Ok(final_seq)) => rt.set_last_seq(final_seq),
-        other => {
-            tracing::warn!("persist task did not finish cleanly: {other:?}");
-            rt.set_last_seq(agent.ctx.messages.len() as i64);
-        }
+    match wisp_store::join_or_abort_persist(persist_handle, std::time::Duration::from_secs(5)).await
+    {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => tracing::warn!("incremental persist failed: {error}"),
+        Err(error) => tracing::warn!("persist task did not finish cleanly: {error}"),
+    }
+    if let Err(error) = rt.sync_last_seq_from_store(&state.store, &frame_id).await {
+        tracing::warn!("{error}");
     }
     let _ = tokio::time::timeout(std::time::Duration::from_secs(10), prov_handle).await;
+    // replace/compaction must not start until the persist task has finished
+    // or been aborted and joined — a late INSERT would race the rewrite.
     if agent.ctx.compaction_revision() != compaction_revision {
         if let Err(error) = state
             .store
@@ -1176,8 +1188,8 @@ pub(crate) async fn send_message_inner(
             result = Err(anyhow::anyhow!(
                 "automatic compact: persisting the rewritten context failed: {error}"
             ));
-        } else {
-            rt.set_last_seq(agent.ctx.messages.len() as i64);
+        } else if let Err(error) = rt.sync_last_seq_from_store(&state.store, &frame_id).await {
+            tracing::warn!("{error}");
         }
     }
     // Resume is already mid-turn. A normal send is mid-turn once the loop

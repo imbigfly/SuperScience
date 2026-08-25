@@ -10,6 +10,7 @@ const readRepositoryFile = (path: string) =>
 test("Tauri dev, UI tests, and release builds use isolated Trunk outputs", () => {
   const tauriConfig = JSON.parse(readRepositoryFile("src-tauri/tauri.conf.json"));
   const macosTauriConfig = JSON.parse(readRepositoryFile("src-tauri/tauri.macos.conf.json"));
+  const linuxTauriConfig = JSON.parse(readRepositoryFile("src-tauri/tauri.linux.conf.json"));
   const devScript = readRepositoryFile("ui/dev.ps1");
   const buildScript = readRepositoryFile("ui/build.ps1");
   const playwrightConfig = readRepositoryFile("ui-tests/playwright.config.ts");
@@ -18,10 +19,15 @@ test("Tauri dev, UI tests, and release builds use isolated Trunk outputs", () =>
   expect(devScript).toContain("$devPort = 1421");
   expect(devScript).toContain("--dist dist-dev");
   expect(devScript).toContain("exit $LASTEXITCODE");
-  expect(buildScript).toContain("trunk build --release --dist dist");
+  expect(buildScript).toContain("trunk build --release --cargo-profile release-wasm --dist dist");
   expect(buildScript).toContain("exit $LASTEXITCODE");
   expect(macosTauriConfig.build.beforeDevCommand.script).toContain("node sync-vendor.mjs && trunk serve");
-  expect(macosTauriConfig.build.beforeBuildCommand.script).toContain("node sync-vendor.mjs && trunk build");
+  expect(macosTauriConfig.build.beforeBuildCommand.script).toContain(
+    "node sync-vendor.mjs && trunk build --release --cargo-profile release-wasm --dist dist",
+  );
+  expect(linuxTauriConfig.build.beforeBuildCommand.script).toContain(
+    "node sync-vendor.mjs && trunk build --release --cargo-profile release-wasm --dist dist",
+  );
   expect(playwrightConfig).toContain('UI_TEST_PORT ?? "1422"');
   expect(playwrightConfig).toContain("--dist dist-test");
   expect(playwrightConfig).toContain("--no-autoreload");

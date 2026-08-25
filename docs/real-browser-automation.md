@@ -35,9 +35,11 @@ exact extension directory on that installation, and the following steps.
 If the extension is not connected, live page retrieval fails closed. Wisp
 shows a chat banner that the current answer includes no live web results,
 and the Agent must stop on live, latest, current, or URL-specific requests
-instead of answering from memory. After Chrome is open and the popup shows
-**Connected to Wisp**, use **Retry after connecting** to run the same
-request again.
+instead of answering from memory. The banner's **Set up browser** button
+opens the browser's extension page and copies the bundled path so the
+remaining steps are Developer mode and Load unpacked. After Chrome is open
+and the popup shows **Connected to Wisp**, use **Retry after connecting**
+to run the same request again.
 
 **Settings → Browser → Open browser automatically** is on by default. When a
 browser tool needs the real session and Chrome/Chromium/Edge is not running,

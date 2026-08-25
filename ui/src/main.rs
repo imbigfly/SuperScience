@@ -38,9 +38,9 @@ use bindings::{
     clear_selection, close_mcp_app,
     force_chat_bottom, invoke, invoke_checked, is_mac, is_windows, jump_chat_to_item,
     jump_chat_to_user, listen, listen_current_window, listen_native_file_drop,
-    native_drop_in_composer, open_external_url, pasted_image_count, preserve_chat_prepend_position,
-    preview_selection, restore_chat_session_scroll, schedule_chat_follow, set_saved_marks,
-    CHAT_SCROLLER_ID, CHAT_THREAD_ID,
+    native_drop_in_composer, open_browser_extension_page, open_external_url, pasted_image_count,
+    preserve_chat_prepend_position, preview_selection, restore_chat_session_scroll,
+    schedule_chat_follow, set_saved_marks, CHAT_SCROLLER_ID, CHAT_THREAD_ID,
 };
 use context_menu::{ContextMenuPortal, CtxMenu};
 use dto::*;
@@ -1228,8 +1228,6 @@ fn App() -> impl IntoView {
         })
     });
     let artifact_count = create_memo(move |_| artifacts.with(Vec::len));
-    let artifact_render_fingerprint =
-        create_memo(move |_| artifacts.with(|artifacts| artifacts_fingerprint(artifacts)));
     let notebook_count = create_memo(move |_| notebook_cells.with(Vec::len));
     let provenance_count = create_memo(move |_| provenance_rows.with(Vec::len));
     let highlight_count = create_memo(move |_| {
@@ -7153,6 +7151,28 @@ fn App() -> impl IntoView {
     refresh_runtimes(runtime_infos);
     refresh_runs(run_records, locale);
     {
+        // UI liveness heartbeat for the backend watchdog: a webview whose
+        // renderer died (process crash / WASM panic) stops beating and gets
+        // reloaded; see `run_ui_watchdog` in src-tauri/src/lib.rs.
+        let beat = Closure::wrap(Box::new(move || {
+            spawn_local(async move {
+                let _ = invoke("ui_heartbeat", JsValue::UNDEFINED).await;
+            });
+        }) as Box<dyn FnMut()>);
+        if let Some(window) = web_sys::window() {
+            let _ = window.set_interval_with_callback_and_timeout_and_arguments_0(
+                beat.as_ref().unchecked_ref(),
+                5_000,
+            );
+            let _ = window.add_event_listener_with_callback("focus", beat.as_ref().unchecked_ref());
+            if let Some(document) = window.document() {
+                let _ = document
+                    .add_event_listener_with_callback("visibilitychange", beat.as_ref().unchecked_ref());
+            }
+        }
+        beat.forget();
+    }
+    {
         let ticks = Cell::new(0_u8);
         let refresh = Closure::wrap(Box::new(move || {
             run_clock.set(now_secs());
@@ -10551,7 +10571,6 @@ fn App() -> impl IntoView {
                     <For
                         each=move || {
                             use std::hash::{Hash, Hasher};
-                            let arts_fp = artifact_render_fingerprint.get();
                             let busy_now = busy.get();
                             // `load_session` deliberately swaps the visible rows before
                             // publishing their session id. Carry the id in every keyed row
@@ -10714,12 +10733,6 @@ fn App() -> impl IntoView {
                                     } else {
                                         list[i].fingerprint()
                                     };
-                                    // Assistant markdown embeds artifact chips (index + label).
-                                    if !streaming_assistant
-                                        && matches!(&list[i], ChatItem::Assistant { .. })
-                                    {
-                                        fp ^= arts_fp;
-                                    }
                                     fp ^= (commentary as u64) << 63;
                                     fp ^= (compact_assistant as u64) << 62;
                                     fp ^= timestamp.unwrap_or_default() as u64;
@@ -10811,13 +10824,6 @@ fn App() -> impl IntoView {
                                         ChatItem::Reasoning(String::new())
                                     } else {
                                         items.with_untracked(|list| list[i].clone())
-                                    };
-                                    let arts = if matches!(&item, ChatItem::Assistant { .. })
-                                        && !compact_assistant
-                                    {
-                                        artifacts.get_untracked()
-                                    } else {
-                                        Vec::new()
                                     };
                                     let on_resume = Callback::new(resume_turn);
                                     let class = if commentary {
@@ -10965,7 +10971,7 @@ fn App() -> impl IntoView {
                                                 }.into_view()
                                             } else {
                                                 render_item(
-                                                    i, &item, timestamp, &arts, on_artifact_select, on_file_link,
+                                                    i, &item, timestamp, artifacts, on_artifact_select, on_file_link,
                                                     run_records, run_clock.read_only(), busy.read_only(), compact_assistant,
                                                     active_acp_agent_id.get().is_none()
                                                         && !matches!(active_branch_state.get_untracked().as_deref(), Some("merged" | "orphaned")),
@@ -11382,6 +11388,33 @@ fn App() -> impl IntoView {
                                             browser_offline_notice.set(None);
                                             send.call(ComposerSendAction::Normal);
                                         }>{t(locale.get(), "browser.offline.retry")}</button>
+                                    <button type="button"
+                                        on:click=move |_| {
+                                            spawn_local(async move {
+                                                let reply = open_browser_extension_page().await;
+                                                let setup = from_value::<BrowserExtensionSetup>(reply)
+                                                    .unwrap_or_default();
+                                                let path = setup
+                                                    .extension_path
+                                                    .filter(|path| !path.trim().is_empty());
+                                                let has_path = path.is_some();
+                                                // Keep the remaining manual steps to one paste:
+                                                // the extension path goes onto the clipboard.
+                                                if let Some(path) = path {
+                                                    if let Some(window) = web_sys::window() {
+                                                        let _ = wasm_bindgen_futures::JsFuture::from(
+                                                            window.navigator().clipboard().write_text(&path),
+                                                        )
+                                                        .await;
+                                                    }
+                                                }
+                                                if setup.opened && has_path {
+                                                    show_actionable_toast(&t(locale.get_untracked(), "browser.offline.setup_done"));
+                                                } else {
+                                                    show_actionable_warning_toast(&t(locale.get_untracked(), "browser.offline.setup_failed"));
+                                                }
+                                            });
+                                        }>{t(locale.get(), "browser.offline.setup")}</button>
                                     <button type="button"
                                         on:click=move |_| browser_offline_notice.set(None)>{t(locale.get(), "browser.offline.dismiss")}</button>
                                 </div>
@@ -15154,8 +15187,30 @@ fn App() -> impl IntoView {
     }
 }
 
+/// `console_error_panic_hook` plus one deliberate downgrade: leptos 0.6
+/// runs a `create_effect`'s first pass in a microtask bound to its owner, and
+/// an owner disposed in between makes `with_owner` panic with
+/// `OwnerDisposed`. Keyed rows (streaming turns, artifact-card rebuilds) hit
+/// that race routinely; under release `panic = "abort"` it used to take the
+/// whole renderer down — a dead window with the backend still running. A
+/// disposed-owner effect has nothing left to update, so the correct handling
+/// is to drop it with a console warning instead of aborting.
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(move |info| {
+        let message = format!("{info}");
+        if message.contains("OwnerDisposed") {
+            web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&format!(
+                "dropped reactive effect for a disposed owner: {message}"
+            )));
+            return;
+        }
+        // Everything else keeps the standard hook behavior (error + stack).
+        console_error_panic_hook::hook(info);
+    }));
+}
+
 pub fn main() {
-    console_error_panic_hook::set_once();
+    install_panic_hook();
     let is_pet_window = window().location().search().ok().is_some_and(|query| {
         query
             .split('&')

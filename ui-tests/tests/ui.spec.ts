@@ -6673,7 +6673,7 @@ test("image generation shows a placeholder and replaces it with the PNG", async 
   await expect(card).toHaveAttribute("data-status", "completed", { timeout: 3_000 });
   const image = card.locator("img");
   await expect(image).toBeVisible();
-  await expect(image).toHaveAttribute("src", /^data:image\/png;base64,/);
+  await expect(image).toHaveAttribute("src", /^blob:/);
   await expect(card.locator(".image-generation-spinner")).toHaveCount(0);
 });
 
@@ -6692,7 +6692,7 @@ test("video generation shows a placeholder and replaces it with the MP4", async 
   await expect(card).toHaveAttribute("data-status", "completed", { timeout: 3_000 });
   const video = card.locator("video");
   await expect(video).toBeVisible();
-  await expect(video).toHaveAttribute("src", /^data:video\/mp4;base64,/);
+  await expect(video).toHaveAttribute("src", /^blob:/);
   await expect(video).toHaveAttribute("preload", "metadata");
   await expect(card.locator(".video-generation-spinner")).toHaveCount(0);
 });
@@ -9114,7 +9114,7 @@ test("OAuth authorization keeps Cancel available and clears form status", async 
   await page.getByLabel("Type").selectOption("http");
   await page.getByPlaceholder("https://host/mcp").fill("https://example.com/mcp");
   await page.getByLabel("Authentication").selectOption("oauth");
-  await expect(page.getByPlaceholder("X-Custom-Header: value")).toBeVisible();
+  await expect(page.getByPlaceholder("X-Custom-Header")).toBeVisible();
 
   await page.getByRole("button", { name: "Test" }).click();
   await expect(page.getByText("Complete authorization in your browser…")).toBeVisible();
