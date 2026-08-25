@@ -244,7 +244,8 @@ async fn cancelled_request_terminates_process_tree() -> Result<(), String> {
 
 async fn cancelled_isolated_request_keeps_process_tree() -> Result<(), String> {
     let fixture = launch_fixture().await?;
-    let request = fixture.client.tool_call_rich_isolated("hang", &json!({}));
+    let hang_args = json!({});
+    let request = fixture.client.tool_call_rich_isolated("hang", &hang_args);
     if let Ok(result) = tokio::time::timeout(Duration::from_millis(150), request).await {
         cleanup_fixture(&fixture.root, fixture.wrapper, fixture.grandchild);
         return Err(format!(

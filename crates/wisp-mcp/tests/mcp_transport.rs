@@ -135,7 +135,8 @@ async fn cancelled_isolated_call_leaves_connection_usable() -> Result<(), String
     let client = McpClient::launch(&executable.to_string_lossy(), &args)
         .await
         .map_err(|error| error.to_string())?;
-    let hang = client.tool_call_rich_isolated("echo", &json!({ "token": "hang", "delay_ms": 400 }));
+    let hang_args = json!({ "token": "hang", "delay_ms": 400 });
+    let hang = client.tool_call_rich_isolated("echo", &hang_args);
     if tokio::time::timeout(Duration::from_millis(60), hang)
         .await
         .is_ok()
@@ -143,8 +144,9 @@ async fn cancelled_isolated_call_leaves_connection_usable() -> Result<(), String
         let _ = client.shutdown().await;
         return Err("isolated call returned before the host timeout".into());
     }
+    let recovered_args = json!({ "token": "recovered" });
     let recovered = client
-        .tool_call_rich_isolated("echo", &json!({ "token": "recovered" }))
+        .tool_call_rich_isolated("echo", &recovered_args)
         .await
         .map_err(|error| error.to_string())?;
     if recovered
