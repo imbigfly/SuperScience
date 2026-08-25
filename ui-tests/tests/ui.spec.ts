@@ -9114,7 +9114,7 @@ test("OAuth authorization keeps Cancel available and clears form status", async 
   await page.getByLabel("Type").selectOption("http");
   await page.getByPlaceholder("https://host/mcp").fill("https://example.com/mcp");
   await page.getByLabel("Authentication").selectOption("oauth");
-  await expect(page.getByPlaceholder("X-Custom-Header: value")).toBeVisible();
+  await expect(page.getByPlaceholder("X-Custom-Header")).toBeVisible();
 
   await page.getByRole("button", { name: "Test" }).click();
   await expect(page.getByText("Complete authorization in your browser…")).toBeVisible();
