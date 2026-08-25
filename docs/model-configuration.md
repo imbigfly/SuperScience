@@ -163,7 +163,10 @@ entry selects the Anthropic protocol and sets its endpoint suffix to
 OpenAI-compatible reasoning streams are normalized into one reasoning channel.
 Empty `content` placeholders sent alongside Alibaba/DashScope
 `reasoning_content` chunks are ignored, so a continuous thought process remains
-one disclosure in the conversation.
+one disclosure in the conversation. If a compatible relay resends the full
+`content` or `reasoning_content` snapshot on every SSE chunk instead of a
+fragment, Wisp keeps only the new suffix so the assembled reply and live UI
+events stay linear.
 
 If a provider ends a turn after returning only reasoning tokens—without visible
 text or a tool call—Wisp reports a resumable error instead of showing the turn
