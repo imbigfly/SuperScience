@@ -1,4 +1,5 @@
 // Tauri v2 shim + scientific preview mounts (single file so Trunk ships one snippet).
+import { highlight_root } from "./highlight.js";
 
 function tauriCore() {
   return window.__TAURI__?.core;
@@ -650,10 +651,256 @@ export async function copy_share_pack(text, pngBase64) {
   await navigator.clipboard.write([new ClipboardItem(record)]);
 }
 
+function shareCssTransparent(color) {
+  return !color || color === "transparent" || color === "rgba(0, 0, 0, 0)";
+}
+
+function shareComputedFont(style) {
+  if (style.font && style.font !== "0px") return style.font;
+  return `${style.fontStyle || "normal"} ${style.fontWeight || "400"} ${style.fontSize || "14px"} ${style.fontFamily || SHARE_SERIF}`;
+}
+
+/** Paint one element's background and border using already-resolved styles. */
+function paintShareBox(ctx, el, style, ox, oy) {
+  const rect = el.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return;
+  const x = rect.left - ox;
+  const y = rect.top - oy;
+  const w = rect.width;
+  const h = rect.height;
+  const radius = Math.min(
+    parseFloat(style.borderTopLeftRadius) || 0,
+    w / 2,
+    h / 2,
+  );
+  const bg = style.backgroundColor;
+  if (!shareCssTransparent(bg)) {
+    ctx.fillStyle = bg;
+    shareRoundRect(ctx, x, y, w, h, radius);
+    ctx.fill();
+  }
+  const sides = ["Top", "Right", "Bottom", "Left"];
+  const widths = sides.map((side) => parseFloat(style[`border${side}Width`]) || 0);
+  const styles = sides.map((side) => style[`border${side}Style`]);
+  const colors = sides.map((side) => style[`border${side}Color`]);
+  const painted = widths.some((width, i) => width > 0 && styles[i] !== "none");
+  if (!painted) return;
+  const uniform = widths.every((width) => width === widths[0])
+    && styles.every((value) => value === styles[0])
+    && colors.every((value) => value === colors[0]);
+  if (uniform) {
+    ctx.strokeStyle = colors[0];
+    ctx.lineWidth = widths[0];
+    shareRoundRect(
+      ctx,
+      x + widths[0] / 2,
+      y + widths[0] / 2,
+      Math.max(0, w - widths[0]),
+      Math.max(0, h - widths[0]),
+      Math.max(0, radius - widths[0] / 2),
+    );
+    ctx.stroke();
+    return;
+  }
+  const edges = [
+    [x, y + widths[0] / 2, x + w, y + widths[0] / 2, 0],
+    [x + w - widths[1] / 2, y, x + w - widths[1] / 2, y + h, 1],
+    [x, y + h - widths[2] / 2, x + w, y + h - widths[2] / 2, 2],
+    [x + widths[3] / 2, y, x + widths[3] / 2, y + h, 3],
+  ];
+  for (const [x1, y1, x2, y2, i] of edges) {
+    if (widths[i] <= 0 || styles[i] === "none") continue;
+    ctx.strokeStyle = colors[i];
+    ctx.lineWidth = widths[i];
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+  }
+}
+
+/** Draw a list marker to the left of the first line; ::marker is not in the DOM. */
+function paintShareListMarker(ctx, el, style, ox, oy) {
+  if (el.tagName !== "LI") return;
+  const type = style.listStyleType;
+  if (!type || type === "none") return;
+  const marker = getComputedStyle(el, "::marker");
+  const range = document.createRange();
+  let first = null;
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  while (walker.nextNode()) {
+    if (!walker.currentNode.nodeValue || !walker.currentNode.nodeValue.trim()) continue;
+    range.selectNodeContents(walker.currentNode);
+    first = range.getBoundingClientRect();
+    break;
+  }
+  if (!first || first.height <= 0) first = el.getBoundingClientRect();
+  ctx.fillStyle = marker.color || style.color;
+  if (type === "disc" || type === "circle") {
+    ctx.beginPath();
+    ctx.arc(el.getBoundingClientRect().left - ox - 10, first.top - oy + first.height * 0.45, 2.2, 0, Math.PI * 2);
+    if (type === "circle") {
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = ctx.fillStyle;
+      ctx.stroke();
+    } else {
+      ctx.fill();
+    }
+    return;
+  }
+  if (type !== "decimal") return;
+  const list = el.parentElement;
+  const items = list ? [...list.children].filter((child) => child.tagName === "LI") : [el];
+  const start = Number(list && list.start ? list.start : 1) || 1;
+  const index = items.indexOf(el);
+  ctx.font = shareComputedFont(marker.font ? marker : style);
+  ctx.textAlign = "right";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillText(
+    `${start + Math.max(0, index)}.`,
+    el.getBoundingClientRect().left - ox - 8,
+    first.top - oy + first.height * 0.78,
+  );
+  ctx.textAlign = "left";
+}
+
+/** Paint a text node using the browser's already-wrapped line boxes. */
+function paintShareTextNode(ctx, node, ox, oy) {
+  const text = node.nodeValue;
+  if (!text || !node.parentElement) return;
+  const style = getComputedStyle(node.parentElement);
+  if (style.visibility === "hidden" || parseFloat(style.opacity || "1") === 0) return;
+  ctx.fillStyle = style.color;
+  ctx.font = shareComputedFont(style);
+  ctx.textBaseline = "top";
+  ctx.textAlign = "left";
+  if (ctx.letterSpacing !== undefined) ctx.letterSpacing = style.letterSpacing || "0px";
+  const range = document.createRange();
+  let i = 0;
+  while (i < text.length) {
+    range.setStart(node, i);
+    range.setEnd(node, i + 1);
+    const first = range.getBoundingClientRect();
+    if (first.width === 0 && first.height === 0) {
+      i += 1;
+      continue;
+    }
+    let j = i + 1;
+    while (j < text.length) {
+      range.setEnd(node, j + 1);
+      const next = range.getBoundingClientRect();
+      if (Math.abs(next.top - first.top) > 0.6) break;
+      j += 1;
+    }
+    const slice = text.slice(i, j);
+    if (slice && slice !== "\n") {
+      ctx.fillText(slice, first.left - ox, first.top - oy);
+    }
+    i = j;
+  }
+  if (ctx.letterSpacing !== undefined) ctx.letterSpacing = "0px";
+}
+
+function paintShareDom(ctx, node, ox, oy, alpha) {
+  if (node.nodeType === Node.TEXT_NODE) {
+    ctx.globalAlpha = alpha;
+    paintShareTextNode(ctx, node, ox, oy);
+    return;
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE) return;
+  const el = node;
+  const tag = el.tagName;
+  if (tag === "SCRIPT" || tag === "STYLE" || tag === "LINK" || tag === "NOSCRIPT") return;
+  const style = getComputedStyle(el);
+  if (style.display === "none" || style.visibility === "hidden") return;
+  const nextAlpha = alpha * (parseFloat(style.opacity || "1") || 1);
+  if (nextAlpha <= 0) return;
+  ctx.globalAlpha = nextAlpha;
+  paintShareBox(ctx, el, style, ox, oy);
+  paintShareListMarker(ctx, el, style, ox, oy);
+  if (tag === "IMG" && el.naturalWidth) {
+    const rect = el.getBoundingClientRect();
+    try {
+      ctx.drawImage(el, rect.left - ox, rect.top - oy, rect.width, rect.height);
+    } catch {
+      // Cross-origin or broken images stay empty.
+    }
+    return;
+  }
+  for (const child of el.childNodes) paintShareDom(ctx, child, ox, oy, nextAlpha);
+}
+
+/**
+ * Mount assistant HTML with the live `.md` stylesheet, typeset KaTeX the same
+ * way chat does, then paint the laid-out DOM onto a canvas.
+ */
+async function rasterizeShareHtml(html, width) {
+  const host = document.createElement("div");
+  host.className = "body md share-raster";
+  host.setAttribute("aria-hidden", "true");
+  host.style.cssText = [
+    "position:fixed",
+    "left:-10000px",
+    "top:0",
+    `width:${Math.max(1, Math.round(width))}px`,
+    "max-width:none",
+    "margin:0",
+    "padding:0",
+    "pointer-events:none",
+    "z-index:-1",
+    "overflow:visible",
+    "background:transparent",
+  ].join(";");
+  host.innerHTML = html;
+  document.body.appendChild(host);
+  host.querySelectorAll("table").forEach((table) => {
+    table.style.display = "table";
+    table.style.overflow = "visible";
+    table.style.width = "100%";
+  });
+  const tableCount = host.querySelectorAll("table").length;
+  const mathCount = host.querySelectorAll(".math").length;
+  try {
+    await highlight_root(host);
+  } catch {
+    // Highlight/KaTeX stay best-effort; the HTML is still painted.
+  }
+  if (document.fonts?.ready) {
+    try { await document.fonts.ready; } catch { /* ignore */ }
+  }
+  try {
+    await document.fonts.load("16px KaTeX_Main");
+  } catch {
+    // KaTeX fonts are optional until the stylesheet finishes loading.
+  }
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  const rect = host.getBoundingClientRect();
+  const w = Math.max(1, Math.ceil(Math.max(host.scrollWidth, rect.width)));
+  const h = Math.max(1, Math.ceil(Math.max(host.scrollHeight, rect.height)));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.ceil(w * SHARE_SCALE);
+  canvas.height = Math.ceil(h * SHARE_SCALE);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    host.remove();
+    throw new Error("Canvas is not available");
+  }
+  ctx.scale(SHARE_SCALE, SHARE_SCALE);
+  paintShareDom(ctx, host, rect.left, rect.top, 1);
+  ctx.globalAlpha = 1;
+  const katexCount = host.querySelectorAll(".katex").length;
+  host.remove();
+  return { canvas, width: w, height: h, tableCount, mathCount, katexCount };
+}
+
+function recordShareRasterInfo(info) {
+  if (typeof window !== "undefined") window.__shareRasterInfo = info;
+}
+
 /**
  * Draw the selected conversation as one tall PNG using the live chat theme.
- * Assistant rows are full-width prose (no card). User rows are the warm
- * panel bubble. Thinking is a left-border italic note.
+ * Assistant rows reuse chat HTML (tables + KaTeX) so the image matches the
+ * thread. User rows are the warm panel bubble. Thinking is a left-border note.
  * @param {string} payloadJson
  */
 export async function render_share_png(payloadJson) {
@@ -676,7 +923,48 @@ export async function render_share_png(payloadJson) {
   const thinkLh = Math.round(thinkSize * 1.55);
   const bubbleMaxText = Math.floor(proseWidth * 0.78) - SHARE_BUBBLE_PAD_X * 2;
 
-  const laid = messages.map((message) => {
+  const rasters = [];
+  let tableCount = 0;
+  let mathCount = 0;
+  let katexCount = 0;
+  let usedHtml = false;
+  let fallback = false;
+  for (const message of messages) {
+    if (message.kind === "assistant" && typeof message.html === "string" && message.html) {
+      try {
+        const raster = await rasterizeShareHtml(message.html, proseWidth);
+        rasters.push(raster);
+        usedHtml = true;
+        tableCount += raster.tableCount;
+        mathCount += raster.mathCount;
+        katexCount += raster.katexCount;
+      } catch {
+        rasters.push(null);
+        fallback = true;
+      }
+    } else {
+      rasters.push(null);
+    }
+  }
+  recordShareRasterInfo({ usedHtml, fallback, tableCount, mathCount, katexCount });
+
+  const laid = messages.map((message, index) => {
+    const raster = rasters[index];
+    if (raster) {
+      const drawWidth = Math.min(raster.width, proseWidth);
+      const drawHeight = raster.width > 0
+        ? raster.height * (drawWidth / raster.width)
+        : raster.height;
+      return {
+        ...message,
+        mode: "html",
+        raster,
+        drawWidth,
+        drawHeight,
+        width: proseWidth,
+        height: Math.max(drawHeight, userLh),
+      };
+    }
     if (message.kind === "assistant" && Array.isArray(message.blocks)) {
       const blocks = layoutShareBlocks(measure, message.blocks, proseWidth, SHARE_SERIF);
       const contentHeight = blocks.reduce(
@@ -761,7 +1049,15 @@ export async function render_share_png(payloadJson) {
     ctx.fillText(label, user ? shareWidth - SHARE_PAD - labelWidth : SHARE_PAD, y + 10);
     y += 18;
 
-    if (message.mode === "prose") {
+    if (message.mode === "html") {
+      ctx.drawImage(
+        message.raster.canvas,
+        x,
+        y,
+        message.drawWidth,
+        message.drawHeight,
+      );
+    } else if (message.mode === "prose") {
       drawShareBlocks(ctx, message.blocks, x, y, proseWidth);
     } else if (message.mode === "thinking") {
       ctx.fillStyle = SHARE_COLORS.borderStrong;

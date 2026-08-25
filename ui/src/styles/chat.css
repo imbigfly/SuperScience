@@ -1100,6 +1100,9 @@ details.tool:not([open]) > summary.head .run-dot { animation: tool-pulse 1.1s ea
 :lang(zh) .md em { font-style: normal; font-weight: 500; }
 .md img { max-width: 100%; border-radius: var(--radius-sm); }
 .md table { border-collapse: collapse; width: 100%; font-size: var(--md-table-font-size); margin: 0 0 10px; display: block; overflow: auto; }
+/* Share PNG snapshots the live .md DOM; keep tables fully painted, not scroll-clipped. */
+.share-raster.md table { display: table; overflow: visible; width: 100%; }
+.share-raster.md .math-display { overflow: visible; }
 .md .md-table-card { margin: 0 0 10px; }
 .md .md-table-card table { width: 100%; margin: 0; display: table; overflow: visible; }
 .md .md-table-card .tbl-wrap { margin: 0; }

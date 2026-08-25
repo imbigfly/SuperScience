@@ -2341,6 +2341,38 @@ test("/share exports selected, keyword-redacted messages as a PNG", async ({ pag
   await expect(composerInput).toBeVisible();
 });
 
+test("/share PNG keeps markdown tables and KaTeX from the live thread", async ({ page }) => {
+  await enterApp(page);
+  const composerInput = composer(page);
+  await composerInput.fill("SHARETABLEMATH export the table");
+  await composerInput.press("Enter");
+  const assistant = page.locator(".msg.assistant .body.md");
+  await expect(assistant.locator("table")).toBeVisible({ timeout: 10_000 });
+  await expect(assistant.locator("th")).toContainText("项目");
+  await expect(assistant.locator("td")).toContainText("A");
+  await expect(assistant.locator(".katex")).toBeVisible({ timeout: 10_000 });
+
+  await composerInput.fill("/share");
+  await composerInput.press("Enter");
+  const overlay = page.getByTestId("share-overlay");
+  await expect(overlay).toBeVisible();
+  await overlay.getByTestId("share-export").click();
+  await expect.poll(() => lastInvokeArgs(page, "save_share_image")).not.toBeNull();
+  const info = await page.evaluate(() => (window as any).__shareRasterInfo);
+  expect(info).toMatchObject({ usedHtml: true, fallback: false });
+  expect(info.tableCount).toBeGreaterThan(0);
+  expect(info.mathCount).toBeGreaterThan(0);
+  expect(info.katexCount).toBeGreaterThan(0);
+  const args = await lastInvokeArgs(page, "save_share_image");
+  expect(String(args.pngBase64).length).toBeGreaterThan(10000);
+  const pngHeight = await page.evaluate((raw) => {
+    const bytes = Uint8Array.from(atob(raw), (c) => c.charCodeAt(0));
+    return new DataView(bytes.buffer).getUint32(20, false);
+  }, String(args.pngBase64));
+  // Header + table + two equations is taller than a short prose-only image.
+  expect(pngHeight).toBeGreaterThan(400);
+});
+
 test("/share hides the social copy flow and keeps PNG plus HTML export", async ({ page }) => {
   await enterApp(page);
   const composerInput = composer(page);

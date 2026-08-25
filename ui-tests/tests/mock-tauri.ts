@@ -4700,6 +4700,18 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               }, 30);
               return fid;
             }
+            if (String(msg).includes("SHARETABLEMATH")) {
+              setTimeout(() => {
+                emit("agent", { kind: "User", frame_id: fid, text: msg });
+                emit("agent", {
+                  kind: "Text",
+                  frame_id: fid,
+                  delta: "| 项目 | 数值 |\n| --- | --- |\n| A | 1 |\n| B | 2 |\n\n质能方程 $E = mc^2$\n\n$$\\int_0^1 x^2 dx$$",
+                });
+                emit("agent", { kind: "Done", frame_id: fid, stop_reason: "end_turn" });
+              }, 30);
+              return fid;
+            }
             if (String(msg).includes("SHARETHINK")) {
               // Fixture for /share: a turn with a visible thinking block, so
               // the share dialog lists it (deselected by default). The reply
