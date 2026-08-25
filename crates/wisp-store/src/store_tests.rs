@@ -3985,6 +3985,17 @@ async fn remote_staging_ledger_round_trips_and_counts_external_references() {
     let _ = std::fs::remove_file(&tmp);
 }
 
+#[test]
+fn auto_harvest_skip_and_lease_hold_are_pure_helpers() {
+    assert!(!skip_auto_harvest(None));
+    assert!(skip_auto_harvest(Some(1)));
+    assert!(require_lifecycle_hold(true, "ok").is_ok());
+    assert_eq!(
+        require_lifecycle_hold(false, "Run lifecycle lease was lost").unwrap_err(),
+        "Run lifecycle lease was lost"
+    );
+}
+
 #[tokio::test]
 async fn run_harvest_state_is_recorded_once_and_survives_reopen() {
     let tmp = std::env::temp_dir().join(format!(
@@ -4005,6 +4016,7 @@ async fn run_harvest_state_is_recorded_once_and_survives_reopen() {
         .harvested_at
         .is_none());
     assert!(store.mark_run_harvested("r").await.unwrap());
+    assert!(store.get_run("r").await.unwrap().unwrap().is_harvested());
     let harvested_at = store
         .get_run("r")
         .await

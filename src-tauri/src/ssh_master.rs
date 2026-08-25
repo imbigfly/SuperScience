@@ -344,6 +344,10 @@ mod tests {
         ));
         // stdin as data for the remote command needs a dedicated session
         assert!(eligible_payload("ssh", &args(&["-T", "host", "cat > f"]), Some("data")).is_none());
+        // Harvest collect uses `sh -s --` so it does not take the shared slot.
+        assert!(
+            eligible_payload("ssh", &args(&["-T", "host", "sh -s --"]), Some("collect")).is_none()
+        );
         assert!(eligible_payload("scp", &args(&["a", "b"]), None).is_none());
         assert!(eligible_payload("ssh", &args(&["host"]), None).is_none());
     }
