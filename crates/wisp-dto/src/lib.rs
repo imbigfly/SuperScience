@@ -1698,6 +1698,16 @@ pub struct BrowserTabCleanupPrompt {
     pub tabs: Vec<BrowserTabCleanupItem>,
 }
 
+/// Reply of `open_browser_extension_page`: bundled extension path and whether
+/// a browser was launched on its extension-manager page.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserExtensionSetup {
+    #[serde(default)]
+    pub extension_path: Option<String>,
+    #[serde(default)]
+    pub opened: bool,
+}
+
 fn default_sync_backend() -> String {
     "relay".into()
 }

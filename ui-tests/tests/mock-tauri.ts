@@ -4057,6 +4057,13 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             if (path.includes(".docx")) return base64Bytes(docxBase64);
             if (path.includes(".xlsx") && xlsxBase64) return base64Bytes(xlsxBase64);
             if (path.includes(".pptx") && pptxBase64) return base64Bytes(pptxBase64);
+            // Chat media (artifact thumbnails, generated-image cards) fetches
+            // images through the blob-object-URL pipeline; hand back a small
+            // SVG so `blob:` sources resolve in tests.
+            if (/\.(png|jpe?g|gif|webp|svg)$/.test(path)) {
+              const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="8" height="6"><rect width="8" height="6" fill="#9af"/></svg>`;
+              return new TextEncoder().encode(svg);
+            }
             throw new Error("Binary fixture not found");
           }
           case "read_artifact":
@@ -5408,6 +5415,10 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           case "open_external_url":
             if (arg("url")) window.open(String(arg("url")), "_blank", "noopener,noreferrer");
             return null;
+          case "open_browser_extension_page":
+            return { extension_path: "/mock/wisp/browser-extension", opened: false };
+          case "ui_heartbeat":
+            return null;
           case "list_specialists":
             return mockSpecialists;
           case "save_specialist_cmd": {
@@ -5804,6 +5815,10 @@ export function parallelMock(): void {
           case "queued_turn_action": return null;
           case "open_external_url":
             if (arg("url")) window.open(String(arg("url")), "_blank", "noopener,noreferrer");
+            return null;
+          case "open_browser_extension_page":
+            return { extension_path: "/mock/wisp/browser-extension", opened: false };
+          case "ui_heartbeat":
             return null;
           default: return null;
         }

@@ -26,3 +26,9 @@ futures-channel = "0.3"
 # Standalone workspace: this crate compiles to wasm32 for the Tauri WebView,
 # separate from the native Cargo workspace at the repo root.
 [workspace]
+
+# wasm32 defaults to abort; unwind lets install_panic_hook keep the renderer
+# alive after an OwnerDisposed race in a keyed row.
+[profile.release-wasm]
+inherits = "release"
+panic = "unwind"

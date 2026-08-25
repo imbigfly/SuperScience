@@ -5314,6 +5314,10 @@ async fn automatic_review(
                 agent.ctx.clear_runtime_injections();
                 if let Err(error) = correction {
                     tracing::warn!("automatic correction failed for {frame_id}: {error}");
+                    output.emit(AgentEvent::ReviewFailed {
+                        frame_id: frame_id.to_string(),
+                        message: format!("correction turn failed: {error}"),
+                    });
                     report.set_status("unaddressed");
                 } else {
                     match generate_review(state, frame_id, &agent.ctx.messages, Some(cancel)).await
@@ -5325,6 +5329,10 @@ async fn automatic_review(
                             tracing::warn!(
                                 "automatic follow-up review failed for {frame_id}: {error}"
                             );
+                            output.emit(AgentEvent::ReviewFailed {
+                                frame_id: frame_id.to_string(),
+                                message: format!("follow-up review failed: {error}"),
+                            });
                             report.set_status("unaddressed");
                         }
                     }
@@ -5405,6 +5413,13 @@ async fn automatic_review_acp(
                         .await;
                 if let Err(error) = correction {
                     tracing::warn!("automatic ACP correction failed for {frame_id}: {error}");
+                    emit_agent_event(
+                        app,
+                        AgentEvent::ReviewFailed {
+                            frame_id: frame_id.to_string(),
+                            message: format!("correction turn failed: {error}"),
+                        },
+                    );
                     report.set_status("unaddressed");
                 } else {
                     match state.store.load_messages(frame_id).await {
@@ -5417,6 +5432,13 @@ async fn automatic_review_acp(
                                     tracing::warn!(
                                     "automatic ACP follow-up review failed for {frame_id}: {error}"
                                 );
+                                    emit_agent_event(
+                                        app,
+                                        AgentEvent::ReviewFailed {
+                                            frame_id: frame_id.to_string(),
+                                            message: format!("follow-up review failed: {error}"),
+                                        },
+                                    );
                                     report.set_status("unaddressed");
                                 }
                             }
@@ -5424,6 +5446,13 @@ async fn automatic_review_acp(
                         Err(error) => {
                             tracing::warn!(
                                 "load corrected ACP transcript failed for {frame_id}: {error}"
+                            );
+                            emit_agent_event(
+                                app,
+                                AgentEvent::ReviewFailed {
+                                    frame_id: frame_id.to_string(),
+                                    message: format!("load corrected transcript failed: {error}"),
+                                },
                             );
                             report.set_status("unaddressed");
                         }
@@ -6031,6 +6060,78 @@ pub(crate) fn startup_report_summary() -> String {
         .unwrap_or_default()
 }
 
+/// Frontend `ui_heartbeat` timer. Silence on a focused window means the
+/// renderer died; reload recovers because sessions live in SQLite.
+static UI_HEARTBEAT: StdMutex<Option<std::time::Instant>> = StdMutex::new(None);
+static UI_WATCHDOG_LAST_RELOAD: StdMutex<Option<std::time::Instant>> = StdMutex::new(None);
+const UI_HEARTBEAT_STALE: std::time::Duration = std::time::Duration::from_secs(60);
+const UI_WATCHDOG_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(120);
+
+#[tauri::command]
+fn ui_heartbeat() {
+    if let Ok(mut last) = UI_HEARTBEAT.lock() {
+        *last = Some(std::time::Instant::now());
+    }
+}
+
+fn ui_watchdog_requires_reload(
+    secs_since_beat: Option<u64>,
+    secs_since_reload: Option<u64>,
+) -> bool {
+    match secs_since_beat {
+        Some(secs) if secs >= UI_HEARTBEAT_STALE.as_secs() => match secs_since_reload {
+            Some(secs) => secs >= UI_WATCHDOG_COOLDOWN.as_secs(),
+            None => true,
+        },
+        _ => false,
+    }
+}
+
+/// Backgrounded webviews throttle JS timers, so elapsed time is not a death
+/// signal. Refresh the clock while unfocused so a later focus does not look
+/// immediately stale. Leave `None` alone: that means "wait for a real beat".
+fn ui_watchdog_note_unfocused(last_beat: &mut Option<std::time::Instant>) {
+    if last_beat.is_some() {
+        *last_beat = Some(std::time::Instant::now());
+    }
+}
+
+async fn run_ui_watchdog(app: tauri::AppHandle) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        let secs_since_beat = UI_HEARTBEAT
+            .lock()
+            .ok()
+            .and_then(|last| last.map(|instant| instant.elapsed().as_secs()));
+        let secs_since_reload = UI_WATCHDOG_LAST_RELOAD
+            .lock()
+            .ok()
+            .and_then(|last| last.map(|instant| instant.elapsed().as_secs()));
+        if !ui_watchdog_requires_reload(secs_since_beat, secs_since_reload) {
+            continue;
+        }
+        let Some(window) = app.get_webview_window("main") else {
+            continue;
+        };
+        if !window.is_focused().unwrap_or(false) {
+            if let Ok(mut last) = UI_HEARTBEAT.lock() {
+                ui_watchdog_note_unfocused(&mut last);
+            }
+            continue;
+        }
+        tracing::warn!(target: "wisp", secs_since_beat = secs_since_beat.unwrap_or_default(),
+            "main webview stopped heartbeating; reloading to recover the UI");
+        if window.reload().is_ok() {
+            if let Ok(mut last) = UI_WATCHDOG_LAST_RELOAD.lock() {
+                *last = Some(std::time::Instant::now());
+            }
+            if let Ok(mut last) = UI_HEARTBEAT.lock() {
+                *last = None;
+            }
+        }
+    }
+}
+
 /// Windows creates the main WebView2 before `setup` runs but cannot service it
 /// until the event loop pumps messages, so everything `setup` does on the way
 /// to the first paint is time the user spends looking at a blank window. Record
@@ -6305,6 +6406,7 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             let main_builder = main_builder.decorations(false).shadow(true);
             main_builder.build().expect("create main window");
+            tauri::async_runtime::spawn(run_ui_watchdog(app.handle().clone()));
             let mut startup = StartupTimeline::default();
             if let Ok(res) = app.path().resource_dir() {
                 wisp_paths::set_resource_root(res);
@@ -6844,6 +6946,8 @@ pub fn run() {
             app_updates::download_update,
             app_updates::install_update,
             app_commands::open_external_url,
+            app_commands::open_browser_extension_page,
+            ui_heartbeat,
             app_commands::reveal_in_file_manager,
             connector_commands::list_mcp_connections,
             connector_commands::add_mcp_connection,
