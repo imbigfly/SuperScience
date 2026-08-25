@@ -348,3 +348,35 @@ fn browser_tab_cleanup_prompt_contract() {
     assert_eq!(dto.tabs[0].title, "Paper");
     assert_eq!(dto.tabs[0].initial_url, "https://example.com");
 }
+
+#[test]
+fn mcp_connection_list_contract_redacts_secrets() {
+    let backend = crate::McpConnection {
+        id: "conn-1".into(),
+        name: "remote".into(),
+        enabled: true,
+        transport: crate::McpTransport::Http {
+            url: "https://example.test/mcp".into(),
+            headers: vec![wisp_dto::McpSecretEntry::plaintext(
+                "Authorization",
+                "secret-value",
+            )],
+            auth: crate::McpHttpAuth::None,
+        },
+    };
+    let json = serde_json::to_value(&backend).expect("backend value must serialize");
+    assert!(json["transport"]["headers"][0].get("value").is_none());
+    assert!(!json.to_string().contains("secret-value"));
+    assert_eq!(json["transport"]["headers"][0]["name"], "Authorization");
+    assert_eq!(json["transport"]["headers"][0]["has_value"], true);
+
+    let dto: wisp_dto::ConnRow = serde_json::from_value(json).unwrap();
+    match dto.transport {
+        wisp_dto::ConnTransport::Http { headers, .. } => {
+            assert_eq!(headers[0].name, "Authorization");
+            assert!(headers[0].has_value);
+            assert_eq!(headers[0].value, None);
+        }
+        _ => panic!("expected http"),
+    }
+}

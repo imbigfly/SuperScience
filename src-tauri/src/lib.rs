@@ -52,6 +52,7 @@ mod library_commands;
 mod mcp_bridge;
 pub use mcp_bridge::run_mcp_bridge_cli;
 mod mcp_oauth;
+mod mcp_secrets;
 mod memory_commands;
 mod method_search;
 mod method_search_coordinator;
@@ -624,20 +625,23 @@ enum McpTransport {
         #[serde(default)]
         args: Vec<String>,
         #[serde(default)]
-        env: Vec<(String, String)>,
+        env: Vec<wisp_dto::McpSecretEntry>,
         #[serde(default)]
         cwd: Option<String>,
     },
     Http {
         url: String,
         #[serde(default)]
-        headers: Vec<(String, String)>,
+        headers: Vec<wisp_dto::McpSecretEntry>,
         #[serde(default)]
         auth: McpHttpAuth,
     },
 }
 
 /// A user-configured MCP server connection.
+///
+/// Header/env values are write-only. Persisted JSON and list payloads contain
+/// names and `has_value` only; actual values live in the OS keyring.
 #[derive(Serialize, Deserialize, Clone)]
 struct McpConnection {
     id: String,
@@ -3841,17 +3845,37 @@ fn sync_prompt_section(prompt: &mut String, start: &str, end: &str, section: &st
 }
 
 async fn load_mcp_connections(store: &Store) -> Vec<McpConnection> {
-    store
+    let mut conns = store
         .get_setting("mcp_connections")
         .await
         .ok()
         .flatten()
         .and_then(|s| serde_json::from_str::<Vec<McpConnection>>(&s).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    match mcp_secrets::migrate_loaded(&mut conns) {
+        Ok(true) => {
+            if let Err(error) = save_mcp_connections(store, &conns).await {
+                tracing::warn!("failed to rewrite MCP connections after secret migration: {error}");
+            }
+        }
+        Ok(false) => {}
+        Err(error) => {
+            tracing::warn!("failed to migrate MCP connection secrets: {error}");
+        }
+    }
+    for conn in &mut conns {
+        mcp_secrets::strip_secret_values(conn);
+    }
+    mcp_secrets::refresh_listed_has_value(&mut conns);
+    conns
 }
 
 async fn save_mcp_connections(store: &Store, conns: &[McpConnection]) -> Result<(), String> {
-    let json = serde_json::to_string(conns).map_err(|e| format!("{e}"))?;
+    let mut redacted = conns.to_vec();
+    for conn in &mut redacted {
+        mcp_secrets::strip_secret_values(conn);
+    }
+    let json = serde_json::to_string(&redacted).map_err(|e| format!("{e}"))?;
     store
         .set_setting("mcp_connections", &json)
         .await
@@ -4111,14 +4135,13 @@ fn memory_file_path(memory: &MemoryManager, name: &str) -> Result<std::path::Pat
 
 /// Build an `McpClient` from a user-configured connection. Stdio connections
 /// carry their own command/env/cwd (unrelated to the bundled Python venv).
+/// Header/env values are hydrated from the keyring here and never written back.
 async fn connect_mcp(conn: &McpConnection) -> anyhow::Result<wisp_mcp::McpClient> {
     match &conn.transport {
         McpTransport::Stdio {
-            command,
-            args,
-            env,
-            cwd,
+            command, args, cwd, ..
         } => {
+            let env = mcp_secrets::hydrate_env(conn);
             let mut cmd = tokio::process::Command::new(command);
             cmd.args(args);
             for (k, v) in env {
@@ -4132,10 +4155,13 @@ async fn connect_mcp(conn: &McpConnection) -> anyhow::Result<wisp_mcp::McpClient
             wisp_tools::process::hide_console_async(&mut cmd);
             wisp_mcp::McpClient::launch_with_command(cmd).await
         }
-        McpTransport::Http { url, headers, auth } => match auth {
-            McpHttpAuth::None => wisp_mcp::McpClient::connect_http(url, headers).await,
-            McpHttpAuth::OAuth => mcp_oauth::connect(&conn.id, url, headers).await,
-        },
+        McpTransport::Http { url, auth, .. } => {
+            let headers = mcp_secrets::hydrate_headers(conn);
+            match auth {
+                McpHttpAuth::None => wisp_mcp::McpClient::connect_http(url, &headers).await,
+                McpHttpAuth::OAuth => mcp_oauth::connect(&conn.id, url, &headers).await,
+            }
+        }
     }
 }
 

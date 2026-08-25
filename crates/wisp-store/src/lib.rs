@@ -17,6 +17,7 @@ mod external_session_cache;
 mod global_memories;
 mod library;
 mod lineage;
+pub mod mcp_secrets;
 mod method_search;
 mod models;
 mod plugins;

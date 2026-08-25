@@ -1783,7 +1783,7 @@ fn mcp_connection_serde_roundtrip() {
         transport: McpTransport::Stdio {
             command: "python".into(),
             args: vec!["s.py".into()],
-            env: vec![("K".into(), "V".into())],
+            env: vec![wisp_dto::McpSecretEntry::plaintext("K", "secret-value")],
             cwd: None,
         },
     };
@@ -1793,14 +1793,30 @@ fn mcp_connection_serde_roundtrip() {
         enabled: false,
         transport: McpTransport::Http {
             url: "https://x/mcp".into(),
-            headers: vec![("Authorization".into(), "Bearer t".into())],
+            headers: vec![wisp_dto::McpSecretEntry::plaintext(
+                "Authorization",
+                "secret-value",
+            )],
             auth: McpHttpAuth::OAuth,
         },
     };
     for c in [stdio, http] {
         let json = serde_json::to_string(&c).unwrap();
+        assert!(
+            !json.contains("secret-value"),
+            "stored MCP JSON must not contain secret values: {json}"
+        );
         let back: McpConnection = serde_json::from_str(&json).unwrap();
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+    let legacy = r#"{"id":"1","name":"local","enabled":true,"transport":{"kind":"stdio","command":"python","args":["s.py"],"env":[["K","secret-value"]]}}"#;
+    let migrated: McpConnection = serde_json::from_str(legacy).unwrap();
+    match &migrated.transport {
+        McpTransport::Stdio { env, .. } => {
+            assert_eq!(env[0].name, "K");
+            assert_eq!(env[0].value.as_deref(), Some("secret-value"));
+        }
+        _ => panic!("expected stdio"),
     }
     // tag shape
     let j = serde_json::to_value(&McpConnection {

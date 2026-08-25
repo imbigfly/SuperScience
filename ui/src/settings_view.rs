@@ -5820,6 +5820,49 @@ pub(super) fn SettingsView(
                                         <label>{move || t(locale.get(),"conn.args")}
                                             <input placeholder="arg1 arg2" prop:value=move || conn_form.get().map(|f| f.args.clone()).unwrap_or_default()
                                                 on:input=move |ev| conn_form.update(|o| if let Some(o)=o { o.args = event_target_input(&ev).value(); }) /></label>
+                                        <div class="conn-secret-fields">
+                                            <span class="conn-secret-label">{move || t(locale.get(),"conn.env")}</span>
+                                            {move || conn_form.get().map(|f| f.env).unwrap_or_default().into_iter().enumerate().map(|(idx, field)| {
+                                                let has_value = field.has_value;
+                                                view! {
+                                                    <div class="conn-secret-row">
+                                                        <input placeholder="NAME"
+                                                            prop:value=field.name
+                                                            on:input=move |ev| conn_form.update(|o| if let Some(o)=o {
+                                                                if let Some(row) = o.env.get_mut(idx) {
+                                                                    row.name = event_target_input(&ev).value();
+                                                                }
+                                                            }) />
+                                                        <input type="password" autocomplete="new-password"
+                                                            placeholder=move || if has_value {
+                                                                t(locale.get(), "conn.secret_keep").to_string()
+                                                            } else {
+                                                                t(locale.get(), "conn.secret_value").to_string()
+                                                            }
+                                                            prop:value=field.value
+                                                            on:input=move |ev| conn_form.update(|o| if let Some(o)=o {
+                                                                if let Some(row) = o.env.get_mut(idx) {
+                                                                    row.value = event_target_input(&ev).value();
+                                                                }
+                                                            }) />
+                                                        <button type="button" class="settings-list-remove"
+                                                            title=move || t(locale.get(), "conn.secret_remove")
+                                                            aria-label=move || t(locale.get(), "conn.secret_remove")
+                                                            on:click=move |_| conn_form.update(|o| if let Some(o)=o {
+                                                                if idx < o.env.len() { o.env.remove(idx); }
+                                                            })>{compose_icon("close")}</button>
+                                                    </div>
+                                                }
+                                            }).collect_view()}
+                                            <button type="button" class="settings-add-btn conn-secret-add"
+                                                on:click=move |_| conn_form.update(|o| if let Some(o)=o {
+                                                    o.env.push(ConnSecretField::default());
+                                                })>
+                                                {compose_icon("plus")}
+                                                <span>{move || t(locale.get(), "conn.secret_add_env")}</span>
+                                            </button>
+                                            <p class="hint">{move || t(locale.get(), "conn.secret_hint")}</p>
+                                        </div>
                                     })}
                                     {move || (conn_form_kind.get() == "http").then(|| view!{
                                         <label>{move || t(locale.get(),"conn.url")}
@@ -5837,15 +5880,56 @@ pub(super) fn SettingsView(
                                                 <option value="oauth">{move || t(locale.get(),"conn.auth.oauth")}</option>
                                             </select>
                                         </label>
-                                        <label>{move || t(locale.get(),"conn.headers")}
-                                            <input placeholder=move || if conn_form.get().is_some_and(|form| form.auth == "oauth") {
-                                                    "X-Custom-Header: value"
-                                                } else {
-                                                    "Authorization: Bearer token"
+                                        <div class="conn-secret-fields">
+                                            <span class="conn-secret-label">{move || t(locale.get(),"conn.headers")}</span>
+                                            {move || conn_form.get().map(|f| f.headers).unwrap_or_default().into_iter().enumerate().map(|(idx, field)| {
+                                                let has_value = field.has_value;
+                                                let oauth = conn_form.get().is_some_and(|form| form.auth == "oauth");
+                                                view! {
+                                                    <div class="conn-secret-row">
+                                                        <input placeholder=if oauth { "X-Custom-Header" } else { "Authorization" }
+                                                            prop:value=field.name
+                                                            disabled=move || oauth_authorizing.get()
+                                                            on:input=move |ev| conn_form.update(|o| if let Some(o)=o {
+                                                                if let Some(row) = o.headers.get_mut(idx) {
+                                                                    row.name = event_target_input(&ev).value();
+                                                                }
+                                                            }) />
+                                                        <input type="password" autocomplete="new-password"
+                                                            placeholder=move || if has_value {
+                                                                t(locale.get(), "conn.secret_keep").to_string()
+                                                            } else if oauth {
+                                                                "value".to_string()
+                                                            } else {
+                                                                "Bearer token".to_string()
+                                                            }
+                                                            prop:value=field.value
+                                                            disabled=move || oauth_authorizing.get()
+                                                            on:input=move |ev| conn_form.update(|o| if let Some(o)=o {
+                                                                if let Some(row) = o.headers.get_mut(idx) {
+                                                                    row.value = event_target_input(&ev).value();
+                                                                }
+                                                            }) />
+                                                        <button type="button" class="settings-list-remove"
+                                                            title=move || t(locale.get(), "conn.secret_remove")
+                                                            aria-label=move || t(locale.get(), "conn.secret_remove")
+                                                            disabled=move || oauth_authorizing.get()
+                                                            on:click=move |_| conn_form.update(|o| if let Some(o)=o {
+                                                                if idx < o.headers.len() { o.headers.remove(idx); }
+                                                            })>{compose_icon("close")}</button>
+                                                    </div>
                                                 }
-                                                prop:value=move || conn_form.get().map(|f| f.headers.clone()).unwrap_or_default()
+                                            }).collect_view()}
+                                            <button type="button" class="settings-add-btn conn-secret-add"
                                                 disabled=move || oauth_authorizing.get()
-                                                on:input=move |ev| conn_form.update(|o| if let Some(o)=o { o.headers = event_target_input(&ev).value(); }) /></label>
+                                                on:click=move |_| conn_form.update(|o| if let Some(o)=o {
+                                                    o.headers.push(ConnSecretField::default());
+                                                })>
+                                                {compose_icon("plus")}
+                                                <span>{move || t(locale.get(), "conn.secret_add_header")}</span>
+                                            </button>
+                                            <p class="hint">{move || t(locale.get(), "conn.secret_hint")}</p>
+                                        </div>
                                     })}
                                     {move || (conn_form_kind.get() == "http"
                                         && conn_form.get().is_some_and(|form| form.auth == "oauth")).then(|| view!{
@@ -6081,7 +6165,7 @@ pub(super) fn SettingsView(
                                 format!("{} ({})", t(locale.get(), "settings.nav.connections"), nb + nc)
                             }}</span>
                             <button type="button" class="settings-add-btn" on:click=move |_| {
-                                conn_form.set(Some(ConnForm { kind: "stdio".into(), enabled: true, ..Default::default() }));
+                                conn_form.set(Some(ConnForm::new_connection()));
                                 conn_test_msg.set(None);
                             }>{move || t(locale.get(), "conn.add")}</button>
                         </div>

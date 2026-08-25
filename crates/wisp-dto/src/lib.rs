@@ -2812,6 +2812,85 @@ pub struct PluginRow {
     pub runtime_errors: Vec<String>,
 }
 
+/// Named HTTP header or stdio env slot. List/persist payloads include only
+/// `name` and `has_value`; `value` is write-only from the editor.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct McpSecretEntry {
+    pub name: String,
+    pub value: Option<String>,
+    pub has_value: bool,
+    /// True when the client explicitly sent `has_value: false` with no new value.
+    pub clear: bool,
+}
+
+impl McpSecretEntry {
+    pub fn plaintext(name: impl Into<String>, value: impl Into<String>) -> Self {
+        let value = value.into();
+        let has_value = !value.is_empty();
+        Self {
+            name: name.into(),
+            value: Some(value),
+            has_value,
+            clear: false,
+        }
+    }
+
+    pub fn redacted(name: impl Into<String>, has_value: bool) -> Self {
+        Self {
+            name: name.into(),
+            value: None,
+            has_value,
+            clear: false,
+        }
+    }
+}
+
+impl Serialize for McpSecretEntry {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("McpSecretEntry", 2)?;
+        state.serialize_field("name", &self.name)?;
+        state.serialize_field("has_value", &self.has_value)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for McpSecretEntry {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Pair(String, String),
+            Name(String),
+            Obj {
+                name: String,
+                #[serde(default)]
+                value: Option<String>,
+                #[serde(default)]
+                has_value: Option<bool>,
+            },
+        }
+        match Raw::deserialize(deserializer)? {
+            Raw::Pair(name, value) => Ok(Self::plaintext(name, value)),
+            Raw::Name(name) => Ok(Self::redacted(name, false)),
+            Raw::Obj {
+                name,
+                value,
+                has_value,
+            } => {
+                let inferred = value.as_deref().is_some_and(|v| !v.trim().is_empty());
+                let clear = has_value == Some(false) && !inferred;
+                Ok(Self {
+                    name,
+                    value,
+                    has_value: inferred || has_value.unwrap_or(false),
+                    clear,
+                })
+            }
+        }
+    }
+}
+
 #[derive(Clone, serde::Deserialize)]
 pub struct ConnRow {
     pub id: String,
@@ -2826,11 +2905,15 @@ pub enum ConnTransport {
         command: String,
         #[serde(default)]
         args: Vec<String>,
+        #[serde(default)]
+        env: Vec<McpSecretEntry>,
+        #[serde(default)]
+        cwd: Option<String>,
     },
     Http {
         url: String,
         #[serde(default)]
-        headers: Vec<(String, String)>,
+        headers: Vec<McpSecretEntry>,
         #[serde(default)]
         auth: String,
     },
@@ -2884,7 +2967,30 @@ pub struct ApprovalGrantRow {
     pub label: String,
 }
 
-// Simple flat form state (kind + raw text fields; args/env/headers entered as text, parsed on save).
+/// Editor row for a header or env secret. `value` is the typed replacement;
+/// empty keeps the stored secret when `has_value` is true.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct ConnSecretField {
+    pub name: String,
+    pub value: String,
+    pub has_value: bool,
+}
+
+impl ConnSecretField {
+    pub fn from_entry(entry: &McpSecretEntry) -> Self {
+        Self {
+            name: entry.name.clone(),
+            value: String::new(),
+            has_value: entry.has_value
+                || entry
+                    .value
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty()),
+        }
+    }
+}
+
+// Flat form state. Secret values are write-only; listed keys arrive as has_value.
 #[derive(Clone, Default)]
 pub struct ConnForm {
     pub id: Option<String>,
@@ -2893,9 +2999,22 @@ pub struct ConnForm {
     pub command: String,
     pub args: String,
     pub url: String,
-    pub headers: String,
+    pub headers: Vec<ConnSecretField>,
+    pub env: Vec<ConnSecretField>,
     pub auth: String,
     pub enabled: bool,
+}
+
+impl ConnForm {
+    pub fn new_connection() -> Self {
+        Self {
+            kind: "stdio".into(),
+            enabled: true,
+            headers: vec![ConnSecretField::default()],
+            env: vec![ConnSecretField::default()],
+            ..Self::default()
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -4513,4 +4632,60 @@ pub struct TrajectoryStatsDto {
     /// output_tokens / (llm_ms / 1000); `None` when llm_ms is zero.
     #[serde(default)]
     pub tokens_per_sec: Option<f64>,
+}
+
+#[cfg(test)]
+mod mcp_secret_entry_tests {
+    use super::McpSecretEntry;
+    use serde_json::json;
+
+    #[test]
+    fn serialize_omits_secret_values() {
+        let entry = McpSecretEntry::plaintext("Authorization", "secret-value");
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json, json!({"name": "Authorization", "has_value": true}));
+        assert!(json.get("value").is_none());
+        assert!(!json.to_string().contains("secret-value"));
+    }
+
+    #[test]
+    fn deserialize_legacy_pair_keeps_value_for_migration() {
+        let entry: McpSecretEntry =
+            serde_json::from_value(json!(["Authorization", "secret-value"])).unwrap();
+        assert_eq!(entry.name, "Authorization");
+        assert_eq!(entry.value.as_deref(), Some("secret-value"));
+        assert!(entry.has_value);
+        assert!(!entry.clear);
+    }
+
+    #[test]
+    fn deserialize_omitted_value_keeps_existing_secret() {
+        let entry: McpSecretEntry =
+            serde_json::from_value(json!({"name": "Authorization"})).unwrap();
+        assert_eq!(entry.name, "Authorization");
+        assert_eq!(entry.value, None);
+        assert!(!entry.has_value);
+        assert!(!entry.clear);
+    }
+
+    #[test]
+    fn deserialize_explicit_has_value_false_clears() {
+        let entry: McpSecretEntry =
+            serde_json::from_value(json!({"name": "Authorization", "has_value": false})).unwrap();
+        assert!(entry.clear);
+        assert!(!entry.has_value);
+    }
+
+    #[test]
+    fn deserialize_non_empty_value_sets_even_if_has_value_false() {
+        let entry: McpSecretEntry = serde_json::from_value(json!({
+            "name": "Authorization",
+            "value": "secret-value",
+            "has_value": false
+        }))
+        .unwrap();
+        assert!(!entry.clear);
+        assert_eq!(entry.value.as_deref(), Some("secret-value"));
+        assert!(entry.has_value);
+    }
 }
