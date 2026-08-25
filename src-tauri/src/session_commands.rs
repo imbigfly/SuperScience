@@ -275,7 +275,7 @@ pub(super) async fn merge_session_branch_summary(
         let sessions = state.sessions.lock().await;
         wisp_core::session_locks::existing_in_lock_order(&sessions, &ids)
     };
-    let _merge_locks = lock_session_branch_merge_runtimes(&runtimes).await;
+    let (_workflow_locks, mut agent_guards) = lock_session_branch_merge_runtimes(&runtimes).await;
 
     if session_branch_is_busy(&state, &ids).await {
         return Err(BRANCH_MERGE_BUSY.into());
@@ -294,8 +294,20 @@ pub(super) async fn merge_session_branch_summary(
         .merge_session_branch_summary(&id, &project.id, &expected_guard_hash, &summary)
         .await
         .map_err(|error| error.to_string())?;
-    // Main history changed; drop its cached agent. Branch messages are unchanged.
-    state.sessions.lock().await.remove(&merged.main_session_id);
+    // Main history changed. Drop the cached agent but keep the Arc so a turn
+    // that already cloned it cannot `or_insert_with` a second runtime.
+    for ((session_id, runtime), agent) in runtimes.iter().zip(agent_guards.iter_mut()) {
+        if session_id == &merged.main_session_id {
+            agent.take();
+            let generation = runtime
+                .agent_config_generation
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                .saturating_add(1);
+            runtime
+                .cached_agent_generation
+                .store(generation, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
     state.set_active_frame(window.label(), Some(merged.main_session_id.clone()));
     Ok(merged)
 }

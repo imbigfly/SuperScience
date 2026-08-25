@@ -146,8 +146,8 @@ mod tests {
                 let found = existing_in_lock_order(&merge_map, &ids);
                 assert_eq!(found.len(), 2);
                 let _locks = lock_existing_in_order(&merge_map, &ids).await;
-                let mut merge_map = merge_map;
-                merge_map.remove(&main).expect("main runtime")
+                // Production merge keeps the Arc and only drops the cached agent.
+                merge_map.get(&main).cloned()
             }
         });
 
@@ -165,15 +165,20 @@ mod tests {
             .clone();
         assert!(
             Arc::ptr_eq(&turn_rt, &main_rt),
-            "same frame_id must reuse the existing runtime until merge detaches it"
+            "same frame_id must reuse the existing runtime"
         );
 
         drop(persist);
-        let detached = tokio::time::timeout(Duration::from_secs(1), merge)
+        let kept = tokio::time::timeout(Duration::from_secs(1), merge)
             .await
             .expect("merge should finish once the workflow lock is released")
-            .unwrap();
-        assert!(Arc::ptr_eq(&detached, &main_rt));
+            .unwrap()
+            .expect("main runtime stays in the map");
+        assert!(Arc::ptr_eq(&kept, &main_rt));
+        assert!(
+            Arc::ptr_eq(sessions.get(&main).expect("main runtime"), &main_rt),
+            "merge must not replace the runtime Arc"
+        );
     }
 
     #[tokio::test]
