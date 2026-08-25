@@ -2348,9 +2348,10 @@ test("/share PNG keeps markdown tables and KaTeX from the live thread", async ({
   await composerInput.press("Enter");
   const assistant = page.locator(".msg.assistant .body.md");
   await expect(assistant.locator("table")).toBeVisible({ timeout: 10_000 });
-  await expect(assistant.locator("th")).toContainText("项目");
-  await expect(assistant.locator("td")).toContainText("A");
-  await expect(assistant.locator(".katex")).toBeVisible({ timeout: 10_000 });
+  await expect(assistant.getByRole("columnheader", { name: "项目" })).toBeVisible();
+  await expect(assistant.getByRole("cell", { name: "A", exact: true })).toBeVisible();
+  await expect(assistant.locator(".katex").first()).toBeVisible({ timeout: 10_000 });
+  await expect(assistant.locator(".katex")).toHaveCount(2);
 
   await composerInput.fill("/share");
   await composerInput.press("Enter");
