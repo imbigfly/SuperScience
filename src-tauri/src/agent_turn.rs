@@ -937,7 +937,7 @@ pub(crate) async fn send_message_inner(
                             );
                         }
                     }
-                    Ok(())
+                    Ok::<(), anyhow::Error>(())
                 }
             })
             .await
