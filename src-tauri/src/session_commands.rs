@@ -264,7 +264,21 @@ pub(super) async fn merge_session_branch_summary(
         .map_err(|error| error.to_string())?;
     let ids = [preview.main_session_id.clone(), id.clone()];
     if session_branch_is_busy(&state, &ids).await {
-        return Err("Wait for the branch and main conversation to finish before merging.".into());
+        return Err(BRANCH_MERGE_BUSY.into());
+    }
+
+    // A finishing turn drops `running_turns` before persist/compaction, but
+    // still holds `rt.workflow`. Collect existing runtimes (never insert) and
+    // wait for those locks so merge cannot detach a frame the old Arc still
+    // owns — that would let a new turn `or_insert_with` a second runtime.
+    let runtimes = {
+        let sessions = state.sessions.lock().await;
+        wisp_core::session_locks::existing_in_lock_order(&sessions, &ids)
+    };
+    let _merge_locks = lock_session_branch_merge_runtimes(&runtimes).await;
+
+    if session_branch_is_busy(&state, &ids).await {
+        return Err(BRANCH_MERGE_BUSY.into());
     }
     if state
         .store
@@ -280,6 +294,7 @@ pub(super) async fn merge_session_branch_summary(
         .merge_session_branch_summary(&id, &project.id, &expected_guard_hash, &summary)
         .await
         .map_err(|error| error.to_string())?;
+    // Main history changed; drop its cached agent. Branch messages are unchanged.
     state.sessions.lock().await.remove(&merged.main_session_id);
     state.set_active_frame(window.label(), Some(merged.main_session_id.clone()));
     Ok(merged)
@@ -287,22 +302,38 @@ pub(super) async fn merge_session_branch_summary(
 
 const BRANCH_SUMMARY_OUTPUT_TOKENS: u64 = 4_096;
 const BRANCH_SUMMARY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+const BRANCH_MERGE_BUSY: &str =
+    "Wait for the branch and main conversation to finish before merging.";
 
-fn session_branch_is_waiting(state: &AppState, ids: &[String]) -> bool {
-    let awaiting = state.awaiting_confirm.lock().unwrap();
-    let reviewing = state.reviewing.lock().unwrap();
-    ids.iter()
-        .any(|id| awaiting.contains(id) || reviewing.contains(id))
+/// Workflow then agent, in the already-sorted runtime list (lexicographic ids).
+/// Matches transfer/delete lock order per session; missing runtimes were skipped.
+async fn lock_session_branch_merge_runtimes(
+    runtimes: &[(String, Arc<SessionRuntime>)],
+) -> (
+    Vec<tokio::sync::OwnedMutexGuard<()>>,
+    Vec<tokio::sync::MutexGuard<'_, Option<Agent>>>,
+) {
+    let ids: Vec<String> = runtimes.iter().map(|(id, _)| id.clone()).collect();
+    let workflows = runtimes
+        .iter()
+        .map(|(id, rt)| (id.clone(), rt.workflow.clone()))
+        .collect();
+    let workflow = wisp_core::session_locks::lock_existing_in_order(&workflows, &ids).await;
+    let mut agent = Vec::with_capacity(runtimes.len());
+    for (_, rt) in runtimes {
+        agent.push(rt.agent.lock().await);
+    }
+    (workflow, agent)
 }
 
 async fn session_branch_is_busy(state: &AppState, ids: &[String]) -> bool {
-    state
-        .running_turns
-        .lock()
-        .await
-        .iter()
-        .any(|running| ids.contains(running))
-        || session_branch_is_waiting(state, ids)
+    let running = state.running_turns.lock().await.clone();
+    wisp_core::session_locks::session_targets_busy(
+        &running,
+        &state.awaiting_confirm.lock().unwrap(),
+        &state.reviewing.lock().unwrap(),
+        ids,
+    )
 }
 
 #[tauri::command]

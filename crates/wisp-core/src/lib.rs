@@ -12,6 +12,7 @@ pub mod method_search;
 pub mod orchestration;
 pub mod output;
 pub mod provenance;
+pub mod session_locks;
 pub mod subagent;
 pub mod system_prompt;
 
