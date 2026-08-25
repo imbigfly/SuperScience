@@ -493,7 +493,9 @@ pub(crate) async fn send_message_inner(
             }
             None => skills,
         };
-        let mut agent = Agent::new(
+        // Desktop history lives in SQLite. Do not hydrate the project-shared
+        // `.wisp/session.json` (CLI leftover / other session) into model context.
+        let mut agent = Agent::new_without_session_file(
             cfg.clone(),
             skills.clone(),
             ap.memory.clone(),
@@ -659,16 +661,13 @@ pub(crate) async fn send_message_inner(
                 frame_id.clone(),
             )));
         }
-        match state.store.load_messages(&frame_id).await {
-            Ok(msgs) => {
-                agent.ctx.messages = msgs;
-                if let Some(message) = agent.ctx.messages.first_mut() {
-                    if let wisp_llm::Content::Text(prompt) = &mut message.content {
-                        ssh_hosts::strip_legacy_compute_section(prompt);
-                    }
-                }
+        let msgs =
+            wisp_core::require_sqlite_session_messages(state.store.load_messages(&frame_id).await)?;
+        agent.ctx.messages = msgs;
+        if let Some(message) = agent.ctx.messages.first_mut() {
+            if let wisp_llm::Content::Text(prompt) = &mut message.content {
+                ssh_hosts::strip_legacy_compute_section(prompt);
             }
-            Err(e) => tracing::warn!("load session from sqlite failed: {e}"),
         }
         rt.sync_last_seq_from_store(&state.store, &frame_id).await?;
         agent.seed_system_prompt(&skills, None);
