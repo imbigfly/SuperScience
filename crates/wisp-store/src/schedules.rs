@@ -386,11 +386,22 @@ mod tests {
             .create_schedule(&test_schedule("orphan", "p1", 100))
             .await
             .unwrap();
-        // Simulate a pre-fix leftover: the project row is gone, the schedule is not.
-        sqlx::query("DELETE FROM projects WHERE id='p1'")
-            .execute(&store.pool)
+        // sqlx enables foreign_keys per connection, so a leftover row has to
+        // be planted the way a PRAGMA-off or pre-sqlx opener would leave it.
+        let mut conn = store.pool.acquire().await.unwrap();
+        sqlx::query("PRAGMA foreign_keys=OFF")
+            .execute(&mut *conn)
             .await
             .unwrap();
+        sqlx::query("DELETE FROM projects WHERE id='p1'")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA foreign_keys=ON")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        drop(conn);
         assert!(
             store.get_schedule("orphan").await.unwrap().is_some(),
             "the leftover schedule row is still present"
