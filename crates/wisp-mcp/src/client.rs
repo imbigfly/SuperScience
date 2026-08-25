@@ -213,6 +213,44 @@ pub struct McpClient {
     transport: Transport,
 }
 
+/// How a stdio JSON-RPC call behaves when it is cancelled or hits the
+/// transport timeout. Agent turns tear down the process so a hung server
+/// cannot block the next turn. MCP App iframe calls must not: one preview
+/// or pager request should fail without killing the shared server.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StdioCallPolicy {
+    TeardownProcess,
+    IsolateCall,
+}
+
+struct StdioWaiterGuard {
+    waiters: StdioWaiters,
+    id: u64,
+    armed: bool,
+}
+
+impl StdioWaiterGuard {
+    fn new(waiters: StdioWaiters, id: u64) -> Self {
+        Self {
+            waiters,
+            id,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for StdioWaiterGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.waiters.lock().unwrap().remove(&self.id);
+        }
+    }
+}
+
 struct CancellationCleanup<'a> {
     process_tree: &'a ProcessTree,
     child: &'a Mutex<Option<tokio::process::Child>>,
@@ -398,6 +436,16 @@ impl McpClient {
     }
 
     async fn request(&self, method: &str, params: Option<Value>) -> Result<Value> {
+        self.request_with(method, params, StdioCallPolicy::TeardownProcess)
+            .await
+    }
+
+    async fn request_with(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        policy: StdioCallPolicy,
+    ) -> Result<Value> {
         match &self.transport {
             Transport::Stdio {
                 stdin,
@@ -422,6 +470,7 @@ impl McpClient {
                 let val = serde_json::to_value(&req)?;
                 let (tx, rx) = oneshot::channel();
                 waiters.lock().unwrap().insert(id, tx);
+                let mut waiter_guard = StdioWaiterGuard::new(Arc::clone(waiters), id);
                 let exchange = async {
                     {
                         let mut w = stdin.lock().await;
@@ -447,38 +496,51 @@ impl McpClient {
                     process_tree,
                     child,
                     closing,
-                    armed: true,
+                    armed: matches!(policy, StdioCallPolicy::TeardownProcess),
                 };
                 match tokio::time::timeout(STDIO_REQUEST_TIMEOUT, exchange).await {
                     Ok(Ok(result)) => {
+                        waiter_guard.disarm();
                         cancellation.disarm();
                         Ok(result)
                     }
                     Ok(Err(error)) => {
                         waiters.lock().unwrap().remove(&id);
+                        waiter_guard.disarm();
                         cancellation.disarm();
                         Err(error)
                     }
                     Err(_) => {
                         waiters.lock().unwrap().remove(&id);
-                        let cleanup = shutdown_stdio(
-                            stdin,
-                            child,
-                            process_tree,
-                            closing,
-                            terminated,
-                            shutdown_lock,
-                            waiters,
-                        )
-                        .await;
-                        cancellation.disarm();
+                        waiter_guard.disarm();
                         let message = format!(
                             "MCP stdio request '{method}' timed out after {}s",
                             STDIO_REQUEST_TIMEOUT.as_secs()
                         );
-                        match cleanup {
-                            Ok(()) => Err(anyhow!(message)),
-                            Err(error) => Err(anyhow!("{message}; shutdown failed: {error}")),
+                        match policy {
+                            StdioCallPolicy::IsolateCall => {
+                                cancellation.disarm();
+                                Err(anyhow!(message))
+                            }
+                            StdioCallPolicy::TeardownProcess => {
+                                let cleanup = shutdown_stdio(
+                                    stdin,
+                                    child,
+                                    process_tree,
+                                    closing,
+                                    terminated,
+                                    shutdown_lock,
+                                    waiters,
+                                )
+                                .await;
+                                cancellation.disarm();
+                                match cleanup {
+                                    Ok(()) => Err(anyhow!(message)),
+                                    Err(error) => {
+                                        Err(anyhow!("{message}; shutdown failed: {error}"))
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -598,9 +660,36 @@ impl McpClient {
 
     /// `tools/call` preserving structured content, embedded resources, error
     /// state, and MCP Apps metadata for hosts that can render them.
+    ///
+    /// Agent-originated: a stdio timeout or cancelled future tears down the
+    /// server process so a hung tool cannot block the next turn.
     pub async fn tool_call_rich(&self, name: &str, arguments: &Value) -> Result<McpCallResult> {
+        self.tool_call_with(name, arguments, StdioCallPolicy::TeardownProcess)
+            .await
+    }
+
+    /// `tools/call` from an MCP App iframe. Timeout or cancel fails only this
+    /// JSON-RPC id; the shared stdio process stays up for sibling App calls
+    /// and the presenting agent connection.
+    pub async fn tool_call_rich_isolated(
+        &self,
+        name: &str,
+        arguments: &Value,
+    ) -> Result<McpCallResult> {
+        self.tool_call_with(name, arguments, StdioCallPolicy::IsolateCall)
+            .await
+    }
+
+    async fn tool_call_with(
+        &self,
+        name: &str,
+        arguments: &Value,
+        policy: StdioCallPolicy,
+    ) -> Result<McpCallResult> {
         let params = json!({ "name": name, "arguments": arguments });
-        let result = self.request("tools/call", Some(params)).await?;
+        let result = self
+            .request_with("tools/call", Some(params), policy)
+            .await?;
         let content = result
             .get("content")
             .and_then(|c| c.as_array())

@@ -38,7 +38,8 @@ async fn run_regressions() -> Result<(), String> {
     drop_client_terminates_wrapper_and_grandchild().await?;
     explicit_shutdown_is_idempotent_and_terminates_process_tree().await?;
     cancelled_shutdown_terminates_process_tree().await?;
-    cancelled_request_terminates_process_tree().await
+    cancelled_request_terminates_process_tree().await?;
+    cancelled_isolated_request_keeps_process_tree().await
 }
 
 fn fake_wrapper(root: Option<PathBuf>, fail_initialize: bool) -> ExitCode {
@@ -238,6 +239,31 @@ async fn cancelled_request_terminates_process_tree() -> Result<(), String> {
     drop(fixture.client);
     cleanup_result
         .map_err(|error| format!("shutdown after request cancellation failed: {error}"))?;
+    assert_fixture_stopped(fixture.root, fixture.wrapper, fixture.grandchild).await
+}
+
+async fn cancelled_isolated_request_keeps_process_tree() -> Result<(), String> {
+    let fixture = launch_fixture().await?;
+    let request = fixture.client.tool_call_rich_isolated("hang", &json!({}));
+    if let Ok(result) = tokio::time::timeout(Duration::from_millis(150), request).await {
+        cleanup_fixture(&fixture.root, fixture.wrapper, fixture.grandchild);
+        return Err(format!(
+            "isolated hanging request unexpectedly completed: {result:?}"
+        ));
+    }
+
+    // App iframe cancel must fail only this call. The shared stdio tree stays
+    // up so sibling App calls and the presenting agent connection survive.
+    if wait_until_stopped(fixture.wrapper, Duration::from_millis(250)).await
+        || wait_until_stopped(fixture.grandchild, Duration::from_millis(250)).await
+    {
+        cleanup_fixture(&fixture.root, fixture.wrapper, fixture.grandchild);
+        return Err("isolated MCP request cancel tore down the process tree".into());
+    }
+
+    let cleanup_result = fixture.client.shutdown().await;
+    drop(fixture.client);
+    cleanup_result.map_err(|error| format!("shutdown after isolated cancel failed: {error}"))?;
     assert_fixture_stopped(fixture.root, fixture.wrapper, fixture.grandchild).await
 }
 

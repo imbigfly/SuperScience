@@ -460,16 +460,20 @@ fn approval_grant_key(message: &str) -> Option<ApprovalGrantKey> {
     })
 }
 
-fn mcp_app_approval_grant_key(connector_id: &str, tool: &str) -> ApprovalGrantKey {
-    let connector = if connector_id.trim().is_empty() {
-        "_"
-    } else {
-        connector_id.trim()
-    };
-    ApprovalGrantKey {
+pub(crate) const BUNDLED_DEV_MCP_CONNECTOR_ID: &str = "dev-mcp";
+pub(crate) const BUNDLED_BIO_MCP_CONNECTOR_ID: &str = "mcp_bio";
+
+/// Always-allow key for an MCP App `tools/call`. Empty connector ids are
+/// refused so bundled sources cannot share a `_:{tool}` grant.
+fn mcp_app_approval_grant_key(connector_id: &str, tool: &str) -> Option<ApprovalGrantKey> {
+    let connector = connector_id.trim();
+    if connector.is_empty() {
+        return None;
+    }
+    Some(ApprovalGrantKey {
         kind: "mcp_app_tool".into(),
         target: format!("{connector}:{tool}"),
-    }
+    })
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -2217,8 +2221,26 @@ const MAX_MCP_APP_ARGUMENT_BYTES: usize = 3 * 1024 * 1024;
 /// Hard ceiling on a single MCP App `tools/call` result JSON blob.
 const MAX_MCP_APP_RESULT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_MCP_APP_TOOL_NAME_BYTES: usize = 256;
+/// Host-side App `tools/call` ceiling, independent of the 120s transport
+/// timeout. Expiry fails this iframe call only; it does not tear down stdio.
+const MCP_APP_TOOL_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const MCP_APP_STALE_INSTANCE_ERROR: &str =
     "stale-instance: the MCP App is no longer bound to a live MCP server";
+
+pub(crate) async fn invoke_mcp_app_server_tool(
+    server: &dyn wisp_tools::McpAppServer,
+    name: &str,
+    arguments: &serde_json::Value,
+    timeout: std::time::Duration,
+) -> Result<serde_json::Value, String> {
+    match tokio::time::timeout(timeout, server.call_tool(name, arguments)).await {
+        Ok(result) => result,
+        Err(_) => Err(format!(
+            "MCP App tool '{name}' timed out after {}s",
+            timeout.as_secs()
+        )),
+    }
+}
 
 fn audit_mcp_app_tool(
     event: &str,
@@ -2399,11 +2421,13 @@ async fn call_mcp_app_tool(
             "Run tool '{name}' from MCP App '{}' (connector '{connector_id}')?",
             bridge.server.app_name()
         );
-        let granted = state
-            .approval_grants
-            .lock()
-            .map(|grants| grants.allows(&frame_id, &project_id, &grant_key))
-            .unwrap_or(false);
+        let granted = grant_key.as_ref().is_some_and(|key| {
+            state
+                .approval_grants
+                .lock()
+                .map(|grants| grants.allows(&frame_id, &project_id, key))
+                .unwrap_or(false)
+        });
         if !granted {
             let decision = request_mcp_app_tool_confirmation(
                 &app,
@@ -2413,7 +2437,7 @@ async fn call_mcp_app_tool(
                 message,
                 &name,
                 preview,
-                Some(grant_key),
+                grant_key,
             )
             .await;
             if !decision.approved() {
@@ -2439,7 +2463,14 @@ async fn call_mcp_app_tool(
         started.elapsed().as_millis() as u64,
         "",
     );
-    match bridge.server.call_tool(&name, &arguments).await {
+    match invoke_mcp_app_server_tool(
+        bridge.server.as_ref(),
+        &name,
+        &arguments,
+        MCP_APP_TOOL_CALL_TIMEOUT,
+    )
+    .await
+    {
         Ok(result) => {
             let result_bytes = serde_json::to_vec(&result)
                 .map_err(|error| format!("Invalid MCP App tool result: {error}"))?
@@ -2471,6 +2502,7 @@ async fn call_mcp_app_tool(
             Ok(result)
         }
         Err(error) => {
+            let timed_out = error.contains("timed out after");
             audit_mcp_app_tool(
                 "mcp_app.tool_call_failed",
                 &instance_id,
@@ -2478,9 +2510,13 @@ async fn call_mcp_app_tool(
                 bridge.server.connector_id(),
                 &name,
                 started.elapsed().as_millis() as u64,
-                "tool-error",
+                if timed_out { "timeout" } else { "tool-error" },
             );
-            Err(format!("mcp app tool '{name}' error: {error}"))
+            if timed_out {
+                Err(error)
+            } else {
+                Err(format!("mcp app tool '{name}' error: {error}"))
+            }
         }
     }
 }
@@ -4510,7 +4546,13 @@ async fn wire_runtimes_and_mcp(
         if !parts.is_empty() {
             let args: Vec<String> = parts[1..].to_vec();
             match wisp_mcp::McpClient::launch(&parts[0], &args).await {
-                Ok(client) => match register_mcp(registry, std::sync::Arc::new(client)).await {
+                Ok(client) => match register_mcp(
+                    registry,
+                    std::sync::Arc::new(client),
+                    BUNDLED_DEV_MCP_CONNECTOR_ID,
+                )
+                .await
+                {
                     Ok(names) => result.added_tools.extend(names),
                     Err(error) => result.errors.push(error),
                 },
@@ -4537,7 +4579,13 @@ async fn wire_runtimes_and_mcp(
         if !all_off {
             match wisp_mcp::McpClient::launch_bio_tools(&env.python(), &pkg, &service_env).await {
                 Ok(client) => {
-                    match register_mcp_filtered(registry, std::sync::Arc::new(client), &skip).await
+                    match register_mcp_filtered(
+                        registry,
+                        std::sync::Arc::new(client),
+                        BUNDLED_BIO_MCP_CONNECTOR_ID,
+                        &skip,
+                    )
+                    .await
                     {
                         Ok(names) => result.added_tools.extend(names),
                         Err(error) => result.errors.push(error),
@@ -4691,8 +4739,9 @@ async fn finish_custom_mcp_wiring(
 async fn register_mcp(
     registry: &mut wisp_tools::Registry,
     client: std::sync::Arc<wisp_mcp::McpClient>,
+    connector_id: &str,
 ) -> Result<Vec<String>, String> {
-    register_mcp_with_approval(registry, client, "", false).await
+    register_mcp_with_approval(registry, client, connector_id, false).await
 }
 
 async fn register_mcp_with_approval(
@@ -4716,9 +4765,10 @@ async fn register_mcp_with_approval(
 async fn register_mcp_filtered(
     registry: &mut wisp_tools::Registry,
     client: std::sync::Arc<wisp_mcp::McpClient>,
+    connector_id: &str,
     skip: &HashSet<String>,
 ) -> Result<Vec<String>, String> {
-    register_mcp_filtered_with_approval(registry, client, "", skip, false).await
+    register_mcp_filtered_with_approval(registry, client, connector_id, skip, false).await
 }
 
 async fn register_mcp_filtered_with_approval(
@@ -4728,6 +4778,11 @@ async fn register_mcp_filtered_with_approval(
     skip: &HashSet<String>,
     require_approval: bool,
 ) -> Result<Vec<String>, String> {
+    if connector_id.trim().is_empty() {
+        tracing::warn!(
+            "registering MCP tools with an empty connector_id; Always-allow grants will not be offered"
+        );
+    }
     match client.tools_list().await {
         Ok(tools) => {
             let collisions: Vec<_> = tools
