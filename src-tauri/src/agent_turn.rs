@@ -669,7 +669,15 @@ pub(crate) async fn send_message_inner(
                 ssh_hosts::strip_legacy_compute_section(prompt);
             }
         }
+        // last_seq is durable MAX(seq). Repair after this so the incremental
+        // flush writes synthetic tool results the same way a skipped-batch
+        // result is persisted (#979).
         rt.sync_last_seq_from_store(&state.store, &frame_id).await?;
+        if agent.ctx.repair_unpaired_tool_calls() > 0 {
+            tracing::warn!(
+                "repaired unpaired tool_calls in {frame_id} so the provider transcript stays paired"
+            );
+        }
         agent.seed_system_prompt(&skills, None);
         if let Some(message) = agent.ctx.messages.first_mut() {
             if let wisp_llm::Content::Text(prompt) = &mut message.content {

@@ -46,10 +46,11 @@ mod backend {
 
 #[cfg(debug_assertions)]
 mod backend {
-    // ponytail: plaintext file, whole-file rewrite, no locking. Dev-only, single
-    // user — if concurrent writes ever matter, put a Mutex around load+store.
+    // Dev-only plaintext file. Serialize load+store so parallel `cargo test`
+    // workers cannot clobber each other's whole-file rewrites.
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
 
     fn file() -> PathBuf {
         std::env::var_os("HOME")
@@ -57,6 +58,13 @@ mod backend {
             .map(PathBuf::from)
             .unwrap_or_else(std::env::temp_dir)
             .join(".wisp-science-dev-secrets.json")
+    }
+
+    fn lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn load() -> BTreeMap<String, String> {
@@ -72,18 +80,21 @@ mod backend {
     }
 
     pub fn set(name: &str, value: &str) -> anyhow::Result<()> {
+        let _guard = lock();
         let mut map = load();
         map.insert(name.to_string(), value.to_string());
         store(&map)
     }
 
     pub fn get(name: &str) -> anyhow::Result<String> {
+        let _guard = lock();
         load()
             .remove(name)
             .ok_or_else(|| anyhow::anyhow!("no secret named {name}"))
     }
 
     pub fn delete(name: &str) -> anyhow::Result<()> {
+        let _guard = lock();
         let mut map = load();
         map.remove(name);
         store(&map)

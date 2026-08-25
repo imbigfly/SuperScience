@@ -437,6 +437,28 @@ async fn agent_loop_inner(
             anyhow::bail!(EMPTY_RESPONSE_MESSAGE);
         }
 
+        // Stuck-loop guard: a degenerate model re-issues the exact same call
+        // (same name + args), each returning the same result, making no
+        // progress. max_iter only caps the waste; this cuts it off early.
+        // Scans a recent window rather than only consecutive turns, so an
+        // interspersed loop (A/B/A/B, or bouncing among a few calls) trips it
+        // too — not just a byte-for-byte repeat run.
+        //
+        // Check *before* persisting the assistant tool_calls: bailing after
+        // append_assistant left unpaired calls that crash the next provider
+        // request (#979).
+        if !comp.tool_calls.is_empty() {
+            let sig = tool_call_signature(&comp.tool_calls);
+            let repeats = recent_sigs.iter().filter(|s| *s == &sig).count() + 1;
+            if repeats >= STUCK_REPEAT_LIMIT {
+                anyhow::bail!(STUCK_LOOP_MESSAGE);
+            }
+            recent_sigs.push_back(sig);
+            if recent_sigs.len() > STUCK_WINDOW {
+                recent_sigs.pop_front();
+            }
+        }
+
         ctx.append_assistant(
             comp.content.clone(),
             comp.tool_calls.clone(),
@@ -466,24 +488,12 @@ async fn agent_loop_inner(
             return Ok(AgentLoopOutcome::Completed);
         }
 
-        // Stuck-loop guard: a degenerate model re-issues the exact same call
-        // (same name + args), each returning the same result, making no
-        // progress. max_iter only caps the waste; this cuts it off early.
-        // Scans a recent window rather than only consecutive turns, so an
-        // interspersed loop (A/B/A/B, or bouncing among a few calls) trips it
-        // too — not just a byte-for-byte repeat run.
-        let sig = tool_call_signature(&comp.tool_calls);
-        let repeats = recent_sigs.iter().filter(|s| *s == &sig).count() + 1;
-        recent_sigs.push_back(sig);
-        if recent_sigs.len() > STUCK_WINDOW {
-            recent_sigs.pop_front();
-        }
-        if repeats >= STUCK_REPEAT_LIMIT {
-            anyhow::bail!(STUCK_LOOP_MESSAGE);
-        }
-
         let mut batch_control = ToolControl::Continue;
         for (index, tc) in comp.tool_calls.iter().enumerate() {
+            if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                append_interrupted_tool_results(ctx, tools, output, &comp.tool_calls[index..]);
+                anyhow::bail!(STOPPED_BY_USER);
+            }
             let name = tc.function.name.clone();
             let args = tc.args_value();
             let producing = provenance::is_producing(&name);
@@ -635,6 +645,28 @@ async fn agent_loop_inner(
     }
 }
 
+const INTERRUPTED_BY_USER: &str = "interrupted by user";
+
+fn append_synthetic_tool_results(
+    ctx: &mut ContextManager,
+    tools: &Registry,
+    output: &dyn Output,
+    calls: &[ToolCall],
+    reason: &str,
+) {
+    for tc in calls {
+        let name = &tc.function.name;
+        let args = tc.args_value();
+        let event_name = tools.event_name(name, &args);
+        output.tool_call(&event_name, reason);
+        output.tool_result(&event_name, false, reason, 0);
+        ctx.append_tool(&tc.id, name, Content::text(reason.to_string()));
+        if let Some(message) = ctx.messages.last() {
+            output.on_message(message);
+        }
+    }
+}
+
 fn append_skipped_tool_results(
     ctx: &mut ContextManager,
     tools: &Registry,
@@ -652,17 +684,16 @@ fn append_skipped_tool_results(
         ),
         ToolControl::Continue => return,
     };
-    for tc in skipped {
-        let name = &tc.function.name;
-        let args = tc.args_value();
-        let event_name = tools.event_name(name, &args);
-        output.tool_call(&event_name, &reason);
-        output.tool_result(&event_name, false, &reason, 0);
-        ctx.append_tool(&tc.id, name, Content::text(reason.clone()));
-        if let Some(message) = ctx.messages.last() {
-            output.on_message(message);
-        }
-    }
+    append_synthetic_tool_results(ctx, tools, output, skipped, &reason);
+}
+
+fn append_interrupted_tool_results(
+    ctx: &mut ContextManager,
+    tools: &Registry,
+    output: &dyn Output,
+    remaining: &[ToolCall],
+) {
+    append_synthetic_tool_results(ctx, tools, output, remaining, INTERRUPTED_BY_USER);
 }
 
 fn iteration_limit_reached(iteration: usize, max_iter: usize) -> bool {
@@ -2564,6 +2595,11 @@ mod tests {
             err.to_string().contains("identical tool call"),
             "unexpected error: {err}"
         );
+        assert!(
+            crate::unpaired_tool_call_ids(&ctx.messages).is_empty(),
+            "stuck abort must not leave unpaired tool_calls: {:?}",
+            crate::unpaired_tool_call_ids(&ctx.messages)
+        );
         std::fs::remove_dir_all(root).ok();
     }
 
@@ -2832,7 +2868,168 @@ mod tests {
             err.to_string().contains("identical tool call"),
             "unexpected error: {err}"
         );
+        assert!(
+            crate::unpaired_tool_call_ids(&ctx.messages).is_empty(),
+            "stuck abort must not leave unpaired tool_calls: {:?}",
+            crate::unpaired_tool_call_ids(&ctx.messages)
+        );
         std::fs::remove_dir_all(root).ok();
+    }
+
+    struct CancelOnRunTool {
+        name: &'static str,
+        runs: Arc<AtomicUsize>,
+        cancel: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl Tool for CancelOnRunTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn schema(&self) -> ToolSchema {
+            ToolSchema::new(
+                self.name,
+                "sets cancel after starting",
+                serde_json::json!({"type": "object"}),
+            )
+        }
+
+        async fn run(&self, _args: &serde_json::Value, _env: &dyn ToolEnv) -> ToolResult {
+            self.runs.fetch_add(1, Ordering::SeqCst);
+            self.cancel.store(true, Ordering::SeqCst);
+            ToolResult::ok("ran")
+        }
+    }
+
+    struct CancelOnAssistantTools<'a> {
+        cancel: &'a AtomicBool,
+    }
+
+    impl Output for CancelOnAssistantTools<'_> {
+        fn on_message(&self, message: &Message) {
+            if message.role == Role::Assistant && !message.tool_calls.is_empty() {
+                self.cancel.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_after_first_tool_starts_skips_the_rest_of_the_batch() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let first_runs = Arc::new(AtomicUsize::new(0));
+        let second_runs = Arc::new(AtomicUsize::new(0));
+        let provider = SequenceProvider::new([Completion {
+            tool_calls: vec![
+                call("first", "first", serde_json::json!({})),
+                call("second", "second", serde_json::json!({})),
+            ],
+            finish_reason: Some("tool_calls".into()),
+            ..Completion::default()
+        }]);
+        let mut tools = Registry::builtins().filtered(&[]);
+        tools.add(Box::new(CancelOnRunTool {
+            name: "first",
+            runs: first_runs.clone(),
+            cancel: cancel.clone(),
+        }));
+        tools.add(Box::new(CountingTool {
+            name: "second",
+            runs: second_runs.clone(),
+        }));
+        let mut ctx = ContextManager::new(100_000);
+        let root = std::env::temp_dir().join(format!(
+            "wisp-core-stop-mid-batch-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let err = agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            &root,
+            &NullOutput,
+            "do both",
+            0,
+            Some(cancel.as_ref()),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains(STOPPED_BY_USER),
+            "unexpected error: {err}"
+        );
+        assert_eq!(first_runs.load(Ordering::SeqCst), 1);
+        assert_eq!(second_runs.load(Ordering::SeqCst), 0);
+        assert_eq!(tool_result_ids(&ctx), vec!["first", "second"]);
+        assert!(ctx
+            .messages
+            .iter()
+            .find(|message| message.tool_call_id.as_deref() == Some("second"))
+            .unwrap()
+            .content
+            .as_text()
+            .contains(INTERRUPTED_BY_USER));
+        assert!(crate::unpaired_tool_call_ids(&ctx.messages).is_empty());
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[tokio::test]
+    async fn stop_before_first_tool_runs_none_and_pairs_all_calls() {
+        let cancel = AtomicBool::new(false);
+        let first_runs = Arc::new(AtomicUsize::new(0));
+        let second_runs = Arc::new(AtomicUsize::new(0));
+        let provider = SequenceProvider::new([Completion {
+            tool_calls: vec![
+                call("first", "first", serde_json::json!({})),
+                call("second", "second", serde_json::json!({})),
+            ],
+            finish_reason: Some("tool_calls".into()),
+            ..Completion::default()
+        }]);
+        let mut tools = Registry::builtins().filtered(&[]);
+        tools.add(Box::new(CountingTool {
+            name: "first",
+            runs: first_runs.clone(),
+        }));
+        tools.add(Box::new(CountingTool {
+            name: "second",
+            runs: second_runs.clone(),
+        }));
+        let mut ctx = ContextManager::new(100_000);
+        let output = CancelOnAssistantTools { cancel: &cancel };
+
+        let err = agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            Path::new("."),
+            &output,
+            "do both",
+            0,
+            Some(&cancel),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains(STOPPED_BY_USER),
+            "unexpected error: {err}"
+        );
+        assert_eq!(first_runs.load(Ordering::SeqCst), 0);
+        assert_eq!(second_runs.load(Ordering::SeqCst), 0);
+        assert_eq!(tool_result_ids(&ctx), vec!["first", "second"]);
+        assert!(ctx
+            .messages
+            .iter()
+            .filter(|m| m.role == Role::Tool)
+            .all(|message| message.content.as_text().contains(INTERRUPTED_BY_USER)));
+        assert!(crate::unpaired_tool_call_ids(&ctx.messages).is_empty());
     }
 
     /// Streams like a real provider: each turn's content is pushed into the

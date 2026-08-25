@@ -89,23 +89,7 @@ impl OpenAiProvider {
     /// call.
     fn sanitize(messages: &[Message]) -> Vec<Value> {
         // ids answered by a `tool` message, and ids requested by an assistant.
-        let mut answered = std::collections::HashSet::new();
-        let mut requested = std::collections::HashSet::new();
-        for m in messages {
-            match m.role {
-                Role::Tool => {
-                    if let Some(id) = &m.tool_call_id {
-                        answered.insert(id.clone());
-                    }
-                }
-                Role::Assistant => {
-                    for tc in &m.tool_calls {
-                        requested.insert(tc.id.clone());
-                    }
-                }
-                _ => {}
-            }
-        }
+        let (answered, requested) = crate::tool_call_pairing(messages);
         // Never replay chain-of-thought. Re-sending historical `reasoning_content`
         // bloats the request (~37% of an 86K kimi-k3 session) and feeds a
         // "thinking" model its own past flailing, reinforcing repeat loops.
