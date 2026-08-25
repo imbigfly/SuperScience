@@ -670,7 +670,15 @@ pub(crate) async fn send_message_inner(
             }
             Err(e) => tracing::warn!("load session from sqlite failed: {e}"),
         }
+        // last_seq is the persisted prefix. Repair after this so the later
+        // incremental flush writes synthetic tool results the same way a
+        // skipped-batch result is persisted (#979).
         rt.set_last_seq(agent.ctx.messages.len() as i64);
+        if agent.ctx.repair_unpaired_tool_calls() > 0 {
+            tracing::warn!(
+                "repaired unpaired tool_calls in {frame_id} so the provider transcript stays paired"
+            );
+        }
         agent.seed_system_prompt(&skills, None);
         if let Some(message) = agent.ctx.messages.first_mut() {
             if let wisp_llm::Content::Text(prompt) = &mut message.content {

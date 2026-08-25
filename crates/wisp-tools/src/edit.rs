@@ -67,6 +67,9 @@ impl Tool for EditTool {
     }
 
     async fn run(&self, args: &serde_json::Value, env: &dyn ToolEnv) -> ToolResult {
+        if env.is_cancelled() {
+            return ToolResult::fail("interrupted by user");
+        }
         let path = match arg_str(args, "path") {
             Ok(p) => p,
             Err(e) => return ToolResult::fail(e),
@@ -290,6 +293,50 @@ mod tests {
             bytes.windows(2).filter(|w| w == b"\r\n").count(),
             3,
             "all three CRLF terminators preserved"
+        );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    struct CancelledEnv(PathBuf);
+
+    #[async_trait::async_trait]
+    impl ToolEnv for CancelledEnv {
+        fn project_root(&self) -> &Path {
+            &self.0
+        }
+        async fn confirm(&self, _message: &str) -> bool {
+            true
+        }
+        async fn emit(&self, _event: ToolEvent) {}
+        fn is_cancelled(&self) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_edit_does_not_change_the_file() {
+        let tmp = std::env::temp_dir().join(format!("wisp_edit_cancel_{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("keep.txt"), "original\n").unwrap();
+        let env = CancelledEnv(tmp.clone());
+
+        let result = EditTool
+            .run(
+                &json!({
+                    "path": "keep.txt",
+                    "old": "original",
+                    "new": "changed"
+                }),
+                &env,
+            )
+            .await;
+
+        assert!(!result.success, "{}", result.content);
+        assert!(result.content.contains("interrupted by user"));
+        assert_eq!(
+            std::fs::read_to_string(tmp.join("keep.txt")).unwrap(),
+            "original\n"
         );
         std::fs::remove_dir_all(&tmp).ok();
     }

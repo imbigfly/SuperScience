@@ -16,7 +16,10 @@ pub mod subagent;
 pub mod system_prompt;
 
 pub use agent::{agent_loop, agent_loop_continue, AgentLoopOutcome, GuidanceQueue};
-pub use context::{ContextManager, ContextToolDetail, ContextUsage, ContextUsageDetails};
+pub use context::{
+    repair_unpaired_tool_calls, tool_call_pairing, unpaired_tool_call_ids, ContextManager,
+    ContextToolDetail, ContextUsage, ContextUsageDetails, UNPAIRED_ON_LOAD_RESULT,
+};
 pub use delegation::{
     degraded_delivery_marker, is_degraded_delivery, AgentArtifact, AgentAuthorizationSnapshot,
     AgentBackend, AgentBudget, AgentDelegationLineage, AgentDelegationRequest,

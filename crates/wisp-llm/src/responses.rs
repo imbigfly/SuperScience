@@ -94,23 +94,7 @@ impl OpenAiResponsesProvider {
 /// chat-completions path already strips these (#74). Symmetrically drop tool
 /// outputs with no preceding call.
 fn sanitize_messages(messages: &[Message]) -> Vec<Message> {
-    let mut answered = std::collections::HashSet::new();
-    let mut requested = std::collections::HashSet::new();
-    for m in messages {
-        match m.role {
-            Role::Tool => {
-                if let Some(id) = &m.tool_call_id {
-                    answered.insert(id.clone());
-                }
-            }
-            Role::Assistant => {
-                for tc in &m.tool_calls {
-                    requested.insert(tc.id.clone());
-                }
-            }
-            _ => {}
-        }
-    }
+    let (answered, requested) = crate::tool_call_pairing(messages);
     messages
         .iter()
         .filter_map(|m| match m.role {

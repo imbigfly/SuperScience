@@ -31,6 +31,9 @@ impl Tool for WriteTool {
         arg_str(args, "path").unwrap_or_default()
     }
     async fn run(&self, args: &serde_json::Value, env: &dyn ToolEnv) -> ToolResult {
+        if env.is_cancelled() {
+            return ToolResult::fail("interrupted by user");
+        }
         let path = match arg_str(args, "path") {
             Ok(p) => p,
             Err(e) => return ToolResult::fail(e),
@@ -135,5 +138,38 @@ mod tests {
         );
         assert!(env.events.lock().unwrap().is_empty());
         std::fs::remove_dir_all(&base).ok();
+    }
+
+    struct CancelledEnv(PathBuf);
+
+    #[async_trait::async_trait]
+    impl ToolEnv for CancelledEnv {
+        fn project_root(&self) -> &Path {
+            &self.0
+        }
+        async fn confirm(&self, _message: &str) -> bool {
+            true
+        }
+        async fn emit(&self, _event: ToolEvent) {}
+        fn is_cancelled(&self) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_write_does_not_touch_the_file() {
+        let tmp = std::env::temp_dir().join(format!("wisp_write_cancel_{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(&tmp).unwrap();
+        let env = CancelledEnv(tmp.clone());
+
+        let result = WriteTool
+            .run(&json!({ "path": "skip.txt", "content": "nope" }), &env)
+            .await;
+
+        assert!(!result.success, "{}", result.content);
+        assert!(result.content.contains("interrupted by user"));
+        assert!(!tmp.join("skip.txt").exists());
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }
