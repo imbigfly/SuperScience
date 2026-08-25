@@ -4057,13 +4057,12 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             if (path.includes(".docx")) return base64Bytes(docxBase64);
             if (path.includes(".xlsx") && xlsxBase64) return base64Bytes(xlsxBase64);
             if (path.includes(".pptx") && pptxBase64) return base64Bytes(pptxBase64);
-            // Chat media (artifact thumbnails, generated-image cards) fetches
-            // images through the blob-object-URL pipeline; hand back a small
-            // SVG so `blob:` sources resolve in tests.
+            // Chat media (generated-image/video cards, artifact thumbnails)
+            // fetches bytes through the blob-object-URL pipeline.
             if (/\.(png|jpe?g|gif|webp|svg)$/.test(path)) {
-              const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="8" height="6"><rect width="8" height="6" fill="#9af"/></svg>`;
-              return new TextEncoder().encode(svg);
+              return base64Bytes("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z0mAAAAAASUVORK5CYII=");
             }
+            if (path.includes(".mp4")) return base64Bytes(mp4Base64);
             throw new Error("Binary fixture not found");
           }
           case "read_artifact":

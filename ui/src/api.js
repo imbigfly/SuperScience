@@ -1084,7 +1084,8 @@ export async function media_url(path) {
   } catch (_) {
     return null;
   }
-  const entry = { url: URL.createObjectURL(new Blob([bytes])), mime: blobMime(bytes) };
+  const mime = blobMime(bytes);
+  const entry = { url: URL.createObjectURL(new Blob([bytes], { type: mime })), mime };
   mediaUrlCache.set(key, entry);
   if (mediaUrlCache.size > MEDIA_URL_CACHE_LIMIT) {
     // Drop the lookup only. The URL may still be an <img>/<video> src
