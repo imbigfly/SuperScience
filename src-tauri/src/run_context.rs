@@ -20,14 +20,13 @@ mod transfer;
 pub(crate) use harvest_remote::WorkspaceListing;
 #[cfg(all(test, windows))]
 use remote::scp_local_path;
-pub(super) use remote::ssh_dedicated_script_command;
 #[cfg(test)]
 use remote::{cancel_payload, launch_payload, poll_payload, prepare_payload};
 use remote::{
     cancel_remote, checked_output, ensure_remote_started, permanent_remote_start_error,
     poll_remote, prepare_remote, remote_poll_interval, remote_poll_interval_for,
-    remote_terminal_status, resolve_input_paths, ssh_script_command, PrepareRemote, RemoteCancel,
-    RemotePollState,
+    remote_terminal_status, resolve_input_paths, ssh_dedicated_script_command, ssh_script_command,
+    PrepareRemote, RemoteCancel, RemotePollState,
 };
 #[cfg(test)]
 use remote::{parse_input_progress, remote_poll_delay_secs};

@@ -3060,7 +3060,7 @@ async fn ssh_harvest_collect_renew_failure_aborts() {
 async fn ssh_harvest_collect_does_not_block_same_host_poll_or_cancel() {
     let tmp = std::env::temp_dir().join(format!("wisp_ssh_harvest_slot_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = seed_active_harvest_run(&tmp, "run-slot", "test-owner", 30).await;
+    let store = seed_harvest_run(&tmp, "run-slot").await;
     let collect_started = Arc::new(tokio::sync::Semaphore::new(0));
     let collect_release = Arc::new(tokio::sync::Semaphore::new(0));
     let runner = Arc::new(SlotAwareHarvestRunner {
@@ -3081,13 +3081,13 @@ async fn ssh_harvest_collect_does_not_block_same_host_poll_or_cancel() {
                 runner.as_ref(),
                 "test-owner",
                 &harvest_remote_run,
-                true,
+                false,
             )
             .await
         }
     });
 
-    tokio::time::timeout(Duration::from_secs(2), collect_started.acquire())
+    let _started = tokio::time::timeout(Duration::from_secs(2), collect_started.acquire())
         .await
         .expect("collect never started")
         .expect("collect start permit");
