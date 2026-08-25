@@ -1385,6 +1385,30 @@ impl BrowserBridge {
         }
         self.persist_pending().await;
     }
+
+    /// Open the first available browser on its extension-manager page.
+    /// Tests never spawn a browser (`can_launch` is false on `new()`).
+    pub fn open_extension_setup(&self) -> BrowserExtensionSetup {
+        let extension_path = self.verified_extension_path();
+        let opened = self.can_launch
+            && browser_extension_page_plan().is_some_and(|(program, args)| {
+                spawn_browser_with_url(&program, &args)
+                    .map_err(|error| {
+                        tracing::warn!(target: "wisp", "extension page launch failed: {error}");
+                    })
+                    .is_ok()
+            });
+        BrowserExtensionSetup {
+            extension_path,
+            opened,
+        }
+    }
+}
+
+#[derive(Serialize, Clone)]
+pub struct BrowserExtensionSetup {
+    pub extension_path: Option<String>,
+    pub opened: bool,
 }
 
 /// Start the user's existing Chrome/Chromium/Edge so the unpacked Wisp
@@ -1413,6 +1437,71 @@ fn first_available_browser() -> Option<(PathBuf, Vec<String>)> {
     browser_launch_candidates()
         .into_iter()
         .find(|(program, args)| launch_plan_available(program, args))
+}
+
+/// Launch plan for the first real browser executable, pointed at its
+/// extension manager page. The `cmd /C start` fallback is skipped: it cannot
+/// carry the `*://extensions` URL.
+fn browser_extension_page_plan() -> Option<(PathBuf, Vec<String>)> {
+    browser_launch_candidates()
+        .into_iter()
+        .filter(|(program, _)| program.file_name().and_then(|name| name.to_str()) != Some("cmd"))
+        .find(|(program, args)| launch_plan_available(program, args))
+        .map(|(program, args)| {
+            let args = extension_page_launch_args(&program, args);
+            (program, args)
+        })
+}
+
+/// `open -a App` needs `--args` before `chrome://…`; Chromium executables take
+/// the URL as a trailing argument.
+fn extension_page_launch_args(program: &Path, mut args: Vec<String>) -> Vec<String> {
+    let url = extensions_page_url(program, &args);
+    if program.ends_with("open") {
+        args.push("--args".into());
+    }
+    args.push(url.to_string());
+    args
+}
+
+/// Each Chromium fork only understands its own `*://extensions` scheme.
+fn extensions_page_url(program: &Path, args: &[String]) -> &'static str {
+    let name = if program.ends_with("open") {
+        // macOS `open -a "<App Name>"`: the browser identity sits in the args.
+        args.get(1).map(String::as_str).unwrap_or_default()
+    } else {
+        program
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_default()
+    }
+    .to_lowercase();
+    if name.contains("edge") {
+        "edge://extensions"
+    } else if name.contains("brave") {
+        "brave://extensions"
+    } else {
+        "chrome://extensions"
+    }
+}
+
+/// Start `program` detached like `spawn_user_browser`, with caller-chosen args.
+fn spawn_browser_with_url(program: &Path, args: &[String]) -> Result<(), String> {
+    let mut command = std::process::Command::new(program);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x00000008 | 0x00000200);
+    }
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("failed to start {}: {error}", program.display()))
 }
 
 /// OS-specific launch plans. The first available program is used at runtime.
@@ -3087,6 +3176,71 @@ mod tests {
         assert_eq!(incomplete_info["status"], "extension_missing");
         assert!(incomplete_info["extension_path"].is_null());
         let _ = std::fs::remove_dir_all(&incomplete);
+    }
+
+    #[test]
+    fn extension_page_url_matches_the_browser_scheme() {
+        // Windows/Linux executables identify the browser by file stem.
+        assert_eq!(
+            extensions_page_url(Path::new("chrome"), &[]),
+            "chrome://extensions"
+        );
+        assert_eq!(
+            extensions_page_url(Path::new("chromium"), &[]),
+            "chrome://extensions"
+        );
+        assert_eq!(
+            extensions_page_url(Path::new("msedge"), &[]),
+            "edge://extensions"
+        );
+        assert_eq!(
+            extensions_page_url(Path::new("microsoft-edge-stable"), &[]),
+            "edge://extensions"
+        );
+        assert_eq!(
+            extensions_page_url(Path::new("brave"), &[]),
+            "brave://extensions"
+        );
+        // macOS goes through `open -a "<App Name>"`, so the identity is an arg.
+        let open = Path::new("/usr/bin/open");
+        assert_eq!(
+            extensions_page_url(open, &["-a".into(), "Google Chrome".into()]),
+            "chrome://extensions"
+        );
+        assert_eq!(
+            extensions_page_url(open, &["-a".into(), "Microsoft Edge".into()]),
+            "edge://extensions"
+        );
+        assert_eq!(
+            extensions_page_url(open, &["-a".into(), "Brave Browser".into()]),
+            "brave://extensions"
+        );
+        assert_eq!(
+            extension_page_launch_args(open, vec!["-a".into(), "Google Chrome".into()]),
+            vec![
+                "-a".to_string(),
+                "Google Chrome".into(),
+                "--args".into(),
+                "chrome://extensions".into(),
+            ]
+        );
+        assert_eq!(
+            extension_page_launch_args(Path::new("msedge"), Vec::new()),
+            vec!["edge://extensions".to_string()]
+        );
+    }
+
+    #[test]
+    fn extension_setup_never_launches_a_browser_from_tests() {
+        let missing = std::env::temp_dir().join(format!(
+            "wisp-browser-extension-setup-missing-{}",
+            std::process::id()
+        ));
+        let bridge = BrowserBridge::new(missing);
+        let setup = bridge.open_extension_setup();
+
+        assert!(!setup.opened);
+        assert!(setup.extension_path.is_none());
     }
 
     #[test]

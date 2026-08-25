@@ -1027,6 +1027,164 @@ function normalizeRawBytes(value) {
   throw new Error("Binary preview command returned an unsupported payload");
 }
 
+// Chat media (generated images/videos, attachment thumbnails, inline resource
+// images) used to inline as base64 data URLs — a 64 MB video became ~85 MB of
+// string per card, and repeated loads under row remounts pushed the WebView
+// renderer toward OOM (#dead-window). Instead, bytes are fetched through the
+// same preview command family and handed to the browser as a blob object URL:
+// decoded once by the media stack, shareable across cards with one entry per
+// path, and revocable when evicted.
+const MEDIA_URL_CACHE_LIMIT = 64;
+const mediaUrlCache = new Map(); // path -> { url, mime }
+const thumbnailJobs = new Map(); // path -> Promise<string | null>
+
+function mediaBytesCommand(path) {
+  // Mirrors `previewBytes`'s command selection for the four path spellings.
+  if (path.startsWith("artifact-version:")) {
+    return { command: "read_artifact_version_bytes", args: { versionId: path.slice("artifact-version:".length) } };
+  }
+  if (path.startsWith("artifact:")) {
+    return { command: "read_artifact_bytes", args: { id: path.slice("artifact:".length) } };
+  }
+  if (path.startsWith("remote:ssh:")) {
+    const withoutPrefix = path.slice("remote:ssh:".length);
+    const separator = withoutPrefix.indexOf(":");
+    if (separator <= 0 || separator === withoutPrefix.length - 1) {
+      throw new Error("Remote media path is invalid");
+    }
+    return {
+      command: "read_remote_file_bytes",
+      args: {
+        contextId: `ssh:${withoutPrefix.slice(0, separator)}`,
+        path: withoutPrefix.slice(separator + 1),
+      },
+    };
+  }
+  return { command: "read_file_bytes", args: { path } };
+}
+
+export async function media_url(path) {
+  const key = String(path || "");
+  if (!key) return null;
+  const hit = mediaUrlCache.get(key);
+  if (hit) {
+    // Refresh insertion order so eviction is LRU.
+    mediaUrlCache.delete(key);
+    mediaUrlCache.set(key, hit);
+    return hit.url;
+  }
+  const { command, args } = mediaBytesCommand(key);
+  // One shot rather than invoke: a missing file must surface as null (the
+  // callers paint their fallback), not a console error.
+  const core = tauriCore();
+  if (!core) return null;
+  let bytes;
+  try {
+    bytes = normalizeRawBytes(await core.invoke(command, args));
+  } catch (_) {
+    return null;
+  }
+  const mime = blobMime(bytes);
+  const entry = { url: URL.createObjectURL(new Blob([bytes], { type: mime })), mime };
+  mediaUrlCache.set(key, entry);
+  if (mediaUrlCache.size > MEDIA_URL_CACHE_LIMIT) {
+    // Drop the lookup only. The URL may still be an <img>/<video> src
+    // (and media_thumbnail_url reuses it when the image is already small).
+    const oldest = mediaUrlCache.keys().next().value;
+    mediaUrlCache.delete(oldest);
+  }
+  return entry.url;
+}
+
+// Thumbnails for attachment/artifact cards: a small canvas re-encode instead
+// of the full-resolution object URL, so a 20-message history of pasted photos
+// does not keep 20 decoded full-size bitmaps alive.
+const THUMB_MAX_EDGE = 384;
+// path -> downscaled blob URL. Kept (never revoked alongside the media cache)
+// because a thumbnail URL handed to the DOM must stay valid for the DOM's
+// lifetime; the thumbs are ≤384px re-encodes, so a bounded count of them is
+// the cheap side of the trade.
+const THUMB_CACHE_LIMIT = 128;
+const thumbnailCache = new Map();
+
+export async function media_thumbnail_url(path) {
+  const key = String(path || "");
+  if (!key) return null;
+  const cached = thumbnailCache.get(key);
+  if (cached !== undefined) return cached;
+  const pending = thumbnailJobs.get(key);
+  if (pending) return pending;
+  const job = (async () => {
+    const url = await media_url(key);
+    if (!url) {
+      thumbnailCache.set(key, null);
+      return null;
+    }
+    let thumb;
+    try {
+      thumb = await downscaleToPngBlobUrl(url, THUMB_MAX_EDGE);
+    } catch (_) {
+      thumb = url; // non-decodable or huge image: show it as-is
+    }
+    thumbnailCache.set(key, thumb);
+    if (thumbnailCache.size > THUMB_CACHE_LIMIT) {
+      // Drop the oldest entry's cache slot only; its URL may still be in the
+      // DOM, so revoking here would blank a live thumbnail.
+      const oldest = thumbnailCache.keys().next().value;
+      thumbnailCache.delete(oldest);
+    }
+    return thumb;
+  })();
+  thumbnailJobs.set(key, job.finally(() => thumbnailJobs.delete(key)));
+  return job;
+}
+
+function downscaleToPngBlobUrl(url, maxEdge) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const scale = Math.min(1, maxEdge / Math.max(img.naturalWidth, img.naturalHeight));
+        if (scale >= 1) {
+          resolve(url); // already small enough; reuse the media URL
+          return;
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob((blob) => {
+          if (!blob) {
+            resolve(url);
+            return;
+          }
+          resolve(URL.createObjectURL(blob));
+        }, "image/png");
+      } catch (err) {
+        reject(err);
+      }
+    };
+    img.onerror = () => reject(new Error("image decode failed"));
+    img.src = url;
+  });
+}
+
+function blobMime(bytes) {
+  // The byte-returning commands omit the MIME; sniff the signatures that
+  // matter for chat media. Defaults to application/octet-stream, which still
+  // plays in <video> via extension-less blob sniffing in Chromium.
+  if (bytes.length >= 12 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return "image/png";
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+  if (bytes.length >= 4 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) return "image/gif";
+  if (bytes.length >= 12 && bytes[4] === 0x66 && bytes[5] === 0x74 && bytes[6] === 0x79 && bytes[7] === 0x70) return "video/mp4";
+  // "<?xml" or "<svg" plaintext: the SVG fixtures (and SVG artifacts) decode
+  // as images only when served with an image/* MIME.
+  const head = new TextDecoder().decode(bytes.slice(0, 256)).trimStart().toLowerCase();
+  if (head.startsWith("<?xml") || head.startsWith("<svg")) return "image/svg+xml";
+  return "application/octet-stream";
+}
+
+
 async function previewBytes(payload) {
   if (payload.bytes) return normalizeRawBytes(payload.bytes);
   if (payload.b64) return base64Bytes(payload.b64);

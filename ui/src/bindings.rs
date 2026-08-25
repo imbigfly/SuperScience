@@ -62,6 +62,14 @@ extern "C" {
     pub(crate) fn close_mcp_app(instance_id: &str);
     #[wasm_bindgen(js_name = pasted_image_count)]
     pub(crate) fn pasted_image_count(event: JsValue) -> usize;
+    /// Chat media as a cached blob object URL (never a base64 data URL) —
+    /// `null` when the file cannot be read, so callers paint their fallback.
+    #[wasm_bindgen(js_name = media_url)]
+    pub(crate) async fn media_url(path: &str) -> JsValue;
+    /// Small canvas-downscaled variant of [`media_url`] for thumbnail-sized
+    /// cards, so long histories do not keep full-size decoded bitmaps alive.
+    #[wasm_bindgen(js_name = media_thumbnail_url)]
+    pub(crate) async fn media_thumbnail_url(path: &str) -> JsValue;
     #[wasm_bindgen(js_name = drag_has_files)]
     pub(crate) fn drag_has_files(event: JsValue) -> bool;
     #[wasm_bindgen(js_name = set_drag_copy)]
@@ -193,4 +201,10 @@ pub(crate) fn open_external_url(url: String) {
             .unwrap_or(JsValue::UNDEFINED);
         let _ = invoke("open_external_url", args).await;
     });
+}
+
+/// Ask the backend to open the first available browser on its extension
+/// manager page; resolves to the `BrowserExtensionSetup` reply.
+pub(crate) async fn open_browser_extension_page() -> JsValue {
+    invoke("open_browser_extension_page", JsValue::UNDEFINED).await
 }
