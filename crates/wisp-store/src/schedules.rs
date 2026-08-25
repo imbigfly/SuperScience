@@ -140,7 +140,9 @@ impl Store {
     pub async fn due_schedules(&self, now: i64) -> Result<Vec<ScheduleRecord>> {
         let rows = sqlx::query(&format!(
             "SELECT {SCHEDULE_COLUMNS} FROM schedules \
-             WHERE enabled=1 AND next_run_at<=? ORDER BY next_run_at,id"
+             WHERE enabled=1 AND next_run_at<=? \
+             AND EXISTS (SELECT 1 FROM projects WHERE id=schedules.project_id) \
+             ORDER BY next_run_at,id"
         ))
         .bind(now)
         .fetch_all(&self.pool)
@@ -372,6 +374,31 @@ mod tests {
 
         store.delete_schedule("s1").await.unwrap();
         assert!(store.list_schedule_runs("s1", 10).await.unwrap().is_empty());
+
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn due_schedules_skips_rows_whose_project_is_gone() {
+        let (store, root) = test_store().await;
+        store
+            .create_schedule(&test_schedule("orphan", "p1", 100))
+            .await
+            .unwrap();
+        // Simulate a pre-fix leftover: the project row is gone, the schedule is not.
+        sqlx::query("DELETE FROM projects WHERE id='p1'")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        assert!(
+            store.get_schedule("orphan").await.unwrap().is_some(),
+            "the leftover schedule row is still present"
+        );
+        assert!(
+            store.due_schedules(1_000).await.unwrap().is_empty(),
+            "orphan schedules must not be claimed"
+        );
 
         drop(store);
         let _ = std::fs::remove_dir_all(root);
