@@ -29,6 +29,7 @@ pub(crate) struct SessionRuntime {
     pub(crate) workflow: Arc<tokio::sync::Mutex<()>>,
     pub(crate) cancel: Arc<AtomicBool>,
     pub(crate) deleted: AtomicBool,
+    /// Last persisted message seq (`COALESCE(MAX(seq),0)`), not a message count.
     pub(crate) last_seq: StdMutex<i64>,
     /// Guide (#410): mid-turn messages the running loop drains into user
     /// messages at its next iteration; ids let queued senders detect that.
@@ -111,6 +112,21 @@ impl SessionRuntime {
     }
     pub(crate) fn set_last_seq(&self, v: i64) {
         *self.last_seq.lock().unwrap() = v;
+    }
+
+    /// Refresh `last_seq` from the durable `MAX(seq)` cursor. Recovery paths
+    /// must not use `messages.len()`.
+    pub(crate) async fn sync_last_seq_from_store(
+        &self,
+        store: &Store,
+        frame_id: &str,
+    ) -> Result<i64, String> {
+        let seq = store
+            .max_message_seq(frame_id)
+            .await
+            .map_err(|error| format!("reading MAX(seq) failed: {error}"))?;
+        self.set_last_seq(seq);
+        Ok(seq)
     }
     pub(crate) fn set_mcp_app_context(&self, instance_id: String, context: Option<McpAppContext>) {
         let mut contexts = self.mcp_app_contexts.lock().unwrap();
