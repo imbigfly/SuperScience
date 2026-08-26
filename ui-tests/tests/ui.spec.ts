@@ -6330,6 +6330,10 @@ test("completed SSH transfer cards leave the composer tray promptly", async ({ p
   });
   await expect(card).toContainText("Download complete");
   await expect(card).toBeHidden({ timeout: 5_000 });
+  // Crossing another shared-clock tick must not remount an expired card after
+  // the transfer tray has dropped its clock dependency.
+  await page.waitForTimeout(1_200);
+  await expect(card).toBeHidden();
 });
 
 test("monitor_run renders a live Run card from summary polls and on-demand detail", async ({ page }) => {
