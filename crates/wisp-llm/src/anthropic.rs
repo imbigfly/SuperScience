@@ -85,7 +85,10 @@ impl AnthropicProvider {
                     pending_tool_results.push(json!({
                         "type": "tool_result",
                         "tool_use_id": m.tool_call_id.clone().unwrap_or_default(),
-                        "content": m.content.as_text(),
+                        // Anthropic tool_result blocks accept nested text and
+                        // image content. Keep a native view_image result inside
+                        // the result block instead of flattening it to its label.
+                        "content": tool_result_content(&m.content),
                     }));
                 }
                 Role::User => {
@@ -295,6 +298,13 @@ fn user_content(c: &Content) -> Value {
                 .collect();
             json!(arr)
         }
+    }
+}
+
+fn tool_result_content(content: &Content) -> Value {
+    match content {
+        Content::Text(text) => json!(text),
+        Content::Parts(_) => user_content(content),
     }
 }
 
@@ -627,6 +637,23 @@ mod tests {
         out
     }
 
+    fn image_tool_result(id: &str) -> Message {
+        let mut message = Message::tool(id, "view_image", "plot.png");
+        message.content = Content::Parts(vec![
+            crate::Part::Text {
+                kind: "text".into(),
+                text: "plot.png".into(),
+            },
+            crate::Part::Image {
+                kind: "image_url".into(),
+                image_url: crate::ImageUrl {
+                    url: "data:image/png;base64,AAAA".into(),
+                },
+            },
+        ]);
+        message
+    }
+
     #[test]
     fn reasoning_effort_maps_to_output_config_effort() {
         let mut cfg =
@@ -656,6 +683,26 @@ mod tests {
         assert_eq!(out[2]["role"], "user");
         assert_eq!(out[2]["content"][0]["type"], "tool_result");
         assert_eq!(out[2]["content"][0]["tool_use_id"], "tu_1");
+    }
+
+    #[test]
+    fn native_tool_image_stays_inside_anthropic_tool_result() {
+        let messages = vec![
+            Message::user("inspect"),
+            assistant_with_call("", "tu_image", "view_image", "{\"path\":\"plot.png\"}"),
+            image_tool_result("tu_image"),
+        ];
+        let out = wire_messages(&messages);
+        let result = &out[2]["content"][0];
+        assert_eq!(result["type"], "tool_result");
+        assert_eq!(result["tool_use_id"], "tu_image");
+        let content = result["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "plot.png");
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(content[1]["source"]["type"], "base64");
+        assert_eq!(content[1]["source"]["media_type"], "image/png");
+        assert_eq!(content[1]["source"]["data"], "AAAA");
     }
 
     /// Interrupted turn: assistant emitted tool_use, user resumed before the
