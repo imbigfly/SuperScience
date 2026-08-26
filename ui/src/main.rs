@@ -6849,6 +6849,35 @@ fn App() -> impl IntoView {
     let runtime_object_states =
         create_rw_signal::<HashMap<String, RuntimeObjectState>>(HashMap::new());
     let run_clock = create_rw_signal(now_secs());
+    // The transfer tray needs the shared clock only while the active session
+    // has an active or briefly lingering transfer. Once the last card expires,
+    // this effect reruns with `clock_active = false` and drops its run_clock
+    // dependency; historical progress records then stay idle between run-list
+    // updates instead of rebuilding the tray every second.
+    let transfer_tray_clock_active = create_rw_signal(false);
+    let transfer_tray_now = create_rw_signal(run_clock.get_untracked());
+    create_effect(move |_| {
+        let clock_active = transfer_tray_clock_active.get();
+        let now = if clock_active {
+            run_clock.get()
+        } else {
+            run_clock.get_untracked()
+        };
+        let has_visible_transfer = active_session.get().is_some_and(|session_id| {
+            run_records.with(|records| {
+                records.iter().any(|run| {
+                    run.frame_id.as_deref() == Some(session_id.as_str())
+                        && run_progress(run).is_some_and(|progress| {
+                            transfer_progress_visible(&progress, &run.status, now)
+                        })
+                })
+            })
+        });
+        transfer_tray_now.set(now);
+        if clock_active != has_visible_transfer {
+            transfer_tray_clock_active.set(has_visible_transfer);
+        }
+    });
     let show_add_host = create_rw_signal(false);
     let host_alias = create_rw_signal(String::new());
     let host_hostname = create_rw_signal(String::new());
@@ -11309,10 +11338,10 @@ fn App() -> impl IntoView {
             </div>
 
             {move || active_session.get().and_then(|session_id| {
-                // Finished transfers linger briefly for confirmation. Reading
-                // the shared clock makes this tray recompute after run polling
-                // stops, so settled cards cannot remain over the conversation.
-                let now = run_clock.get();
+                // Finished transfers linger briefly for confirmation. The
+                // clock-driving effect above stops updating this signal after
+                // the final card expires.
+                let now = transfer_tray_now.get();
                 let transfers = run_records.with(|records| {
                     records
                         .iter()
