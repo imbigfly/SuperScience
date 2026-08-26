@@ -33,6 +33,12 @@ async function lastInvokeArgs(page: Page, cmd: string) {
   }, cmd);
 }
 
+async function invokeCount(page: Page, cmd: string) {
+  return page.evaluate((name) =>
+    ((window as any).__skillInvokeLog ?? []).filter((call: any) => call.cmd === name).length,
+  cmd);
+}
+
 async function startLiveRetrievalTurn(page: Page) {
   await page.locator("#composer-input").fill("latest rustc version");
   await page.getByRole("button", { name: "Send" }).click();
@@ -121,6 +127,19 @@ test("a later connected browser_setup clears the offline banner", async ({ page 
     content: JSON.stringify({ status: "connected", live_retrieval: true, connected_tabs: 1 }),
   });
   await expect(banner).toHaveCount(0);
+});
+
+test("a live extension recheck clears a stale offline verdict", async ({ page }) => {
+  await enterApp(page);
+  const sessionId = await startLiveRetrievalTurn(page);
+  await page.evaluate(() => {
+    (window as any).__extensionConnected = true;
+  });
+
+  await emitTauriEvent(page, "agent", disconnectedSetup(sessionId));
+
+  await expect.poll(() => invokeCount(page, "extension_connected")).toBe(1);
+  await expect(page.getByTestId("browser-offline-banner")).toHaveCount(0);
 });
 
 test("successful live retrieval survives a stream disconnect error", async ({ page }) => {

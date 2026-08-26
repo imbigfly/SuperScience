@@ -298,7 +298,28 @@ pub struct ProviderConfig {
 }
 
 /// Shared reqwest client for all providers, honoring `cfg.proxy`.
+/// Process-wide connection pool for the default proxy configuration. Review /
+/// follow-up / memory side calls used to build a fresh `reqwest::Client` per
+/// call — every one of them paid a new TLS handshake before this cache. Explicit
+/// proxy configs stay per-client because they vary by profile.
+static SHARED_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+
 pub(crate) fn http_client(cfg: &ProviderConfig) -> reqwest::Client {
+    http_client_from_pool(cfg, &SHARED_CLIENT)
+}
+
+fn http_client_from_pool(
+    cfg: &ProviderConfig,
+    shared: &std::sync::OnceLock<reqwest::Client>,
+) -> reqwest::Client {
+    let proxy = cfg.proxy.as_deref().map(str::trim);
+    if matches!(proxy, None | Some("")) {
+        return shared.get_or_init(|| build_http_client(cfg)).clone();
+    }
+    build_http_client(cfg)
+}
+
+fn build_http_client(cfg: &ProviderConfig) -> reqwest::Client {
     let mut b = reqwest::Client::builder()
         .user_agent("wisp-science")
         // A total request timeout also caps a healthy, actively streaming SSE
@@ -508,6 +529,30 @@ mod tests {
             cfg.proxy = proxy.map(Into::into);
             let _ = http_client(&cfg);
         }
+    }
+
+    #[test]
+    fn default_proxy_configuration_reuses_one_client_pool() {
+        let shared = std::sync::OnceLock::new();
+        let cfg = ProviderConfig::openai("https://api.example.com", "k", "m");
+
+        let _first = http_client_from_pool(&cfg, &shared);
+        let initialized = shared
+            .get()
+            .expect("default client initializes shared pool") as *const _;
+        let _second = http_client_from_pool(&cfg, &shared);
+        let reused = shared.get().expect("shared pool remains initialized") as *const _;
+
+        assert_eq!(initialized, reused);
+
+        let direct_pool = std::sync::OnceLock::new();
+        let mut direct = cfg;
+        direct.proxy = Some("none".into());
+        let _ = http_client_from_pool(&direct, &direct_pool);
+        assert!(
+            direct_pool.get().is_none(),
+            "explicit proxy modes must not reuse the default connection pool"
+        );
     }
 
     // #437: a stream that closes without a terminal marker is a cut, EXCEPT
