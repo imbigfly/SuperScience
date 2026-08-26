@@ -3911,6 +3911,9 @@ async fn save_mcp_connections(store: &Store, conns: &[McpConnection]) -> Result<
     for conn in &mut redacted {
         mcp_secrets::strip_secret_values(conn);
     }
+    if !mcp_secrets::stored_json_is_redacted(&redacted) {
+        return Err("Refusing to store MCP connection secrets in the database.".into());
+    }
     let json = serde_json::to_string(&redacted).map_err(|e| format!("{e}"))?;
     store
         .set_setting("mcp_connections", &json)
