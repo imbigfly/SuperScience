@@ -32,7 +32,7 @@ function ensureKatex() {
 }
 
 /** @param {ParentNode} root */
-async function highlight_root(root) {
+export async function highlight_root(root) {
   // Re-rendered blocks are fresh DOM nodes without the marker, so content
   // changes still re-render; untouched siblings are skipped.
   const math = root.querySelectorAll(".math:not([data-math])");
