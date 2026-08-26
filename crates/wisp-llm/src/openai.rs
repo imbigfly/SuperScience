@@ -100,9 +100,19 @@ impl OpenAiProvider {
         // provider's prompt cache keeps hitting. (Keeping "only the last turn's"
         // would mutate a message once it's no longer last, breaking the prefix.)
         // Same stance as pi / grok-build, which never bulk-replay raw CoT.
-        messages
-            .iter()
-            .filter_map(|m| match m.role {
+        let mut out = Vec::new();
+        // Chat Completions only accepts text content on `role: tool`. Keep
+        // every tool result in its strict pairing position, then append the
+        // images from the complete contiguous result batch as one multimodal
+        // user message. Flushing only after the batch matters when an
+        // assistant issued several parallel tool calls: no user message may
+        // split their corresponding tool rows.
+        let mut pending_tool_image_parts = Vec::new();
+        for m in messages {
+            if m.role != Role::Tool {
+                flush_tool_images(&mut out, &mut pending_tool_image_parts);
+            }
+            let wire = match m.role {
                 Role::System => Some(json!({ "role": "system", "content": m.content.as_text() })),
                 Role::User => {
                     Some(json!({ "role": "user", "content": sanitize_user_content(&m.content) }))
@@ -128,18 +138,22 @@ impl OpenAiProvider {
                     // tolerates it). Nothing replayable is left, so drop the
                     // turn. Empty text alongside tool_calls is fine on both.
                     if kept.is_empty() && text.is_empty() {
-                        return None;
+                        None
+                    } else {
+                        let mut o = json!({ "role": "assistant", "content": text });
+                        if !kept.is_empty() {
+                            o["tool_calls"] = serde_json::to_value(&kept).unwrap_or(Value::Null);
+                        }
+                        Some(o)
                     }
-                    let mut o = json!({ "role": "assistant", "content": text });
-                    if !kept.is_empty() {
-                        o["tool_calls"] = serde_json::to_value(&kept).unwrap_or(Value::Null);
-                    }
-                    Some(o)
                 }
                 Role::Tool => {
                     let id = m.tool_call_id.clone().unwrap_or_default();
                     if !requested.contains(&id) {
-                        return None;
+                        continue;
+                    }
+                    if let Some(parts) = tool_image_parts(&m.content) {
+                        pending_tool_image_parts.extend(parts);
                     }
                     Some(json!({
                         "role": "tool",
@@ -147,8 +161,13 @@ impl OpenAiProvider {
                         "content": m.content.as_text(),
                     }))
                 }
-            })
-            .collect()
+            };
+            if let Some(wire) = wire {
+                out.push(wire);
+            }
+        }
+        flush_tool_images(&mut out, &mut pending_tool_image_parts);
+        out
     }
 
     fn build_body(&self, messages: &[Message], tools: &[ToolSchema], stream: bool) -> Value {
@@ -253,18 +272,38 @@ impl OpenAiProvider {
 fn sanitize_user_content(c: &Content) -> Value {
     match c {
         Content::Text(s) => json!(s),
-        Content::Parts(parts) => {
-            let arr: Vec<Value> = parts
-                .iter()
-                .map(|p| match p {
-                    Part::Text { text, .. } => json!({ "type": "text", "text": text }),
-                    Part::Image { image_url, .. } => {
-                        json!({ "type": "image_url", "image_url": { "url": image_url.url } })
-                    }
-                })
-                .collect();
-            json!(arr)
-        }
+        Content::Parts(parts) => json!(openai_content_parts(parts)),
+    }
+}
+
+fn openai_content_parts(parts: &[Part]) -> Vec<Value> {
+    parts
+        .iter()
+        .map(|p| match p {
+            Part::Text { text, .. } => json!({ "type": "text", "text": text }),
+            Part::Image { image_url, .. } => {
+                json!({ "type": "image_url", "image_url": { "url": image_url.url } })
+            }
+        })
+        .collect()
+}
+
+fn tool_image_parts(content: &Content) -> Option<Vec<Value>> {
+    let Content::Parts(parts) = content else {
+        return None;
+    };
+    parts
+        .iter()
+        .any(|part| matches!(part, Part::Image { .. }))
+        .then(|| openai_content_parts(parts))
+}
+
+fn flush_tool_images(out: &mut Vec<Value>, pending: &mut Vec<Value>) {
+    if !pending.is_empty() {
+        out.push(json!({
+            "role": "user",
+            "content": std::mem::take(pending),
+        }));
     }
 }
 
@@ -1006,6 +1045,51 @@ mod tests {
                 arguments: "{}".into(),
             },
         }
+    }
+
+    fn image_tool_result(id: &str) -> Message {
+        let mut message = Message::tool(id, "view_image", "plot.png");
+        message.content = Content::Parts(vec![
+            Part::Text {
+                kind: "text".into(),
+                text: "plot.png".into(),
+            },
+            Part::Image {
+                kind: "image_url".into(),
+                image_url: crate::ImageUrl {
+                    url: "data:image/png;base64,AAAA".into(),
+                },
+            },
+        ]);
+        message
+    }
+
+    #[test]
+    fn native_tool_images_follow_the_complete_chat_tool_result_batch() {
+        let mut asst = Message::assistant("");
+        asst.tool_calls = vec![call("image"), call("text")];
+        let out = OpenAiProvider::sanitize(&[
+            asst,
+            image_tool_result("image"),
+            Message::tool("text", "read", "ok"),
+        ]);
+
+        let roles: Vec<_> = out.iter().map(|message| message["role"].as_str()).collect();
+        assert_eq!(
+            roles,
+            [Some("assistant"), Some("tool"), Some("tool"), Some("user")]
+        );
+        assert_eq!(out[1]["tool_call_id"], "image");
+        assert_eq!(out[1]["content"], "plot.png");
+        assert_eq!(out[2]["tool_call_id"], "text");
+        let image_message = out[3]["content"].as_array().unwrap();
+        assert_eq!(image_message[0]["type"], "text");
+        assert_eq!(image_message[0]["text"], "plot.png");
+        assert_eq!(image_message[1]["type"], "image_url");
+        assert_eq!(
+            image_message[1]["image_url"]["url"],
+            "data:image/png;base64,AAAA"
+        );
     }
 
     // #74: a turn interrupted after GLM emitted `tool_calls` but before its
