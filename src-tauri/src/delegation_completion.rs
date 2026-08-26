@@ -19,6 +19,16 @@ use wisp_store::{
 };
 
 const COMPLETION_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const COMPLETION_POLL_IDLE_INTERVAL: Duration = Duration::from_secs(5);
+const COMPLETION_POLL_IDLE_THRESHOLD: u32 = 4;
+
+fn completion_poll_delay(idle_polls: u32, found_work: bool) -> Duration {
+    if found_work || idle_polls < COMPLETION_POLL_IDLE_THRESHOLD {
+        COMPLETION_POLL_INTERVAL
+    } else {
+        COMPLETION_POLL_IDLE_INTERVAL
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -465,6 +475,7 @@ async fn dispatch_frame(app: AppHandle, frame_id: String) {
 pub(crate) fn start_dispatcher(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
+        let mut idle_polls = 0u32;
         loop {
             let state = app.state::<AppState>();
             repair_incomplete_deliveries(&state.store).await;
@@ -476,9 +487,16 @@ pub(crate) fn start_dispatcher(app: &AppHandle) {
                 Ok(frames) => frames,
                 Err(error) => {
                     tracing::warn!(target: "wisp", %error, "failed to poll Agent completions");
-                    tokio::time::sleep(COMPLETION_POLL_INTERVAL).await;
+                    idle_polls = idle_polls.saturating_add(1);
+                    tokio::time::sleep(completion_poll_delay(idle_polls, false)).await;
                     continue;
                 }
+            };
+            let found_work = !frames.is_empty();
+            idle_polls = if found_work {
+                0
+            } else {
+                idle_polls.saturating_add(1)
             };
             for frame_id in frames {
                 let mut active = state.completion_dispatches.lock().await;
@@ -497,7 +515,7 @@ pub(crate) fn start_dispatcher(app: &AppHandle) {
                         .remove(&frame_id);
                 });
             }
-            tokio::time::sleep(COMPLETION_POLL_INTERVAL).await;
+            tokio::time::sleep(completion_poll_delay(idle_polls, found_work)).await;
         }
     });
 }
@@ -505,6 +523,20 @@ pub(crate) fn start_dispatcher(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completion_poll_backoff_resets_on_ready_work() {
+        assert_eq!(completion_poll_delay(0, false), COMPLETION_POLL_INTERVAL);
+        assert_eq!(completion_poll_delay(3, false), COMPLETION_POLL_INTERVAL);
+        assert_eq!(
+            completion_poll_delay(COMPLETION_POLL_IDLE_THRESHOLD, false),
+            COMPLETION_POLL_IDLE_INTERVAL
+        );
+        assert_eq!(
+            completion_poll_delay(u32::MAX, true),
+            COMPLETION_POLL_INTERVAL
+        );
+    }
 
     #[test]
     fn completion_policy_defaults_inline_and_disables_irrelevant_resume() {

@@ -209,6 +209,12 @@ async function lastInvokeArgs(page: Page, cmd: string) {
   }, cmd);
 }
 
+async function invokeCount(page: Page, cmd: string) {
+  return page.evaluate((name) =>
+    ((window as any).__skillInvokeLog ?? []).filter((call: any) => call.cmd === name).length,
+  cmd);
+}
+
 // How many run-list refreshes the UI has performed. The app polls `list_runs`
 // on a ticker (every second while a turn is busy or a transfer is active),
 // so "wait until N more polls happened" replaces fixed sleeps in tests that
@@ -11775,6 +11781,16 @@ test("pet stays off until the user explicitly configures its directory", async (
   await expect.poll(() => pet.getAttribute("data-state")).toMatch(/^(idle|looking)$/);
   await pet.click();
   await expect(pet).toHaveAttribute("data-state", "waving");
+});
+
+test("disabled desktop pet skips runtime run polling", async ({ page }) => {
+  await page.goto("/?pet=desktop");
+
+  // Wait for both the initial settings read and one interval tick. Neither
+  // should query the run snapshot while the pet is disabled.
+  await expect.poll(() => invokeCount(page, "get_pet")).toBeGreaterThanOrEqual(2);
+  expect(await invokeCount(page, "get_pet_runtime_status")).toBe(0);
+  await expect.poll(() => page.evaluate(() => (window as any).__petWindowVisible)).toBe(false);
 });
 
 test("desktop pet remains independent and reflects global agent state", async ({ page }) => {
