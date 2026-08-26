@@ -832,6 +832,20 @@ fn App() -> impl IntoView {
     // Live web retrieval failed because the Chrome extension is disconnected.
     // Root-owned so Escape can dismiss it without first focusing the banner.
     let browser_offline_notice = create_rw_signal::<Option<BrowserOfflineNotice>>(None);
+    // A transcript records the connection state at tool-call time. Recheck the
+    // live bridge once whenever a notice appears so a reconnect does not leave
+    // a stale banner on screen or revive one after a session reload.
+    create_effect(move |_| {
+        let Some(notice) = browser_offline_notice.get() else {
+            return;
+        };
+        spawn_local(async move {
+            let value = invoke("extension_connected", JsValue::UNDEFINED).await;
+            if value.as_bool().unwrap_or(false) {
+                set_browser_offline_notice(browser_offline_notice, &notice.frame_id, None);
+            }
+        });
+    });
     let browser_tab_cleanup = create_rw_signal(None::<BrowserTabCleanupPrompt>);
     let browser_tab_cleanup_queue = create_rw_signal(Vec::<BrowserTabCleanupPrompt>::new());
     let browser_tab_cleanup_selected = create_rw_signal(HashSet::<(String, i64)>::new());

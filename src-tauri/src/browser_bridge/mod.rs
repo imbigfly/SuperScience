@@ -1403,6 +1403,15 @@ impl BrowserBridge {
             opened,
         }
     }
+
+    /// Live connection status for the offline banner's recheck: the per-turn
+    /// judgment is frozen into the transcript, so a banner from a transient
+    /// disconnect sticks forever even after the extension reconnects (and
+    /// resurrects on session reload). The UI rechecks through this before
+    /// showing the banner.
+    pub async fn extension_connected(&self) -> bool {
+        self.client_connected().await
+    }
 }
 
 #[derive(Serialize, Clone)]
@@ -3036,6 +3045,19 @@ mod tests {
             Approval::Ask
         );
         let _ = std::fs::remove_file(tmp);
+    }
+
+    #[tokio::test]
+    async fn extension_connection_status_tracks_live_clients() {
+        let bridge = BrowserBridge::new(PathBuf::from("extension"));
+        assert!(!bridge.extension_connected().await);
+
+        let (tx, _rx) = mpsc::unbounded_channel();
+        bridge.install_client(7, tx).await;
+        assert!(bridge.extension_connected().await);
+
+        bridge.disconnect_client(7).await;
+        assert!(!bridge.extension_connected().await);
     }
 
     #[tokio::test]
