@@ -198,9 +198,14 @@ fn refresh_desktop_pet(status: RwSignal<PetStatus>, activity: RwSignal<DesktopPe
             .unwrap_or(JsValue::UNDEFINED);
         let _ = invoke("set_pet_window_visible", args).await;
 
-        let snapshot = invoke("get_pet_runtime_status", JsValue::UNDEFINED).await;
-        if let Ok(snapshot) = serde_wasm_bindgen::from_value::<PetRuntimeSnapshot>(snapshot) {
-            activity.update(|current| current.replace_from_snapshot(snapshot));
+        // A disabled or unconfigured pet has no visible runtime state. Keep
+        // the cheap settings probe so external changes are noticed, but do
+        // not query SQLite for active runs until the pet can be shown.
+        if visible {
+            let snapshot = invoke("get_pet_runtime_status", JsValue::UNDEFINED).await;
+            if let Ok(snapshot) = serde_wasm_bindgen::from_value::<PetRuntimeSnapshot>(snapshot) {
+                activity.update(|current| current.replace_from_snapshot(snapshot));
+            }
         }
     });
 }
