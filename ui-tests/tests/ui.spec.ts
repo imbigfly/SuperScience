@@ -9863,6 +9863,7 @@ test("opening a long conversation lands at the latest message and stays stable o
   await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(before - 240);
 
   const readingPosition = await scroller.evaluate((element) => element.scrollTop);
+  await expect(scroller).toHaveCSS("overflow-anchor", "auto");
   // Unfollow flips overflow-anchor back to auto, but Chromium only picks a
   // scroll anchor at layout time. Waiting frames alone is not enough: if no
   // layout ran in between, the prepend below is never compensated (#663).
@@ -9887,6 +9888,14 @@ test("opening a long conversation lands at the latest message and stays stable o
     thread?.prepend(spacer);
   });
   await expect.poll(() => scroller.evaluate((element) => element.scrollTop))
+    .toBeGreaterThan(readingPosition + 400);
+  // ResizeObserver runs after layout. Verify the scroll helper keeps the
+  // browser's prepend compensation instead of briefly accepting it and then
+  // restoring the stale pre-prepend bookmark.
+  await page.evaluate(
+    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+  );
+  expect(await scroller.evaluate((element) => element.scrollTop))
     .toBeGreaterThan(readingPosition + 400);
 });
 
