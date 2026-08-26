@@ -78,6 +78,8 @@ extern "C" {
     pub(crate) fn is_windows() -> bool;
     pub(crate) fn is_mac() -> bool;
     pub(crate) async fn window_control(action: &str);
+    #[wasm_bindgen(js_name = set_window_title)]
+    pub(crate) async fn set_window_title(title: &str);
     pub(crate) async fn start_window_move();
     #[wasm_bindgen(js_name = arm_caption_drag)]
     pub(crate) async fn arm_caption_drag(start_x: f64, start_y: f64);

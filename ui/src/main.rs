@@ -34,13 +34,12 @@ use app_overlays::{
     TurnMemoryOverlay, TurnMemoryOverlayState, UpdateCheckOverlay, UpdateCheckOverlayState,
 };
 use bindings::{
-    add_workspace_file_to_motif, attach_chat_autoscroll, cancel_saved_marks_apply,
-    clear_selection, close_mcp_app,
-    force_chat_bottom, invoke, invoke_checked, is_mac, is_windows, jump_chat_to_item,
-    jump_chat_to_user, listen, listen_current_window, listen_native_file_drop,
+    add_workspace_file_to_motif, attach_chat_autoscroll, cancel_saved_marks_apply, clear_selection,
+    close_mcp_app, force_chat_bottom, invoke, invoke_checked, is_mac, is_windows,
+    jump_chat_to_item, jump_chat_to_user, listen, listen_current_window, listen_native_file_drop,
     native_drop_in_composer, open_browser_extension_page, open_external_url, pasted_image_count,
     preserve_chat_prepend_position, preview_selection, restore_chat_session_scroll,
-    schedule_chat_follow, set_saved_marks, CHAT_SCROLLER_ID, CHAT_THREAD_ID,
+    schedule_chat_follow, set_saved_marks, set_window_title, CHAT_SCROLLER_ID, CHAT_THREAD_ID,
 };
 use context_menu::{ContextMenuPortal, CtxMenu};
 use dto::*;
@@ -83,7 +82,7 @@ use text::{
 use trajectory::TrajectoryOverlay;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use window_titlebar::WindowTitlebar;
+use window_titlebar::{app_window_title, WindowTitlebar};
 
 /// Stable substring of the backend's missing-key error (`src-tauri` `send_message`),
 /// used to turn that failure into an actionable "open Settings" prompt.
@@ -9395,6 +9394,23 @@ fn App() -> impl IntoView {
             || (project_info.get().is_some() && !show_projects.get() && !demo_mode.get())
     });
     let home_page = Signal::derive(move || show_projects.get());
+    let window_title = Signal::derive(move || {
+        if scratch_open.get() {
+            app_window_title(Some("Scratch"))
+        } else if show_projects.get() {
+            app_window_title(None)
+        } else if demo_mode.get() {
+            app_window_title(Some(&t(locale.get(), "projects.example")))
+        } else {
+            app_window_title(project_info.get().as_ref().map(|p| p.name.as_str()))
+        }
+    });
+    create_effect(move |_| {
+        let title = window_title.get();
+        spawn_local(async move {
+            set_window_title(&title).await;
+        });
+    });
     let shortcut_action = palette_action.clone();
     window_event_listener(ev::keydown, move |ev| {
         let Some(ev) = ev.dyn_ref::<web_sys::KeyboardEvent>() else {
@@ -9553,7 +9569,7 @@ fn App() -> impl IntoView {
     view! {
         {is_windows().then(|| view! {
             <WindowTitlebar locale=locale has_current_project=has_current_project
-                home=home_page on_action=palette_action.clone() />
+                home=home_page brand=window_title on_action=palette_action.clone() />
         })}
         <ActionPalette open=action_palette_open has_current_project=has_current_project
             on_action=palette_action />

@@ -9,6 +9,10 @@ Choose another workspace from the sidebar workspace menu to switch the current
 window in place. A separate window is opened only by an action explicitly
 labelled **Open in new window**.
 
+Each window title includes the open workspace name
+(`wisp science — my-project`) so the taskbar, Alt-Tab, and macOS title bar can
+tell windows apart. The Projects home screen uses the app name alone.
+
 On the Projects home screen, each project card has a **Project settings**
 button. It opens name, description, and Agent Context for that project without
 entering the workspace first. The home screen does not use the browser

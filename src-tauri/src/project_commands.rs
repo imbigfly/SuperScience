@@ -1,6 +1,7 @@
 //! Project Commands split out of lib.rs; shared state/helpers stay in the crate root.
 
 use super::*;
+use tauri::Manager;
 
 fn same_workspace_path(left: &Path, right: &Path) -> bool {
     if left == right {
@@ -232,6 +233,23 @@ pub(super) async fn set_active_project(
     Ok((name, ws))
 }
 
+/// Brand string used when no project is open (home, or a window that has not
+/// loaded a workspace yet). Taskbar, Alt-Tab, and the macOS title bar all
+/// read this, so it must stay in sync with the custom Windows titlebar.
+pub(super) const APP_WINDOW_TITLE: &str = "wisp science";
+
+/// Native window title: the app name, plus the project when one is open.
+pub(super) fn app_window_title(project_name: Option<&str>) -> String {
+    match project_name.map(str::trim).filter(|name| !name.is_empty()) {
+        Some(name) => format!("{APP_WINDOW_TITLE} \u{2014} {name}"),
+        None => APP_WINDOW_TITLE.to_string(),
+    }
+}
+
+fn apply_app_window_title(window: &tauri::WebviewWindow, project_name: Option<&str>) {
+    let _ = window.set_title(&app_window_title(project_name));
+}
+
 #[tauri::command]
 pub(super) async fn open_project(
     state: State<'_, AppState>,
@@ -240,6 +258,7 @@ pub(super) async fn open_project(
 ) -> Result<ProjectSummary, String> {
     let _project_activity = state.begin_project_activity(&id)?;
     let (name, ws) = set_active_project(state.inner(), window.label(), &id).await?;
+    apply_app_window_title(&window, Some(&name));
     let _ = state.store.create_project(&id, &name, &ws).await; // touch updated_at → sorts to top
     Ok(build_project_summary(&state, &id).await)
 }
@@ -328,10 +347,10 @@ pub(super) async fn spawn_project_window(
     }
     // Pre-set this window's active project so its first commands resolve correctly
     // even before the window's frontend calls open_project.
-    set_active_project(state, &label, id).await?;
+    let (name, _) = set_active_project(state, &label, id).await?;
     let url = tauri::WebviewUrl::App(project_window_url(id, session).into());
     let mut builder = tauri::WebviewWindowBuilder::new(app, &label, url)
-        .title("wisp science")
+        .title(app_window_title(Some(&name)))
         .inner_size(1100.0, 760.0)
         .resizable(true)
         .on_navigation(crate::guard_webview_navigation);
@@ -678,12 +697,26 @@ pub(super) async fn update_project(
         "Project settings changes",
     )
     .await?;
+    let name = name.trim();
     state
         .store
-        .update_project(&project_id, name.trim(), description.trim())
+        .update_project(&project_id, name, description.trim())
         .await
         .map_err(|e| format!("{e}"))?;
     write_project_agent_context(&root, &agent_context)?;
+    // Home-card configure (`id` is Some) may run while this window is still
+    // on the projects landing — do not stamp that window with the renamed
+    // project. In-project settings omit `id` and should update this window.
+    // The dedicated `proj-{id}` window, if open, always shows that project.
+    if id.is_none() {
+        apply_app_window_title(&window, Some(name));
+    }
+    if let Some(proj_win) = window
+        .app_handle()
+        .get_webview_window(&project_window_label(&project_id))
+    {
+        apply_app_window_title(&proj_win, Some(name));
+    }
     Ok(build_project_summary(&state, &project_id).await)
 }
 
@@ -697,7 +730,25 @@ pub(super) async fn get_project_info(
 
 #[cfg(test)]
 mod tests {
-    use super::{read_project_agent_context, same_workspace_path, write_project_agent_context};
+    use super::{
+        app_window_title, read_project_agent_context, same_workspace_path,
+        write_project_agent_context, APP_WINDOW_TITLE,
+    };
+
+    #[test]
+    fn app_window_title_uses_the_project_name() {
+        assert_eq!(app_window_title(None), APP_WINDOW_TITLE);
+        assert_eq!(app_window_title(Some("")), APP_WINDOW_TITLE);
+        assert_eq!(app_window_title(Some("   ")), APP_WINDOW_TITLE);
+        assert_eq!(
+            app_window_title(Some("fkbp1a-aortic-ring-assay")),
+            "wisp science \u{2014} fkbp1a-aortic-ring-assay"
+        );
+        assert_eq!(
+            app_window_title(Some("  fkbp1a  ")),
+            "wisp science \u{2014} fkbp1a"
+        );
+    }
 
     #[test]
     fn workspace_path_match_resolves_equivalent_existing_paths() {

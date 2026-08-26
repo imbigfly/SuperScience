@@ -29,6 +29,20 @@ export async function window_control(action) {
   if (action === "close") return current.close();
 }
 
+/** Native window title (taskbar / Alt-Tab / macOS title bar) plus `document.title`. */
+export async function set_window_title(title) {
+  if (typeof document !== "undefined") {
+    document.title = title;
+  }
+  const current = window.__TAURI__?.window?.getCurrentWindow?.();
+  if (!current?.setTitle) return;
+  try {
+    await current.setTitle(title);
+  } catch {
+    // Browser mock or missing capability — `document.title` still updated.
+  }
+}
+
 /** Caption-style move so Windows Aero Snap / edge snap can engage. */
 export async function start_window_move() {
   const core = tauriCore();

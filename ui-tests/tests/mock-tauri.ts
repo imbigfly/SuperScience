@@ -5536,6 +5536,10 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
         close: async () => {
           ((window as any).__skillInvokeLog ??= []).push({ cmd: "close" });
         },
+        setTitle: async (title: string) => {
+          document.title = String(title);
+          ((window as any).__skillInvokeLog ??= []).push({ cmd: "set-title", args: { title } });
+        },
       }),
     },
   };
@@ -5850,6 +5854,10 @@ export function parallelMock(): void {
         listen: async (event: string, cb: (e: { payload: unknown }) => void) => {
           windowListeners[event] = cb;
           return () => { windowListeners[event] = undefined; };
+        },
+        setTitle: async (title: string) => {
+          document.title = String(title);
+          ((window as any).__skillInvokeLog ??= []).push({ cmd: "set-title", args: { title } });
         },
       }),
     },

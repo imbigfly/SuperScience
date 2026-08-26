@@ -10963,6 +10963,8 @@ test("Windows uses the integrated title bar without covering the project landing
   await page.goto("/");
 
   await expect(page.locator(".window-titlebar")).toBeVisible();
+  await expect(page.getByTestId("window-brand-title")).toHaveText("wisp science");
+  await expect(page).toHaveTitle("wisp science");
   await expect(page.getByRole("button", { name: "Minimize" })).toBeVisible();
   await expect(page.getByTestId("window-maximize")).toBeVisible();
   await expect(page.locator("#titlebar-maximize")).toHaveAttribute("aria-label", "Maximize");
@@ -11061,6 +11063,36 @@ test("Windows uses the integrated title bar without covering the project landing
       .filter((c: any) => c.cmd === "open_external_url")
       .map((c: any) => (c.args instanceof Map ? c.args.get("url") : c.args?.url))
   )).toContain("https://github.com/xuzhougeng/wisp-science#readme");
+
+  await context.close();
+});
+
+test("window title includes the open project name (#1017)", async ({ browser }) => {
+  const context = await browser.newContext({
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136 Safari/537.36",
+  });
+  const page = await context.newPage();
+  await page.addInitScript(tauriMock);
+  await page.goto("/");
+
+  await expect(page.getByTestId("window-brand-title")).toHaveText("wisp science");
+  await expect(page).toHaveTitle("wisp science");
+
+  await page.locator(".proj-card-main").first().click();
+  await expect(newSessionButton(page)).toBeVisible();
+  await expect(page.getByTestId("window-brand-title")).toHaveText("wisp science \u2014 wisp-science");
+  await expect(page).toHaveTitle("wisp science \u2014 wisp-science");
+
+  await page.locator(".proj-switch").click();
+  await page.locator(".proj-menu").getByRole("button", { name: "Other project" }).click();
+  await expect(page.locator(".proj-name")).toHaveText("Other project");
+  await expect(page.getByTestId("window-brand-title")).toHaveText("wisp science \u2014 Other project");
+  await expect(page).toHaveTitle("wisp science \u2014 Other project");
+
+  await page.getByRole("button", { name: "Back to projects" }).click();
+  await expect(page.locator(".projects-screen")).toBeVisible();
+  await expect(page.getByTestId("window-brand-title")).toHaveText("wisp science");
+  await expect(page).toHaveTitle("wisp science");
 
   await context.close();
 });
@@ -12837,6 +12869,7 @@ test("a ?project window opens straight into the project, skipping the landing (#
   await expect.poll(async () => page.evaluate(() =>
     ((window as any).__skillInvokeLog ?? []).some((c: any) => c.cmd === "open_project"),
   )).toBe(true);
+  await expect(page).toHaveTitle("wisp science \u2014 wisp-science");
 });
 
 test("specialists page configures the builtin Reader and saves a custom specialist", async ({ page }) => {

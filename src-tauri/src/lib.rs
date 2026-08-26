@@ -6479,7 +6479,7 @@ pub fn run() {
                 "main",
                 tauri::WebviewUrl::App("index.html".into()),
             )
-            .title("wisp science")
+            .title(project_commands::APP_WINDOW_TITLE)
             .inner_size(1100.0, 760.0)
             .resizable(true)
             .disable_drag_drop_handler()
