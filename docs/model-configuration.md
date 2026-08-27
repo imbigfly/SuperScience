@@ -50,6 +50,14 @@ Choosing a level saves it as the profile's default — it applies to every
 conversation using that model and is not scoped to the current conversation.
 Choosing "default" clears the value so the provider decides.
 
+The built-in Reader used by `#` session references inherits that profile's
+model and reasoning effort, but the first retrieval pass is capped at 2048
+output tokens. If hidden reasoning fills that budget, or the JSON lands in a
+thinking field instead of visible content, Reader retries once with the
+profile's full output budget and parses JSON from either field. If structured
+retrieval still fails, the cited transcript is injected in truncated form so
+the main turn can still use the reference.
+
 Model profiles describe model access and capabilities for the **built-in Wisp
 agent**. External coding agents (Codex / Claude via ACP) are configured under
 **Settings → Models → ACP Agents** — see [ACP Agents](acp-agents.md). Do not put

@@ -307,6 +307,53 @@ fn flush_tool_images(out: &mut Vec<Value>, pending: &mut Vec<Value>) {
     }
 }
 
+/// Visible assistant text from a Chat Completions `message`.
+///
+/// Compatible gateways do not agree on the JSON type: a string, `null`, an
+/// array of text parts, or (when the model was asked for JSON) a parsed
+/// object. `as_str()` alone turns every non-string into `""`, which made
+/// Reader report "no JSON object" on an otherwise successful call (#1019).
+fn extract_message_content(msg: &Value) -> String {
+    match msg.get("content") {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(parts)) => extract_content_array(parts),
+        Some(Value::Object(_)) | Some(Value::Number(_)) | Some(Value::Bool(_)) => {
+            msg["content"].to_string()
+        }
+        Some(Value::Null) | None => String::new(),
+    }
+}
+
+fn extract_content_array(parts: &[Value]) -> String {
+    let mut text = String::new();
+    let mut saw_part = false;
+    for part in parts {
+        if let Some(piece) = content_part_text(part) {
+            saw_part = true;
+            text.push_str(&piece);
+        }
+    }
+    if saw_part {
+        text
+    } else {
+        Value::Array(parts.to_vec()).to_string()
+    }
+}
+
+fn content_part_text(part: &Value) -> Option<String> {
+    if let Some(text) = part.as_str() {
+        return Some(text.to_string());
+    }
+    match part.get("type").and_then(Value::as_str) {
+        Some("text") | Some("output_text") | None => part
+            .get("text")
+            .or_else(|| part.get("output_text"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        _ => None,
+    }
+}
+
 fn extract_reasoning(msg: &Value) -> Option<String> {
     if let Some(s) = msg.get("reasoning_content").and_then(|v| v.as_str()) {
         return Some(s.to_string());
@@ -515,11 +562,7 @@ impl Provider for OpenAiProvider {
             .cloned()
             .unwrap_or(Value::Null);
         let msg = choice.get("message").cloned().unwrap_or(Value::Null);
-        let content = msg
-            .get("content")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        let content = extract_message_content(&msg);
         let reasoning = extract_reasoning(&msg);
         let tool_calls = normalize_tool_calls(&msg);
         ensure_named_tool_calls(&tool_calls)?;
@@ -803,6 +846,65 @@ mod tests {
             requests.await.unwrap(),
             ["/chat/completions", "/v1/chat/completions"]
         );
+    }
+
+    #[test]
+    fn extract_message_content_joins_text_parts() {
+        let msg = json!({
+            "content": [
+                {"type": "text", "text": "{\"summary\":"},
+                {"type": "text", "text": "\"hit\"}"}
+            ]
+        });
+        assert_eq!(extract_message_content(&msg), "{\"summary\":\"hit\"}");
+    }
+
+    #[test]
+    fn extract_message_content_serializes_object_payload() {
+        let msg = json!({ "content": { "summary": "hit", "evidence": [] } });
+        let parsed: Value = serde_json::from_str(&extract_message_content(&msg)).unwrap();
+        assert_eq!(parsed["summary"], "hit");
+        assert_eq!(parsed["evidence"], json!([]));
+    }
+
+    #[test]
+    fn extract_message_content_treats_null_as_empty() {
+        assert_eq!(extract_message_content(&json!({ "content": null })), "");
+    }
+
+    #[tokio::test]
+    async fn complete_reads_array_content_parts() {
+        let (base_url, requests) = serve_responses(vec![(
+            "200 OK",
+            "application/json",
+            r#"{"choices":[{"message":{"content":[{"type":"text","text":"OK"}]},"finish_reason":"stop"}]}"#,
+        )])
+        .await;
+        let provider = local_provider(&base_url);
+        let completion = provider
+            .complete(&[Message::user("Reply with OK.")], &[])
+            .await
+            .unwrap();
+        assert_eq!(completion.content, "OK");
+        assert_eq!(requests.await.unwrap(), ["/chat/completions"]);
+    }
+
+    #[tokio::test]
+    async fn complete_keeps_reasoning_when_content_is_null() {
+        let (base_url, requests) = serve_responses(vec![(
+            "200 OK",
+            "application/json",
+            r#"{"choices":[{"message":{"content":null,"reasoning_content":"think"},"finish_reason":"stop"}]}"#,
+        )])
+        .await;
+        let provider = local_provider(&base_url);
+        let completion = provider
+            .complete(&[Message::user("Reply with OK.")], &[])
+            .await
+            .unwrap();
+        assert_eq!(completion.content, "");
+        assert_eq!(completion.reasoning.as_deref(), Some("think"));
+        assert_eq!(requests.await.unwrap(), ["/chat/completions"]);
     }
 
     #[tokio::test]
