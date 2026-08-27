@@ -2645,6 +2645,9 @@ struct TauriOutput {
     provenance_scope: String,
     /// Per-send_message id used to attribute real-browser tabs to this turn.
     turn_id: String,
+    /// IM turns force Ask on mutating tools and skip Full Permission
+    /// auto-approval so an unattended Feishu/WeChat message cannot write/shell.
+    force_ask_mutations: bool,
 }
 
 impl TauriOutput {
@@ -2678,7 +2681,7 @@ impl TauriOutput {
         message: &str,
         allow_full_permission: bool,
     ) -> wisp_tools::ConfirmDecision {
-        if allow_full_permission && self.full_permission() {
+        if allow_full_permission && self.full_permission() && !self.force_ask_mutations {
             return wisp_tools::ConfirmDecision::Approved;
         }
         let (tool, preview) = parse_confirm_payload(message);
@@ -3019,10 +3022,16 @@ impl Output for TauriOutput {
         })
     }
     fn approval_bypass(&self) -> bool {
-        self.full_permission()
+        self.full_permission() && !self.force_ask_mutations
     }
     fn danger_auto_approve(&self) -> bool {
+        if self.force_ask_mutations {
+            return false;
+        }
         self.full_permission() || self.approvals.read().map(|p| p.full()).unwrap_or(false)
+    }
+    fn force_ask_mutations(&self) -> bool {
+        self.force_ask_mutations
     }
     fn plan_mode(&self) -> bool {
         self.plan_mode
@@ -6735,6 +6744,9 @@ pub fn run() {
             channels::feishu_bind_poll,
             channels::feishu_bind_cancel,
             channels::feishu_unbind,
+            channels::set_feishu_owner,
+            channels::confirm_feishu_pending_owner,
+            channels::reject_feishu_pending_owner,
             channels::set_weixin_channel,
             channels::weixin_bind_start,
             channels::weixin_bind_poll,

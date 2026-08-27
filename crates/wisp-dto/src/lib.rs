@@ -1751,6 +1751,10 @@ pub struct ChannelsStatus {
     #[serde(default)]
     pub feishu_detail: String,
     #[serde(default)]
+    pub feishu_owner_open_id: String,
+    #[serde(default)]
+    pub feishu_pending_owner_open_id: String,
+    #[serde(default)]
     pub weixin_enabled: bool,
     #[serde(default)]
     pub weixin_bound: bool,

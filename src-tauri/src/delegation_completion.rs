@@ -457,6 +457,7 @@ async fn dispatch_frame(app: AppHandle, frame_id: String) {
         None,
         None,
         Some(workflow_guard),
+        crate::TurnOrigin::Desktop,
     )
     .await;
     let (success, error) = match &result {

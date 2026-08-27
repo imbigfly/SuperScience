@@ -1319,7 +1319,21 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "channels.feishu.region_lark") => Some("Lark International"),
         (Locale::En, "channels.feishu.app_id") => Some("App ID"),
         (Locale::En, "channels.feishu.app_secret") => Some("App Secret"),
-        (Locale::En, "channels.feishu.hint") => Some("The app must expose a bot, use long-connection event subscription for im.message.receive_v1, and have message send/receive plus bot-info permissions. Agent turns are returned as live CardKit progress cards."),
+        (Locale::En, "channels.feishu.hint") => Some("The app must expose a bot, use long-connection event subscription for im.message.receive_v1, and have message send/receive plus bot-info permissions. Agent turns are returned as live CardKit progress cards. Only the bound owner can drive turns; mutating tools from Feishu still ask for desktop approval."),
+        (Locale::En, "channels.feishu.owner_title") => Some("Bound owner"),
+        (Locale::En, "channels.feishu.owner_hint") => Some("The owner must be confirmed here or entered explicitly. The first person to message the bot is never bound automatically."),
+        (Locale::En, "channels.feishu.owner_not_bound") => Some("No owner bound"),
+        (Locale::En, "channels.feishu.owner_bound") => Some("Owner"),
+        (Locale::En, "channels.feishu.owner_missing") => Some("App connected · owner not bound"),
+        (Locale::En, "channels.feishu.owner_open_id") => Some("Owner open_id"),
+        (Locale::En, "channels.feishu.owner_save") => Some("Bind owner"),
+        (Locale::En, "channels.feishu.owner_clear") => Some("Clear owner"),
+        (Locale::En, "channels.feishu.owner_saved") => Some("Feishu owner saved."),
+        (Locale::En, "channels.feishu.owner_cleared") => Some("Feishu owner cleared."),
+        (Locale::En, "channels.feishu.pending_title") => Some("Pending owner pairing"),
+        (Locale::En, "channels.feishu.pending_hint") => Some("A Feishu user messaged the bot. Confirm on this computer to bind them as owner."),
+        (Locale::En, "channels.feishu.pending_confirm") => Some("Confirm owner"),
+        (Locale::En, "channels.feishu.pending_reject") => Some("Reject"),
         (Locale::En, "channels.weixin.title") => Some("WeChat bot (iLink)"),
         (Locale::En, "channels.weixin.subtitle") => Some("Personal 1:1 messages · QR code binding"),
         (Locale::En, "channels.weixin.toggle") => Some("Enable WeChat bot"),
@@ -3764,7 +3778,21 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "channels.feishu.region_lark") => Some("Lark 国际版"),
         (Locale::Zh, "channels.feishu.app_id") => Some("App ID"),
         (Locale::Zh, "channels.feishu.app_secret") => Some("App Secret"),
-        (Locale::Zh, "channels.feishu.hint") => Some("应用需启用机器人能力，事件订阅选择「长连接」并订阅 im.message.receive_v1，同时开通消息收发与获取机器人信息权限。AI 处理过程会通过 CardKit 卡片持续更新。"),
+        (Locale::Zh, "channels.feishu.hint") => Some("应用需启用机器人能力，事件订阅选择「长连接」并订阅 im.message.receive_v1，同时开通消息收发与获取机器人信息权限。AI 处理过程会通过 CardKit 卡片持续更新。只有已绑定的所有者可以发起任务；飞书侧的写入/执行类工具仍会在桌面端请求审批。"),
+        (Locale::Zh, "channels.feishu.owner_title") => Some("绑定所有者"),
+        (Locale::Zh, "channels.feishu.owner_hint") => Some("所有者必须在本机确认配对或手动填写 open_id。第一个给机器人发消息的人不会被自动设为所有者。"),
+        (Locale::Zh, "channels.feishu.owner_not_bound") => Some("尚未绑定所有者"),
+        (Locale::Zh, "channels.feishu.owner_bound") => Some("所有者"),
+        (Locale::Zh, "channels.feishu.owner_missing") => Some("应用已连接 · 尚未绑定所有者"),
+        (Locale::Zh, "channels.feishu.owner_open_id") => Some("所有者 open_id"),
+        (Locale::Zh, "channels.feishu.owner_save") => Some("绑定所有者"),
+        (Locale::Zh, "channels.feishu.owner_clear") => Some("清除所有者"),
+        (Locale::Zh, "channels.feishu.owner_saved") => Some("已保存飞书所有者。"),
+        (Locale::Zh, "channels.feishu.owner_cleared") => Some("已清除飞书所有者。"),
+        (Locale::Zh, "channels.feishu.pending_title") => Some("待确认所有者配对"),
+        (Locale::Zh, "channels.feishu.pending_hint") => Some("有飞书用户向机器人发了消息。请在本机确认后才会将其绑定为所有者。"),
+        (Locale::Zh, "channels.feishu.pending_confirm") => Some("确认所有者"),
+        (Locale::Zh, "channels.feishu.pending_reject") => Some("拒绝"),
         (Locale::Zh, "channels.weixin.title") => Some("微信机器人(iLink)"),
         (Locale::Zh, "channels.weixin.subtitle") => Some("个人一对一消息 · 扫码绑定"),
         (Locale::Zh, "channels.weixin.toggle") => Some("启用微信机器人"),
@@ -5569,7 +5597,10 @@ mod queue_label_tests {
             t(Locale::En, "browser.auto_close_tabs"),
             "Automatically close browser tabs"
         );
-        assert_eq!(t(Locale::Zh, "browser.auto_close_tabs"), "自动关闭浏览器标签页");
+        assert_eq!(
+            t(Locale::Zh, "browser.auto_close_tabs"),
+            "自动关闭浏览器标签页"
+        );
         assert_eq!(
             tf(Locale::En, "browser.cleanup.body", &[("n", "18")]),
             "This turn opened 18 tabs. Selected tabs will be closed. Uncheck any you want to keep."
@@ -5585,11 +5616,19 @@ mod queue_label_tests {
         assert_eq!(t(Locale::En, "trajectory.export"), "Export HTML");
         assert_eq!(t(Locale::Zh, "trajectory.export"), "导出 HTML");
         assert_eq!(
-            tf(Locale::En, "trajectory.export_saved", &[("path", "/tmp/a.html")]),
+            tf(
+                Locale::En,
+                "trajectory.export_saved",
+                &[("path", "/tmp/a.html")]
+            ),
             "Trajectory saved to /tmp/a.html"
         );
         assert_eq!(
-            tf(Locale::Zh, "trajectory.export_saved", &[("path", "/tmp/a.html")]),
+            tf(
+                Locale::Zh,
+                "trajectory.export_saved",
+                &[("path", "/tmp/a.html")]
+            ),
             "轨迹已保存到 /tmp/a.html"
         );
     }

@@ -242,6 +242,12 @@ pub trait ToolEnv: Send + Sync {
     fn approval_bypass(&self) -> bool {
         false
     }
+    /// When true, mutating tools (`plan_mode_blocks && !read_only`) require Ask
+    /// even if the host policy is Allow and even if [`Self::approval_bypass`]
+    /// is set. Used for unattended IM turns.
+    fn force_ask_mutations(&self) -> bool {
+        false
+    }
     /// Whether this session is in plan mode: the agent researches and drafts a
     /// plan, so `Registry::run` refuses every tool outside
     /// [`crate::PLAN_MODE_READ_ONLY`]. Default `false`.

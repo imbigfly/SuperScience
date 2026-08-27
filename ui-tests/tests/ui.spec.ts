@@ -13077,6 +13077,12 @@ test("remote access settings: Feishu, WeChat, and StickS3 setup", async ({ page 
   // setup path.
   await page.getByTestId("feishu-channel-row").click();
   await expect(page.getByTestId("feishu-channel-card")).toBeVisible();
+  await expect(page.getByTestId("feishu-pending-owner")).toBeVisible();
+  await expect(page.getByTestId("feishu-pending-owner")).toContainText("ou_pending");
+  await page.getByTestId("feishu-pending-reject").click();
+  await expect.poll(() => lastInvokeArgs(page, "reject_feishu_pending_owner")).not.toBeNull();
+  await expect(page.getByTestId("feishu-pending-owner")).toHaveCount(0);
+  await expect(page.getByTestId("feishu-owner-status")).toContainText("No owner bound");
   await page.getByTestId("feishu-international").check();
   await page.getByTestId("feishu-app-id").fill("cli_test123");
   await page.getByTestId("feishu-app-secret").fill("secret-xyz");
@@ -13097,6 +13103,13 @@ test("remote access settings: Feishu, WeChat, and StickS3 setup", async ({ page 
   await expect(page.getByTestId("feishu-qr")).toBeVisible();
   await expect(page.getByTestId("feishu-unbind")).toBeVisible({ timeout: 10_000 });
   await expect(page.getByTestId("feishu-app-id")).toHaveValue("cli_scan_created");
+  await expect(page.getByTestId("feishu-owner-status")).toContainText("ou_scan_owner");
+  await page.getByTestId("feishu-owner-id").fill("ou_manual");
+  await page.getByTestId("feishu-owner-save").click();
+  await expect.poll(() => lastInvokeArgs(page, "set_feishu_owner")).toMatchObject({
+    openId: "ou_manual",
+  });
+  await expect(page.getByTestId("feishu-owner-status")).toContainText("ou_manual");
 
   // Back on the list the bound bot's toggle is now enabled.
   await page.locator(".settings-head-back").click();
