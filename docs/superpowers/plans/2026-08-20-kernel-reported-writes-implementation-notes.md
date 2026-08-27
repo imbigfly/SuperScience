@@ -88,17 +88,21 @@ credit for rewrites the mtime-granularity snapshot cannot see.
   on 500 writes with every path under the cap: 0.024 s median baseline vs
   0.028 s with the hook, about 8 µs per file.
 
-**Not done: #947 gap 3 (WSL).** The gap as filed assumed WSL kernels run in the
-project directory and only needed a `/mnt/<drive>/…` prefix translation. They do
-not: `build_attached_command` runs `cd {runtime_workdir} && exec …` where
-`runtime_workdir` is the context's configured workdir, else the probed
-`pwd`/`home`, else `~` — and `project_root` is unused in that branch
-(`src-tauri/src/runtime_launcher.rs`). So a WSL cell's relative writes land
-outside the project entirely, which also means the host's workspace snapshot
-cannot see them either. Making reports work there requires first deciding
-whether WSL kernels should `cd` into the project (WSL *terminals* already do,
-via `wsl.exe --cd`); that is a user-visible behavior change, not a path-mapping
-fix.
+## WSL project-root runtimes (2026-08-27, #947 gap 3)
+
+- WSL Python and R REPLs now translate the registered Windows project root with
+  `wslpath -a -u` and enter it before starting the worker. Translation or `cd`
+  failure aborts startup with an actionable error instead of silently running
+  in the context home. This aligns WSL REPLs with local REPLs, WSL terminals,
+  and WSL Runs. SSH retains its configured/probed remote workdir.
+- WSL Python workers receive the same host-owned write scope as local workers,
+  using `.` after the launcher has entered the translated project. Their
+  project-relative reports are joined and canonicalized against the Windows
+  project root before reaching provenance. Legacy absolute WSL reports and all
+  SSH reports remain rejected.
+- Pure tests cover launch command quoting, WSL-vs-SSH working-directory
+  behavior, write-scope selection, WSL report forwarding, and the SSH gate; CI
+  does not require a real WSL distro.
 
 ## Host-configured report scope (2026-08-27, #947 gap 1)
 

@@ -92,20 +92,24 @@ fn validated_project_writes(root: &Path, reported: &[String]) -> Vec<String> {
 }
 
 /// Hand a finished cell's self-reported writes to the running tool
-/// environment. Only local kernels report: a remote or WSL worker's absolute
-/// paths describe another machine's filesystem. An absent report means the
-/// worker could not observe, so the host keeps inferring from its snapshot.
-fn report_local_writes(env: &dyn ToolEnv, context_id: &str, response: &KernelResp) {
-    if context_id != LOCAL_CONTEXT_ID {
-        return;
-    }
+/// environment. Legacy absolute reports are local-only. A host-configured
+/// project-relative report is also safe for WSL because its REPL runs inside
+/// the translated Windows project root; SSH remains a different filesystem.
+/// An absent report means the worker could not observe, so the host keeps
+/// inferring from its snapshot.
+fn report_runtime_writes(env: &dyn ToolEnv, context_id: &str, response: &KernelResp) {
     let Some(reported) = &response.files_written else {
         return;
     };
-    let paths = match response.files_written_base.as_deref() {
-        None => project_relative_writes(env.project_root(), reported),
-        Some("project") => validated_project_writes(env.project_root(), reported),
-        Some(_) => Vec::new(),
+    let paths = match (context_id, response.files_written_base.as_deref()) {
+        (LOCAL_CONTEXT_ID, None) => project_relative_writes(env.project_root(), reported),
+        (LOCAL_CONTEXT_ID, Some("project")) => {
+            validated_project_writes(env.project_root(), reported)
+        }
+        (context, Some("project")) if context.starts_with("wsl:") => {
+            validated_project_writes(env.project_root(), reported)
+        }
+        _ => Vec::new(),
     };
     if !paths.is_empty() {
         env.report_written_paths(&paths);
@@ -126,8 +130,8 @@ pub struct RTool {
     session_id: String,
 }
 
-const PYTHON_TOOL_DESCRIPTION: &str = "Execute Python code in a persistent REPL. Variables, imports, and loaded data persist per conversation and execution context; parallel conversations never share interpreter state. Return values of expressions are printed. Paths are interpreted inside the selected context. Use this for analysis, data loading, plotting, and computation when required packages already exist. Do not use this as a package installer; if dependencies are missing, set up a project-local pixi environment or use local-env-setup first.";
-const R_TOOL_DESCRIPTION: &str = "Execute R code in a persistent REPL. Variables, libraries, and loaded data persist per conversation and execution context; parallel conversations never share interpreter state. The final visible value is printed. Paths are interpreted inside the selected context. Write plots explicitly with png(), pdf(), ggsave(), or another file device. Rscript and the jsonlite package must already exist in that context; this tool does not install packages.";
+const PYTHON_TOOL_DESCRIPTION: &str = "Execute Python code in a persistent REPL. Variables, imports, and loaded data persist per conversation and execution context; parallel conversations never share interpreter state. Return values of expressions are printed. Local and WSL REPLs start in the project root; SSH REPLs use the execution context workdir. Use this for analysis, data loading, plotting, and computation when required packages already exist. Do not use this as a package installer; if dependencies are missing, set up a project-local pixi environment or use local-env-setup first.";
+const R_TOOL_DESCRIPTION: &str = "Execute R code in a persistent REPL. Variables, libraries, and loaded data persist per conversation and execution context; parallel conversations never share interpreter state. The final visible value is printed. Local and WSL REPLs start in the project root; SSH REPLs use the execution context workdir. Write plots explicitly with png(), pdf(), ggsave(), or another file device. Rscript and the jsonlite package must already exist in that context; this tool does not install packages.";
 
 impl ReplTool {
     pub fn new(manager: RuntimeManager, project_id: impl Into<String>) -> Self {
@@ -254,7 +258,7 @@ async fn run_runtime(
                     env.emit(ToolEvent::Stdout { chunk }).await;
                 }
                 Some(RuntimeEvent::Finished(Ok(response))) => {
-                    report_local_writes(env, &key.context_id, &response);
+                    report_runtime_writes(env, &key.context_id, &response);
                     let success = response.error.is_none();
                     return ToolResult {
                         success,
@@ -388,7 +392,7 @@ impl Tool for RTool {
 #[cfg(test)]
 mod tests {
     use super::{
-        code_arg, context_id, project_relative_writes, report_local_writes,
+        code_arg, context_id, project_relative_writes, report_runtime_writes,
         validated_project_writes, PYTHON_TOOL_DESCRIPTION, R_TOOL_DESCRIPTION,
     };
     use crate::{KernelResp, LOCAL_CONTEXT_ID, MAX_CODE_BYTES};
@@ -408,6 +412,8 @@ mod tests {
         for description in [PYTHON_TOOL_DESCRIPTION, R_TOOL_DESCRIPTION] {
             assert!(description.contains("persist per conversation"));
             assert!(description.contains("parallel conversations never share interpreter state"));
+            assert!(description.contains("Local and WSL REPLs start in the project root"));
+            assert!(description.contains("SSH REPLs use the execution context workdir"));
         }
     }
 
@@ -581,7 +587,7 @@ mod tests {
         let env = recording_env(root.clone());
         let reported = vec![root.join("fig_1.png").to_string_lossy().into_owned()];
 
-        report_local_writes(&env, LOCAL_CONTEXT_ID, &response_with(Some(reported)));
+        report_runtime_writes(&env, LOCAL_CONTEXT_ID, &response_with(Some(reported)));
 
         assert_eq!(
             *env.reported.lock().unwrap(),
@@ -601,7 +607,7 @@ mod tests {
             ..KernelResp::default()
         };
 
-        report_local_writes(&env, LOCAL_CONTEXT_ID, &response);
+        report_runtime_writes(&env, LOCAL_CONTEXT_ID, &response);
 
         assert_eq!(
             *env.reported.lock().unwrap(),
@@ -610,20 +616,42 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// A remote or WSL worker's absolute paths describe another filesystem,
-    /// and an absent report means "host, keep inferring". Neither may reach
-    /// the record.
     #[test]
-    fn only_local_kernels_with_an_actual_report_are_forwarded() {
+    fn configured_wsl_report_is_forwarded_but_ssh_stays_remote() {
+        let root = unique_tmp("report_configured_wsl");
+        std::fs::write(root.join("fig_1.png"), b"x").unwrap();
+        let response = KernelResp {
+            files_written: Some(vec!["fig_1.png".into()]),
+            files_written_base: Some("project".into()),
+            ..KernelResp::default()
+        };
+        let wsl = recording_env(root.clone());
+        report_runtime_writes(&wsl, "wsl:Ubuntu", &response);
+        assert_eq!(
+            *wsl.reported.lock().unwrap(),
+            vec![vec!["fig_1.png".to_string()]]
+        );
+
+        let ssh = recording_env(root.clone());
+        report_runtime_writes(&ssh, "ssh:gpu-box", &response);
+        assert!(ssh.reported.lock().unwrap().is_empty());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A remote or WSL worker's legacy absolute paths describe another
+    /// filesystem, and an absent report means "host, keep inferring". Neither
+    /// may reach the record.
+    #[test]
+    fn only_local_legacy_absolute_reports_are_forwarded() {
         let root = unique_tmp("report_gates");
         std::fs::write(root.join("fig_1.png"), b"x").unwrap();
         let inside = vec![root.join("fig_1.png").to_string_lossy().into_owned()];
         let env = recording_env(root.clone());
 
-        report_local_writes(&env, "ssh:gpu-box", &response_with(Some(inside.clone())));
-        report_local_writes(&env, "wsl:Ubuntu", &response_with(Some(inside)));
-        report_local_writes(&env, LOCAL_CONTEXT_ID, &response_with(None));
-        report_local_writes(&env, LOCAL_CONTEXT_ID, &response_with(Some(Vec::new())));
+        report_runtime_writes(&env, "ssh:gpu-box", &response_with(Some(inside.clone())));
+        report_runtime_writes(&env, "wsl:Ubuntu", &response_with(Some(inside)));
+        report_runtime_writes(&env, LOCAL_CONTEXT_ID, &response_with(None));
+        report_runtime_writes(&env, LOCAL_CONTEXT_ID, &response_with(Some(Vec::new())));
 
         assert!(env.reported.lock().unwrap().is_empty());
         std::fs::remove_dir_all(&root).ok();

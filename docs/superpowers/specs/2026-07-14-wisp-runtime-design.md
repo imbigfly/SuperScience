@@ -344,8 +344,9 @@ plugin registry.
 - A macOS GUI app may not inherit the user's interactive shell `PATH`. Runtime
   discovery must support an explicitly configured interpreter path and report an
   actionable error when discovery fails.
-- Native Windows and WSL are separate contexts. Do not silently translate Windows
-  paths into Linux paths or vice versa.
+- Native Windows and WSL are separate contexts. Do not heuristically translate
+  arbitrary paths. The one explicit bridge is the registered project root: WSL
+  terminals, Runs, and interactive runtimes translate it with `wslpath`.
 
 ### 9.2 WSL and SSH worker deployment
 
@@ -365,10 +366,13 @@ therefore marks the runtime `dead` and loses its in-memory state.
 ### 9.3 Working directory
 
 - Local runtimes start in the project root.
-- WSL/SSH runtimes use the context's configured default workdir when present,
+- WSL runtimes start in the same project root translated with `wslpath`, because
+  WSL shares the Windows filesystem and project-relative writes participate in
+  local provenance, undo, and publication records.
+- SSH runtimes use the context's configured default workdir when present,
   otherwise the probed context home/current directory.
-- v1 does not create or synchronize a remote mirror of the local project.
-- Remote data should be addressed with paths meaningful inside that context.
+- v1 does not create or synchronize an SSH mirror of the local project. Remote
+  data should be addressed with paths meaningful inside that context.
 
 A future project-to-context workspace binding may provide a stable remote project
 root without changing runtime identity.
