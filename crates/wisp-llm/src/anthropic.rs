@@ -310,6 +310,7 @@ fn tool_result_content(content: &Content) -> Value {
 
 fn parse_completion(val: &Value) -> Completion {
     let mut content = String::new();
+    let mut reasoning = String::new();
     let mut tool_calls = vec![];
     if let Some(blocks) = val.get("content").and_then(|v| v.as_array()) {
         for b in blocks {
@@ -317,6 +318,11 @@ fn parse_completion(val: &Value) -> Completion {
                 Some("text") => {
                     if let Some(t) = b.get("text").and_then(|v| v.as_str()) {
                         content.push_str(t);
+                    }
+                }
+                Some("thinking") => {
+                    if let Some(t) = b.get("thinking").and_then(|v| v.as_str()) {
+                        reasoning.push_str(t);
                     }
                 }
                 Some("tool_use") => {
@@ -355,7 +361,7 @@ fn parse_completion(val: &Value) -> Completion {
     let usage = parse_usage(val.get("usage"));
     Completion {
         content,
-        reasoning: None,
+        reasoning: (!reasoning.is_empty()).then_some(reasoning),
         tool_calls,
         finish_reason,
         usage,
@@ -666,6 +672,19 @@ mod tests {
         let provider = AnthropicProvider::new(cfg);
         let (_, _, body) = provider.build_body(&[Message::user("hi")], &[], false);
         assert_eq!(body["output_config"]["effort"], "max");
+    }
+
+    #[test]
+    fn complete_extracts_thinking_blocks_into_reasoning() {
+        let completion = parse_completion(&json!({
+            "content": [
+                {"type": "thinking", "thinking": "plan the json"},
+                {"type": "text", "text": "{\"summary\":\"hit\",\"evidence\":[]}"}
+            ],
+            "stop_reason": "end_turn"
+        }));
+        assert_eq!(completion.content, "{\"summary\":\"hit\",\"evidence\":[]}");
+        assert_eq!(completion.reasoning.as_deref(), Some("plan the json"));
     }
 
     #[test]
