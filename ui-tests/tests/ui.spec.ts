@@ -1228,6 +1228,33 @@ test("ACP Agent settings create, test, and authenticate an installed agent", asy
   await expect.poll(() => lastInvokeArgs(page, "authenticate_acp_agent")).toMatchObject({ methodId: "browser" });
 });
 
+test("ACP terminal authentication opens the advertised login command in the terminal dock", async ({ page }) => {
+  await enterApp(page, "/?mockAcpTerminalAuth=1");
+  await globalSettingsButton(page).click();
+  await page.getByRole("button", { name: "Models", exact: true }).click();
+  await page.getByTestId("open-acp-agents-from-settings").click();
+  await page.getByTestId("add-acp-agent-settings").click();
+  const settings = page.getByTestId("acp-agents-settings");
+  await settings.getByTestId("acp-agent-label").fill("Claude ACP");
+  await settings.getByTestId("acp-agent-command").fill("npx");
+  await settings.getByTestId("acp-agent-args").fill("-y\n@agentclientprotocol/claude-agent-acp");
+  await settings.getByTestId("save-acp-agent").click();
+
+  const row = page.getByTestId("acp-agent-row").filter({ hasText: "Claude ACP" });
+  await row.getByTestId("test-acp-agent").click();
+  await expect(row.getByTestId("acp-agent-info")).toContainText("Claude Agent 0.69.0 · ACP v1");
+  await row.getByRole("button", { name: "Claude Subscription" }).click();
+
+  await expect.poll(() => lastInvokeArgs(page, "authenticate_acp_agent")).toMatchObject({
+    methodId: "claude-ai-login",
+  });
+  await expect(page.locator(".settings-page")).toHaveCount(0);
+  const terminalDock = page.getByTestId("terminal-dock");
+  await expect(terminalDock).toBeVisible();
+  await expect(terminalDock.getByRole("tab", { name: "Claude ACP — Claude Subscription" })).toBeVisible();
+  await expect(page.getByText("Authentication terminal opened. Complete sign-in there, then retry the ACP session.")).toBeVisible();
+});
+
 test("selecting an ACP Agent from a populated HTTP session starts a fresh session", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("existing HTTP turn");

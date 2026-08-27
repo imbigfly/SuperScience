@@ -1988,6 +1988,8 @@ pub struct AcpAuthMethod {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
+    #[serde(default, rename = "type")]
+    pub kind: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]

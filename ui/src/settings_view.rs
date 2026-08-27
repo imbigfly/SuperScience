@@ -7,7 +7,7 @@ use crate::app_support::{
     profile_to_form, provider_entries_are_pristine, quick_action_label, reviewer_backend_key,
     reviewer_backend_label,
     reviewer_missing_acp_profile_id, set_reviewer_backend, settings_section_label,
-    settings_subpage_label, skill_matches_filter, start_session_drag, CRED_GROUPS,
+    settings_subpage_label, show_toast, skill_matches_filter, start_session_drag, CRED_GROUPS,
 };
 use crate::bindings::{invoke, invoke_checked, is_mac, is_windows};
 use crate::dto::*;
@@ -817,6 +817,7 @@ pub(super) fn SettingsView(
     import_wsl_contexts: Callback<()>,
     remove_ssh_host: Callback<String>,
     probe_compute_resource: Callback<String>,
+    open_terminal_session: Callback<TerminalSessionSummary>,
 ) -> impl IntoView {
     let SettingsViewState {
         locale,
@@ -3455,16 +3456,27 @@ pub(super) fn SettingsView(
                                                                                 let method_id = method.id.clone();
                                                                                 view! {
                                                                                     <button type="button" data-testid="authenticate-acp-agent" title=method.description.clone().unwrap_or_default()
+                                                                                        disabled=move || settings_busy.get()
                                                                                         on:click=move |ev| {
                                                                                             ev.stop_propagation();
                                                                                             let id = id.clone();
                                                                                             let method_id = method_id.clone();
                                                                                             spawn_local(async move {
+                                                                                                settings_busy.set(true);
                                                                                                 let args = to_value(&serde_json::json!({ "id": id, "methodId": method_id })).unwrap();
                                                                                                 match invoke_checked("authenticate_acp_agent", args).await {
-                                                                                                    Ok(_) => acp_form_msg.set(Some((true, t(Locale::detect_browser(), "models.acp_auth_ok").into()))),
+                                                                                                    Ok(value) => match serde_wasm_bindgen::from_value::<Option<TerminalSessionSummary>>(value) {
+                                                                                                        Ok(Some(session)) => {
+                                                                                                            open_terminal_session.call(session);
+                                                                                                            show_settings.set(false);
+                                                                                                            show_toast(&t(locale.get_untracked(), "models.acp_auth_terminal_started"));
+                                                                                                        }
+                                                                                                        Ok(None) => acp_form_msg.set(Some((true, t(locale.get_untracked(), "models.acp_auth_ok").into()))),
+                                                                                                        Err(error) => acp_form_msg.set(Some((false, error.to_string()))),
+                                                                                                    },
                                                                                                     Err(error) => acp_form_msg.set(Some((false, js_error_text(error)))),
                                                                                                 }
+                                                                                                settings_busy.set(false);
                                                                                             });
                                                                                         }>{method.name.clone()}</button>
                                                                                 }

@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     path::PathBuf,
     process::ExitCode,
     sync::{
@@ -13,8 +14,8 @@ use wisp_acp::{
         self,
         schema::{
             v1::{
-                AgentCapabilities, AuthMethod, AuthMethodAgent, AuthenticateRequest,
-                AuthenticateResponse, CancelNotification, CloseSessionRequest,
+                AgentCapabilities, AuthMethod, AuthMethodAgent, AuthMethodTerminal,
+                AuthenticateRequest, AuthenticateResponse, CancelNotification, CloseSessionRequest,
                 CloseSessionResponse, ContentBlock, ContentChunk, InitializeRequest,
                 InitializeResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest,
                 NewSessionResponse, PermissionOption, PermissionOptionKind, PromptRequest,
@@ -30,8 +31,8 @@ use wisp_acp::{
         },
         Agent, Client, ConnectionTo, JsonRpcMessage, JsonRpcNotification, UntypedMessage,
     },
-    AcpAgentProfile, AcpError, AcpPermissionKind, AcpSessionEvent, AcpSessionHandle, AcpStopReason,
-    AcpUpdateKind,
+    AcpAgentProfile, AcpAuthMethodKind, AcpError, AcpPermissionKind, AcpSessionEvent,
+    AcpSessionHandle, AcpStopReason, AcpUpdateKind,
 };
 
 fn main() -> ExitCode {
@@ -57,12 +58,54 @@ fn main() -> ExitCode {
 }
 
 async fn run_tests() -> Result<(), String> {
-    test_environment_propagation().await?;
-    test_full_lifecycle().await?;
-    test_protocol_mismatch().await?;
-    test_capability_omission().await?;
-    test_child_exit().await?;
-    test_stderr_bound_and_drop_cleanup().await?;
+    test_environment_propagation()
+        .await
+        .map_err(|error| format!("environment propagation: {error}"))?;
+    test_terminal_auth_discovery()
+        .await
+        .map_err(|error| format!("terminal auth discovery: {error}"))?;
+    test_full_lifecycle()
+        .await
+        .map_err(|error| format!("full lifecycle: {error}"))?;
+    test_protocol_mismatch()
+        .await
+        .map_err(|error| format!("protocol mismatch: {error}"))?;
+    test_capability_omission()
+        .await
+        .map_err(|error| format!("capability omission: {error}"))?;
+    test_child_exit()
+        .await
+        .map_err(|error| format!("child exit: {error}"))?;
+    test_stderr_bound_and_drop_cleanup()
+        .await
+        .map_err(|error| format!("stderr and cleanup: {error}"))?;
+    Ok(())
+}
+
+async fn test_terminal_auth_discovery() -> Result<(), String> {
+    let handle = AcpSessionHandle::launch(profile("terminal-auth", vec![]))
+        .await
+        .map_err(stringify)?;
+    let method = handle
+        .info()
+        .auth_methods
+        .first()
+        .ok_or("terminal auth method was not advertised")?;
+    check(method.id == "terminal-login", "terminal auth method id")?;
+    match &method.kind {
+        AcpAuthMethodKind::Terminal { args, env } => {
+            check(
+                args == &["--cli", "auth", "login", "argument with spaces"],
+                "terminal auth argument boundaries",
+            )?;
+            check(
+                env.get("WISP_ACP_AUTH_TEST").map(String::as_str) == Some("enabled"),
+                "terminal auth environment",
+            )?;
+        }
+        kind => return Err(format!("expected terminal auth method, got {kind:?}")),
+    }
+    handle.shutdown(Duration::from_secs(1)).await;
     Ok(())
 }
 
@@ -386,7 +429,7 @@ fn fake_agent(args: &[String]) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         }
-        "full" | "mismatch" | "no-caps" => {}
+        "full" | "mismatch" | "no-caps" | "terminal-auth" => {}
         _ => return ExitCode::FAILURE,
     }
 
@@ -412,6 +455,7 @@ struct FakeState {
 async fn serve_fake(scenario: &str) -> acp::Result<()> {
     let mismatch = scenario == "mismatch";
     let full_capabilities = scenario != "no-caps";
+    let terminal_auth = scenario == "terminal-auth";
     let state = Arc::new(FakeState::default());
     Agent
         .builder()
@@ -434,13 +478,34 @@ async fn serve_fake(scenario: &str) -> acp::Result<()> {
                 } else {
                     AgentCapabilities::new()
                 };
+                let auth_methods = if terminal_auth {
+                    if request.client_capabilities.auth.terminal {
+                        vec![AuthMethod::Terminal(
+                            AuthMethodTerminal::new("terminal-login", "Terminal login")
+                                .args(vec![
+                                    "--cli".into(),
+                                    "auth".into(),
+                                    "login".into(),
+                                    "argument with spaces".into(),
+                                ])
+                                .env(HashMap::from([(
+                                    "WISP_ACP_AUTH_TEST".into(),
+                                    "enabled".into(),
+                                )])),
+                        )]
+                    } else {
+                        vec![]
+                    }
+                } else {
+                    vec![AuthMethod::Agent(AuthMethodAgent::new(
+                        "fake-login",
+                        "Fake login",
+                    ))]
+                };
                 responder.respond(
                     InitializeResponse::new(protocol)
                         .agent_capabilities(capabilities)
-                        .auth_methods(vec![AuthMethod::Agent(AuthMethodAgent::new(
-                            "fake-login",
-                            "Fake login",
-                        ))]),
+                        .auth_methods(auth_methods),
                 )
             },
             acp::on_receive_request!(),

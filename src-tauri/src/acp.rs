@@ -17,8 +17,8 @@ use wisp_acp::{
     acp::schema::v1::{
         ContentBlock, McpServer, McpServerStdio, ResourceLink, SessionId, TextContent,
     },
-    AcpAgentProfile as LaunchProfile, AcpPermissionKind, AcpPermissionRequest, AcpSessionEvent,
-    AcpSessionHandle, AcpStopReason, AcpUpdateKind,
+    AcpAgentProfile as LaunchProfile, AcpAuthMethod, AcpAuthMethodKind, AcpPermissionKind,
+    AcpPermissionRequest, AcpSessionEvent, AcpSessionHandle, AcpStopReason, AcpUpdateKind,
 };
 use wisp_llm::Message;
 
@@ -171,10 +171,41 @@ fn info_dto(handle: &AcpSessionHandle) -> AcpAgentInfoDto {
                     "id": method.id,
                     "name": method.name,
                     "description": method.description,
+                    "type": auth_method_kind(&method.kind),
                 })
             })
             .collect(),
     }
+}
+
+fn auth_method_kind(kind: &AcpAuthMethodKind) -> &'static str {
+    match kind {
+        AcpAuthMethodKind::Agent => "agent",
+        AcpAuthMethodKind::Terminal { .. } => "terminal",
+        AcpAuthMethodKind::Environment => "env_var",
+    }
+}
+
+fn terminal_auth_launch_spec(
+    profile: &AcpAgentProfile,
+    method: &AcpAuthMethod,
+    cwd: &Path,
+) -> Result<crate::terminal_sessions::TerminalLaunchSpec, String> {
+    let AcpAuthMethodKind::Terminal { args, env } = &method.kind else {
+        return Err("The selected ACP authentication method is not terminal-based.".into());
+    };
+    let mut launch_args = profile.args.clone();
+    launch_args.extend(args.iter().cloned());
+    Ok(crate::terminal_sessions::TerminalLaunchSpec {
+        program: profile.command.clone(),
+        args: launch_args,
+        cwd: Some(cwd.to_path_buf()),
+        display_cwd: cwd.to_string_lossy().into_owned(),
+        envs: env
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+    })
 }
 
 #[tauri::command]
@@ -300,9 +331,11 @@ pub(crate) async fn test_acp_agent(
 #[tauri::command]
 pub(crate) async fn authenticate_acp_agent(
     state: State<'_, AppState>,
+    terminals: State<'_, crate::terminal_sessions::TerminalManager>,
+    window: tauri::WebviewWindow,
     id: String,
     method_id: String,
-) -> Result<(), String> {
+) -> Result<Option<crate::terminal_sessions::TerminalSessionSummary>, String> {
     let profile = profiles(&state.store)
         .await
         .into_iter()
@@ -311,12 +344,49 @@ pub(crate) async fn authenticate_acp_agent(
     let handle = AcpSessionHandle::launch(launch_profile(&profile))
         .await
         .map_err(|error| error.to_string())?;
-    let result = handle
-        .authenticate(method_id)
-        .await
-        .map_err(|error| error.to_string());
-    handle.shutdown(Duration::from_secs(2)).await;
-    result
+    let method = handle
+        .info()
+        .auth_methods
+        .iter()
+        .find(|method| method.id == method_id)
+        .cloned();
+    let Some(method) = method else {
+        handle.shutdown(Duration::from_secs(2)).await;
+        return Err("The ACP Agent no longer advertises this authentication method.".into());
+    };
+    match &method.kind {
+        AcpAuthMethodKind::Agent => {
+            let result = handle
+                .authenticate(method_id)
+                .await
+                .map_err(|error| error.to_string());
+            handle.shutdown(Duration::from_secs(2)).await;
+            result.map(|_| None)
+        }
+        AcpAuthMethodKind::Terminal { .. } => {
+            let (project, scope) = crate::exploration_commands::working_project_for_active_frame(
+                &state,
+                window.label(),
+            )
+            .await?;
+            let spec = terminal_auth_launch_spec(&profile, &method, &project.root)?;
+            handle.shutdown(Duration::from_secs(2)).await;
+            terminals
+                .open_spec(
+                    &project.id,
+                    scope.scope_key(),
+                    &format!("acp-auth:{}", profile.id),
+                    format!("{} — {}", profile.label, method.name),
+                    "acp-auth",
+                    spec,
+                )
+                .map(Some)
+        }
+        AcpAuthMethodKind::Environment => {
+            handle.shutdown(Duration::from_secs(2)).await;
+            Err("Environment-variable ACP authentication is not supported yet.".into())
+        }
+    }
 }
 
 /// One-shot, read-only ACP answer: launch a throwaway session without MCP
@@ -1748,6 +1818,49 @@ mod tests {
     }
 
     #[test]
+    fn terminal_auth_launch_preserves_profile_and_method_argument_boundaries() {
+        let profile = AcpAgentProfile {
+            id: "claude".into(),
+            label: "Claude ACP".into(),
+            command: "npx".into(),
+            args: vec!["-y".into(), "@agentclientprotocol/claude-agent-acp".into()],
+        };
+        let method = AcpAuthMethod {
+            id: "claude-ai-login".into(),
+            name: "Claude Subscription".into(),
+            description: None,
+            kind: AcpAuthMethodKind::Terminal {
+                args: vec![
+                    "--cli".into(),
+                    "auth".into(),
+                    "login".into(),
+                    "argument with spaces".into(),
+                ],
+                env: [("ACP_AUTH_TEST".into(), "enabled".into())]
+                    .into_iter()
+                    .collect(),
+            },
+        };
+
+        let spec = terminal_auth_launch_spec(&profile, &method, Path::new("/tmp/project"))
+            .expect("terminal auth spec");
+        assert_eq!(spec.program, "npx");
+        assert_eq!(
+            spec.args,
+            [
+                "-y",
+                "@agentclientprotocol/claude-agent-acp",
+                "--cli",
+                "auth",
+                "login",
+                "argument with spaces",
+            ]
+        );
+        assert_eq!(spec.envs, [("ACP_AUTH_TEST".into(), "enabled".into())]);
+        assert_eq!(spec.cwd.as_deref(), Some(Path::new("/tmp/project")));
+    }
+
+    #[test]
     fn acp_wire_dtos_serialize_as_camel_case() {
         let info = serde_json::to_value(AcpAgentInfoDto {
             protocol_version: 1,
@@ -1758,6 +1871,13 @@ mod tests {
         .unwrap();
         assert!(info.get("protocolVersion").is_some());
         assert!(info.get("authMethods").is_some());
+        assert_eq!(
+            auth_method_kind(&AcpAuthMethodKind::Terminal {
+                args: vec![],
+                env: Default::default(),
+            }),
+            "terminal"
+        );
         let event = serde_json::to_value(permission_event(
             "frame-1",
             &AcpPermissionRequest {
