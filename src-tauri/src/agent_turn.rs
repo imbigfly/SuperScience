@@ -9,6 +9,21 @@
 
 use super::*;
 
+/// Where a user-visible turn originated. IM turns share the desktop approval
+/// UI but must not inherit an unattended Allow default for mutating tools.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum TurnOrigin {
+    #[default]
+    Desktop,
+    Im,
+}
+
+impl TurnOrigin {
+    fn force_ask_mutations(self) -> bool {
+        matches!(self, Self::Im)
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn send_message(
     state: State<'_, AppState>,
@@ -38,6 +53,7 @@ pub(crate) async fn send_message(
         guide,
         replace,
         None,
+        TurnOrigin::Desktop,
     )
     .await
 }
@@ -61,6 +77,7 @@ pub(crate) async fn send_message_inner(
     // started before running this message ("replace the current task").
     replace: Option<bool>,
     mut workflow_guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+    origin: TurnOrigin,
 ) -> Result<String, String> {
     let resume = resume.unwrap_or(false);
     // Automatic delegation resume carries an owned workflow guard and uses the
@@ -1087,6 +1104,7 @@ pub(crate) async fn send_message_inner(
         prov: Some(prov_tx),
         provenance_scope,
         turn_id: browser_turn_id.clone(),
+        force_ask_mutations: origin.force_ask_mutations(),
     };
 
     let turn_start = agent.ctx.messages.len();
@@ -1299,6 +1317,7 @@ pub(crate) fn spawn_queue_driver(
                 None,
                 None,
                 Some(guard),
+                TurnOrigin::Desktop,
             )
             .await
             {

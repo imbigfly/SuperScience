@@ -90,6 +90,12 @@ pub trait Output: Send + Sync {
     fn approval_bypass(&self) -> bool {
         false
     }
+    /// When true, mutating tools require Ask even if the host policy is Allow
+    /// and even if [`Self::approval_bypass`] is set. Used for unattended IM
+    /// turns that share the desktop approval UI.
+    fn force_ask_mutations(&self) -> bool {
+        false
+    }
     fn restrict_read_paths_to_project(&self) -> bool {
         false
     }
@@ -233,6 +239,9 @@ impl<'a> wisp_tools::ToolEnv for ToolEnvAdapter<'a> {
     }
     fn approval_bypass(&self) -> bool {
         self.out.approval_bypass()
+    }
+    fn force_ask_mutations(&self) -> bool {
+        self.out.force_ask_mutations()
     }
     fn danger_auto_approve(&self) -> bool {
         self.out.danger_auto_approve()

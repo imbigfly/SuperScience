@@ -380,3 +380,32 @@ fn mcp_connection_list_contract_redacts_secrets() {
         _ => panic!("expected http"),
     }
 }
+
+#[test]
+fn channels_status_contract_includes_feishu_owner() {
+    let backend = crate::channels::ChannelsStatus {
+        feishu_enabled: true,
+        feishu_bound: true,
+        feishu_international: false,
+        feishu_app_id: "cli_1".into(),
+        feishu_has_secret: true,
+        feishu_state: "running".into(),
+        feishu_detail: String::new(),
+        feishu_owner_open_id: "ou_owner".into(),
+        feishu_pending_owner_open_id: "ou_pending".into(),
+        weixin_enabled: false,
+        weixin_bound: false,
+        weixin_state: "stopped".into(),
+        weixin_detail: String::new(),
+        device: crate::device_bridge::DeviceBridgeSettingsStatus {
+            enabled: false,
+            mode: crate::device_bridge::DeviceBridgeMode::Lan,
+            has_token: false,
+            runtime: crate::device_bridge::DeviceBridgeRuntimeStatus::default(),
+        },
+    };
+    let dto: wisp_dto::ChannelsStatus = roundtrip(&backend);
+    assert_eq!(dto.feishu_owner_open_id, "ou_owner");
+    assert_eq!(dto.feishu_pending_owner_open_id, "ou_pending");
+    assert_eq!(dto.feishu_app_id, "cli_1");
+}

@@ -32,7 +32,9 @@ sends directly going forward.
 
 Only plain text is supported in v1 (WeChat voice messages arrive as transcripts
 and work too). Tool-approval prompts still appear in the desktop app —
-unattended turns that need approval wait until you click there.
+unattended turns that need approval wait until you click there. IM turns
+additionally force Ask on write/edit/shell and other mutating tools even when
+the desktop policy defaults to Allow, including Full Permission.
 
 ## Feishu bot
 
@@ -55,12 +57,18 @@ An existing app can still be configured manually on
 4. Paste App ID / App Secret in Settings → Remote Access, select the matching
    region, save, then toggle on. The secret is stored in the OS keyring.
 
-Direct (p2p) messages are handled as-is; in group chats the bot only reacts
-when @-mentioned. Duplicate event delivery is deduped by `event_id`. Normal
-agent turns appear as a single CardKit card: the card shows a safe, coarse
-view of tool progress and partial answer text, then becomes the final answer.
-Raw model reasoning, tool output, and command output are never copied into the
-external progress card. Slash-command replies remain plain text.
+Only the **bound owner** can drive agent turns. Scanning to create the app
+binds that Feishu account when the registration response includes an
+`open_id`. Otherwise bind an owner in Settings by confirming a pending pairing
+request or pasting their `open_id`. The first person to message the bot is
+never made owner automatically. Direct (p2p) and group @-mentions from anyone
+else are rejected before they enter the agent.
+
+Duplicate event delivery is deduped by `event_id`. Normal agent turns appear
+as a single CardKit card: the card shows a safe, coarse view of tool progress
+and partial answer text, then becomes the final answer. Raw model reasoning,
+tool output, and command output are never copied into the external progress
+card. Slash-command replies remain plain text.
 
 If CardKit creation or delivery is unavailable (for example because the app is
 missing CardKit permissions), Wisp falls back to one plain-text final reply.
@@ -91,10 +99,10 @@ pbbp2 frames → ACK ≤3s → events; REST token cache + CardKit stream),
 protobuf frame codec, round-trip tested), `weixin.rs` (QR bind, `getupdates`
 long-poll with cursor, send), and `mod.rs` (ChannelManager, live progress
 observer, shared last-message route in the `channel_last_message_route` setting,
-Tauri commands). The route contains `project_id` and an optional `session_id`;
-an empty session is the intentional pending state created by `/project` or
-`/new`. Inbound text reuses the same `send_message` path as the UI, so desktop
-and both channels update the same route and history/tools/approvals behave
-identically.
+Feishu owner pairing, Tauri commands). The route contains `project_id` and an
+optional `session_id`; an empty session is the intentional pending state created
+by `/project` or `/new`. Inbound text reuses the same `send_message` path as the
+UI with `TurnOrigin::Im`, so desktop and both channels update the same route
+and history, while mutating-tool approval is stricter for IM.
 Protocol shapes follow phantty's tested implementations and the official
 `larksuite/oapi-sdk-go`.

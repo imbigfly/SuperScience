@@ -381,7 +381,7 @@ Wisp 插件可以把 Skill、本地 stdio MCP 服务和 MCP App 打包为一个�
 
 ![飞书机器人配置](assets/basic-configuration/07-feishu-setup.png)
 
-App Secret 只保存在操作系统凭据库中。私聊消息直接处理；群聊中需要 @ 机器人。若 CardKit 权限不足，Wisp 会退化为普通文本回复。
+App Secret 只保存在操作系统凭据库中。扫码创建应用时，若飞书返回扫码账号的 `open_id`，该账号会成为所有者；也可以在设置里确认待配对请求，或手动填写 `open_id`。第一个给机器人发消息的人不会被自动设为所有者。只有所有者的私聊和群聊 @ 会进入 Agent；其他人会被拒绝。飞书/微信轮次里的写入、编辑、执行类工具即使桌面默认允许，仍会在桌面端弹出审批。若 CardKit 权限不足，Wisp 会退化为普通文本回复。
 
 ### 微信 iLink
 

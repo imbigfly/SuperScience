@@ -1,10 +1,12 @@
 //! External IM channels (Feishu bot, WeChat iLink bot).
 //!
 //! Inbound text from a channel drives a normal agent session — the turn runs
-//! through the same `send_message` path the UI uses, so history, tools,
-//! approvals, and persistence all behave identically and the conversation is
-//! visible in the desktop app. The final assistant message is sent back to
-//! the IM chat when the turn completes.
+//! through the same `send_message` path the UI uses, so history, tools, and
+//! persistence behave the same way and the conversation is visible in the
+//! desktop app. The final assistant message is sent back to the IM chat when
+//! the turn completes. Feishu additionally requires a desktop-confirmed owner
+//! before any inbound message may enter that path, and IM turns force Ask on
+//! mutating tools even when the desktop policy defaults to Allow.
 //!
 //! Desktop, Feishu, and WeChat share one durable last-message route. An ordinary
 //! IM message always continues the session that most recently accepted a user
@@ -23,12 +25,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::watch;
 use wisp_store::secrets::Secret;
 use wisp_store::Store;
 
 const FEISHU_SECRET: &str = "feishu_app_secret";
+const FEISHU_OWNER_KEY: &str = "feishu_owner_binding";
+const FEISHU_PENDING_OWNER_KEY: &str = "feishu_pending_owner";
 const WEIXIN_TOKEN_SECRET: &str = "weixin_bot_token";
 /// ponytail: single reply cap for both channels; per-channel limits if an API
 /// ever rejects shorter messages.
@@ -162,6 +166,96 @@ async fn load_secret(name: &'static str) -> String {
 
 async fn load_weixin_binding(store: &Store) -> Option<weixin::Binding> {
     serde_json::from_str(&get_setting(store, "weixin_binding").await).ok()
+}
+
+fn emit_channels_updated(app: &AppHandle) {
+    let _ = app.emit("channels-updated", ());
+}
+
+async fn load_feishu_owner(store: &Store) -> Option<String> {
+    let raw = get_setting(store, FEISHU_OWNER_KEY).await;
+    let binding: feishu::OwnerBinding = serde_json::from_str(&raw).ok()?;
+    let open_id = binding.open_id.trim();
+    (!open_id.is_empty()).then(|| open_id.to_string())
+}
+
+async fn load_feishu_pending_owner(store: &Store) -> Option<String> {
+    let open_id = get_setting(store, FEISHU_PENDING_OWNER_KEY).await;
+    let open_id = open_id.trim();
+    (!open_id.is_empty()).then(|| open_id.to_string())
+}
+
+async fn save_feishu_owner(store: &Store, open_id: &str) -> Result<(), String> {
+    let open_id = open_id.trim();
+    if open_id.is_empty() {
+        return Err("所有者 open_id 不能为空。".into());
+    }
+    let binding = feishu::OwnerBinding {
+        open_id: open_id.to_string(),
+        bound_at: chrono::Utc::now().to_rfc3339(),
+    };
+    let json = serde_json::to_string(&binding).map_err(|error| error.to_string())?;
+    store
+        .set_setting(FEISHU_OWNER_KEY, &json)
+        .await
+        .map_err(|error| error.to_string())?;
+    store
+        .set_setting(FEISHU_PENDING_OWNER_KEY, "")
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+async fn clear_feishu_owner(store: &Store) -> Result<(), String> {
+    store
+        .set_setting(FEISHU_OWNER_KEY, "")
+        .await
+        .map_err(|error| error.to_string())?;
+    store
+        .set_setting(FEISHU_PENDING_OWNER_KEY, "")
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+async fn save_feishu_pending_owner(store: &Store, open_id: &str) -> Result<(), String> {
+    let open_id = open_id.trim();
+    if open_id.is_empty() {
+        return Ok(());
+    }
+    if load_feishu_pending_owner(store).await.as_deref() == Some(open_id) {
+        return Ok(());
+    }
+    store
+        .set_setting(FEISHU_PENDING_OWNER_KEY, open_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Gate one inbound Feishu sender. `None` means the message may enter the
+/// agent path; `Some(reply)` is sent back and the turn is not started.
+pub(crate) async fn authorize_feishu_sender(
+    app: &AppHandle,
+    sender_open_id: &str,
+) -> Option<String> {
+    let state = app.state::<AppState>();
+    let owner = load_feishu_owner(&state.store).await;
+    match feishu::sender_decision(sender_open_id, owner.as_deref()) {
+        feishu::SenderDecision::Allow => None,
+        feishu::SenderDecision::Reject => Some(feishu::NON_OWNER_REPLY.to_string()),
+        feishu::SenderDecision::Unbound => {
+            if let Err(error) = save_feishu_pending_owner(&state.store, sender_open_id).await {
+                tracing::warn!(
+                    target: "wisp",
+                    channel = "feishu",
+                    %error,
+                    "failed to record pending Feishu owner"
+                );
+            }
+            emit_channels_updated(app);
+            Some(feishu::UNBOUND_REPLY.to_string())
+        }
+    }
 }
 
 // --------------------------------------------- live agent progress observers
@@ -847,10 +941,10 @@ pub(crate) async fn handle_inbound_observed(
     // before the long agent turn so a later `/stop` can interrupt it. The
     // destination runtime serializes subsequent turns in this same session.
     drop(_turn_guard);
-    let result = crate::send_message(
-        app.state(),
+    let result = crate::send_message_inner(
+        state.inner(),
         app.clone(),
-        window,
+        window.label(),
         Some(session_id.clone()),
         text.to_string(),
         None,
@@ -860,6 +954,8 @@ pub(crate) async fn handle_inbound_observed(
         progress.as_ref().map(PendingProgress::id),
         None,
         None,
+        None,
+        crate::TurnOrigin::Im,
     )
     .await;
     match result {
@@ -884,6 +980,8 @@ pub struct ChannelsStatus {
     pub feishu_has_secret: bool,
     pub feishu_state: String,
     pub feishu_detail: String,
+    pub feishu_owner_open_id: String,
+    pub feishu_pending_owner_open_id: String,
     pub weixin_enabled: bool,
     pub weixin_bound: bool,
     pub weixin_state: String,
@@ -908,6 +1006,10 @@ pub(crate) async fn channels_status(
         feishu_has_secret,
         feishu_state: feishu.state,
         feishu_detail: feishu.detail,
+        feishu_owner_open_id: load_feishu_owner(&state.store).await.unwrap_or_default(),
+        feishu_pending_owner_open_id: load_feishu_pending_owner(&state.store)
+            .await
+            .unwrap_or_default(),
         weixin_enabled: get_setting(&state.store, "weixin_enabled").await == "true",
         weixin_bound: load_weixin_binding(&state.store).await.is_some(),
         weixin_state: weixin.state,
@@ -1043,6 +1145,7 @@ pub(crate) async fn feishu_bind_poll(
             app_id,
             app_secret,
             international,
+            owner_open_id,
         } => {
             let stored_secret = app_secret;
             tokio::task::spawn_blocking(move || Secret::set(FEISHU_SECRET, &stored_secret))
@@ -1062,6 +1165,10 @@ pub(crate) async fn feishu_bind_poll(
                 )
                 .await
                 .map_err(|e| e.to_string())?;
+            if !owner_open_id.trim().is_empty() {
+                save_feishu_owner(&state.store, &owner_open_id).await?;
+            }
+            emit_channels_updated(&app);
             if get_setting(&state.store, "feishu_enabled").await == "true" {
                 mgr.start_feishu(&app).await;
             }
@@ -1087,6 +1194,7 @@ pub(crate) async fn feishu_bind_cancel(
 pub(crate) async fn feishu_unbind(
     state: State<'_, AppState>,
     mgr: State<'_, ChannelManager>,
+    app: AppHandle,
 ) -> Result<(), String> {
     mgr.stop_feishu();
     mgr.feishu_registrations.lock().await.clear();
@@ -1101,6 +1209,51 @@ pub(crate) async fn feishu_unbind(
         .set_setting("feishu_enabled", "false")
         .await
         .map_err(|e| e.to_string())?;
+    clear_feishu_owner(&state.store).await?;
+    emit_channels_updated(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn set_feishu_owner(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    open_id: String,
+) -> Result<(), String> {
+    let open_id = open_id.trim();
+    if open_id.is_empty() {
+        clear_feishu_owner(&state.store).await?;
+    } else {
+        save_feishu_owner(&state.store, open_id).await?;
+    }
+    emit_channels_updated(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn confirm_feishu_pending_owner(
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let Some(open_id) = load_feishu_pending_owner(&state.store).await else {
+        return Err("没有待确认的飞书发送者。".into());
+    };
+    save_feishu_owner(&state.store, &open_id).await?;
+    emit_channels_updated(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn reject_feishu_pending_owner(
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<(), String> {
+    state
+        .store
+        .set_setting(FEISHU_PENDING_OWNER_KEY, "")
+        .await
+        .map_err(|e| e.to_string())?;
+    emit_channels_updated(&app);
     Ok(())
 }
 
@@ -1551,5 +1704,31 @@ mod tests {
         )
         .unwrap();
         assert!(svg.contains("<svg"));
+    }
+
+    #[tokio::test]
+    async fn feishu_owner_is_never_the_first_pending_sender() {
+        let path =
+            std::env::temp_dir().join(format!("wisp_feishu_owner_{}.sqlite", uuid::Uuid::new_v4()));
+        let store = Store::open(&path).await.unwrap();
+        assert!(load_feishu_owner(&store).await.is_none());
+
+        save_feishu_pending_owner(&store, "ou_stranger")
+            .await
+            .unwrap();
+        assert!(load_feishu_owner(&store).await.is_none());
+        assert_eq!(
+            load_feishu_pending_owner(&store).await.as_deref(),
+            Some("ou_stranger")
+        );
+
+        save_feishu_owner(&store, "ou_owner").await.unwrap();
+        assert_eq!(load_feishu_owner(&store).await.as_deref(), Some("ou_owner"));
+        assert!(load_feishu_pending_owner(&store).await.is_none());
+
+        clear_feishu_owner(&store).await.unwrap();
+        assert!(load_feishu_owner(&store).await.is_none());
+        drop(store);
+        let _ = std::fs::remove_file(path);
     }
 }

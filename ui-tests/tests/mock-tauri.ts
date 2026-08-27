@@ -1097,6 +1097,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     feishu_has_secret: false,
     feishu_state: "stopped",
     feishu_detail: "",
+    feishu_owner_open_id: "",
+    feishu_pending_owner_open_id: "ou_pending",
     weixin_enabled: false,
     weixin_bound: false,
     weixin_state: "stopped",
@@ -3030,6 +3032,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             mockChannels.feishu_bound = true;
             mockChannels.feishu_has_secret = true;
             mockChannels.feishu_app_id = "cli_scan_created";
+            mockChannels.feishu_owner_open_id = "ou_scan_owner";
+            mockChannels.feishu_pending_owner_open_id = "";
             mockChannels.feishu_international = Boolean(arg("international") ?? mockChannels.feishu_international);
             return { state: "confirmed", retry_after_ms: 0, app_id: mockChannels.feishu_app_id };
           case "feishu_bind_cancel":
@@ -3039,7 +3043,20 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             mockChannels.feishu_enabled = false;
             mockChannels.feishu_has_secret = false;
             mockChannels.feishu_app_id = "";
+            mockChannels.feishu_owner_open_id = "";
+            mockChannels.feishu_pending_owner_open_id = "";
             mockChannels.feishu_state = "stopped";
+            return null;
+          case "set_feishu_owner":
+            mockChannels.feishu_owner_open_id = String(arg("openId") ?? "").trim();
+            mockChannels.feishu_pending_owner_open_id = "";
+            return null;
+          case "confirm_feishu_pending_owner":
+            mockChannels.feishu_owner_open_id = mockChannels.feishu_pending_owner_open_id;
+            mockChannels.feishu_pending_owner_open_id = "";
+            return null;
+          case "reject_feishu_pending_owner":
+            mockChannels.feishu_pending_owner_open_id = "";
             return null;
           case "set_weixin_channel":
             mockChannels.weixin_enabled = Boolean(arg("enabled"));
