@@ -219,7 +219,63 @@ impl TerminalManager {
         context: &wisp_store::ExecutionContext,
     ) -> Result<TerminalSessionSummary, String> {
         let spec = build_terminal_launch_spec(context, project_root)?;
-        let (session, reader, child) = spawn_session(project_id, scope_key, context, spec)?;
+        let cleanup_envs = spec.envs.clone();
+        let label = if context.label.trim().is_empty() {
+            context.id.clone()
+        } else {
+            context.label.clone()
+        };
+        self.open_spec_with_cleanup(
+            project_id,
+            scope_key,
+            &context.id,
+            format!("{label} — Terminal"),
+            context.kind.as_str(),
+            spec,
+            cleanup_envs,
+        )
+    }
+
+    pub(crate) fn open_spec(
+        &self,
+        project_id: &str,
+        scope_key: &str,
+        context_id: &str,
+        title: String,
+        kind: &str,
+        spec: TerminalLaunchSpec,
+    ) -> Result<TerminalSessionSummary, String> {
+        self.open_spec_with_cleanup(
+            project_id,
+            scope_key,
+            context_id,
+            title,
+            kind,
+            spec,
+            Vec::new(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn open_spec_with_cleanup(
+        &self,
+        project_id: &str,
+        scope_key: &str,
+        context_id: &str,
+        title: String,
+        kind: &str,
+        spec: TerminalLaunchSpec,
+        cleanup_envs: Vec<(String, String)>,
+    ) -> Result<TerminalSessionSummary, String> {
+        let (session, reader, child) = spawn_session(
+            project_id,
+            scope_key,
+            context_id,
+            title,
+            kind,
+            spec,
+            cleanup_envs,
+        )?;
         let summary = session.summary();
         lock(&self.state)
             .sessions
@@ -286,8 +342,11 @@ impl TerminalManager {
 fn spawn_session(
     project_id: &str,
     scope_key: &str,
-    context: &wisp_store::ExecutionContext,
+    context_id: &str,
+    title: String,
+    kind: &str,
     spec: TerminalLaunchSpec,
+    cleanup_envs: Vec<(String, String)>,
 ) -> Result<
     (
         Arc<TerminalSession>,
@@ -317,46 +376,41 @@ fn spawn_session(
     }
 
     let child = pair.slave.spawn_command(command).map_err(|error| {
-        crate::ssh_hosts::cleanup_password_auth_env(&spec.envs);
-        format!("failed to start {} terminal: {error}", context.id)
+        crate::ssh_hosts::cleanup_password_auth_env(&cleanup_envs);
+        format!("failed to start {context_id} terminal: {error}")
     })?;
     drop(pair.slave);
 
     let reader = match pair.master.try_clone_reader() {
         Ok(reader) => reader,
         Err(error) => {
-            crate::ssh_hosts::cleanup_password_auth_env(&spec.envs);
+            crate::ssh_hosts::cleanup_password_auth_env(&cleanup_envs);
             return Err(format!("failed to read terminal PTY: {error}"));
         }
     };
     let writer = match pair.master.take_writer() {
         Ok(writer) => writer,
         Err(error) => {
-            crate::ssh_hosts::cleanup_password_auth_env(&spec.envs);
+            crate::ssh_hosts::cleanup_password_auth_env(&cleanup_envs);
             return Err(format!("failed to write terminal PTY: {error}"));
         }
     };
     let process_id = child.process_id();
     let killer = child.clone_killer();
-    let label = if context.label.trim().is_empty() {
-        context.id.clone()
-    } else {
-        context.label.clone()
-    };
     let session = Arc::new(TerminalSession {
         id: uuid::Uuid::new_v4().to_string(),
         project_id: project_id.into(),
         scope_key: scope_key.into(),
-        context_id: context.id.clone(),
-        title: format!("{label} — Terminal"),
-        kind: context.kind.as_str().into(),
+        context_id: context_id.into(),
+        title,
+        kind: kind.into(),
         display_cwd: spec.display_cwd,
         process_id,
         master: Mutex::new(pair.master),
         writer: Mutex::new(writer),
         killer: Mutex::new(killer),
         output: Mutex::new(TerminalOutputState::new()),
-        auth_cleanup_envs: spec.envs,
+        auth_cleanup_envs: cleanup_envs,
     });
     Ok((session, reader, child))
 }

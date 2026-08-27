@@ -311,7 +311,7 @@ Arguments:
 @agentclientprotocol/claude-agent-acp
 ```
 
-保存后点击 **测试连接**。成功表示 Wisp 已启动进程并完成 ACP `initialize`；若 adapter 返回登录方式，按提示完成认证。之后在空会话的模型选择器中选择该 ACP Agent。已有消息的普通会话切换到 ACP 时，Wisp 会保留草稿并创建新的空 ACP 会话。
+保存后点击 **测试连接**。成功表示 Wisp 已启动进程并完成 ACP `initialize`；若 adapter 返回登录方式，按提示完成认证。对于 terminal 类型的认证，Wisp 会在集成终端中打开 adapter 声明的登录命令；在终端完成交互登录后，再次测试或启动 ACP 会话。之后在空会话的模型选择器中选择该 ACP Agent。已有消息的普通会话切换到 ACP 时，Wisp 会保留草稿并创建新的空 ACP 会话。
 
 > ACP 进程拥有当前 Wisp 用户的本机权限。只配置可信 adapter；命令或参数改变后，原会话的进程指纹不再匹配，应新建会话。
 

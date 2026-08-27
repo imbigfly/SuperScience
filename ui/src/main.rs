@@ -7096,27 +7096,27 @@ fn App() -> impl IntoView {
         });
     });
 
+    let activate_terminal_session = Callback::new(move |session: TerminalSessionSummary| {
+        let session_id = session.id.clone();
+        terminal_sessions.update(|sessions| {
+            if let Some(existing) = sessions.iter_mut().find(|item| item.id == session_id) {
+                *existing = session;
+            } else {
+                sessions.push(session);
+            }
+        });
+        active_terminal_id.set(Some(session_id));
+        terminal_panel_open.set(true);
+        terminal_add_menu_open.set(false);
+    });
+
     let open_terminal_for_context = Callback::new(move |context_id: String| {
         spawn_local(async move {
             let arg = to_value(&serde_json::json!({ "contextId": context_id })).unwrap();
             match invoke_checked("open_terminal", arg).await {
                 Ok(value) => {
                     match serde_wasm_bindgen::from_value::<TerminalSessionSummary>(value) {
-                        Ok(session) => {
-                            let session_id = session.id.clone();
-                            terminal_sessions.update(|sessions| {
-                                if let Some(existing) =
-                                    sessions.iter_mut().find(|item| item.id == session_id)
-                                {
-                                    *existing = session;
-                                } else {
-                                    sessions.push(session);
-                                }
-                            });
-                            active_terminal_id.set(Some(session_id));
-                            terminal_panel_open.set(true);
-                            terminal_add_menu_open.set(false);
-                        }
+                        Ok(session) => activate_terminal_session.call(session),
                         Err(error) => show_toast(&error.to_string()),
                     }
                 }
@@ -15169,6 +15169,7 @@ fn App() -> impl IntoView {
                     probing_context_id.set(None);
                 });
             })
+            open_terminal_session=activate_terminal_session
         />
 
         {(!is_windows()).then(|| view! {

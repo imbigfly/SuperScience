@@ -2966,6 +2966,19 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             mockAcpAgents = mockAcpAgents.filter((agent) => agent.id !== arg("id"));
             return mockAcpAgents;
           case "test_acp_agent":
+            if (query.get("mockAcpTerminalAuth") === "1") {
+              return {
+                protocolVersion: 1,
+                implementation: { name: "fake-claude-acp", title: "Claude Agent", version: "0.69.0" },
+                capabilities: {},
+                authMethods: [{
+                  id: "claude-ai-login",
+                  name: "Claude Subscription",
+                  description: "Use Claude subscription",
+                  type: "terminal",
+                }],
+              };
+            }
             return {
               protocolVersion: 1,
               implementation: { name: "fake-acp", title: "Fake ACP", version: "1.0" },
@@ -2973,6 +2986,19 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               authMethods: [{ id: "browser", name: "Sign in", description: "Authenticate in browser" }],
             };
           case "authenticate_acp_agent":
+            if (query.get("mockAcpTerminalAuth") === "1") {
+              const profile = mockAcpAgents.find((agent) => agent.id === arg("id"));
+              return {
+                id: `terminal-mock-${++terminalCounter}`,
+                projectId: activeProjectId,
+                contextId: `acp-auth:${String(arg("id") ?? "agent")}`,
+                title: `${String(profile?.label ?? "ACP Agent")} — Claude Subscription`,
+                kind: "acp-auth",
+                displayCwd: "/mock/root",
+                processId: 1234,
+                running: true,
+              };
+            }
             return null;
           case "set_acp_session_config": {
             const configId = String(arg("configId") ?? "");

@@ -42,7 +42,7 @@ Click a row to edit. HTTP and ACP both use Cancel / Save on the subpage.
 
 4. Click **Save Agent**.
 5. Click **Test Connection**. A success message means Wisp could launch the process and complete ACP `initialize`.
-6. If auth methods appear after the test, click the advertised button (for example browser login). Credentials stay with the agent; Wisp does not store them in SQLite.
+6. If auth methods appear after the test, click the advertised button. Agent-managed methods run through ACP directly. For a terminal method, Wisp opens the adapter's advertised login command in the integrated terminal; complete the interactive login there, then test or start the ACP session again. Credentials stay with the agent; Wisp does not store them in SQLite.
 7. Close the dialog, open the model picker again, and select the ACP Agent under **ACP Agents**.
 8. Send a prompt. The first prompt locks that session to the selected agent.
 
