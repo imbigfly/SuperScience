@@ -14,8 +14,8 @@ use std::{
 };
 use tauri::State;
 use wisp_runtime::{
-    find_rscript, KernelClient, LaunchedRuntime, PythonEnv, RuntimeKey, RuntimeLanguage,
-    RuntimeLauncher, RuntimeMetadata, PROTOCOL_VERSION,
+    find_rscript, KernelClient, KernelWriteScope, LaunchedRuntime, PythonEnv, RuntimeKey,
+    RuntimeLanguage, RuntimeLauncher, RuntimeMetadata, PROTOCOL_VERSION,
 };
 
 const DEPLOY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -240,7 +240,7 @@ impl RuntimeLauncher for TauriRuntimeLauncher {
             Vec::new()
         };
         envs.extend(ssh_auth_envs.iter().cloned());
-        let client = match KernelClient::spawn_command(
+        let mut client = match KernelClient::spawn_command(
             &command.program,
             &command.args,
             envs.as_slice(),
@@ -267,6 +267,19 @@ impl RuntimeLauncher for TauriRuntimeLauncher {
                 return Err(error);
             }
         };
+        if key.language == RuntimeLanguage::Python
+            && context.kind == wisp_store::ExecutionContextKind::Local
+        {
+            client
+                .configure_write_scope(&KernelWriteScope {
+                    root: project_root.to_string_lossy().into_owned(),
+                    skip_dirs: wisp_core::provenance::SNAPSHOT_SKIP_DIRS
+                        .iter()
+                        .map(|name| (*name).to_string())
+                        .collect(),
+                })
+                .await?;
+        }
         let ready = client.ready().clone();
         Ok(LaunchedRuntime::new(
             Box::new(client),

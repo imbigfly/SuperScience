@@ -59,6 +59,38 @@ fn project_relative_writes(root: &Path, reported: &[String]) -> Vec<String> {
     out
 }
 
+/// Validate paths already reported relative to a host-configured project
+/// boundary. Joining and canonicalizing again keeps a compromised or stale
+/// worker from naming a symlink target outside the project.
+fn validated_project_writes(root: &Path, reported: &[String]) -> Vec<String> {
+    let root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let mut out = Vec::new();
+    for raw in reported {
+        let normalized = normalize_separators(raw);
+        let relative = Path::new(&normalized);
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            continue;
+        }
+        let candidate = root.join(relative);
+        let Ok(candidate) = dunce::canonicalize(candidate) else {
+            continue;
+        };
+        if candidate.strip_prefix(&root).is_err() {
+            continue;
+        }
+        if !normalized.is_empty() {
+            out.push(normalized);
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// Hand a finished cell's self-reported writes to the running tool
 /// environment. Only local kernels report: a remote or WSL worker's absolute
 /// paths describe another machine's filesystem. An absent report means the
@@ -70,7 +102,11 @@ fn report_local_writes(env: &dyn ToolEnv, context_id: &str, response: &KernelRes
     let Some(reported) = &response.files_written else {
         return;
     };
-    let paths = project_relative_writes(env.project_root(), reported);
+    let paths = match response.files_written_base.as_deref() {
+        None => project_relative_writes(env.project_root(), reported),
+        Some("project") => validated_project_writes(env.project_root(), reported),
+        Some(_) => Vec::new(),
+    };
     if !paths.is_empty() {
         env.report_written_paths(&paths);
     }
@@ -353,7 +389,7 @@ impl Tool for RTool {
 mod tests {
     use super::{
         code_arg, context_id, project_relative_writes, report_local_writes,
-        PYTHON_TOOL_DESCRIPTION, R_TOOL_DESCRIPTION,
+        validated_project_writes, PYTHON_TOOL_DESCRIPTION, R_TOOL_DESCRIPTION,
     };
     use crate::{KernelResp, LOCAL_CONTEXT_ID, MAX_CODE_BYTES};
     use std::path::{Path, PathBuf};
@@ -482,6 +518,27 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    #[test]
+    fn configured_project_writes_reject_absolute_traversal_and_missing_paths() {
+        let root = unique_tmp("configured_writes");
+        std::fs::create_dir_all(root.join("out")).unwrap();
+        std::fs::write(root.join("out/a.txt"), b"a").unwrap();
+        let absolute = root.join("out/a.txt").to_string_lossy().into_owned();
+        assert_eq!(
+            validated_project_writes(
+                &root,
+                &[
+                    "out/a.txt".into(),
+                    "../escape.txt".into(),
+                    absolute,
+                    "out/missing.txt".into(),
+                ],
+            ),
+            vec!["out/a.txt".to_string()]
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     /// Captures what the finished-cell branch of `run_runtime` hands to the
     /// agent loop.
     struct RecordingEnv {
@@ -525,6 +582,26 @@ mod tests {
         let reported = vec![root.join("fig_1.png").to_string_lossy().into_owned()];
 
         report_local_writes(&env, LOCAL_CONTEXT_ID, &response_with(Some(reported)));
+
+        assert_eq!(
+            *env.reported.lock().unwrap(),
+            vec![vec!["fig_1.png".to_string()]]
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn configured_local_report_reaches_the_tool_environment() {
+        let root = unique_tmp("report_configured_local");
+        std::fs::write(root.join("fig_1.png"), b"x").unwrap();
+        let env = recording_env(root.clone());
+        let response = KernelResp {
+            files_written: Some(vec!["fig_1.png".into()]),
+            files_written_base: Some("project".into()),
+            ..KernelResp::default()
+        };
+
+        report_local_writes(&env, LOCAL_CONTEXT_ID, &response);
 
         assert_eq!(
             *env.reported.lock().unwrap(),

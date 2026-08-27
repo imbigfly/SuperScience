@@ -10,7 +10,8 @@ Response: {"type": "result", "id": "<uuid>", "stdout": "...", "stderr": "...",
            "error": null|"<traceback>", "interrupted": false,
            "trace": {"error_lineno": null, "error_call": null},
            "usage": {"wall_s": 0.0, "cpu_s": 0.0, "rss_kb": 0},
-           "files_written": ["<abs path>", ...]  # omitted if unobserved/truncated}
+           "files_written": ["<path>", ...],  # omitted if unobserved/truncated
+           "files_written_base": "project"}  # present for configured relative reports
 
 `files_written` lists the files this cell actually changed, not the ones it
 opened for writing; see `_WriteObserver`.
@@ -42,9 +43,13 @@ MAX_LINECACHE_BYTES = 8 * 1024 * 1024
 MAX_CODE_SIZE = 1024 * 1024
 MAX_CODE_LINES = 20_000
 MAX_REQUEST_SIZE = 8 * 1024 * 1024
-# Cap on distinct write paths reported per cell. Exceeding it omits the
-# field entirely: a truncated list would look authoritative while being wrong.
+# Cap on actual, project-eligible changes reported per cell. Exceeding it
+# omits the field entirely: a truncated list would look authoritative while
+# being wrong. Candidate intent has a separate, larger memory guard so paths
+# later proven unchanged do not consume this semantic cap.
 MAX_REPORTED_WRITES = 512
+MAX_OBSERVED_WRITE_CANDIDATES = 4096
+MAX_OBSERVED_WRITE_PATH_BYTES = 4 * 1024 * 1024
 _WRITE_FLAGS = (
     os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
 )
@@ -94,6 +99,12 @@ def _is_bytecode_cache(path) -> bool:
     return "__pycache__" in normalized.split("/")[:-1]
 
 
+def _path_components(path):
+    """Split an OS-native relative path without rewriting Unix backslashes."""
+    normalized = path.replace(os.altsep, os.sep) if os.altsep else path
+    return [part for part in normalized.split(os.sep) if part not in ("", ".")]
+
+
 class _WriteObserver:
     """Collect the paths this interpreter changed during one cell.
 
@@ -114,19 +125,53 @@ class _WriteObserver:
         self._active = False
         self._paths = []
         self._before = {}
+        self._relative = {}
+        self._path_bytes = 0
         self._truncated = False
+        self._project_root = None
+        self._skip_dirs = frozenset()
+
+    def configure(self, root, skip_dirs):
+        """Set the host-owned project boundary used by subsequent cells."""
+        if self._active:
+            raise ValueError("cannot configure write scope during a cell")
+        if not isinstance(root, str) or not root:
+            raise ValueError("write scope root must be a non-empty string")
+        if not isinstance(skip_dirs, list):
+            raise ValueError("write scope skip_dirs must be a list")
+        cleaned = []
+        for name in skip_dirs:
+            if (
+                not isinstance(name, str)
+                or not name
+                or name in (".", "..")
+                or "/" in name
+                or "\\" in name
+            ):
+                raise ValueError("write scope skip_dirs contains an invalid name")
+            cleaned.append(name)
+        project_root = os.path.realpath(os.path.abspath(root))
+        if not os.path.isdir(project_root):
+            raise ValueError("write scope root is not an existing directory")
+        self._project_root = project_root
+        self._skip_dirs = frozenset(cleaned)
+
+    @property
+    def report_base(self):
+        return "project" if self._project_root is not None else None
 
     def begin(self):
         self._active = True
         self._paths = []
         self._before = {}
+        self._relative = {}
+        self._path_bytes = 0
         self._truncated = False
 
     def finish(self):
         self._active = False
         if self._truncated:
-            self._paths = []
-            self._before = {}
+            self._reset_cell()
             return None
         out = []
         for path in self._paths:
@@ -136,12 +181,38 @@ class _WriteObserver:
                 # or byte-for-byte the file we saw before the open.
                 if after is None or after == self._before[path]:
                     continue
-                out.append(path)
+                out.append(self._relative.get(path, path))
+                if len(out) > MAX_REPORTED_WRITES:
+                    self._reset_cell()
+                    return None
             except Exception:
                 pass
+        self._reset_cell()
+        return out
+
+    def _reset_cell(self):
         self._paths = []
         self._before = {}
-        return out
+        self._relative = {}
+        self._path_bytes = 0
+
+    def _project_relative(self, resolved):
+        if self._project_root is None:
+            return None
+        candidate = os.path.realpath(resolved)
+        try:
+            common = os.path.commonpath([self._project_root, candidate])
+        except (OSError, ValueError):
+            return False
+        if os.path.normcase(common) != os.path.normcase(self._project_root):
+            return False
+        relative = os.path.relpath(candidate, self._project_root)
+        if relative in ("", "."):
+            return False
+        components = _path_components(relative)
+        if any(name in self._skip_dirs for name in components[:-1]):
+            return False
+        return "/".join(components)
 
     def _note(self, path):
         if not self._active or self._truncated:
@@ -158,17 +229,27 @@ class _WriteObserver:
             resolved.encode("utf-8", "strict")
         except Exception:
             return
+        if self._project_root is not None:
+            resolved = os.path.realpath(resolved)
+        relative = self._project_relative(resolved)
+        if relative is False:
+            return
+        if relative is None and _is_bytecode_cache(resolved):
+            return
         if resolved in self._before:
             return
-        # Filtered before the cap so paths that can never be reported do not
-        # evict the ones that can.
-        if _is_bytecode_cache(resolved):
-            return
-        if len(self._paths) >= MAX_REPORTED_WRITES:
+        encoded_bytes = len(resolved.encode("utf-8"))
+        if (
+            len(self._paths) >= MAX_OBSERVED_WRITE_CANDIDATES
+            or self._path_bytes + encoded_bytes > MAX_OBSERVED_WRITE_PATH_BYTES
+        ):
             self._truncated = True
             return
         self._before[resolved] = _file_state(resolved)
         self._paths.append(resolved)
+        self._path_bytes += encoded_bytes
+        if relative is not None:
+            self._relative[resolved] = relative
 
     def hook(self, event, args):
         try:
@@ -487,6 +568,25 @@ def main():
             continue
 
         rid = req.get("id", "unknown")
+        if req.get("type") == "configure":
+            try:
+                scope = req.get("write_scope")
+                if not isinstance(scope, dict):
+                    raise ValueError("write_scope must be an object")
+                _WRITE_OBSERVER.configure(
+                    scope.get("root"),
+                    scope.get("skip_dirs"),
+                )
+                configured = {"type": "configured", "id": rid}
+            except Exception as error:
+                configured = {
+                    "type": "configure_error",
+                    "id": rid,
+                    "error": str(error),
+                }
+            protocol_out.write(json.dumps(configured) + "\n")
+            protocol_out.flush()
+            continue
         if req.get("type") == "inspect":
             inspection = _inspect_objects(namespace)
             with protocol_lock:
@@ -572,6 +672,8 @@ def main():
         # complete list (cap exceeded). An explicit [] means "wrote nothing".
         if files_written is not None:
             resp["files_written"] = files_written
+            if _WRITE_OBSERVER.report_base is not None:
+                resp["files_written_base"] = _WRITE_OBSERVER.report_base
         with protocol_lock:
             protocol_out.write(json.dumps(resp) + "\n")
             protocol_out.flush()

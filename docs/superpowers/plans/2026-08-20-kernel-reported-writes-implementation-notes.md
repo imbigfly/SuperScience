@@ -100,6 +100,26 @@ whether WSL kernels should `cd` into the project (WSL *terminals* already do,
 via `wsl.exe --cd`); that is a user-visible behavior change, not a path-mapping
 fix.
 
+## Host-configured report scope (2026-08-27, #947 gap 1)
+
+- The host now sends a write-scope configuration frame to each local Python
+  worker before its first cell. The scope contains the project root and the
+  exact `SNAPSHOT_SKIP_DIRS` policy owned by `wisp-core`; the Python worker no
+  longer maintains a second project-layout list.
+- Configured workers resolve symlinks, discard paths outside the project and
+  under every snapshot-skipped parent directory before storing a candidate,
+  and return normalized project-relative paths marked with
+  `files_written_base: "project"`. The Rust host joins and canonicalizes those
+  paths again before they reach `ToolEnv`.
+- Candidate memory safety and report completeness are separate limits. A
+  larger count/byte guard bounds raw write-intent candidates, while the 512
+  semantic cap is applied only after candidates are proven changed. Exceeding
+  either guard still omits the field so snapshot inference remains the safe
+  fallback.
+- Real-worker regressions cover all snapshot-skipped directories, outside-root
+  writes, unchanged intent-only opens, the true 513-output cap, and a leaf file
+  whose own name matches a skipped directory.
+
 ## Deviations
 
 - Windows CI invokes `python` instead of `python3` (sibling step on the same matrix job). `python3` is not on PATH on `windows-latest`; Unix steps keep the planned `python3` command so the worker tests still run on all three OSes.
