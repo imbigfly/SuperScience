@@ -436,7 +436,9 @@ pub(crate) struct AppState {
     /// one conversation — different conversations never block each other.
     pub(crate) sessions: tokio::sync::Mutex<HashMap<String, Arc<SessionRuntime>>>,
     pub(crate) acp_sessions: acp::AcpRuntimeMap,
-    pub(crate) acp_permissions: tokio::sync::Mutex<HashMap<String, String>>,
+    /// Live ACP permission requests keyed by protocol request id. Each value
+    /// retains the exact options plus a separate one-shot remote approval id.
+    pub(crate) acp_permissions: tokio::sync::Mutex<HashMap<String, acp::PendingAcpPermission>>,
     /// Live ACP `ask_user` requests (request id → frame id), mirroring
     /// `acp_permissions`. Membership also marks a reloaded pending row as
     /// still answerable; rows absent here expire on reload.

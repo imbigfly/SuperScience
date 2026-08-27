@@ -37,6 +37,8 @@ const WEIXIN_TOKEN_SECRET: &str = "weixin_bot_token";
 /// ponytail: single reply cap for both channels; per-channel limits if an API
 /// ever rejects shorter messages.
 const REPLY_MAX_CHARS: usize = 8000;
+const APPROVAL_PREVIEW_MAX_CHARS: usize = 1200;
+const APPROVAL_CODE_CHARS: usize = 8;
 
 // ------------------------------------------------------------------- manager
 
@@ -270,6 +272,7 @@ pub(crate) enum ProgressEvent {
         ok: bool,
         duration_ms: u64,
     },
+    ApprovalRequested(crate::ConfirmRequest),
 }
 
 type ProgressSubscribers =
@@ -390,6 +393,17 @@ pub(crate) fn publish_agent_event(event: &crate::AgentEvent) {
         ),
         _ => return,
     };
+    publish_progress_event(frame_id, progress);
+}
+
+pub(crate) fn publish_approval_request(request: &crate::ConfirmRequest) {
+    publish_progress_event(
+        &request.frame_id,
+        ProgressEvent::ApprovalRequested(request.clone()),
+    );
+}
+
+fn publish_progress_event(frame_id: &str, progress: ProgressEvent) {
     let Some(registry) = PROGRESS_SUBSCRIBERS.get() else {
         return;
     };
@@ -410,6 +424,106 @@ fn truncate_reply(text: &str, max_chars: usize) -> String {
     }
     let cut: String = text.chars().take(max_chars).collect();
     format!("{cut}\n……(内容过长已截断,完整内容请在桌面端查看)")
+}
+
+fn approval_code(approval_id: &str) -> String {
+    approval_id
+        .chars()
+        .take(APPROVAL_CODE_CHARS)
+        .collect::<String>()
+        .to_ascii_uppercase()
+}
+
+fn approval_preview(request: &crate::ConfirmRequest) -> String {
+    let raw = if request.preview.trim().is_empty() {
+        request.message.trim()
+    } else {
+        request.preview.trim()
+    };
+    if raw.chars().count() <= APPROVAL_PREVIEW_MAX_CHARS {
+        raw.to_string()
+    } else {
+        format!(
+            "{}\n……(审批详情过长已截断)",
+            raw.chars()
+                .take(APPROVAL_PREVIEW_MAX_CHARS)
+                .collect::<String>()
+        )
+    }
+}
+
+pub(super) fn render_approval_request(request: &crate::ConfirmRequest) -> String {
+    let code = approval_code(&request.approval_id);
+    let tool = if request.tool.trim().is_empty() {
+        "操作"
+    } else {
+        request.tool.trim()
+    };
+    let preview = approval_preview(request);
+    let detail = if preview.is_empty() {
+        String::new()
+    } else {
+        format!("\n详情:\n{preview}\n")
+    };
+    format!(
+        "⚠️ Wisp 等待审批\n\n编号: {code}\n会话: {}\n工具: {tool}\n{detail}\n回复:\n/approve {code}\n/reject {code} 原因",
+        short_id(&request.frame_id)
+    )
+}
+
+async fn pending_approval_requests(state: &AppState) -> Vec<crate::ConfirmRequest> {
+    let mut requests = crate::approval_commands::pending_confirmation_requests(state);
+    requests.extend(crate::acp::pending_remote_permission_requests(state).await);
+    requests.sort_by(|left, right| left.approval_id.cmp(&right.approval_id));
+    requests
+}
+
+async fn render_pending_approvals(state: &AppState) -> String {
+    let requests = pending_approval_requests(state).await;
+    if requests.is_empty() {
+        return "当前没有待审批请求。".into();
+    }
+    let mut text = format!("当前有 {} 个待审批请求:\n", requests.len());
+    for request in requests {
+        text.push('\n');
+        text.push_str(&render_approval_request(&request));
+        text.push('\n');
+    }
+    truncate_reply(text.trim_end(), REPLY_MAX_CHARS)
+}
+
+async fn respond_text_approval(
+    app: &AppHandle,
+    state: &AppState,
+    selector: &str,
+    approved: bool,
+    feedback: Option<String>,
+) -> Result<crate::approval_commands::RemoteConfirmationResolution, String> {
+    let selector = selector.trim().to_ascii_lowercase();
+    if selector.len() < 6 || !selector.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err("审批编号至少需要 6 位十六进制字符。".into());
+    }
+    let native = crate::approval_commands::pending_confirmation_requests(state);
+    let acp = crate::acp::pending_remote_permission_requests(state).await;
+    let native_matches = native
+        .iter()
+        .filter(|request| request.approval_id.starts_with(&selector))
+        .count();
+    let acp_matches = acp
+        .iter()
+        .filter(|request| request.approval_id.starts_with(&selector))
+        .count();
+    match native_matches + acp_matches {
+        0 => Err("未找到该待审批请求；它可能已经处理或失效。".into()),
+        1 if native_matches == 1 => {
+            crate::approval_commands::respond_remote_confirmation(
+                state, &selector, approved, feedback,
+            )
+            .await
+        }
+        1 => crate::acp::respond_remote_permission(state, app, &selector, approved).await,
+        _ => Err("审批编号前缀不唯一，请输入更多位。".into()),
+    }
 }
 
 // ------------------------------------------------ shared last-message route
@@ -759,7 +873,7 @@ async fn last_assistant_text(store: &Store, frame_id: &str) -> Option<String> {
         .find(|t| !t.trim().is_empty())
 }
 
-const HELP_TEXT: &str = "可用命令:\n/status — 查看共享的最近发言会话\n/project — 列出项目\n/project <序号|名称|ID> — 切换项目\n/session — 列出当前项目的最近会话\n/session <序号|标题|ID> — 切换会话\n/new — 在当前项目开启新会话\n/stop — 停止当前任务\n/help — 显示本帮助\n\n桌面端、微信和飞书共用同一个路由目标：普通消息始终继续最近一次实际发送过用户消息的 session。/project、/session 和 /new 会显式切换这个共享目标。";
+const HELP_TEXT: &str = "可用命令:\n/status — 查看共享的最近发言会话\n/project — 列出项目\n/project <序号|名称|ID> — 切换项目\n/session — 列出当前项目的最近会话\n/session <序号|标题|ID> — 切换会话\n/new — 在当前项目开启新会话\n/approval — 查看待审批请求（微信）\n/approve <编号> — 批准一次（微信）\n/reject <编号> [原因] — 拒绝（微信）\n/stop — 停止当前任务\n/help — 显示本帮助\n\n桌面端、微信和飞书共用同一个路由目标：普通消息始终继续最近一次实际发送过用户消息的 session。/project、/session 和 /new 会显式切换这个共享目标。";
 
 /// Route one inbound IM text: chat commands are handled locally, everything
 /// else drives an agent turn. Returns the reply to send back (may be empty).
@@ -795,6 +909,66 @@ pub(crate) async fn handle_inbound_observed(
     let argument = parts.next().unwrap_or_default().trim();
     match command.as_str() {
         "/help" => return HELP_TEXT.to_string(),
+        "/approval" | "/approvals" => {
+            if channel != "weixin" {
+                return "文本审批命令目前仅支持绑定 owner 的微信一对一会话。".into();
+            }
+            return render_pending_approvals(&state).await;
+        }
+        "/approve" => {
+            if channel != "weixin" {
+                return "文本审批命令目前仅支持绑定 owner 的微信一对一会话。".into();
+            }
+            let mut approval = argument.split_whitespace();
+            let Some(selector) = approval.next() else {
+                return "用法: /approve <审批编号>".into();
+            };
+            if approval.next().is_some() {
+                return "用法: /approve <审批编号>。微信审批目前只允许本次。".into();
+            }
+            return match respond_text_approval(app, &state, selector, true, None).await {
+                Ok(resolved) => format!(
+                    "已批准 {}，会话 {} 将继续执行。",
+                    approval_code(&resolved.approval_id),
+                    short_id(&resolved.frame_id)
+                ),
+                Err(error) => format!("批准失败: {error}"),
+            };
+        }
+        "/reject" => {
+            if channel != "weixin" {
+                return "文本审批命令目前仅支持绑定 owner 的微信一对一会话。".into();
+            }
+            let mut rejection = argument.splitn(2, char::is_whitespace);
+            let selector = rejection.next().unwrap_or_default().trim();
+            if selector.is_empty() {
+                return "用法: /reject <审批编号> [原因]".into();
+            }
+            let feedback = rejection
+                .next()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            let feedback_supplied = feedback.is_some();
+            return match respond_text_approval(app, &state, selector, false, feedback).await {
+                Ok(resolved) => {
+                    let note = if feedback_supplied
+                        && resolved.source
+                            == crate::approval_commands::RemoteConfirmationSource::Acp
+                    {
+                        " ACP 协议不支持附带拒绝原因。"
+                    } else {
+                        ""
+                    };
+                    format!(
+                        "已拒绝 {}，会话 {} 将收到拒绝结果。{note}",
+                        approval_code(&resolved.approval_id),
+                        short_id(&resolved.frame_id)
+                    )
+                }
+                Err(error) => format!("拒绝失败: {error}"),
+            };
+        }
         "/status" => {
             return match validated_route(&state.store).await {
                 Ok(route) => route_status_text(&state.store, &route).await,
@@ -1439,6 +1613,9 @@ mod tests {
         assert!(HELP_TEXT.contains("/status"));
         assert!(HELP_TEXT.contains("/project"));
         assert!(HELP_TEXT.contains("/session"));
+        assert!(HELP_TEXT.contains("/approval"));
+        assert!(HELP_TEXT.contains("/approve <编号>"));
+        assert!(HELP_TEXT.contains("/reject <编号>"));
         assert!(HELP_TEXT.contains("微信和飞书共用同一个路由目标"));
         let projects = vec![ProjectChoice {
             id: "project-123456".into(),
@@ -1683,6 +1860,19 @@ mod tests {
             })
         );
 
+        let mut request = crate::ConfirmRequest::new(
+            &frame_id,
+            "Dangerous command detected".into(),
+            "shell",
+            "Remove-Item output.tmp".into(),
+        );
+        request.approval_id = "abcdef1234567890abcdef1234567890".into();
+        publish_approval_request(&request);
+        assert_eq!(
+            receiver.try_recv(),
+            Ok(ProgressEvent::ApprovalRequested(request))
+        );
+
         drop(subscription);
         drop(pending);
         publish_agent_event(&crate::AgentEvent::Text {
@@ -1690,6 +1880,26 @@ mod tests {
             delta: "ignored".into(),
         });
         assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn wechat_approval_text_uses_one_time_code_and_bounded_preview() {
+        let mut request = crate::ConfirmRequest::new(
+            "session-1234567890",
+            "Dangerous command detected".into(),
+            "shell",
+            "好".repeat(APPROVAL_PREVIEW_MAX_CHARS + 10),
+        );
+        request.approval_id = "abcdef1234567890abcdef1234567890".into();
+
+        let rendered = render_approval_request(&request);
+        assert!(rendered.contains("编号: ABCDEF12"));
+        assert!(rendered.contains("会话: session-"));
+        assert!(rendered.contains("工具: shell"));
+        assert!(rendered.contains("审批详情过长已截断"));
+        assert!(rendered.contains("/approve ABCDEF12"));
+        assert!(rendered.contains("/reject ABCDEF12 原因"));
+        assert!(!rendered.contains(&"好".repeat(APPROVAL_PREVIEW_MAX_CHARS + 1)));
     }
 
     #[test]

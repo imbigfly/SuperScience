@@ -266,8 +266,11 @@ enum AgentEvent {
     },
 }
 
-#[derive(Serialize, Clone)]
-struct ConfirmRequest {
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+pub(crate) struct ConfirmRequest {
+    /// Opaque, one-shot capability used by text-only remote approval surfaces.
+    /// The desktop continues to route by `frame_id` for backward compatibility.
+    approval_id: String,
     frame_id: String,
     message: String,
     /// Tool name when known (`python`, `r`, `shell`, …).
@@ -276,6 +279,23 @@ struct ConfirmRequest {
     /// Code / command preview for the inline approval card.
     #[serde(default)]
     preview: String,
+}
+
+impl ConfirmRequest {
+    fn new(frame_id: &str, message: String, tool: impl Into<String>, preview: String) -> Self {
+        Self {
+            approval_id: Uuid::new_v4().simple().to_string(),
+            frame_id: frame_id.to_string(),
+            message,
+            tool: tool.into(),
+            preview,
+        }
+    }
+}
+
+fn emit_confirm_request(app: &AppHandle, request: &ConfirmRequest) {
+    let _ = app.emit("confirm-request", request.clone());
+    channels::publish_approval_request(request);
 }
 
 type ConfirmSender = tokio::sync::oneshot::Sender<wisp_tools::ConfirmDecision>;
@@ -295,12 +315,14 @@ async fn request_image_resize_confirmation(
     message: String,
 ) -> bool {
     let (tx, rx) = tokio::sync::oneshot::channel();
+    let request = ConfirmRequest::new(frame_id, message, "image_resize", String::new());
     state.confirms.lock().unwrap().insert(
         frame_id.to_string(),
         PendingConfirm {
             tx,
             grant: None,
             project_id: project_id.to_string(),
+            request: request.clone(),
         },
     );
     state
@@ -309,15 +331,7 @@ async fn request_image_resize_confirmation(
         .unwrap()
         .insert(frame_id.to_string());
     state.device_hub.mark_needs_user(frame_id, Some(project_id));
-    let _ = app.emit(
-        "confirm-request",
-        ConfirmRequest {
-            frame_id: frame_id.to_string(),
-            message,
-            tool: "image_resize".into(),
-            preview: String::new(),
-        },
-    );
+    emit_confirm_request(app, &request);
     let approved = receive_confirm_decision(rx).await.approved();
     state.confirms.lock().unwrap().remove(frame_id);
     state.awaiting_confirm.lock().unwrap().remove(frame_id);
@@ -329,6 +343,7 @@ struct PendingConfirm {
     tx: ConfirmSender,
     grant: Option<ApprovalGrantKey>,
     project_id: String,
+    request: ConfirmRequest,
 }
 
 type ConfirmMap = Arc<StdMutex<HashMap<String, PendingConfirm>>>;
@@ -2274,12 +2289,14 @@ async fn request_mcp_app_tool_confirmation(
     grant: Option<ApprovalGrantKey>,
 ) -> wisp_tools::ConfirmDecision {
     let (tx, rx) = tokio::sync::oneshot::channel();
+    let request = ConfirmRequest::new(frame_id, message, tool, preview);
     state.confirms.lock().unwrap().insert(
         frame_id.to_string(),
         PendingConfirm {
             tx,
             grant,
             project_id: project_id.to_string(),
+            request: request.clone(),
         },
     );
     state
@@ -2288,15 +2305,7 @@ async fn request_mcp_app_tool_confirmation(
         .unwrap()
         .insert(frame_id.to_string());
     state.device_hub.mark_needs_user(frame_id, Some(project_id));
-    let _ = app.emit(
-        "confirm-request",
-        ConfirmRequest {
-            frame_id: frame_id.to_string(),
-            message,
-            tool: tool.to_string(),
-            preview,
-        },
-    );
+    emit_confirm_request(app, &request);
     let decision = receive_confirm_decision(rx).await;
     state.confirms.lock().unwrap().remove(frame_id);
     state.awaiting_confirm.lock().unwrap().remove(frame_id);
@@ -2697,12 +2706,14 @@ impl TauriOutput {
             return wisp_tools::ConfirmDecision::Approved;
         }
         let (tx, rx) = tokio::sync::oneshot::channel();
+        let request = ConfirmRequest::new(&self.frame_id, message.into(), tool, preview);
         self.confirms.lock().unwrap().insert(
             self.frame_id.clone(),
             PendingConfirm {
                 tx,
                 grant,
                 project_id: self.project_id.clone(),
+                request: request.clone(),
             },
         );
         self.awaiting_confirm
@@ -2711,15 +2722,7 @@ impl TauriOutput {
             .insert(self.frame_id.clone());
         self.device_hub
             .mark_needs_user(&self.frame_id, Some(&self.project_id));
-        let _ = self.app.emit(
-            "confirm-request",
-            ConfirmRequest {
-                frame_id: self.frame_id.clone(),
-                message: message.into(),
-                tool,
-                preview,
-            },
-        );
+        emit_confirm_request(&self.app, &request);
 
         // There is deliberately no timeout: lack of approval must never be
         // converted into a denial that lets the same agent turn continue.

@@ -17,7 +17,8 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch, RwLock};
+use tokio::task::JoinSet;
 
 pub const DEFAULT_BASE_URL: &str = "https://ilinkai.weixin.qq.com";
 const CHANNEL_VERSION: &str = "1.0.2";
@@ -272,6 +273,88 @@ impl IlinkClient {
 
 // ---------------------------------------------------------------- channel loop
 
+#[derive(Debug)]
+struct InboundText {
+    from_user_id: String,
+    text: String,
+}
+
+fn is_control_text(text: &str) -> bool {
+    text.trim_start().starts_with('/')
+}
+
+async fn send_with_latest_context(
+    client: &IlinkClient,
+    latest_context: &RwLock<String>,
+    to_user_id: &str,
+    text: &str,
+) -> Result<()> {
+    let context_token = latest_context.read().await.clone();
+    client.send_text(to_user_id, text, &context_token).await
+}
+
+async fn handle_control_text(
+    app: &AppHandle,
+    client: &IlinkClient,
+    latest_context: &RwLock<String>,
+    message: InboundText,
+) {
+    let reply = super::handle_inbound(app, "weixin", &message.from_user_id, &message.text).await;
+    if reply.is_empty() {
+        return;
+    }
+    if let Err(error) =
+        send_with_latest_context(client, latest_context, &message.from_user_id, &reply).await
+    {
+        tracing::warn!(target: "wisp", channel = "weixin", %error, "send control reply failed");
+    }
+}
+
+async fn handle_agent_turn(
+    app: &AppHandle,
+    client: &IlinkClient,
+    latest_context: &RwLock<String>,
+    message: InboundText,
+) {
+    let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+    let turn = super::handle_inbound_observed(
+        app,
+        "weixin",
+        &message.from_user_id,
+        &message.text,
+        Some(progress_tx),
+    );
+    tokio::pin!(turn);
+
+    let reply = loop {
+        tokio::select! {
+            reply = &mut turn => break reply,
+            Some(event) = progress_rx.recv() => {
+                if let super::ProgressEvent::ApprovalRequested(request) = event {
+                    let text = super::render_approval_request(&request);
+                    if let Err(error) = send_with_latest_context(
+                        client,
+                        latest_context,
+                        &message.from_user_id,
+                        &text,
+                    ).await {
+                        tracing::warn!(target: "wisp", channel = "weixin", %error, "send approval request failed");
+                    }
+                }
+            }
+        }
+    };
+
+    if reply.is_empty() {
+        return;
+    }
+    if let Err(error) =
+        send_with_latest_context(client, latest_context, &message.from_user_id, &reply).await
+    {
+        tracing::warn!(target: "wisp", channel = "weixin", %error, "send turn reply failed");
+    }
+}
+
 pub async fn run(
     app: AppHandle,
     binding: Binding,
@@ -280,7 +363,7 @@ pub async fn run(
     mut shutdown: watch::Receiver<bool>,
 ) {
     let client = match IlinkClient::new(&binding.base_url, &token) {
-        Ok(c) => c,
+        Ok(c) => Arc::new(c),
         Err(e) => {
             set_status(&status, "error", &format!("HTTP 客户端初始化失败:{e}"));
             return;
@@ -288,6 +371,28 @@ pub async fn run(
     };
     let state = app.state::<crate::AppState>();
     let mut cursor = super::get_setting(&state.store, "weixin_sync_buf").await;
+    let latest_context = Arc::new(RwLock::new(String::new()));
+    let (turn_tx, mut turn_rx) = mpsc::channel::<InboundText>(32);
+    let (turn_stop_tx, mut turn_stop_rx) = watch::channel(false);
+    let turn_worker = {
+        let app = app.clone();
+        let client = client.clone();
+        let latest_context = latest_context.clone();
+        tokio::spawn(async move {
+            loop {
+                let message = tokio::select! {
+                    message = turn_rx.recv() => message,
+                    _ = turn_stop_rx.changed() => None,
+                };
+                let Some(message) = message else {
+                    break;
+                };
+                handle_agent_turn(&app, &client, &latest_context, message).await;
+            }
+        })
+    };
+    let mut control_tasks = JoinSet::new();
+    let mut session_expired = false;
     set_status(&status, "running", "已连接,等待消息");
 
     loop {
@@ -310,7 +415,8 @@ pub async fn run(
             let _ = state.store.set_setting("weixin_enabled", "false").await;
             set_status(&status, "error", "微信登录已过期,请重新扫码绑定");
             tracing::warn!(target: "wisp", channel = "weixin", "session expired (-14); channel disabled");
-            return;
+            session_expired = true;
+            break;
         }
         if updates.ret != 0 {
             set_status(
@@ -331,38 +437,68 @@ pub async fn run(
             if !should_handle(msg, &binding) {
                 continue;
             }
+            *latest_context.write().await = msg.context_token.clone();
             let Some(text) = extract_text(msg) else {
-                let _ = client
-                    .send_text(
-                        &msg.from_user_id,
+                let client = client.clone();
+                let latest_context = latest_context.clone();
+                let to_user_id = msg.from_user_id.clone();
+                control_tasks.spawn(async move {
+                    let _ = send_with_latest_context(
+                        &client,
+                        &latest_context,
+                        &to_user_id,
                         "暂不支持该消息类型,请发送文本消息。",
-                        &msg.context_token,
                     )
                     .await;
+                });
                 continue;
             };
-            let reply = super::handle_inbound(&app, "weixin", &msg.from_user_id, &text).await;
-            if reply.is_empty() {
-                continue;
-            }
-            if let Err(e) = client
-                .send_text(&msg.from_user_id, &reply, &msg.context_token)
-                .await
-            {
-                tracing::warn!(target: "wisp", channel = "weixin", error = %e, "send reply failed");
+            let message = InboundText {
+                from_user_id: msg.from_user_id.clone(),
+                text,
+            };
+            if is_control_text(&message.text) {
+                let app = app.clone();
+                let client = client.clone();
+                let latest_context = latest_context.clone();
+                control_tasks.spawn(async move {
+                    handle_control_text(&app, &client, &latest_context, message).await;
+                });
+            } else if let Err(error) = turn_tx.try_send(message) {
+                let message = error.into_inner();
+                let client = client.clone();
+                let latest_context = latest_context.clone();
+                control_tasks.spawn(async move {
+                    let _ = send_with_latest_context(
+                        &client,
+                        &latest_context,
+                        &message.from_user_id,
+                        "微信任务队列已满，请稍后重试。",
+                    )
+                    .await;
+                });
             }
         }
         if !updates.get_updates_buf.is_empty() && updates.get_updates_buf != cursor {
             cursor = updates.get_updates_buf.clone();
             let _ = state.store.set_setting("weixin_sync_buf", &cursor).await;
         }
+        while control_tasks.try_join_next().is_some() {}
         let pause = Duration::from_millis(updates.longpolling_timeout_ms.max(1000) as u64);
         tokio::select! {
             _ = tokio::time::sleep(pause) => {}
             _ = shutdown.changed() => break,
         }
     }
-    set_status(&status, "stopped", "");
+    let _ = turn_stop_tx.send(true);
+    drop(turn_tx);
+    // Dropping the JoinHandle detaches an already-running turn so disabling a
+    // channel cannot cancel the shared desktop session at an arbitrary await.
+    drop(turn_worker);
+    control_tasks.detach_all();
+    if !session_expired {
+        set_status(&status, "stopped", "");
+    }
 }
 
 #[cfg(test)]
@@ -427,5 +563,14 @@ mod tests {
             ..msg("owner", "bot", "")
         };
         assert_eq!(extract_text(&m), None);
+    }
+
+    #[test]
+    fn slash_commands_use_the_non_blocking_control_lane() {
+        assert!(is_control_text("/approve ABCDEF12"));
+        assert!(is_control_text("  /reject ABCDEF12 not safe"));
+        assert!(is_control_text("/stop"));
+        assert!(!is_control_text("please run /status later"));
+        assert!(!is_control_text("analyze the dataset"));
     }
 }

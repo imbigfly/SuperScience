@@ -693,6 +693,10 @@ async fn stream_progress_events(
                     super::ProgressEvent::ToolFinished { name, ok, duration_ms } => {
                         state.tool_finished(&name, ok, duration_ms);
                     }
+                    // Feishu interactive approvals remain a separate follow-up.
+                    // Its current worker cannot receive a reply while a turn is
+                    // blocked, so do not project a misleading non-actionable card.
+                    super::ProgressEvent::ApprovalRequested(_) => continue,
                 }
                 dirty = true;
             }
