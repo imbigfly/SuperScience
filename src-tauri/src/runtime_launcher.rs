@@ -14,8 +14,8 @@ use std::{
 };
 use tauri::State;
 use wisp_runtime::{
-    find_rscript, KernelClient, LaunchedRuntime, PythonEnv, RuntimeKey, RuntimeLanguage,
-    RuntimeLauncher, RuntimeMetadata, PROTOCOL_VERSION,
+    find_rscript, KernelClient, KernelWriteScope, LaunchedRuntime, PythonEnv, RuntimeKey,
+    RuntimeLanguage, RuntimeLauncher, RuntimeMetadata, PROTOCOL_VERSION,
 };
 
 const DEPLOY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -240,7 +240,7 @@ impl RuntimeLauncher for TauriRuntimeLauncher {
             Vec::new()
         };
         envs.extend(ssh_auth_envs.iter().cloned());
-        let client = match KernelClient::spawn_command(
+        let mut client = match KernelClient::spawn_command(
             &command.program,
             &command.args,
             envs.as_slice(),
@@ -267,6 +267,9 @@ impl RuntimeLauncher for TauriRuntimeLauncher {
                 return Err(error);
             }
         };
+        if let Some(scope) = kernel_write_scope(&context, key.language, project_root) {
+            client.configure_write_scope(&scope).await?;
+        }
         let ready = client.ready().clone();
         Ok(LaunchedRuntime::new(
             Box::new(client),
@@ -277,6 +280,30 @@ impl RuntimeLauncher for TauriRuntimeLauncher {
             },
         ))
     }
+}
+
+fn kernel_write_scope(
+    context: &wisp_store::ExecutionContext,
+    language: RuntimeLanguage,
+    project_root: &Path,
+) -> Option<KernelWriteScope> {
+    if language != RuntimeLanguage::Python {
+        return None;
+    }
+    let root = match context.kind {
+        wisp_store::ExecutionContextKind::Local => project_root.to_string_lossy().into_owned(),
+        // The WSL launch command enters the translated project root before
+        // starting the worker, so `.` is already the correct in-distro path.
+        wisp_store::ExecutionContextKind::Wsl => ".".into(),
+        wisp_store::ExecutionContextKind::Ssh => return None,
+    };
+    Some(KernelWriteScope {
+        root,
+        skip_dirs: wisp_core::provenance::SNAPSHOT_SKIP_DIRS
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect(),
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -425,7 +452,32 @@ fn build_attached_command(
             },
             cwd: Some(project_root.to_path_buf()),
         }),
-        wisp_store::ExecutionContextKind::Wsl | wisp_store::ExecutionContextKind::Ssh => {
+        wisp_store::ExecutionContextKind::Wsl => {
+            let worker =
+                remote_worker.ok_or_else(|| "remote worker path is required".to_string())?;
+            let interpreter = shell_single_quote(interpreter);
+            let worker = remote_path_expression(worker)?;
+            let execute = match language {
+                RuntimeLanguage::Python => format!("exec {interpreter} {worker}",),
+                RuntimeLanguage::R => format!("exec {interpreter} --vanilla {worker}"),
+            };
+            let project_root = project_root.to_string_lossy();
+            validate_context_value("project root", &project_root)?;
+            let project_root = shell_single_quote(&project_root);
+            let script = format!(
+                "project_root=$(wslpath -a -u {project_root}) || {{ echo 'Wisp could not translate the project root for WSL' >&2; exit 125; }}\ncd \"$project_root\" || {{ echo 'Wisp could not enter the project root in WSL' >&2; exit 125; }}\n{execute}"
+            );
+            let distro = wsl_distro(context)?;
+            Ok(AttachedCommand {
+                program: PathBuf::from("wsl.exe"),
+                args: ["-d", &distro, "--", "sh", "-lc", &script]
+                    .into_iter()
+                    .map(OsString::from)
+                    .collect(),
+                cwd: None,
+            })
+        }
+        wisp_store::ExecutionContextKind::Ssh => {
             let worker =
                 remote_worker.ok_or_else(|| "remote worker path is required".to_string())?;
             let workdir = runtime_workdir(context)?;
@@ -441,29 +493,13 @@ fn build_attached_command(
                     remote_path_expression(&workdir)?,
                 ),
             };
-            match context.kind {
-                wisp_store::ExecutionContextKind::Wsl => {
-                    let distro = wsl_distro(context)?;
-                    Ok(AttachedCommand {
-                        program: PathBuf::from("wsl.exe"),
-                        args: ["-d", &distro, "--", "sh", "-lc", &script]
-                            .into_iter()
-                            .map(OsString::from)
-                            .collect(),
-                        cwd: None,
-                    })
-                }
-                wisp_store::ExecutionContextKind::Ssh => {
-                    let mut args = SshConnection::from_execution_context(context)?.ssh_args()?;
-                    args.push(script);
-                    Ok(AttachedCommand {
-                        program: PathBuf::from("ssh"),
-                        args: args.into_iter().map(OsString::from).collect(),
-                        cwd: None,
-                    })
-                }
-                wisp_store::ExecutionContextKind::Local => unreachable!(),
-            }
+            let mut args = SshConnection::from_execution_context(context)?.ssh_args()?;
+            args.push(script);
+            Ok(AttachedCommand {
+                program: PathBuf::from("ssh"),
+                args: args.into_iter().map(OsString::from).collect(),
+                cwd: None,
+            })
         }
     }
 }
@@ -762,7 +798,30 @@ mod tests {
     }
 
     #[test]
-    fn wsl_and_ssh_launches_preserve_context_configuration() {
+    fn write_scope_is_project_local_for_local_and_wsl_but_disabled_for_ssh_and_r() {
+        let local = wisp_store::ExecutionContext::new("local", "Local").unwrap();
+        let wsl = wisp_store::ExecutionContext::new("wsl:Ubuntu", "WSL").unwrap();
+        let ssh = wisp_store::ExecutionContext::new("ssh:gpu", "SSH").unwrap();
+        let project = Path::new(r"C:\Users\me\project one");
+
+        let local_scope = kernel_write_scope(&local, RuntimeLanguage::Python, project).unwrap();
+        assert_eq!(local_scope.root, project.to_string_lossy());
+        assert_eq!(
+            local_scope.skip_dirs,
+            wisp_core::provenance::SNAPSHOT_SKIP_DIRS
+        );
+        assert_eq!(
+            kernel_write_scope(&wsl, RuntimeLanguage::Python, project)
+                .unwrap()
+                .root,
+            "."
+        );
+        assert!(kernel_write_scope(&ssh, RuntimeLanguage::Python, project).is_none());
+        assert!(kernel_write_scope(&wsl, RuntimeLanguage::R, project).is_none());
+    }
+
+    #[test]
+    fn wsl_uses_project_root_while_ssh_preserves_context_workdir() {
         let mut wsl = wisp_store::ExecutionContext::new("wsl:Ubuntu-24.04", "WSL").unwrap();
         wsl.config_json = serde_json::json!({
             "distro": "Ubuntu 24.04",
@@ -780,7 +839,7 @@ mod tests {
             &wsl_python,
             Path::new("unused"),
             Some("~/.wisp-science/runtime/python.py"),
-            Path::new("unused"),
+            Path::new(r"C:\Users\me\project one"),
         )
         .unwrap();
         let wsl_args = wsl_command
@@ -790,14 +849,21 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(wsl_command.program, PathBuf::from("wsl.exe"));
         assert_eq!(&wsl_args[..2], ["-d", "Ubuntu 24.04"]);
-        assert!(wsl_args.last().unwrap().contains("/scratch/project one"));
+        let wsl_script = wsl_args.last().unwrap();
+        assert!(
+            wsl_script.contains(r"wslpath -a -u 'C:\Users\me\project one'"),
+            "{wsl_script}"
+        );
+        assert!(wsl_script.contains("cd \"$project_root\""), "{wsl_script}");
+        assert!(!wsl_script.contains("/scratch/project one"), "{wsl_script}");
 
         let mut ssh = wisp_store::ExecutionContext::new("ssh:gpu-box", "GPU").unwrap();
         ssh.config_json = serde_json::json!({
             "user": "alice",
             "port": 2222,
             "identity_file": "/home/alice/.ssh/lab key",
-            "python_executable": "/opt/python/bin/python"
+            "python_executable": "/opt/python/bin/python",
+            "workdir": "/scratch/ssh project"
         })
         .to_string();
         let ssh_command = build_attached_command(
@@ -820,6 +886,7 @@ mod tests {
             .windows(2)
             .any(|args| args == ["-i", "/home/alice/.ssh/lab key"]));
         assert!(ssh_args.contains(&"alice@gpu-box".to_string()));
+        assert!(ssh_args.last().unwrap().contains("/scratch/ssh project"));
 
         wsl.capabilities_json = serde_json::json!({
             "rscript_executable": "/opt/R/bin/Rscript",
@@ -833,7 +900,7 @@ mod tests {
             &rscript,
             Path::new("unused"),
             Some("~/.wisp-science/runtime/r.R"),
-            Path::new("unused"),
+            Path::new(r"C:\Users\me\project one"),
         )
         .unwrap();
         assert!(r_command
@@ -842,6 +909,12 @@ mod tests {
             .unwrap()
             .to_string_lossy()
             .contains("--vanilla"));
+        assert!(r_command
+            .args
+            .last()
+            .unwrap()
+            .to_string_lossy()
+            .contains("wslpath -a -u"));
     }
 
     /// A pixi/conda interpreter cannot find its own shared libraries without

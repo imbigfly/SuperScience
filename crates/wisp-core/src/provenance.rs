@@ -42,7 +42,13 @@ pub struct TextPreimage {
     pub checksum: String,
 }
 
-const SKIP_DIRS: &[&str] = &[
+/// Directory names omitted by workspace snapshots at any depth.
+///
+/// Runtime launchers also send this exact policy to local Python workers so
+/// paths the host can never attribute do not consume the worker's report cap.
+/// Keep the policy here: snapshot traversal and reported-write folding remain
+/// the final source of truth.
+pub const SNAPSHOT_SKIP_DIRS: &[&str] = &[
     ".git",
     ".venv",
     "node_modules",
@@ -327,7 +333,9 @@ fn relative_identity(path: &str) -> String {
 /// drift.
 fn is_snapshot_skipped(relative: &str) -> bool {
     match relative.rsplit_once('/') {
-        Some((parents, _)) => parents.split('/').any(|dir| SKIP_DIRS.contains(&dir)),
+        Some((parents, _)) => parents
+            .split('/')
+            .any(|dir| SNAPSHOT_SKIP_DIRS.contains(&dir)),
         None => false,
     }
 }
@@ -713,7 +721,7 @@ fn snapshot_capped(root: &Path, max_entries: usize) -> BTreeMap<PathBuf, SystemT
             let p = entry.path();
             if ft.is_dir() {
                 let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if !SKIP_DIRS.contains(&name) {
+                if !SNAPSHOT_SKIP_DIRS.contains(&name) {
                     stack.push(p);
                 }
             } else if ft.is_file() {

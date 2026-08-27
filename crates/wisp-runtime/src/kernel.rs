@@ -40,6 +40,16 @@ pub struct KernelResp {
     /// worker did not (or could not) observe; `Some([])` means it observed
     /// and the cell wrote nothing. Never conflate the two.
     pub files_written: Option<Vec<String>>,
+    /// `project` means `files_written` contains project-relative paths from a
+    /// host-configured write scope. Absent keeps the legacy absolute-path
+    /// contract for older bundled workers.
+    pub files_written_base: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KernelWriteScope {
+    pub root: String,
+    pub skip_dirs: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +90,8 @@ struct RawResp {
     usage: RawUsage,
     #[serde(default)]
     files_written: Option<Vec<String>>,
+    #[serde(default)]
+    files_written_base: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -209,6 +221,22 @@ impl KernelClient {
 
     pub fn ready(&self) -> &KernelReady {
         &self.ready
+    }
+
+    /// Configure the worker's project write boundary before its first cell.
+    /// Only Python workers currently implement this optional startup frame.
+    pub async fn configure_write_scope(&mut self, scope: &KernelWriteScope) -> Result<()> {
+        let id = uuid::Uuid::new_v4().to_string();
+        self.send(serde_json::json!({
+            "type": "configure",
+            "id": id,
+            "write_scope": {
+                "root": scope.root,
+                "skip_dirs": scope.skip_dirs,
+            }
+        }))
+        .await?;
+        read_configured(&mut self.stdout, &id, STARTUP_TIMEOUT).await
     }
 
     async fn execute_cell(
@@ -497,10 +525,47 @@ async fn read_response<R: AsyncBufRead + Unpin>(
                     cpu_s: response.usage.cpu_s,
                     rss_kb: response.usage.rss_kb,
                     files_written: response.files_written,
+                    files_written_base: response.files_written_base,
                 });
             }
             other => bail!("unexpected protocol frame '{other}' during execution"),
         }
+    }
+}
+
+async fn read_configured<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    request_id: &str,
+    timeout: Duration,
+) -> Result<()> {
+    let frame = tokio::time::timeout(timeout, read_protocol_line(reader))
+        .await
+        .map_err(|_| anyhow!("timed out waiting for write-scope configuration"))??;
+    let kind = frame
+        .get("type")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| anyhow!("write-scope response is missing string field 'type'"))?;
+    let id = frame
+        .get("id")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    if id != request_id {
+        bail!(
+            "write-scope response id '{}' does not match active request '{}'",
+            id,
+            request_id
+        );
+    }
+    match kind {
+        "configured" => Ok(()),
+        "configure_error" => bail!(
+            "kernel worker rejected write scope: {}",
+            frame
+                .get("error")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown configuration error")
+        ),
+        other => bail!("unexpected protocol frame '{other}' during write-scope configuration"),
     }
 }
 
@@ -588,6 +653,38 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("jsonlite"));
+    }
+
+    #[tokio::test]
+    async fn write_scope_configuration_accepts_ack_and_surfaces_rejection() {
+        let (reader, mut writer) = duplex(1024);
+        writer
+            .write_all(b"{\"type\":\"configured\",\"id\":\"scope-1\"}\n")
+            .await
+            .unwrap();
+        read_configured(
+            &mut BufReader::new(reader),
+            "scope-1",
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+
+        let (reader, mut writer) = duplex(1024);
+        writer
+            .write_all(
+                b"{\"type\":\"configure_error\",\"id\":\"scope-2\",\"error\":\"bad root\"}\n",
+            )
+            .await
+            .unwrap();
+        let error = read_configured(
+            &mut BufReader::new(reader),
+            "scope-2",
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("bad root"));
     }
 
     #[tokio::test]
@@ -776,7 +873,7 @@ mod tests {
         let (reader, mut writer) = duplex(2048);
         writer
             .write_all(
-                br#"{"type":"result","id":"cell-1","stdout":"","stderr":"","error":null,"files_written":["/p/a.txt","/p/b.txt"]}
+                br#"{"type":"result","id":"cell-1","stdout":"","stderr":"","error":null,"files_written":["a.txt","b.txt"],"files_written_base":"project"}
 "#,
             )
             .await
@@ -791,8 +888,9 @@ mod tests {
         .unwrap();
         assert_eq!(
             response.files_written,
-            Some(vec!["/p/a.txt".into(), "/p/b.txt".into()])
+            Some(vec!["a.txt".into(), "b.txt".into()])
         );
+        assert_eq!(response.files_written_base.as_deref(), Some("project"));
     }
 
     #[tokio::test]
