@@ -29,6 +29,7 @@ pub(crate) struct SessionRuntime {
     pub(crate) workflow: Arc<tokio::sync::Mutex<()>>,
     pub(crate) cancel: Arc<AtomicBool>,
     pub(crate) deleted: AtomicBool,
+    /// Last persisted message seq (`COALESCE(MAX(seq),0)`), not a message count.
     pub(crate) last_seq: StdMutex<i64>,
     /// Guide (#410): mid-turn messages the running loop drains into user
     /// messages at its next iteration; ids let queued senders detect that.
@@ -112,6 +113,21 @@ impl SessionRuntime {
     pub(crate) fn set_last_seq(&self, v: i64) {
         *self.last_seq.lock().unwrap() = v;
     }
+
+    /// Refresh `last_seq` from the durable `MAX(seq)` cursor. Recovery paths
+    /// must not use `messages.len()`.
+    pub(crate) async fn sync_last_seq_from_store(
+        &self,
+        store: &Store,
+        frame_id: &str,
+    ) -> Result<i64, String> {
+        let seq = store
+            .max_message_seq(frame_id)
+            .await
+            .map_err(|error| format!("reading MAX(seq) failed: {error}"))?;
+        self.set_last_seq(seq);
+        Ok(seq)
+    }
     pub(crate) fn set_mcp_app_context(&self, instance_id: String, context: Option<McpAppContext>) {
         let mut contexts = self.mcp_app_contexts.lock().unwrap();
         if let Some(context) = context {
@@ -158,6 +174,27 @@ pub(crate) fn mcp_app_frame_id(instance_id: &str) -> Result<&str, String> {
         return Err("Invalid MCP App instance id.".into());
     }
     Ok(frame_id)
+}
+
+/// Stable tab/bridge identity for one MCP App. Same UI resource (ignoring
+/// query/hash) or tool name reuses the existing center tab; a unique
+/// presentation UUID must not mint a new window.
+pub(crate) fn mcp_app_identity(payload: &serde_json::Value) -> &str {
+    let raw = payload
+        .pointer("/resource/uri")
+        .or_else(|| payload.pointer("/tool/name"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("app");
+    raw.split_once(['?', '#'])
+        .map(|(base, _)| base)
+        .filter(|base| !base.is_empty())
+        .unwrap_or(raw)
+}
+
+pub(crate) fn mcp_app_instance_id(frame_id: &str, payload: &serde_json::Value) -> String {
+    format!("mcp-app:{frame_id}:{}", mcp_app_identity(payload))
 }
 
 pub(crate) fn normalize_mcp_app_context(
@@ -235,6 +272,126 @@ pub(crate) struct ActiveProject {
     pub(crate) memory: Arc<MemoryManager>,
 }
 
+/// Host-side `serverTools` binding for one live MCP App instance. Registered
+/// when an `mcp_app` presentation flows to the UI and revoked on teardown or
+/// session delete; the `server` handle keeps only a `Weak` reference to the
+/// MCP client, so an agent rebuild or connector restart naturally makes the
+/// instance stale instead of pinning the server process.
+#[derive(Clone)]
+pub(crate) struct McpAppToolBridge {
+    pub(crate) frame_id: String,
+    pub(crate) server: Arc<dyn superscience_tools::McpAppServer>,
+    pub(crate) limiter: Arc<McpAppCallLimiter>,
+}
+
+pub(crate) const MCP_APP_MAX_CONCURRENT_CALLS: usize = 4;
+pub(crate) const MCP_APP_MAX_CALLS_PER_WINDOW: usize = 20;
+pub(crate) const MCP_APP_CALL_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Live `serverTools` bridges keyed by app instance id. Kept as its own type
+/// so instance routing (two parallel Apps, teardown, session delete) is
+/// testable without building a whole `AppState`.
+#[derive(Default)]
+pub(crate) struct McpAppBridges {
+    bridges: StdMutex<HashMap<String, McpAppToolBridge>>,
+}
+
+impl McpAppBridges {
+    pub(crate) fn register(&self, instance_id: String, bridge: McpAppToolBridge) {
+        self.bridges.lock().unwrap().insert(instance_id, bridge);
+    }
+
+    pub(crate) fn get(&self, instance_id: &str) -> Option<McpAppToolBridge> {
+        self.bridges.lock().unwrap().get(instance_id).cloned()
+    }
+
+    pub(crate) fn close(&self, instance_id: &str) -> bool {
+        self.bridges.lock().unwrap().remove(instance_id).is_some()
+    }
+
+    pub(crate) fn remove_for_frame(&self, frame_id: &str) {
+        self.bridges
+            .lock()
+            .unwrap()
+            .retain(|_, bridge| bridge.frame_id != frame_id);
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct McpAppCallLimiter {
+    max_concurrent: usize,
+    max_per_window: usize,
+    window: std::time::Duration,
+    in_flight: std::sync::atomic::AtomicUsize,
+    recent: StdMutex<std::collections::VecDeque<std::time::Instant>>,
+}
+
+#[derive(Debug)]
+pub(crate) struct McpAppCallPermit {
+    limiter: Arc<McpAppCallLimiter>,
+}
+
+impl Drop for McpAppCallPermit {
+    fn drop(&mut self) {
+        self.limiter
+            .in_flight
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl McpAppCallLimiter {
+    pub(crate) fn new() -> Arc<Self> {
+        Self::with_limits(
+            MCP_APP_MAX_CONCURRENT_CALLS,
+            MCP_APP_MAX_CALLS_PER_WINDOW,
+            MCP_APP_CALL_WINDOW,
+        )
+    }
+
+    pub(crate) fn with_limits(
+        max_concurrent: usize,
+        max_per_window: usize,
+        window: std::time::Duration,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            max_concurrent,
+            max_per_window,
+            window,
+            in_flight: std::sync::atomic::AtomicUsize::new(0),
+            recent: StdMutex::new(std::collections::VecDeque::new()),
+        })
+    }
+
+    pub(crate) fn try_acquire(self: &Arc<Self>) -> Result<McpAppCallPermit, String> {
+        let now = std::time::Instant::now();
+        {
+            let mut recent = self.recent.lock().unwrap();
+            while recent
+                .front()
+                .is_some_and(|started| now.duration_since(*started) >= self.window)
+            {
+                recent.pop_front();
+            }
+            if recent.len() >= self.max_per_window {
+                return Err("MCP App tool calls are rate limited. Try again shortly.".into());
+            }
+            recent.push_back(now);
+        }
+        let current = self
+            .in_flight
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if current >= self.max_concurrent {
+            self.in_flight
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            self.recent.lock().unwrap().pop_back();
+            return Err("MCP App already has too many in-flight tool calls.".into());
+        }
+        Ok(McpAppCallPermit {
+            limiter: Arc::clone(self),
+        })
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct ProjectActivityLocks {
     pub(crate) projects: StdMutex<HashMap<String, Arc<tokio::sync::RwLock<()>>>>,
@@ -279,7 +436,9 @@ pub(crate) struct AppState {
     /// one conversation — different conversations never block each other.
     pub(crate) sessions: tokio::sync::Mutex<HashMap<String, Arc<SessionRuntime>>>,
     pub(crate) acp_sessions: acp::AcpRuntimeMap,
-    pub(crate) acp_permissions: tokio::sync::Mutex<HashMap<String, String>>,
+    /// Live ACP permission requests keyed by protocol request id. Each value
+    /// retains the exact options plus a separate one-shot remote approval id.
+    pub(crate) acp_permissions: tokio::sync::Mutex<HashMap<String, acp::PendingAcpPermission>>,
     /// Live ACP `ask_user` requests (request id → frame id), mirroring
     /// `acp_permissions`. Membership also marks a reloaded pending row as
     /// still answerable; rows absent here expire on reload.
@@ -295,6 +454,13 @@ pub(crate) struct AppState {
     /// Advisory leases for local project resources used by parallel built-in
     /// conversations. External editors remain outside this in-process boundary.
     pub(crate) resource_leases: resource_leases::ProjectResourceCoordinator,
+    /// Live MCP Apps `serverTools` bridges, keyed by `mcp-app:{frame}:{identity}`.
+    /// Each binds one app instance to the MCP connection that presented it so
+    /// the iframe can reuse it through `tools/call` without ever seeing MCP
+    /// URLs, commands, or credentials. Instances are revoked on teardown or
+    /// session delete; after an agent rebuild the embedded `Weak` client dies
+    /// and further calls fail with a stale-instance error.
+    pub(crate) mcp_app_tool_bridges: McpAppBridges,
     /// The frame id the UI is currently viewing. Drives artifact attachment
     /// (`upload_file`/`register_artifact`) and `list_artifacts` fallback.
     /// Written only by view-navigation commands (`load_session`/`new_session`/
@@ -398,6 +564,19 @@ impl AppState {
     }
     pub(crate) fn remove_notification_window(&self, frame_id: &str) {
         self.notification_window.write().unwrap().remove(frame_id);
+    }
+    pub(crate) fn register_mcp_app_bridge(&self, instance_id: String, bridge: McpAppToolBridge) {
+        self.mcp_app_tool_bridges.register(instance_id, bridge);
+    }
+    pub(crate) fn mcp_app_bridge(&self, instance_id: &str) -> Option<McpAppToolBridge> {
+        self.mcp_app_tool_bridges.get(instance_id)
+    }
+    pub(crate) fn close_mcp_app_bridge(&self, instance_id: &str) -> bool {
+        self.mcp_app_tool_bridges.close(instance_id)
+    }
+    /// Revoke every app bridge owned by a conversation (session delete).
+    pub(crate) fn remove_mcp_app_bridges_for_frame(&self, frame_id: &str) {
+        self.mcp_app_tool_bridges.remove_for_frame(frame_id);
     }
     pub(crate) fn preferred_notification_window(
         &self,

@@ -238,7 +238,12 @@ impl<W: Write + Send> Output for RpcOutput<W> {
         self.emit(json!({"type": "stdout", "chunk": chunk}));
     }
 
-    fn tool_presentation(&self, kind: &str, payload: &Value) {
+    fn tool_presentation(
+        &self,
+        kind: &str,
+        payload: &Value,
+        _server: Option<std::sync::Arc<dyn superscience_tools::McpAppServer>>,
+    ) {
         self.emit(json!({"type": "tool_presentation", "kind": kind, "payload": payload}));
     }
 

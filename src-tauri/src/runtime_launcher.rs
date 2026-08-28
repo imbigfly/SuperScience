@@ -13,8 +13,8 @@ use std::{
     time::Duration,
 };
 use superscience_runtime::{
-    find_rscript_for_app, KernelClient, LaunchedRuntime, PythonEnv, RuntimeKey, RuntimeLanguage,
-    RuntimeLauncher, RuntimeMetadata, PROTOCOL_VERSION,
+    find_rscript_for_app, KernelClient, KernelWriteScope, LaunchedRuntime, PythonEnv, RuntimeKey,
+    RuntimeLanguage, RuntimeLauncher, RuntimeMetadata, PROTOCOL_VERSION,
 };
 use tauri::State;
 
@@ -186,7 +186,7 @@ impl RuntimeLauncher for TauriRuntimeLauncher {
                 "python",
             ),
             RuntimeLanguage::R => (
-                resolve_r_interpreter(&context, &self.app_data)?,
+                local_direct_rscript(&context, &self.app_data)?,
                 &self.r_worker,
                 "r",
             ),
@@ -229,24 +229,13 @@ impl RuntimeLauncher for TauriRuntimeLauncher {
             project_root,
         )
         .map_err(anyhow::Error::msg)?;
-        let mut envs = if context.kind == superscience_store::ExecutionContextKind::Local
-            && key.language == RuntimeLanguage::Python
-        {
-            self.envs.clone()
-        } else {
-            Vec::new()
-        };
-        if context.kind == superscience_store::ExecutionContextKind::Local
-            && key.language == RuntimeLanguage::Python
-        {
-            for (name, value) in crate::models::service_env() {
-                if let Some((_, current)) = envs.iter_mut().find(|(current, _)| current == &name) {
-                    *current = value;
-                } else {
-                    envs.push((name, value));
-                }
-            }
-        }
+        let mut envs = launch_envs(
+            &context,
+            key.language,
+            &interpreter,
+            &self.envs,
+            crate::models::service_env(),
+        );
         let ssh_auth_envs = if context.kind == superscience_store::ExecutionContextKind::Ssh {
             let connection =
                 SshConnection::from_execution_context(&context).map_err(anyhow::Error::msg)?;
@@ -255,7 +244,7 @@ impl RuntimeLauncher for TauriRuntimeLauncher {
             Vec::new()
         };
         envs.extend(ssh_auth_envs.iter().cloned());
-        let client = match KernelClient::spawn_command(
+        let mut client = match KernelClient::spawn_command(
             &command.program,
             &command.args,
             envs.as_slice(),
@@ -282,6 +271,9 @@ impl RuntimeLauncher for TauriRuntimeLauncher {
                 return Err(error);
             }
         };
+        if let Some(scope) = kernel_write_scope(&context, key.language, project_root) {
+            client.configure_write_scope(&scope).await?;
+        }
         let ready = client.ready().clone();
         Ok(LaunchedRuntime::new(
             Box::new(client),
@@ -292,6 +284,32 @@ impl RuntimeLauncher for TauriRuntimeLauncher {
             },
         ))
     }
+}
+
+fn kernel_write_scope(
+    context: &superscience_store::ExecutionContext,
+    language: RuntimeLanguage,
+    project_root: &Path,
+) -> Option<KernelWriteScope> {
+    if language != RuntimeLanguage::Python {
+        return None;
+    }
+    let root = match context.kind {
+        superscience_store::ExecutionContextKind::Local => {
+            project_root.to_string_lossy().into_owned()
+        }
+        // The WSL launch command enters the translated project root before
+        // starting the worker, so `.` is already the correct in-distro path.
+        superscience_store::ExecutionContextKind::Wsl => ".".into(),
+        superscience_store::ExecutionContextKind::Ssh => return None,
+    };
+    Some(KernelWriteScope {
+        root,
+        skip_dirs: superscience_core::provenance::SNAPSHOT_SKIP_DIRS
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect(),
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -355,6 +373,54 @@ fn resolve_r_interpreter(
     ))
 }
 
+/// Environment for one launched worker, over and above what the child inherits.
+///
+/// A local interpreter that lives inside a conda/pixi prefix needs that prefix
+/// on the child's `PATH` to load its own shared libraries; the host environment
+/// is never touched. API credentials stay limited to local Python, and remote
+/// contexts get neither: their environment is the remote shell's business.
+fn launch_envs(
+    context: &superscience_store::ExecutionContext,
+    language: RuntimeLanguage,
+    interpreter: &str,
+    base: &[(String, String)],
+    service: Vec<(String, String)>,
+) -> Vec<(String, String)> {
+    if context.kind != superscience_store::ExecutionContextKind::Local {
+        return Vec::new();
+    }
+    let mut envs = superscience_runtime::conda_prefix_envs(Path::new(interpreter));
+    if language == RuntimeLanguage::Python {
+        for (name, value) in base.iter().cloned().chain(service) {
+            upsert_env(&mut envs, name, value);
+        }
+    }
+    envs
+}
+
+fn upsert_env(envs: &mut Vec<(String, String)>, name: String, value: String) {
+    match envs.iter_mut().find(|(current, _)| current == &name) {
+        Some((_, current)) => *current = value,
+        None => envs.push((name, value)),
+    }
+}
+
+/// Resolve the configured `Rscript`, then on a local Windows context launch the
+/// real binary behind the `bin\Rscript.exe` architecture shim. Remote contexts
+/// keep the configured path: their filesystem layout is not ours to inspect.
+fn local_direct_rscript(
+    context: &superscience_store::ExecutionContext,
+    app_data: &Path,
+) -> Result<String> {
+    let configured = resolve_r_interpreter(context, app_data)?;
+    if context.kind != superscience_store::ExecutionContextKind::Local {
+        return Ok(configured);
+    }
+    Ok(superscience_runtime::direct_rscript(Path::new(&configured))
+        .to_string_lossy()
+        .into_owned())
+}
+
 fn ensure_jsonlite_available(
     context: &superscience_store::ExecutionContext,
     capabilities: &serde_json::Value,
@@ -398,8 +464,32 @@ fn build_attached_command(
             },
             cwd: Some(project_root.to_path_buf()),
         }),
-        superscience_store::ExecutionContextKind::Wsl
-        | superscience_store::ExecutionContextKind::Ssh => {
+        superscience_store::ExecutionContextKind::Wsl => {
+            let worker =
+                remote_worker.ok_or_else(|| "remote worker path is required".to_string())?;
+            let interpreter = shell_single_quote(interpreter);
+            let worker = remote_path_expression(worker)?;
+            let execute = match language {
+                RuntimeLanguage::Python => format!("exec {interpreter} {worker}",),
+                RuntimeLanguage::R => format!("exec {interpreter} --vanilla {worker}"),
+            };
+            let project_root = project_root.to_string_lossy();
+            validate_context_value("project root", &project_root)?;
+            let project_root = shell_single_quote(&project_root);
+            let script = format!(
+                "project_root=$(wslpath -a -u {project_root}) || {{ echo 'Wisp could not translate the project root for WSL' >&2; exit 125; }}\ncd \"$project_root\" || {{ echo 'Wisp could not enter the project root in WSL' >&2; exit 125; }}\n{execute}"
+            );
+            let distro = wsl_distro(context)?;
+            Ok(AttachedCommand {
+                program: PathBuf::from("wsl.exe"),
+                args: ["-d", &distro, "--", "sh", "-lc", &script]
+                    .into_iter()
+                    .map(OsString::from)
+                    .collect(),
+                cwd: None,
+            })
+        }
+        superscience_store::ExecutionContextKind::Ssh => {
             let worker =
                 remote_worker.ok_or_else(|| "remote worker path is required".to_string())?;
             let workdir = runtime_workdir(context)?;
@@ -415,29 +505,13 @@ fn build_attached_command(
                     remote_path_expression(&workdir)?,
                 ),
             };
-            match context.kind {
-                superscience_store::ExecutionContextKind::Wsl => {
-                    let distro = wsl_distro(context)?;
-                    Ok(AttachedCommand {
-                        program: PathBuf::from("wsl.exe"),
-                        args: ["-d", &distro, "--", "sh", "-lc", &script]
-                            .into_iter()
-                            .map(OsString::from)
-                            .collect(),
-                        cwd: None,
-                    })
-                }
-                superscience_store::ExecutionContextKind::Ssh => {
-                    let mut args = SshConnection::from_execution_context(context)?.ssh_args()?;
-                    args.push(script);
-                    Ok(AttachedCommand {
-                        program: PathBuf::from("ssh"),
-                        args: args.into_iter().map(OsString::from).collect(),
-                        cwd: None,
-                    })
-                }
-                superscience_store::ExecutionContextKind::Local => unreachable!(),
-            }
+            let mut args = SshConnection::from_execution_context(context)?.ssh_args()?;
+            args.push(script);
+            Ok(AttachedCommand {
+                program: PathBuf::from("ssh"),
+                args: args.into_iter().map(OsString::from).collect(),
+                cwd: None,
+            })
         }
     }
 }
@@ -736,7 +810,30 @@ mod tests {
     }
 
     #[test]
-    fn wsl_and_ssh_launches_preserve_context_configuration() {
+    fn write_scope_is_project_local_for_local_and_wsl_but_disabled_for_ssh_and_r() {
+        let local = superscience_store::ExecutionContext::new("local", "Local").unwrap();
+        let wsl = superscience_store::ExecutionContext::new("wsl:Ubuntu", "WSL").unwrap();
+        let ssh = superscience_store::ExecutionContext::new("ssh:gpu", "SSH").unwrap();
+        let project = Path::new(r"C:\Users\me\project one");
+
+        let local_scope = kernel_write_scope(&local, RuntimeLanguage::Python, project).unwrap();
+        assert_eq!(local_scope.root, project.to_string_lossy());
+        assert_eq!(
+            local_scope.skip_dirs,
+            superscience_core::provenance::SNAPSHOT_SKIP_DIRS
+        );
+        assert_eq!(
+            kernel_write_scope(&wsl, RuntimeLanguage::Python, project)
+                .unwrap()
+                .root,
+            "."
+        );
+        assert!(kernel_write_scope(&ssh, RuntimeLanguage::Python, project).is_none());
+        assert!(kernel_write_scope(&wsl, RuntimeLanguage::R, project).is_none());
+    }
+
+    #[test]
+    fn wsl_uses_project_root_while_ssh_preserves_context_workdir() {
         let mut wsl = superscience_store::ExecutionContext::new("wsl:Ubuntu-24.04", "WSL").unwrap();
         wsl.config_json = serde_json::json!({
             "distro": "Ubuntu 24.04",
@@ -753,8 +850,8 @@ mod tests {
             RuntimeLanguage::Python,
             &wsl_python,
             Path::new("unused"),
-            Some("~/.superscience/runtime/python.py"),
-            Path::new("unused"),
+            Some("~/.wisp-science/runtime/python.py"),
+            Path::new(r"C:\Users\me\project one"),
         )
         .unwrap();
         let wsl_args = wsl_command
@@ -764,14 +861,21 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(wsl_command.program, PathBuf::from("wsl.exe"));
         assert_eq!(&wsl_args[..2], ["-d", "Ubuntu 24.04"]);
-        assert!(wsl_args.last().unwrap().contains("/scratch/project one"));
+        let wsl_script = wsl_args.last().unwrap();
+        assert!(
+            wsl_script.contains(r"wslpath -a -u 'C:\Users\me\project one'"),
+            "{wsl_script}"
+        );
+        assert!(wsl_script.contains("cd \"$project_root\""), "{wsl_script}");
+        assert!(!wsl_script.contains("/scratch/project one"), "{wsl_script}");
 
         let mut ssh = superscience_store::ExecutionContext::new("ssh:gpu-box", "GPU").unwrap();
         ssh.config_json = serde_json::json!({
             "user": "alice",
             "port": 2222,
             "identity_file": "/home/alice/.ssh/lab key",
-            "python_executable": "/opt/python/bin/python"
+            "python_executable": "/opt/python/bin/python",
+            "workdir": "/scratch/ssh project"
         })
         .to_string();
         let ssh_command = build_attached_command(
@@ -794,6 +898,7 @@ mod tests {
             .windows(2)
             .any(|args| args == ["-i", "/home/alice/.ssh/lab key"]));
         assert!(ssh_args.contains(&"alice@gpu-box".to_string()));
+        assert!(ssh_args.last().unwrap().contains("/scratch/ssh project"));
 
         wsl.capabilities_json = serde_json::json!({
             "rscript_executable": "/opt/R/bin/Rscript",
@@ -806,8 +911,8 @@ mod tests {
             RuntimeLanguage::R,
             &rscript,
             Path::new("unused"),
-            Some("~/.superscience/runtime/r.R"),
-            Path::new("unused"),
+            Some("~/.wisp-science/runtime/r.R"),
+            Path::new(r"C:\Users\me\project one"),
         )
         .unwrap();
         assert!(r_command
@@ -816,6 +921,75 @@ mod tests {
             .unwrap()
             .to_string_lossy()
             .contains("--vanilla"));
+        assert!(r_command
+            .args
+            .last()
+            .unwrap()
+            .to_string_lossy()
+            .contains("wslpath -a -u"));
+    }
+
+    /// A pixi/conda interpreter cannot find its own shared libraries without
+    /// its prefix on PATH; on Windows that is the difference between a working
+    /// R kernel and an immediate 0xC0000135 exit (#941).
+    #[test]
+    fn local_launches_add_the_interpreter_prefix_to_the_child_path() {
+        let prefix = std::env::temp_dir().join(format!("wisp-launch-env-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(prefix.join("conda-meta")).unwrap();
+        let rscript = prefix
+            .join("lib")
+            .join("R")
+            .join("bin")
+            .join("Rscript")
+            .to_string_lossy()
+            .into_owned();
+        let local = superscience_store::ExecutionContext::new("local", "Local").unwrap();
+        let credentials = vec![("OPENAI_API_KEY".to_string(), "secret".to_string())];
+
+        let r_envs = launch_envs(
+            &local,
+            RuntimeLanguage::R,
+            &rscript,
+            &[],
+            credentials.clone(),
+        );
+        assert_eq!(r_envs.len(), 1, "{r_envs:?}");
+        assert_eq!(r_envs[0].0, "PATH");
+        assert!(r_envs[0].1.contains(&prefix.to_string_lossy().into_owned()));
+
+        // Python keeps its credentials and gains the same prefix PATH.
+        let python_envs = launch_envs(
+            &local,
+            RuntimeLanguage::Python,
+            &prefix.join("python").to_string_lossy(),
+            &[],
+            credentials.clone(),
+        );
+        assert!(python_envs.iter().any(|(name, _)| name == "PATH"));
+        assert!(python_envs.contains(&credentials[0]));
+
+        // A remote context's environment belongs to the remote shell.
+        let mut ssh = superscience_store::ExecutionContext::new("ssh:cpu2", "CPU2").unwrap();
+        ssh.kind = superscience_store::ExecutionContextKind::Ssh;
+        assert!(launch_envs(
+            &ssh,
+            RuntimeLanguage::Python,
+            &rscript,
+            &[],
+            credentials.clone()
+        )
+        .is_empty());
+
+        // An interpreter outside any prefix must not gain a PATH override.
+        let system = launch_envs(
+            &local,
+            RuntimeLanguage::Python,
+            "/usr/bin/python3",
+            &[],
+            credentials.clone(),
+        );
+        assert_eq!(system, credentials);
+        let _ = std::fs::remove_dir_all(&prefix);
     }
 
     #[test]

@@ -21,8 +21,8 @@ pub mod tool;
 pub mod write;
 
 pub use env::{
-    Approval, ConfirmDecision, ImageData, ToolControl, ToolEnv, ToolEvent, ToolResourceLease,
-    ToolResult,
+    Approval, ConfirmDecision, ImageData, McpAppServer, ToolControl, ToolEnv, ToolEvent,
+    ToolResourceLease, ToolResult,
 };
 pub use tool::Tool;
 
@@ -395,9 +395,14 @@ async fn run_registered_tool(tool: &dyn Tool, args: &Value, env: &dyn ToolEnv) -
     // Per-tool approval gate. `Deny` blocks before the call card even shows;
     // `Ask` shows the card then routes through `confirm`; `Allow` runs as before.
     let host_approval = env.approval_mode(name).await;
+    let mutating = plan_mode_blocks(name) && !tool.read_only();
     let approval = if host_approval == env::Approval::Deny {
         // An explicit block remains a hard policy even in Full Permission.
         env::Approval::Deny
+    } else if env.force_ask_mutations() && mutating {
+        // IM turns must not inherit an unattended Allow default, including
+        // Full Permission / skip-connector bypass.
+        env::Approval::Ask
     } else if env.approval_bypass() {
         // Full Permission suppresses both host prompts and a tool's built-in
         // minimum approval requirement. Plan mode already gated mutations
@@ -629,6 +634,7 @@ mod approval_tests {
         mode: Approval,
         confirm_ok: bool,
         bypass: bool,
+        force_ask: bool,
     }
     #[async_trait::async_trait]
     impl ToolEnv for PolicyEnv {
@@ -643,6 +649,9 @@ mod approval_tests {
         }
         fn approval_bypass(&self) -> bool {
             self.bypass
+        }
+        fn force_ask_mutations(&self) -> bool {
+            self.force_ask
         }
         async fn emit(&self, _event: ToolEvent) {}
     }
@@ -729,6 +738,7 @@ mod approval_tests {
             mode,
             confirm_ok,
             bypass: false,
+            force_ask: false,
         };
         let res = reg.run("spy", &serde_json::json!({}), &env).await;
         (RAN.load(Ordering::SeqCst), res)
@@ -745,6 +755,7 @@ mod approval_tests {
             mode: Approval::Allow,
             confirm_ok: false,
             bypass: false,
+            force_ask: false,
         };
         let result = registry
             .run("third_party", &serde_json::json!({}), &env)
@@ -766,6 +777,7 @@ mod approval_tests {
             mode: Approval::Allow,
             confirm_ok: false,
             bypass: true,
+            force_ask: false,
         };
         let allowed = registry
             .run("third_party", &serde_json::json!({}), &bypass)
@@ -779,12 +791,76 @@ mod approval_tests {
             mode: Approval::Deny,
             confirm_ok: true,
             bypass: true,
+            force_ask: false,
         };
         let blocked = registry
             .run("third_party", &serde_json::json!({}), &denied)
             .await;
         assert!(!blocked.success);
         assert!(!RAN.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn im_force_ask_mutations_upgrades_allow_and_bypass() {
+        static RAN: AtomicBool = AtomicBool::new(false);
+        RAN.store(false, Ordering::SeqCst);
+        let mut registry = Registry { tools: vec![] };
+        registry.add(Box::new(SpyTool(&RAN)));
+        let env = PolicyEnv {
+            root: PathBuf::from("."),
+            mode: Approval::Allow,
+            confirm_ok: false,
+            bypass: true,
+            force_ask: true,
+        };
+        let result = registry.run("spy", &serde_json::json!({}), &env).await;
+        assert!(!result.success);
+        assert_eq!(result.control, ToolControl::StopBatch);
+        assert!(!RAN.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn im_force_ask_preserves_explicit_deny() {
+        static RAN: AtomicBool = AtomicBool::new(false);
+        RAN.store(false, Ordering::SeqCst);
+        let mut registry = Registry { tools: vec![] };
+        registry.add(Box::new(SpyTool(&RAN)));
+        let env = PolicyEnv {
+            root: PathBuf::from("."),
+            mode: Approval::Deny,
+            confirm_ok: true,
+            bypass: true,
+            force_ask: true,
+        };
+        let result = registry.run("spy", &serde_json::json!({}), &env).await;
+        assert!(!result.success);
+        assert!(!RAN.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn im_force_ask_lets_read_only_allow_through() {
+        let dir = std::env::temp_dir().join(format!(
+            "wisp-im-read-allow-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("note.txt"), "hello").unwrap();
+        let registry = Registry::builtins();
+        let env = PolicyEnv {
+            root: dir.clone(),
+            mode: Approval::Allow,
+            confirm_ok: false,
+            bypass: false,
+            force_ask: true,
+        };
+        let read = serde_json::json!({ "path": dir.join("note.txt").to_string_lossy() });
+        let write = serde_json::json!({ "path": "gated.txt", "content": "no" });
+        assert!(registry.run("read", &read, &env).await.success);
+        let blocked = registry.run("write", &write, &env).await;
+        assert!(!blocked.success);
+        assert!(!dir.join("gated.txt").exists());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]

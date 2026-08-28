@@ -5,8 +5,116 @@ use crate::{
 };
 use async_trait::async_trait;
 use serde_json::json;
+use std::path::Path;
 use superscience_llm::ToolSchema;
 use superscience_tools::{Tool, ToolEnv, ToolEvent, ToolResult};
+
+/// Normalize path separators for comparison. Only meaningful on Windows,
+/// where `\` cannot appear in a filename; on Unix a literal `\` is a legal
+/// filename character and replacing it could redirect the path to a
+/// *different* existing file (`we\ird.txt` vs `we/ird.txt`), i.e. credit a
+/// file the cell never wrote.
+fn normalize_separators(path: &str) -> String {
+    if cfg!(windows) {
+        path.replace('\\', "/")
+    } else {
+        path.to_string()
+    }
+}
+
+/// Relativize worker-reported absolute writes to the project root.
+/// Outside-root paths, the root itself, and empty remainders are dropped;
+/// on Windows `\` is normalized to `/`; duplicates are collapsed; the
+/// result is sorted.
+fn project_relative_writes(root: &Path, reported: &[String]) -> Vec<String> {
+    let root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let mut out = Vec::new();
+    for raw in reported {
+        // Normalize separators before canonicalize/strip so a Windows-style
+        // `out\a.txt` still matches on hosts whose temp root is a symlink.
+        let normalized = normalize_separators(raw);
+        let path = Path::new(&normalized);
+        let abs = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let Ok(relative) = abs.strip_prefix(&root) else {
+            continue;
+        };
+        // When canonicalize failed above, `abs` is the raw reported path and
+        // the remainder could still climb out of the root (`/root/../etc`).
+        // Provenance records feed exports and undo — never let one name a
+        // path outside the root.
+        if relative
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+        {
+            continue;
+        }
+        let relative = normalize_separators(&relative.to_string_lossy());
+        if relative.is_empty() {
+            continue;
+        }
+        out.push(relative);
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Validate paths already reported relative to a host-configured project
+/// boundary. Joining and canonicalizing again keeps a compromised or stale
+/// worker from naming a symlink target outside the project.
+fn validated_project_writes(root: &Path, reported: &[String]) -> Vec<String> {
+    let root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let mut out = Vec::new();
+    for raw in reported {
+        let normalized = normalize_separators(raw);
+        let relative = Path::new(&normalized);
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            continue;
+        }
+        let candidate = root.join(relative);
+        let Ok(candidate) = dunce::canonicalize(candidate) else {
+            continue;
+        };
+        if candidate.strip_prefix(&root).is_err() {
+            continue;
+        }
+        if !normalized.is_empty() {
+            out.push(normalized);
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Hand a finished cell's self-reported writes to the running tool
+/// environment. Legacy absolute reports are local-only. A host-configured
+/// project-relative report is also safe for WSL because its REPL runs inside
+/// the translated Windows project root; SSH remains a different filesystem.
+/// An absent report means the worker could not observe, so the host keeps
+/// inferring from its snapshot.
+fn report_runtime_writes(env: &dyn ToolEnv, context_id: &str, response: &KernelResp) {
+    let Some(reported) = &response.files_written else {
+        return;
+    };
+    let paths = match (context_id, response.files_written_base.as_deref()) {
+        (LOCAL_CONTEXT_ID, None) => project_relative_writes(env.project_root(), reported),
+        (LOCAL_CONTEXT_ID, Some("project")) => {
+            validated_project_writes(env.project_root(), reported)
+        }
+        (context, Some("project")) if context.starts_with("wsl:") => {
+            validated_project_writes(env.project_root(), reported)
+        }
+        _ => Vec::new(),
+    };
+    if !paths.is_empty() {
+        env.report_written_paths(&paths);
+    }
+}
 
 pub struct ReplTool {
     manager: RuntimeManager,
@@ -22,8 +130,8 @@ pub struct RTool {
     session_id: String,
 }
 
-const PYTHON_TOOL_DESCRIPTION: &str = "Execute Python code in a persistent REPL. Variables, imports, and loaded data persist per conversation and execution context; parallel conversations never share interpreter state. Return values of expressions are printed. Paths are interpreted inside the selected context. Use this for analysis, data loading, plotting, and computation when required packages already exist. Do not use this as a package installer; if dependencies are missing, set up a project-local pixi environment or use local-env-setup first.";
-const R_TOOL_DESCRIPTION: &str = "Execute R code in a persistent REPL. Variables, libraries, and loaded data persist per conversation and execution context; parallel conversations never share interpreter state. The final visible value is printed. Paths are interpreted inside the selected context. Write plots explicitly with png(), pdf(), ggsave(), or another file device. Rscript and the jsonlite package must already exist in that context; this tool does not install packages.";
+const PYTHON_TOOL_DESCRIPTION: &str = "Execute Python code in a persistent REPL. Variables, imports, and loaded data persist per conversation and execution context; parallel conversations never share interpreter state. Return values of expressions are printed. Local and WSL REPLs start in the project root; SSH REPLs use the execution context workdir. Use this for analysis, data loading, plotting, and computation when required packages already exist. Do not use this as a package installer; if dependencies are missing, set up a project-local pixi environment or use local-env-setup first.";
+const R_TOOL_DESCRIPTION: &str = "Execute R code in a persistent REPL. Variables, libraries, and loaded data persist per conversation and execution context; parallel conversations never share interpreter state. The final visible value is printed. Local and WSL REPLs start in the project root; SSH REPLs use the execution context workdir. Write plots explicitly with png(), pdf(), ggsave(), or another file device. Rscript and the jsonlite package must already exist in that context; this tool does not install packages.";
 
 impl ReplTool {
     pub fn new(manager: RuntimeManager, project_id: impl Into<String>) -> Self {
@@ -150,6 +258,7 @@ async fn run_runtime(
                     env.emit(ToolEvent::Stdout { chunk }).await;
                 }
                 Some(RuntimeEvent::Finished(Ok(response))) => {
+                    report_runtime_writes(env, &key.context_id, &response);
                     let success = response.error.is_none();
                     return ToolResult {
                         success,
@@ -282,8 +391,14 @@ impl Tool for RTool {
 
 #[cfg(test)]
 mod tests {
-    use super::{code_arg, context_id, PYTHON_TOOL_DESCRIPTION, R_TOOL_DESCRIPTION};
-    use crate::MAX_CODE_BYTES;
+    use super::{
+        code_arg, context_id, project_relative_writes, report_runtime_writes,
+        validated_project_writes, PYTHON_TOOL_DESCRIPTION, R_TOOL_DESCRIPTION,
+    };
+    use crate::{KernelResp, LOCAL_CONTEXT_ID, MAX_CODE_BYTES};
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+    use superscience_tools::{ToolEnv, ToolEvent};
 
     #[test]
     fn python_description_keeps_package_setup_out_of_the_repl() {
@@ -297,6 +412,8 @@ mod tests {
         for description in [PYTHON_TOOL_DESCRIPTION, R_TOOL_DESCRIPTION] {
             assert!(description.contains("persist per conversation"));
             assert!(description.contains("parallel conversations never share interpreter state"));
+            assert!(description.contains("Local and WSL REPLs start in the project root"));
+            assert!(description.contains("SSH REPLs use the execution context workdir"));
         }
     }
 
@@ -325,5 +442,218 @@ mod tests {
     fn code_size_is_rejected_before_runtime_dispatch() {
         let args = serde_json::json!({"code": "x".repeat(MAX_CODE_BYTES + 1)});
         assert!(code_arg(&args).unwrap_err().contains("byte limit"));
+    }
+
+    fn unique_tmp(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "wisp_rel_{tag}_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn project_relative_writes_drops_outside_root_and_normalizes() {
+        let root = unique_tmp("writes");
+        std::fs::create_dir_all(root.join("out")).unwrap();
+        std::fs::write(root.join("out/a.txt"), b"a").unwrap();
+        std::fs::write(root.join("out/c.txt"), b"c").unwrap();
+        let outside = unique_tmp("writes_out");
+        std::fs::write(outside.join("cache"), b"x").unwrap();
+
+        let a = root.join("out/a.txt").to_string_lossy().into_owned();
+        let c = root.join("out/c.txt").to_string_lossy().into_owned();
+        let mut reported = vec![
+            a.clone(),
+            a.clone(),
+            c,
+            outside.join("cache").to_string_lossy().into_owned(),
+            root.to_string_lossy().into_owned(),
+        ];
+        // Backslash spellings collapse into the same entries — but only on
+        // Windows, where `\` is a separator rather than a filename character.
+        if cfg!(windows) {
+            reported.push(format!(
+                "{}{}out\\a.txt",
+                root.display(),
+                std::path::MAIN_SEPARATOR
+            ));
+            reported.push(format!(
+                "{}{}out\\c.txt",
+                root.display(),
+                std::path::MAIN_SEPARATOR
+            ));
+        }
+        let got = project_relative_writes(&root, &reported);
+        assert_eq!(got, vec!["out/a.txt".to_string(), "out/c.txt".to_string()]);
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&outside).ok();
+    }
+
+    /// On Unix a literal `\` is a legal filename character; the spelling
+    /// must be preserved so the record names the file that was written,
+    /// not a same-identity sibling under a `we/` directory.
+    #[cfg(not(windows))]
+    #[test]
+    fn project_relative_writes_preserves_backslash_filenames_on_unix() {
+        let root = unique_tmp("writes_bs");
+        std::fs::write(root.join(r"we\ird.txt"), b"x").unwrap();
+        let reported = vec![root.join(r"we\ird.txt").to_string_lossy().into_owned()];
+        assert_eq!(
+            project_relative_writes(&root, &reported),
+            vec![r"we\ird.txt".to_string()]
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn project_relative_writes_rejects_parent_traversal_in_fallback() {
+        // A path that does not exist skips canonicalization, so the raw
+        // remainder is stripped verbatim; `..` must never survive into the
+        // provenance record, where undo would resolve it outside the root.
+        let root = unique_tmp("writes_dotdot");
+        let escape = format!(
+            "{}{}..{}escaped.txt",
+            root.display(),
+            std::path::MAIN_SEPARATOR,
+            std::path::MAIN_SEPARATOR
+        );
+        assert!(project_relative_writes(&root, &[escape]).is_empty());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn configured_project_writes_reject_absolute_traversal_and_missing_paths() {
+        let root = unique_tmp("configured_writes");
+        std::fs::create_dir_all(root.join("out")).unwrap();
+        std::fs::write(root.join("out/a.txt"), b"a").unwrap();
+        let absolute = root.join("out/a.txt").to_string_lossy().into_owned();
+        assert_eq!(
+            validated_project_writes(
+                &root,
+                &[
+                    "out/a.txt".into(),
+                    "../escape.txt".into(),
+                    absolute,
+                    "out/missing.txt".into(),
+                ],
+            ),
+            vec!["out/a.txt".to_string()]
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Captures what the finished-cell branch of `run_runtime` hands to the
+    /// agent loop.
+    struct RecordingEnv {
+        root: PathBuf,
+        reported: Mutex<Vec<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ToolEnv for RecordingEnv {
+        fn project_root(&self) -> &Path {
+            &self.root
+        }
+        async fn confirm(&self, _message: &str) -> bool {
+            true
+        }
+        async fn emit(&self, _event: ToolEvent) {}
+        fn report_written_paths(&self, paths: &[String]) {
+            self.reported.lock().unwrap().push(paths.to_vec());
+        }
+    }
+
+    fn recording_env(root: PathBuf) -> RecordingEnv {
+        RecordingEnv {
+            root,
+            reported: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn response_with(files_written: Option<Vec<String>>) -> KernelResp {
+        KernelResp {
+            files_written,
+            ..KernelResp::default()
+        }
+    }
+
+    #[test]
+    fn local_kernel_report_reaches_the_tool_environment() {
+        let root = unique_tmp("report_local");
+        std::fs::write(root.join("fig_1.png"), b"x").unwrap();
+        let env = recording_env(root.clone());
+        let reported = vec![root.join("fig_1.png").to_string_lossy().into_owned()];
+
+        report_runtime_writes(&env, LOCAL_CONTEXT_ID, &response_with(Some(reported)));
+
+        assert_eq!(
+            *env.reported.lock().unwrap(),
+            vec![vec!["fig_1.png".to_string()]]
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn configured_local_report_reaches_the_tool_environment() {
+        let root = unique_tmp("report_configured_local");
+        std::fs::write(root.join("fig_1.png"), b"x").unwrap();
+        let env = recording_env(root.clone());
+        let response = KernelResp {
+            files_written: Some(vec!["fig_1.png".into()]),
+            files_written_base: Some("project".into()),
+            ..KernelResp::default()
+        };
+
+        report_runtime_writes(&env, LOCAL_CONTEXT_ID, &response);
+
+        assert_eq!(
+            *env.reported.lock().unwrap(),
+            vec![vec!["fig_1.png".to_string()]]
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn configured_wsl_report_is_forwarded_but_ssh_stays_remote() {
+        let root = unique_tmp("report_configured_wsl");
+        std::fs::write(root.join("fig_1.png"), b"x").unwrap();
+        let response = KernelResp {
+            files_written: Some(vec!["fig_1.png".into()]),
+            files_written_base: Some("project".into()),
+            ..KernelResp::default()
+        };
+        let wsl = recording_env(root.clone());
+        report_runtime_writes(&wsl, "wsl:Ubuntu", &response);
+        assert_eq!(
+            *wsl.reported.lock().unwrap(),
+            vec![vec!["fig_1.png".to_string()]]
+        );
+
+        let ssh = recording_env(root.clone());
+        report_runtime_writes(&ssh, "ssh:gpu-box", &response);
+        assert!(ssh.reported.lock().unwrap().is_empty());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A remote or WSL worker's legacy absolute paths describe another
+    /// filesystem, and an absent report means "host, keep inferring". Neither
+    /// may reach the record.
+    #[test]
+    fn only_local_legacy_absolute_reports_are_forwarded() {
+        let root = unique_tmp("report_gates");
+        std::fs::write(root.join("fig_1.png"), b"x").unwrap();
+        let inside = vec![root.join("fig_1.png").to_string_lossy().into_owned()];
+        let env = recording_env(root.clone());
+
+        report_runtime_writes(&env, "ssh:gpu-box", &response_with(Some(inside.clone())));
+        report_runtime_writes(&env, "wsl:Ubuntu", &response_with(Some(inside)));
+        report_runtime_writes(&env, LOCAL_CONTEXT_ID, &response_with(None));
+        report_runtime_writes(&env, LOCAL_CONTEXT_ID, &response_with(Some(Vec::new())));
+
+        assert!(env.reported.lock().unwrap().is_empty());
+        std::fs::remove_dir_all(&root).ok();
     }
 }

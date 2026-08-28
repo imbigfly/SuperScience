@@ -51,10 +51,21 @@ badge. Their files, enabled state, and removal are owned by the parent plugin,
 so they do not expose duplicate Skill controls.
 
 When a tool presents an MCP App such as Motif, SuperScience opens it as a center tab and
-turns on the existing chat/workbench split. Switching back to the conversation
-parks the live app without reloading it; closing its tab tears the app down.
-The latest presented workbench is saved with the conversation and restored when
-that conversation is reopened, including after SuperScience restarts.
+turns on the existing chat/workbench split. Later presentations of the same UI
+resource (or the same tool name when no resource URI is present) reuse that tab
+and replace its contents instead of stacking another window. Switching back to
+the conversation parks the live app without reloading it; closing its tab tears
+the app down. The latest presented workbench is saved with the conversation and
+restored when that conversation is reopened, including after SuperScience restarts.
+
+While that live App is still bound to the MCP server that presented it, SuperScience
+advertises `hostCapabilities.serverTools` and forwards standard `tools/call`
+requests to the same server (same-server tools only, including app-only helpers
+that never enter the agent catalog). Each App call has a 30s host timeout that
+fails only that request; it does not inherit the 120s transport timeout and
+does not tear down a stdio MCP process. Restored Apps that no longer have the
+original connection do not get that capability and keep using
+`ui/update-model-context`.
 
 MCP Apps may publish their current selection or other bounded live state through
 the standard `ui/update-model-context` request. SuperScience keeps only the latest update
@@ -77,10 +88,17 @@ rather than its entire workspace.
   released.
 - Third-party MCP tool names may not replace an existing SuperScience tool.
 - MCP Apps receive structured tool input/results in a script-only, opaque-origin
-  iframe. Network origins are restricted to the resource's declared CSP. Apps may
-  update the next model turn's bounded text/JSON context, but SuperScience does not
-  currently grant app-initiated tool calls, external links, downloads, forms,
-  camera, microphone, or geolocation.
+  iframe. Network origins are restricted to the resource's declared CSP. A live
+  App may call tools on the same MCP server through the host (`tools/call`);
+  those calls use the existing approval policy, are keyed by connector + tool
+  (bundled `dev-mcp` and `mcp_bio` use those stable ids; an empty id is not
+  collapsed to `_`), time out after 30s without tearing down the MCP process,
+  and cannot reach another server. Arguments are checked against a JSON Schema
+  subset (`type`, `required`, `properties`, `additionalProperties: false`,
+  `items`, `enum`, numeric bounds, `pattern`). Combinators such as `oneOf` /
+  `anyOf` / `allOf` are not evaluated. Apps may also update the next model
+  turn's bounded text/JSON context. SuperScience does not grant external links,
+  downloads, forms, camera, microphone, or geolocation.
 - Embedded `text/html` MCP resources are materialized under
   `.superscience/plugin-artifacts/` and opened through SuperScience's sandboxed HTML preview.
 
@@ -114,6 +132,46 @@ guessing MCP tools from its display name. The acceptance checks are:
 4. Calling `motif_create_workbench_artifact` creates a self-contained HTML file
    under `.superscience/plugin-artifacts/`, and that file opens in SuperScience's artifact
    preview.
+
+When the live Motif workbench is open, its host toolbar also provides **Load
+DNA file**. The browser picker can select a SnapGene `.dna`, FASTA, GenBank,
+raw-sequence, or Motif JSON file from anywhere the user can access; the file does not need
+to be copied into the SuperScience project first. SuperScience reads only the explicitly
+selected file and sends its bounded text content through the existing
+`motif_open_workbench` MCP connection. SnapGene packets are parsed locally;
+the DNA sequence, name, topology, and modern SnapGene feature annotations
+(names, types, ranges, direction, colors, segments, and qualifiers) are sent to
+Motif. Features therefore remain visible on the sequence and plasmid map instead
+of being reduced to an unannotated sequence. Malformed or other
+unknown binary files fail instead of being interpreted as protein. Binary AB1/ABI traces continue to use
+Motif's own **Add Entry -> Choose files** importer.
+
+Supported sequence files in the project Files pane also expose **Add to
+Motif**. With a live Motif workbench in the current conversation, SuperScience parses
+the file through `motif_open_workbench` and appends the returned records via
+Motif's workspace API, preserving the existing inventory. Without a live
+workbench, SuperScience attaches the file and prepares an instruction to open Motif and
+add it, rather than silently dropping the action.
+
+The Motif host toolbar provides **Add selection to chat**. SuperScience asks the
+sandboxed workbench for the browser's highlighted sequence text, verifies that
+it is an exact substring of Motif's active record, and calculates one-based
+coordinates. The composer receives both a visible reference card and a
+structured text block containing record identity, coordinates, strand,
+molecule type, and exact sequence. Highlighted UI text that does not match the
+active record fails closed; SuperScience never guesses sequence coordinates.
+
+Clicking an annotated feature on Motif's plasmid map also scrolls the sequence
+pane to that feature. **Add selection to chat** resolves the selected feature
+by its annotation ID before considering browser text selection, and includes
+the feature name, full coordinates, strand, and exact genomic sequence. This
+prevents a stale two-base browser selection from replacing a map feature.
+
+The Motif selection bar shows the selected sequence length in base pairs as
+soon as a range or annotated feature is selected. The same deterministic
+length is included in the composer reference card and structured chat context;
+it is calculated locally from the selected sequence and does not require a
+model call.
 
 Run this acceptance test natively on Windows as well. SuperScience keeps canonical
 containment checks but passes ordinary drive-letter paths to Node MCP entrypoints;

@@ -9,6 +9,26 @@ use std::io::Read;
 use superscience_llm::ToolSchema;
 
 const MAX_EDIT_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_AMBIGUOUS_MATCH_LINES: usize = 5;
+
+/// Return the 1-based start line of the first `limit` non-overlapping matches.
+/// The cursor advances through the file once instead of rescanning the whole
+/// prefix for every occurrence.
+fn match_line_numbers(text: &str, old: &str, limit: usize) -> Vec<usize> {
+    let mut line = 1usize;
+    let mut cursor = 0usize;
+    text.match_indices(old)
+        .take(limit)
+        .map(|(index, _)| {
+            line += text[cursor..index]
+                .bytes()
+                .filter(|byte| *byte == b'\n')
+                .count();
+            cursor = index;
+            line
+        })
+        .collect()
+}
 
 fn replaced_len(text: &str, old: &str, new: &str, all: bool) -> Option<usize> {
     let count = if all {
@@ -67,6 +87,9 @@ impl Tool for EditTool {
     }
 
     async fn run(&self, args: &serde_json::Value, env: &dyn ToolEnv) -> ToolResult {
+        if env.is_cancelled() {
+            return ToolResult::fail("interrupted by user");
+        }
         let path = match arg_str(args, "path") {
             Ok(p) => p,
             Err(e) => return ToolResult::fail(e),
@@ -120,8 +143,20 @@ impl Tool for EditTool {
         }
         let count = text.matches(&old).count();
         if !all && count > 1 {
+            let lines = match_line_numbers(&text, &old, MAX_AMBIGUOUS_MATCH_LINES);
+            let line_label = if count > lines.len() {
+                "first match lines"
+            } else {
+                "match lines"
+            };
             return ToolResult::fail(format!(
-                "edit error: old_string appears {count} times, must be unique (use all=true)"
+                "edit error: old_string appears {count} times, must be unique (use all=true); \
+{line_label}: {}",
+                lines
+                    .iter()
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
         let Some(result_len) = replaced_len(&text, &old, &new, all) else {
@@ -137,7 +172,7 @@ impl Tool for EditTool {
         } else {
             text.replacen(&old, &new, 1)
         };
-        if let Err(e) = std::fs::write(&real, &replaced) {
+        if let Err(e) = crate::safety::write_no_follow(&real, replaced.as_bytes()) {
             return ToolResult::fail(format!("edit {path} error: {e}"));
         }
         env.emit(ToolEvent::FileChanged { path: path.clone() })
@@ -296,6 +331,50 @@ mod tests {
         std::fs::remove_dir_all(&tmp).ok();
     }
 
+    struct CancelledEnv(PathBuf);
+
+    #[async_trait::async_trait]
+    impl ToolEnv for CancelledEnv {
+        fn project_root(&self) -> &Path {
+            &self.0
+        }
+        async fn confirm(&self, _message: &str) -> bool {
+            true
+        }
+        async fn emit(&self, _event: ToolEvent) {}
+        fn is_cancelled(&self) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_edit_does_not_change_the_file() {
+        let tmp = std::env::temp_dir().join(format!("wisp_edit_cancel_{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("keep.txt"), "original\n").unwrap();
+        let env = CancelledEnv(tmp.clone());
+
+        let result = EditTool
+            .run(
+                &json!({
+                    "path": "keep.txt",
+                    "old": "original",
+                    "new": "changed"
+                }),
+                &env,
+            )
+            .await;
+
+        assert!(!result.success, "{}", result.content);
+        assert!(result.content.contains("interrupted by user"));
+        assert_eq!(
+            std::fs::read_to_string(tmp.join("keep.txt")).unwrap(),
+            "original\n"
+        );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
     #[test]
     fn replacement_size_is_checked_before_allocating() {
         assert_eq!(replaced_len("aaa", "a", "bb", true), Some(6));
@@ -305,5 +384,42 @@ mod tests {
             replaced_len("aaa", "a", &"x".repeat(MAX_EDIT_BYTES as usize), true)
                 .is_some_and(|len| len as u64 > MAX_EDIT_BYTES)
         );
+    }
+
+    #[tokio::test]
+    async fn ambiguous_edit_reports_bounded_match_line_numbers() {
+        let tmp =
+            std::env::temp_dir().join(format!("wisp_edit_ambiguous_lines_{}", std::process::id()));
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join("dup.txt"),
+            "dup\nkeep\ndup\nkeep\ndup\nkeep\ndup\nkeep\ndup\nkeep\ndup\n",
+        )
+        .unwrap();
+
+        let result = EditTool
+            .run(
+                &json!({ "path": "dup.txt", "old": "dup", "new": "unique" }),
+                &TestEnv(tmp.clone()),
+            )
+            .await;
+
+        assert!(!result.success);
+        assert!(
+            result.content.contains("appears 6 times"),
+            "{}",
+            result.content
+        );
+        assert!(
+            result.content.contains("first match lines: 1, 3, 5, 7, 9"),
+            "{}",
+            result.content
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.join("dup.txt")).unwrap(),
+            "dup\nkeep\ndup\nkeep\ndup\nkeep\ndup\nkeep\ndup\nkeep\ndup\n"
+        );
+        std::fs::remove_dir_all(tmp).ok();
     }
 }

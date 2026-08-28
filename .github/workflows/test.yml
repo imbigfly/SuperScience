@@ -7,6 +7,13 @@ on:
     branches: [main]
 
 jobs:
+  release-notes-helper:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check release-notes title helper
+        run: bash scripts/github_release_notes.sh --self-test
+
   headless-agent-eval:
     name: Headless agent eval (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -26,6 +33,24 @@ jobs:
 
       - name: Run MCP process-tree shutdown regression
         run: cargo test -p wisp-mcp --test process_tree_shutdown
+
+      # Interpreters are often launchers: Windows Rscript.exe re-launches
+      # bin\x64\Rscript.exe through cmd.exe. Stopping a runtime must reclaim
+      # that whole tree, which only a real per-OS process tree can prove.
+      - name: Run runtime worker process-tree regression
+        run: cargo test -p wisp-runtime --test worker_process_tree
+
+      # The kernel worker is Python, so its tests are too. Run them on all
+      # three OSes: the worker's write reporting and its process handling are
+      # exactly the parts that differ per platform.
+      - name: Run Python kernel worker tests (Unix)
+        if: runner.os != 'Windows'
+        run: python3 -m unittest discover -s python -p "test_kernel_worker.py" -v
+
+      # python3 is not on PATH on windows-latest; the launcher is `python`.
+      - name: Run Python kernel worker tests (Windows)
+        if: runner.os == 'Windows'
+        run: python -m unittest discover -s python -p "test_kernel_worker.py" -v
 
       - name: Run deterministic headless agent suite
         run: cargo run -p wisp-cli -- eval --artifacts target/headless-agent-eval --save target/headless-agent-eval/report.json

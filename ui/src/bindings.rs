@@ -49,10 +49,27 @@ extern "C" {
     pub(crate) fn mount_mcp_app(instance_id: &str, el_id: &str, payload_json: &str) -> bool;
     #[wasm_bindgen(js_name = park_mcp_app)]
     pub(crate) fn park_mcp_app(instance_id: &str);
+    #[wasm_bindgen(catch, js_name = import_motif_dna_file)]
+    pub(crate) async fn import_motif_dna_file(instance_id: &str) -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(catch, js_name = add_workspace_file_to_motif)]
+    pub(crate) async fn add_workspace_file_to_motif(
+        instance_id: &str,
+        path: &str,
+    ) -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(catch, js_name = request_motif_selection)]
+    pub(crate) async fn request_motif_selection(instance_id: &str) -> Result<JsValue, JsValue>;
     #[wasm_bindgen(js_name = close_mcp_app)]
     pub(crate) fn close_mcp_app(instance_id: &str);
     #[wasm_bindgen(js_name = pasted_image_count)]
     pub(crate) fn pasted_image_count(event: JsValue) -> usize;
+    /// Chat media as a cached blob object URL (never a base64 data URL) —
+    /// `null` when the file cannot be read, so callers paint their fallback.
+    #[wasm_bindgen(js_name = media_url)]
+    pub(crate) async fn media_url(path: &str) -> JsValue;
+    /// Small canvas-downscaled variant of [`media_url`] for thumbnail-sized
+    /// cards, so long histories do not keep full-size decoded bitmaps alive.
+    #[wasm_bindgen(js_name = media_thumbnail_url)]
+    pub(crate) async fn media_thumbnail_url(path: &str) -> JsValue;
     #[wasm_bindgen(js_name = drag_has_files)]
     pub(crate) fn drag_has_files(event: JsValue) -> bool;
     #[wasm_bindgen(js_name = set_drag_copy)]
@@ -61,6 +78,8 @@ extern "C" {
     pub(crate) fn is_windows() -> bool;
     pub(crate) fn is_mac() -> bool;
     pub(crate) async fn window_control(action: &str);
+    #[wasm_bindgen(js_name = set_window_title)]
+    pub(crate) async fn set_window_title(title: &str);
     pub(crate) async fn start_window_move();
     #[wasm_bindgen(js_name = arm_caption_drag)]
     pub(crate) async fn arm_caption_drag(start_x: f64, start_y: f64);
@@ -102,7 +121,6 @@ extern "C" {
     fn switch_chat_scroll(scroller_id: &str, session_id: &str);
     fn preserve_chat_scroll_on_prepend(scroller_id: &str, content_id: &str);
     fn jump_chat_scroll(scroller_id: &str, selector: &str);
-    fn jump_chat_scroll_last_user(scroller_id: &str);
     fn follow_run_outputs();
 }
 
@@ -171,11 +189,6 @@ pub(crate) fn jump_chat_to_item(index: usize) {
     );
 }
 
-/// Jump to the latest user turn (floating "Your last message" pill).
-pub(crate) fn jump_chat_to_last_user() {
-    jump_chat_scroll_last_user(CHAT_SCROLLER_ID);
-}
-
 /// Syntax-highlight the code block with the given DOM id, once it is mounted.
 pub(crate) fn schedule_highlight(id: String) {
     spawn_local(async move {
@@ -190,4 +203,10 @@ pub(crate) fn open_external_url(url: String) {
             .unwrap_or(JsValue::UNDEFINED);
         let _ = invoke("open_external_url", args).await;
     });
+}
+
+/// Ask the backend to open the first available browser on its extension
+/// manager page; resolves to the `BrowserExtensionSetup` reply.
+pub(crate) async fn open_browser_extension_page() -> JsValue {
+    invoke("open_browser_extension_page", JsValue::UNDEFINED).await
 }

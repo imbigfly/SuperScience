@@ -5,8 +5,8 @@
 
 use super::*;
 use crate::chat_render::{
-    context_percent, context_usage_detail_text, context_usage_rows, fmt_context_limit,
-    fmt_context_tokens,
+    context_percent, context_usage_detail_text, context_usage_rows, context_usage_tone,
+    fmt_context_limit, fmt_context_tokens, ContextUsageTone,
 };
 
 const CONTEXT_USAGE_DRAG_THRESHOLD: f64 = 8.0;
@@ -256,9 +256,13 @@ pub(crate) fn ContextUsagePanel(
     on_header_dblclick: Callback<web_sys::MouseEvent>,
     on_dock: Callback<()>,
     on_resize_start: Callback<web_sys::MouseEvent>,
+    on_compact: Callback<()>,
+    on_new_session: Callback<()>,
+    compact_disabled: Signal<bool>,
 ) -> impl IntoView {
     let loc = locale.get();
     let pct = context_percent(snapshot.used, snapshot.max);
+    let danger = context_usage_tone(snapshot.used, snapshot.max) == ContextUsageTone::Danger;
     let used = fmt_context_tokens(snapshot.used);
     let total = if snapshot.max == 0 {
         tf(loc, "context_usage.total_used", &[("used", &used)])
@@ -324,6 +328,30 @@ pub(crate) fn ContextUsagePanel(
                 <span>{tf(loc, "context_usage.full", &[("pct", &pct.to_string())])}</span>
                 <span>{total}</span>
             </div>
+            {danger.then(|| view! {
+                <div class="context-usage-nudge" data-testid="context-usage-nudge" role="status">
+                    <span class="context-usage-nudge-copy">{t(loc, "context_usage.nudge")}</span>
+                    <div class="context-usage-nudge-actions">
+                        <button type="button" class="context-usage-nudge-action"
+                            data-testid="context-usage-compact"
+                            disabled=move || compact_disabled.get()
+                            on:click=move |ev| {
+                                ev.stop_propagation();
+                                on_compact.call(());
+                            }>
+                            {t(loc, "context_usage.nudge_compact")}
+                        </button>
+                        <button type="button" class="context-usage-nudge-action"
+                            data-testid="context-usage-new-session"
+                            on:click=move |ev| {
+                                ev.stop_propagation();
+                                on_new_session.call(());
+                            }>
+                            {t(loc, "context_usage.nudge_new_session")}
+                        </button>
+                    </div>
+                </div>
+            })}
             <div class="context-usage-bar" role="img"
                 aria-label=tf(loc, "context_usage.full", &[("pct", &pct.to_string())])>
                 {segments.into_iter().filter(|row| row.tokens > 0).map(|row| {

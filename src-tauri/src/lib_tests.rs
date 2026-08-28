@@ -10,10 +10,11 @@ use super::{
     persist_ui_events, provenance_ui_file_changes, receive_confirm_decision,
     reclaim_unconsumed_cutin, resolve_acp_artifact_references, resolve_composer_references,
     resolve_reader_references, resolve_review_backend, resolve_workspace, session_runtime_status,
-    should_hide_app_on_macos_close, should_persist_ui_event, user_message_start, AgentEvent,
-    ComposerReferenceArg, McpConnection, McpHttpAuth, McpTransport, ProjectActivityLocks,
-    QueuedItem, SessionRuntime, SkillInfo, StartupReport, StartupTimeline,
-    MAX_PENDING_UI_EVENT_BYTES, UI_STREAM_OUTPUT_MAX_BYTES, UI_TOOL_RESULT_MAX_CHARS,
+    should_hide_app_on_macos_close, should_persist_ui_event, ui_watchdog_note_unfocused,
+    ui_watchdog_requires_reload, user_message_start, AgentEvent, ComposerReferenceArg,
+    McpConnection, McpHttpAuth, McpTransport, ProjectActivityLocks, QueuedItem, SessionRuntime,
+    SkillInfo, StartupReport, StartupTimeline, MAX_PENDING_UI_EVENT_BYTES,
+    UI_STREAM_OUTPUT_MAX_BYTES, UI_TOOL_RESULT_MAX_CHARS,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -98,6 +99,204 @@ fn resource_conflict_confirmation_has_dedicated_ui_payload_and_no_saved_grant() 
 }
 
 #[test]
+fn mcp_app_tool_confirm_payload_parses_and_keys_a_grant() {
+    let message =
+        "Run tool 'figure_preview_exact' from MCP App 'Figure Library' (connector 'figure-library')?";
+    let (tool, preview) = super::parse_confirm_payload(message);
+    assert_eq!(tool, "figure_preview_exact");
+    assert_eq!(preview, "");
+    let key = super::mcp_app_approval_grant_key("figure-library", "figure_preview_exact").unwrap();
+    assert_eq!(key.kind, "mcp_app_tool");
+    assert_eq!(key.target, "figure-library:figure_preview_exact");
+    let other = super::mcp_app_approval_grant_key("other-server", "figure_preview_exact").unwrap();
+    assert_ne!(key, other);
+    // Agent Always-allow grants stay tool-name scoped and do not match App grants.
+    let agent = super::approval_grant_key("Run tool 'figure_preview_exact'?").unwrap();
+    assert_eq!(agent.kind, "tool");
+    assert_ne!(agent, key);
+    let (tool, _) = super::parse_confirm_payload("Run tool 'python'?");
+    assert_eq!(tool, "python");
+}
+
+#[test]
+fn mcp_app_approval_grant_key_separates_bundled_connectors() {
+    assert!(super::mcp_app_approval_grant_key("", "echo").is_none());
+    assert!(super::mcp_app_approval_grant_key("   ", "echo").is_none());
+    let dev =
+        super::mcp_app_approval_grant_key(super::BUNDLED_DEV_MCP_CONNECTOR_ID, "echo").unwrap();
+    let bio =
+        super::mcp_app_approval_grant_key(super::BUNDLED_BIO_MCP_CONNECTOR_ID, "echo").unwrap();
+    assert_eq!(dev.target, "dev-mcp:echo");
+    assert_eq!(bio.target, "mcp_bio:echo");
+    assert_ne!(dev, bio);
+    assert_ne!(dev.target, "_:echo");
+    assert_ne!(bio.target, "_:echo");
+}
+
+/// One MCP server behind an App bridge: answers only its own tool and reports
+/// which connector served the call, so a crossed route is visible in the result.
+struct FakeAppServer {
+    connector_id: String,
+    tool: String,
+    delay: Option<std::time::Duration>,
+}
+
+#[async_trait::async_trait]
+impl superscience_tools::McpAppServer for FakeAppServer {
+    fn connector_id(&self) -> &str {
+        &self.connector_id
+    }
+    fn app_name(&self) -> &str {
+        &self.connector_id
+    }
+    fn require_approval(&self) -> bool {
+        false
+    }
+    fn tools(&self) -> Vec<serde_json::Value> {
+        vec![serde_json::json!({ "name": self.tool, "inputSchema": { "type": "object" } })]
+    }
+    fn visible_to_app(&self, name: &str) -> bool {
+        name == self.tool
+    }
+    fn read_only(&self, _name: &str) -> bool {
+        true
+    }
+    async fn call_tool(
+        &self,
+        name: &str,
+        _arguments: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        if name != self.tool {
+            return Err(format!("tool '{name}' is not on this server"));
+        }
+        if let Some(delay) = self.delay {
+            tokio::time::sleep(delay).await;
+        }
+        Ok(serde_json::json!({
+            "content": [],
+            "structuredContent": { "servedBy": self.connector_id },
+            "isError": false,
+        }))
+    }
+}
+
+fn fake_app_bridge(frame_id: &str, connector_id: &str, tool: &str) -> super::McpAppToolBridge {
+    super::McpAppToolBridge {
+        frame_id: frame_id.into(),
+        server: Arc::new(FakeAppServer {
+            connector_id: connector_id.into(),
+            tool: tool.into(),
+            delay: None,
+        }),
+        limiter: super::McpAppCallLimiter::with_limits(1, 8, std::time::Duration::from_secs(10)),
+    }
+}
+
+#[tokio::test]
+async fn parallel_mcp_app_instances_keep_separate_bridges() {
+    let bridges = super::McpAppBridges::default();
+    let figures = "mcp-app:session-a:figures";
+    let motif = "mcp-app:session-b:motif";
+    bridges.register(
+        figures.into(),
+        fake_app_bridge("session-a", "figure-library", "figure_preview_exact"),
+    );
+    bridges.register(
+        motif.into(),
+        fake_app_bridge("session-b", "motif", "motif_refresh"),
+    );
+
+    // Each instance resolves to the connection that presented it, and neither
+    // can reach the sibling App's tool.
+    let first = bridges.get(figures).unwrap();
+    let second = bridges.get(motif).unwrap();
+    assert_eq!(first.frame_id, "session-a");
+    assert_eq!(second.frame_id, "session-b");
+    assert!(first.server.visible_to_app("figure_preview_exact"));
+    assert!(!first.server.visible_to_app("motif_refresh"));
+    let served = first
+        .server
+        .call_tool("figure_preview_exact", &serde_json::json!({}))
+        .await
+        .unwrap();
+    assert_eq!(served["structuredContent"]["servedBy"], "figure-library");
+    let served = second
+        .server
+        .call_tool("motif_refresh", &serde_json::json!({}))
+        .await
+        .unwrap();
+    assert_eq!(served["structuredContent"]["servedBy"], "motif");
+
+    // Limiters are per instance: saturating one App must not rate-limit another.
+    let _busy = first.limiter.try_acquire().unwrap();
+    assert!(first.limiter.try_acquire().is_err());
+    assert!(second.limiter.try_acquire().is_ok());
+
+    // Teardown revokes only that instance; deleting a session revokes only its
+    // own frame's bridges.
+    assert!(bridges.close(figures));
+    assert!(bridges.get(figures).is_none());
+    assert!(bridges.get(motif).is_some());
+    bridges.remove_for_frame("session-a");
+    assert!(bridges.get(motif).is_some());
+    bridges.remove_for_frame("session-b");
+    assert!(bridges.get(motif).is_none());
+}
+
+#[tokio::test]
+async fn mcp_app_host_timeout_fails_only_the_call() {
+    let server = FakeAppServer {
+        connector_id: "figure-library".into(),
+        tool: "figure_preview_exact".into(),
+        delay: Some(std::time::Duration::from_millis(80)),
+    };
+    let error = super::invoke_mcp_app_server_tool(
+        &server,
+        "figure_preview_exact",
+        &serde_json::json!({}),
+        std::time::Duration::from_millis(15),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.contains("timed out after"));
+
+    let fast = FakeAppServer {
+        connector_id: "figure-library".into(),
+        tool: "figure_preview_exact".into(),
+        delay: None,
+    };
+    let result = super::invoke_mcp_app_server_tool(
+        &fast,
+        "figure_preview_exact",
+        &serde_json::json!({}),
+        std::time::Duration::from_millis(50),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["structuredContent"]["servedBy"], "figure-library");
+}
+
+#[test]
+fn mcp_app_call_limiter_caps_concurrency() {
+    let limiter = super::McpAppCallLimiter::with_limits(2, 8, std::time::Duration::from_secs(10));
+    let first = limiter.try_acquire().unwrap();
+    let second = limiter.try_acquire().unwrap();
+    assert!(limiter.try_acquire().is_err());
+    drop(first);
+    assert!(limiter.try_acquire().is_ok());
+    drop(second);
+}
+
+#[test]
+fn mcp_app_call_limiter_caps_rate() {
+    let limiter = super::McpAppCallLimiter::with_limits(8, 2, std::time::Duration::from_secs(10));
+    let _first = limiter.try_acquire().unwrap();
+    let _second = limiter.try_acquire().unwrap();
+    let error = limiter.try_acquire().unwrap_err();
+    assert!(error.contains("rate limited"));
+}
+
+#[test]
 fn mcp_app_context_is_latest_only_and_session_scoped() {
     let first = super::normalize_mcp_app_context(
         "Motif for Claude Science",
@@ -164,6 +363,54 @@ fn mcp_app_instance_id_carries_its_session() {
         "session-a"
     );
     assert!(super::mcp_app_frame_id("not-an-app").is_err());
+}
+
+#[test]
+fn mcp_app_instance_id_reuses_resource_uri_across_presentations() {
+    let open = serde_json::json!({
+        "tool": { "name": "figure_open", "title": "Open Scientific Figure Library" },
+        "resource": { "uri": "ui://figure/library.html" },
+    });
+    let search = serde_json::json!({
+        "tool": { "name": "figure_search", "title": "Search scientific figure templates" },
+        "resource": { "uri": "ui://figure/library.html?q=survival#hits" },
+    });
+    assert_eq!(
+        super::mcp_app_instance_id("session-a", &open),
+        "mcp-app:session-a:ui://figure/library.html"
+    );
+    assert_eq!(
+        super::mcp_app_instance_id("session-a", &search),
+        super::mcp_app_instance_id("session-a", &open)
+    );
+    assert_eq!(
+        super::mcp_app_identity(&serde_json::json!({ "tool": { "name": "open_app" } })),
+        "open_app"
+    );
+}
+
+#[test]
+fn replacing_an_mcp_app_bridge_keeps_one_instance() {
+    let bridges = super::McpAppBridges::default();
+    let instance_id = super::mcp_app_instance_id(
+        "session-a",
+        &serde_json::json!({
+            "resource": { "uri": "ui://figure/library.html" },
+            "tool": { "name": "figure_open" },
+        }),
+    );
+    bridges.register(
+        instance_id.clone(),
+        fake_app_bridge("session-a", "figure-library", "figure_open"),
+    );
+    bridges.register(
+        instance_id.clone(),
+        fake_app_bridge("session-a", "figure-library", "figure_search"),
+    );
+    let bridge = bridges.get(&instance_id).unwrap();
+    assert_eq!(bridge.server.connector_id(), "figure-library");
+    assert!(bridge.server.visible_to_app("figure_search"));
+    assert!(!bridge.server.visible_to_app("figure_open"));
 }
 
 #[test]
@@ -1665,7 +1912,10 @@ fn mcp_connection_serde_roundtrip() {
         transport: McpTransport::Stdio {
             command: "python".into(),
             args: vec!["s.py".into()],
-            env: vec![("K".into(), "V".into())],
+            env: vec![superscience_dto::McpSecretEntry::plaintext(
+                "K",
+                "secret-value",
+            )],
             cwd: None,
         },
     };
@@ -1675,14 +1925,30 @@ fn mcp_connection_serde_roundtrip() {
         enabled: false,
         transport: McpTransport::Http {
             url: "https://x/mcp".into(),
-            headers: vec![("Authorization".into(), "Bearer t".into())],
+            headers: vec![superscience_dto::McpSecretEntry::plaintext(
+                "Authorization",
+                "secret-value",
+            )],
             auth: McpHttpAuth::OAuth,
         },
     };
     for c in [stdio, http] {
         let json = serde_json::to_string(&c).unwrap();
+        assert!(
+            !json.contains("secret-value"),
+            "stored MCP JSON must not contain secret values: {json}"
+        );
         let back: McpConnection = serde_json::from_str(&json).unwrap();
         assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+    let legacy = r#"{"id":"1","name":"local","enabled":true,"transport":{"kind":"stdio","command":"python","args":["s.py"],"env":[["K","secret-value"]]}}"#;
+    let migrated: McpConnection = serde_json::from_str(legacy).unwrap();
+    match &migrated.transport {
+        McpTransport::Stdio { env, .. } => {
+            assert_eq!(env[0].name, "K");
+            assert_eq!(env[0].value.as_deref(), Some("secret-value"));
+        }
+        _ => panic!("expected stdio"),
     }
     // tag shape
     let j = serde_json::to_value(&McpConnection {
@@ -2282,4 +2548,29 @@ fn desktop_app_icon_is_full_bleed_with_an_inset_mark() {
         }),
         "do not pass the in-app logo (canvas-filling badge) to cargo tauri icon"
     );
+}
+
+#[test]
+fn ui_watchdog_reload_decision() {
+    // Never fired a beat (fresh boot, or beat cleared after a reload): the
+    // watchdog must wait for fresh beats, not reload on startup silence.
+    assert!(!ui_watchdog_requires_reload(None, None));
+    // Healthy stream.
+    assert!(!ui_watchdog_requires_reload(Some(5), None));
+    // Freshly reloaded, still loading: inside the cooldown.
+    assert!(!ui_watchdog_requires_reload(Some(120), Some(30)));
+    // Dead renderer, first recovery.
+    assert!(ui_watchdog_requires_reload(Some(120), None));
+    // Dead again after the cooldown expired.
+    assert!(ui_watchdog_requires_reload(Some(120), Some(180)));
+}
+
+#[test]
+fn ui_watchdog_unfocused_silence_is_not_stale() {
+    let mut beat = Some(std::time::Instant::now() - std::time::Duration::from_secs(120));
+    ui_watchdog_note_unfocused(&mut beat);
+    assert!(beat.unwrap().elapsed() < std::time::Duration::from_secs(1));
+    let mut none = None;
+    ui_watchdog_note_unfocused(&mut none);
+    assert!(none.is_none());
 }

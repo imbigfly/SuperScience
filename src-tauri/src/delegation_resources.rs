@@ -662,7 +662,8 @@ fn json_string(raw: &str, keys: &[&str]) -> Option<String> {
 fn custom_connector_fingerprint(connection: &crate::McpConnection) -> String {
     // Include secret-bearing env/header changes in policy invalidation without
     // retaining their plaintext in the catalog or authorization snapshot.
-    let bytes = serde_json::to_vec(connection).unwrap_or_default();
+    let mut bytes = serde_json::to_vec(connection).unwrap_or_default();
+    bytes.extend_from_slice(crate::mcp_secrets::hydrated_secret_digest(connection).as_bytes());
     let hash = bytes.into_iter().fold(0xcbf29ce484222325u64, |hash, byte| {
         (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
     });

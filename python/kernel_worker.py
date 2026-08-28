@@ -9,7 +9,12 @@ Streamed: {"type": "stdout_chunk", "id": "<uuid>", "data": "<text>"}
 Response: {"type": "result", "id": "<uuid>", "stdout": "...", "stderr": "...",
            "error": null|"<traceback>", "interrupted": false,
            "trace": {"error_lineno": null, "error_call": null},
-           "usage": {"wall_s": 0.0, "cpu_s": 0.0, "rss_kb": 0}}
+           "usage": {"wall_s": 0.0, "cpu_s": 0.0, "rss_kb": 0},
+           "files_written": ["<path>", ...],  # omitted if unobserved/truncated
+           "files_written_base": "project"}  # present for configured relative reports
+
+`files_written` lists the files this cell actually changed, not the ones it
+opened for writing; see `_WriteObserver`.
 
 This is a Windows-friendly port of the upstream superscience
 `kernels/kernel_worker.py`: the POSIX-only `resource`, `/proc`, and
@@ -23,6 +28,7 @@ from collections import deque
 import io
 import json
 import os
+import stat
 import sys
 import time
 import traceback
@@ -37,6 +43,16 @@ MAX_LINECACHE_BYTES = 8 * 1024 * 1024
 MAX_CODE_SIZE = 1024 * 1024
 MAX_CODE_LINES = 20_000
 MAX_REQUEST_SIZE = 8 * 1024 * 1024
+# Cap on actual, project-eligible changes reported per cell. Exceeding it
+# omits the field entirely: a truncated list would look authoritative while
+# being wrong. Candidate intent has a separate, larger memory guard so paths
+# later proven unchanged do not consume this semantic cap.
+MAX_REPORTED_WRITES = 512
+MAX_OBSERVED_WRITE_CANDIDATES = 4096
+MAX_OBSERVED_WRITE_PATH_BYTES = 4 * 1024 * 1024
+_WRITE_FLAGS = (
+    os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
+)
 
 # Force a non-interactive matplotlib backend before matplotlib is ever imported.
 # Without this, generated plotting code (plt.show(), scanpy sc.pl.*) selects the
@@ -44,6 +60,214 @@ MAX_REQUEST_SIZE = 8 * 1024 * 1024
 # the kernel until the user closes it, stalling the whole analysis (issue #37).
 # Figures are meant to be surfaced via savefig, never a GUI window.
 os.environ["MPLBACKEND"] = "Agg"
+
+
+def _open_has_write_intent(mode, flags) -> bool:
+    if isinstance(mode, str) and any(ch in mode for ch in "wax+"):
+        return True
+    if isinstance(flags, int) and flags & _WRITE_FLAGS:
+        return True
+    return False
+
+
+def _file_state(path):
+    """`(size, mtime_ns)` of a regular file, or None when it is not one.
+
+    Sampled twice per candidate path — once when the audit event fires and
+    once after the cell — so an unchanged pair proves the bytes never moved.
+    """
+    try:
+        info = os.stat(path)
+    except Exception:
+        return None
+    if not stat.S_ISREG(info.st_mode):
+        return None
+    return (info.st_size, info.st_mtime_ns)
+
+
+def _is_bytecode_cache(path) -> bool:
+    """True for anything under a `__pycache__` directory.
+
+    Importing a project-local module writes bytecode through `os.replace`,
+    which the hook sees. The host discards those paths anyway (its workspace
+    snapshot skips the directory), but they used to consume the report cap
+    first, so a cell that imported enough modules lost its real outputs.
+    Separators are normalized only on Windows: on Unix a literal `\\` is a
+    legal filename character.
+    """
+    normalized = path.replace("\\", "/") if os.name == "nt" else path
+    return "__pycache__" in normalized.split("/")[:-1]
+
+
+def _path_components(path):
+    """Split an OS-native relative path without rewriting Unix backslashes."""
+    normalized = path.replace(os.altsep, os.sep) if os.altsep else path
+    return [part for part in normalized.split(os.sep) if part not in ("", ".")]
+
+
+class _WriteObserver:
+    """Collect the paths this interpreter changed during one cell.
+
+    Audit hooks cannot be unregistered, so per-cell collection is toggled
+    with begin() / finish(). The hook body is wrapped in a broad
+    try/except and returns immediately while collection is off: a raise
+    would propagate into arbitrary user code, including C-extension I/O.
+
+    The `open` audit event carries write *intent*, not proof of a write, and
+    it fires before the OS call completes. So each candidate's pre-open state
+    is sampled when the event arrives and compared again in finish(): a cell
+    that opens a file `'r+'` or `'a'` and writes nothing must not be credited
+    with it (`h5py.File(p, "a")` is the idiomatic way to open a store you
+    then only read).
+    """
+
+    def __init__(self):
+        self._active = False
+        self._paths = []
+        self._before = {}
+        self._relative = {}
+        self._path_bytes = 0
+        self._truncated = False
+        self._project_root = None
+        self._skip_dirs = frozenset()
+
+    def configure(self, root, skip_dirs):
+        """Set the host-owned project boundary used by subsequent cells."""
+        if self._active:
+            raise ValueError("cannot configure write scope during a cell")
+        if not isinstance(root, str) or not root:
+            raise ValueError("write scope root must be a non-empty string")
+        if not isinstance(skip_dirs, list):
+            raise ValueError("write scope skip_dirs must be a list")
+        cleaned = []
+        for name in skip_dirs:
+            if (
+                not isinstance(name, str)
+                or not name
+                or name in (".", "..")
+                or "/" in name
+                or "\\" in name
+            ):
+                raise ValueError("write scope skip_dirs contains an invalid name")
+            cleaned.append(name)
+        project_root = os.path.realpath(os.path.abspath(root))
+        if not os.path.isdir(project_root):
+            raise ValueError("write scope root is not an existing directory")
+        self._project_root = project_root
+        self._skip_dirs = frozenset(cleaned)
+
+    @property
+    def report_base(self):
+        return "project" if self._project_root is not None else None
+
+    def begin(self):
+        self._active = True
+        self._paths = []
+        self._before = {}
+        self._relative = {}
+        self._path_bytes = 0
+        self._truncated = False
+
+    def finish(self):
+        self._active = False
+        if self._truncated:
+            self._reset_cell()
+            return None
+        out = []
+        for path in self._paths:
+            try:
+                after = _file_state(path)
+                # Gone or never created (a failed open fires the event too),
+                # or byte-for-byte the file we saw before the open.
+                if after is None or after == self._before[path]:
+                    continue
+                out.append(self._relative.get(path, path))
+                if len(out) > MAX_REPORTED_WRITES:
+                    self._reset_cell()
+                    return None
+            except Exception:
+                pass
+        self._reset_cell()
+        return out
+
+    def _reset_cell(self):
+        self._paths = []
+        self._before = {}
+        self._relative = {}
+        self._path_bytes = 0
+
+    def _project_relative(self, resolved):
+        if self._project_root is None:
+            return None
+        candidate = os.path.realpath(resolved)
+        try:
+            common = os.path.commonpath([self._project_root, candidate])
+        except (OSError, ValueError):
+            return False
+        if os.path.normcase(common) != os.path.normcase(self._project_root):
+            return False
+        relative = os.path.relpath(candidate, self._project_root)
+        if relative in ("", "."):
+            return False
+        components = _path_components(relative)
+        if any(name in self._skip_dirs for name in components[:-1]):
+            return False
+        return "/".join(components)
+
+    def _note(self, path):
+        if not self._active or self._truncated:
+            return
+        try:
+            resolved = os.path.abspath(os.fspath(path))
+            if isinstance(resolved, bytes):
+                resolved = os.fsdecode(resolved)
+            # The path must survive the JSON protocol: bytes are not
+            # serializable at all, and surrogate escapes from undecodable
+            # filenames are rejected by the host's strict JSON parser.
+            # Skip such paths — the host's snapshot inference still covers
+            # them, and skipping can never suppress it (reports only add).
+            resolved.encode("utf-8", "strict")
+        except Exception:
+            return
+        if self._project_root is not None:
+            resolved = os.path.realpath(resolved)
+        relative = self._project_relative(resolved)
+        if relative is False:
+            return
+        if relative is None and _is_bytecode_cache(resolved):
+            return
+        if resolved in self._before:
+            return
+        encoded_bytes = len(resolved.encode("utf-8"))
+        if (
+            len(self._paths) >= MAX_OBSERVED_WRITE_CANDIDATES
+            or self._path_bytes + encoded_bytes > MAX_OBSERVED_WRITE_PATH_BYTES
+        ):
+            self._truncated = True
+            return
+        self._before[resolved] = _file_state(resolved)
+        self._paths.append(resolved)
+        self._path_bytes += encoded_bytes
+        if relative is not None:
+            self._relative[resolved] = relative
+
+    def hook(self, event, args):
+        try:
+            if not self._active or self._truncated:
+                return
+            if event == "open":
+                path = args[0] if args else None
+                mode = args[1] if len(args) > 1 else None
+                flags = args[2] if len(args) > 2 else None
+                if path is not None and _open_has_write_intent(mode, flags):
+                    self._note(path)
+            elif event in ("os.rename", "os.replace") and len(args) > 1:
+                self._note(args[1])
+        except Exception:
+            return
+
+
+_WRITE_OBSERVER = _WriteObserver()
 
 
 def _neutralize_pyplot_show() -> None:
@@ -307,6 +531,7 @@ def main():
         return mod
 
     builtins.__import__ = import_wrapper
+    sys.addaudithook(_WRITE_OBSERVER.hook)
     _kernel_init(namespace)
     protocol_out.write(json.dumps({
         "type": "ready",
@@ -343,6 +568,25 @@ def main():
             continue
 
         rid = req.get("id", "unknown")
+        if req.get("type") == "configure":
+            try:
+                scope = req.get("write_scope")
+                if not isinstance(scope, dict):
+                    raise ValueError("write_scope must be an object")
+                _WRITE_OBSERVER.configure(
+                    scope.get("root"),
+                    scope.get("skip_dirs"),
+                )
+                configured = {"type": "configured", "id": rid}
+            except Exception as error:
+                configured = {
+                    "type": "configure_error",
+                    "id": rid,
+                    "error": str(error),
+                }
+            protocol_out.write(json.dumps(configured) + "\n")
+            protocol_out.flush()
+            continue
         if req.get("type") == "inspect":
             inspection = _inspect_objects(namespace)
             with protocol_lock:
@@ -393,6 +637,8 @@ def main():
         wall0 = time.perf_counter()
         cpu0 = time.process_time()
         old_out, old_err = sys.stdout, sys.stderr
+        files_written = None
+        _WRITE_OBSERVER.begin()
         try:
             sys.stdout = stdout_cap
             sys.stderr = stderr_cap
@@ -405,6 +651,7 @@ def main():
             stdout_cap._active = False
             sys.stdout = old_out
             sys.stderr = old_err
+            files_written = _WRITE_OBSERVER.finish()
 
         usage = {
             "wall_s": round(time.perf_counter() - wall0, 3),
@@ -421,6 +668,12 @@ def main():
             "trace": {"error_lineno": error_lineno, "error_call": None},
             "usage": usage,
         }
+        # Absent ≠ empty: omit the field when the observer could not produce a
+        # complete list (cap exceeded). An explicit [] means "wrote nothing".
+        if files_written is not None:
+            resp["files_written"] = files_written
+            if _WRITE_OBSERVER.report_base is not None:
+                resp["files_written_base"] = _WRITE_OBSERVER.report_base
         with protocol_lock:
             protocol_out.write(json.dumps(resp) + "\n")
             protocol_out.flush()

@@ -2439,6 +2439,34 @@ async fn transcript_pages_keep_complete_user_turns_and_matching_events() {
 }
 
 #[tokio::test]
+async fn max_message_seq_uses_max_not_count_when_seqs_have_gaps() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_store_max_seq_gap_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    assert_eq!(store.max_message_seq("f").await.unwrap(), 0);
+    store
+        .append_message("f", 1, &Message::user("first"))
+        .await
+        .unwrap();
+    store
+        .append_message("f", 3, &Message::assistant("third"))
+        .await
+        .unwrap();
+    assert_eq!(store.message_count("f").await.unwrap(), 2);
+    assert_eq!(store.max_message_seq("f").await.unwrap(), 3);
+    let page = store
+        .load_session_transcript_page("f", None, 20)
+        .await
+        .unwrap();
+    assert_eq!(page.latest_seq, 3);
+    let _ = std::fs::remove_file(tmp);
+}
+
+#[tokio::test]
 async fn recent_turn_preview_messages_are_turn_and_content_bounded() {
     let tmp = std::env::temp_dir().join(format!(
         "wisp_store_recent_turns_{}.sqlite",
@@ -2809,6 +2837,193 @@ async fn session_ui_events_keep_insertion_order() {
 }
 
 #[tokio::test]
+async fn session_ui_events_timed_roundtrip() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_ui_events_timed_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "P", "").await.unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+
+    let before = chrono::Utc::now().timestamp_millis();
+    store
+        .append_session_ui_event("f", 1, r#"{"kind":"User","frame_id":"f","text":"q"}"#)
+        .await
+        .unwrap();
+    store
+        .append_session_ui_event("f", 2, r#"{"kind":"Text","frame_id":"f","delta":"a"}"#)
+        .await
+        .unwrap();
+    let after = chrono::Utc::now().timestamp_millis();
+
+    let events = store.load_session_ui_events_timed("f").await.unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].seq, 1);
+    assert_eq!(events[1].seq, 2);
+    assert!(events[0].event_json.contains("\"kind\":\"User\""));
+    for event in &events {
+        let created_at = event.created_at.expect("created_at must be stamped");
+        assert!(
+            (before..=after).contains(&created_at),
+            "created_at {created_at} outside [{before}, {after}]"
+        );
+    }
+    store.pool.close().await;
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn session_ui_events_created_at_backfill_is_idempotent() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_ui_events_created_at_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "P", "").await.unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    assert!(
+        Store::has_column(&store.pool, "session_ui_events", "created_at")
+            .await
+            .unwrap()
+    );
+    // Simulate a pre-upgrade deployment: the table exists without the column
+    // and already holds rows.
+    sqlx::query("ALTER TABLE session_ui_events DROP COLUMN created_at")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO session_ui_events(frame_id,seq,event_json) \
+         VALUES('f',1,'{\"kind\":\"User\",\"frame_id\":\"f\",\"text\":\"old\"}')",
+    )
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    store.pool.close().await;
+
+    let repaired = Store::open(&tmp).await.unwrap();
+    assert!(
+        Store::has_column(&repaired.pool, "session_ui_events", "created_at")
+            .await
+            .unwrap()
+    );
+    let events = repaired.load_session_ui_events_timed("f").await.unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].created_at, None);
+    repaired
+        .append_session_ui_event("f", 2, r#"{"kind":"Text","frame_id":"f","delta":"new"}"#)
+        .await
+        .unwrap();
+    let events = repaired.load_session_ui_events_timed("f").await.unwrap();
+    assert_eq!(events.len(), 2);
+    assert!(events[1].created_at.is_some());
+    // Reopening again must not fail or alter the existing rows.
+    repaired.pool.close().await;
+    let reopened = Store::open(&tmp).await.unwrap();
+    let events = reopened.load_session_ui_events_timed("f").await.unwrap();
+    assert_eq!(events.len(), 2);
+    reopened.pool.close().await;
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn interrupted_replace_keeps_the_previous_transcript_and_seq_anchored_rows() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_replace_atomic_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "P", "").await.unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .append_message("f", 1, &Message::user("keep me"))
+        .await
+        .unwrap();
+    store
+        .append_message("f", 2, &Message::assistant("kept answer"))
+        .await
+        .unwrap();
+    store
+        .save_turn_file_undo(
+            "f",
+            1,
+            "src/main.rs",
+            true,
+            None,
+            Some("before"),
+            Some("after"),
+            true,
+            None,
+        )
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO message_resource_links(\
+         id,frame_id,message_seq,ordinal,original_reference,display_name,\
+         resource_kind,mime_type,status,created_at) \
+         VALUES('l1','f',1,0,'@r.csv','r.csv','file','text/csv','linked',1)",
+    )
+    .execute(&store.pool)
+    .await
+    .unwrap();
+
+    // Simulate a crash mid-replace: the deletes and half the inserts ran, but
+    // the transaction is dropped without commit.
+    {
+        let mut tx = store.begin_write().await.unwrap();
+        Store::replace_message_rows_for_test(
+            &mut tx,
+            "f",
+            &[Message::system("half-written checkpoint")],
+        )
+        .await
+        .unwrap();
+    }
+
+    let msgs = store.load_messages("f").await.unwrap();
+    assert_eq!(msgs.len(), 2, "old transcript must survive an interruption");
+    assert_eq!(msgs[0].content.as_text(), "keep me");
+    assert_eq!(msgs[1].content.as_text(), "kept answer");
+    assert_eq!(
+        store.list_turn_file_undo("f", 1).await.unwrap().len(),
+        1,
+        "undo rows must survive an interrupted replace"
+    );
+    assert_eq!(
+        store
+            .list_message_resource_links("f", 1, None)
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "resource links must survive an interrupted replace"
+    );
+
+    // A committed replace applies wholesale and drops the seq-anchored rows,
+    // whose anchors the renumbering invalidated.
+    store
+        .replace_messages(
+            "f",
+            &[Message::system("checkpoint"), Message::user("recent tail")],
+        )
+        .await
+        .unwrap();
+    let msgs = store.load_messages("f").await.unwrap();
+    assert_eq!(msgs.len(), 2);
+    assert_eq!(msgs[0].content.as_text(), "checkpoint");
+    assert_eq!(msgs[1].content.as_text(), "recent tail");
+    assert!(store.list_turn_file_undo("f", 1).await.unwrap().is_empty());
+    assert!(store
+        .list_message_resource_links("f", 1, None)
+        .await
+        .unwrap()
+        .is_empty());
+    store.pool.close().await;
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
 async fn side_chat_snapshot_survives_compaction_and_stops_at_completed_boundary() {
     let tmp = std::env::temp_dir().join(format!(
         "wisp_side_snapshot_{}.sqlite",
@@ -2919,6 +3134,639 @@ async fn project_crud_and_listing() {
     assert!(store.get_project("b").await.unwrap().is_some());
     assert_eq!(store.load_messages("f2").await.unwrap().len(), 1);
 
+    let _ = std::fs::remove_file(&tmp);
+}
+
+async fn count_bound(store: &Store, sql: &str, bind: &str) -> i64 {
+    sqlx::query_scalar(sql)
+        .bind(bind)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn delete_project_clears_later_child_tables_and_ignores_orphan_schedules() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_store_delete_project_cascade_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store
+        .create_project("gone", "Gone", "/tmp/gone")
+        .await
+        .unwrap();
+    store
+        .create_project("keep", "Keep", "/tmp/keep")
+        .await
+        .unwrap();
+    store
+        .create_frame("gone-main", "gone", "OPERON", "m")
+        .await
+        .unwrap();
+    store
+        .create_frame("gone-explore", "gone", "OPERON", "m")
+        .await
+        .unwrap();
+    store
+        .create_frame("keep-main", "keep", "OPERON", "m")
+        .await
+        .unwrap();
+    store
+        .append_message("gone-main", 1, &Message::user("seed"))
+        .await
+        .unwrap();
+
+    let sha = "a".repeat(64);
+    store
+        .create_workspace_snapshot(&WorkspaceSnapshotRecord {
+            id: "gone-snap".into(),
+            project_id: "gone".into(),
+            manifest_json: "{}".into(),
+            manifest_sha256: sha.clone(),
+            created_at: 1,
+        })
+        .await
+        .unwrap();
+    store
+        .create_context_archive(&ContextArchiveRecord {
+            id: "gone-archive".into(),
+            project_id: "gone".into(),
+            frame_id: "gone-main".into(),
+            storage_path: ".wisp/history/gone.json".into(),
+            checksum: sha.clone(),
+            created_at: 1,
+        })
+        .await
+        .unwrap();
+    store
+        .create_exploration_family(&ExplorationFamily {
+            id: "gone-family".into(),
+            project_id: "gone".into(),
+            root_frame_id: "gone-main".into(),
+            mainline_frame_id: "gone-main".into(),
+            generation: 0,
+            created_at: 1,
+            updated_at: 1,
+        })
+        .await
+        .unwrap();
+    store
+        .create_exploration_checkpoint(&ExplorationCheckpoint {
+            id: "gone-checkpoint".into(),
+            family_id: "gone-family".into(),
+            project_id: "gone".into(),
+            source_frame_id: "gone-main".into(),
+            source_message_seq: 1,
+            source_frame_head_seq: 1,
+            source_ui_event_seq: 0,
+            source_family_generation: 0,
+            source_state_generation: 0,
+            workspace_snapshot_id: "gone-snap".into(),
+            context_archive_id: "gone-archive".into(),
+            guard_hash: sha.clone(),
+            entity_hash: "b".repeat(64),
+            isolation_summary_json: "{}".into(),
+            created_at: 1,
+        })
+        .await
+        .unwrap();
+    store
+        .create_exploration(&Exploration {
+            id: "gone-explore-id".into(),
+            checkpoint_id: "gone-checkpoint".into(),
+            frame_id: "gone-explore".into(),
+            name: "Alt path".into(),
+            status: ExplorationStatus::Creating,
+            workspace_dir: "/tmp/gone-explore".into(),
+            workspace_backend: "copy".into(),
+            scope_generation: 0,
+            warnings_json: "[]".into(),
+            created_at: 2,
+            updated_at: 2,
+        })
+        .await
+        .unwrap();
+    store
+        .record_exploration_baseline_entity(&ExplorationBaselineEntity {
+            checkpoint_id: "gone-checkpoint".into(),
+            entity_kind: "decision".into(),
+            entity_id: "gone-decision".into(),
+            version_id: None,
+            fingerprint: sha.clone(),
+        })
+        .await
+        .unwrap();
+    let version_id = store
+        .save_artifact_version(&ArtifactVersionDraft {
+            version_id: Some("gone-version".into()),
+            artifact_id: "gone-artifact".into(),
+            project_id: "gone".into(),
+            root_frame_id: "gone-main".into(),
+            filename: "result.txt".into(),
+            content_type: "text/plain".into(),
+            storage_path: "result.txt".into(),
+            logical_key: Some("path:result.txt".into()),
+            size_bytes: Some(1),
+            checksum: Some(sha.clone()),
+            producing_run_id: None,
+            env_snapshot_hash: None,
+            materialization: ArtifactMaterialization::Snapshot,
+            capture_timing: ArtifactCaptureTiming::AtCreation,
+        })
+        .await
+        .unwrap();
+    store
+        .record_exploration_baseline_artifact_head(&ExplorationBaselineArtifactHead {
+            checkpoint_id: "gone-checkpoint".into(),
+            logical_key: "path:result.txt".into(),
+            artifact_id: "gone-artifact".into(),
+            artifact_version_id: version_id.clone(),
+            fingerprint: sha.clone(),
+        })
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO exploration_effects(\
+           id,exploration_id,effect_kind,recoverability,target_summary,metadata_json,created_at\
+         ) VALUES('gone-effect','gone-explore-id','run','local_reversible','local','{}',1)",
+    )
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    store
+        .create_exploration_promotion(&ExplorationPromotion {
+            id: "gone-promo".into(),
+            exploration_id: "gone-explore-id".into(),
+            expected_guard_hash: sha.clone(),
+            status: ExplorationPromotionStatus::Prepared,
+            diff_json: "{}".into(),
+            journal_path: None,
+            error: None,
+            started_at: 3,
+            committed_at: None,
+        })
+        .await
+        .unwrap();
+    assert!(store
+        .create_project_state_revision(&ProjectStateRevision {
+            id: "gone-rev".into(),
+            project_id: "gone".into(),
+            frame_id: "gone-main".into(),
+            turn_index: 0,
+            message_seq: 1,
+            ui_event_seq: 0,
+            parent_revision_id: None,
+            workspace_snapshot_id: "gone-snap".into(),
+            workspace_manifest_sha256: sha.clone(),
+            workspace_delta_json: "[]".into(),
+            artifact_heads_json: "[]".into(),
+            entities_json: "[]".into(),
+            run_ids_json: "[]".into(),
+            decision_ids_json: "[]".into(),
+            external_effects_json: "[]".into(),
+            context_archive_id: "gone-archive".into(),
+            state_generation: 0,
+            is_full: true,
+            created_at: 1,
+        })
+        .await
+        .unwrap());
+
+    let gone_schedule = ScheduleRecord {
+        id: "gone-sched".into(),
+        project_id: "gone".into(),
+        frame_id: Some("gone-main".into()),
+        name: "Daily".into(),
+        prompt: "Summarize".into(),
+        skill: None,
+        interval_secs: 60,
+        enabled: true,
+        next_run_at: 100,
+        last_run_at: None,
+        created_at: 1,
+        updated_at: 1,
+    };
+    store.create_schedule(&gone_schedule).await.unwrap();
+    store
+        .record_schedule_run(&ScheduleRunRecord {
+            id: "gone-run".into(),
+            schedule_id: "gone-sched".into(),
+            frame_id: Some("gone-main".into()),
+            status: "fired".into(),
+            error: None,
+            fired_at: 100,
+        })
+        .await
+        .unwrap();
+    store
+        .upsert_context_storage_prefs(&ContextStoragePrefs {
+            project_id: "gone".into(),
+            context_id: "local".into(),
+            remote_data_root: "~/data".into(),
+            remote_workdir_root: ".wisp-science/runs".into(),
+            local_results_dir: "results".into(),
+            created_at: 1,
+            updated_at: 1,
+        })
+        .await
+        .unwrap();
+    store
+        .record_remote_staging(&RemoteStagingEntry {
+            id: "gone-staging".into(),
+            project_id: "gone".into(),
+            context_id: "local".into(),
+            run_id: None,
+            remote_path: "/tmp/staged".into(),
+            source: "transfer".into(),
+            checksum: None,
+            size_bytes: None,
+            created_at: 1,
+            removed_at: None,
+        })
+        .await
+        .unwrap();
+    let plugin = PluginInstallation {
+        plugin_id: "cascade-plugin".into(),
+        version: "1.0.0".into(),
+        display_name: "Cascade".into(),
+        description: String::new(),
+        author: String::new(),
+        license: "MIT".into(),
+        source_uri: "https://example.invalid/plugin.zip".into(),
+        install_root: "/plugins/cascade/1.0.0".into(),
+        archive_sha256: sha.clone(),
+        manifest_json: r#"{"schema":"wisp.plugin.v1"}"#.into(),
+        trust_state: "checksum_verified".into(),
+        installed_at: 1,
+        updated_at: 1,
+    };
+    store.replace_plugin_installation(&plugin).await.unwrap();
+    store
+        .set_project_plugin("gone", &plugin.plugin_id, &plugin.version, true, "{}")
+        .await
+        .unwrap();
+    store
+        .set_project_plugin("keep", &plugin.plugin_id, &plugin.version, true, "{}")
+        .await
+        .unwrap();
+    store
+        .insert_ask_user_request("gone-ask", "gone-main", r#"{"q":"ok?"}"#)
+        .await
+        .unwrap();
+    store
+        .record_session_import("gone-import", "gone-main", "/tmp/gone.json")
+        .await
+        .unwrap();
+    store
+        .record_codex_import("gone-codex", "gone-main", "/tmp/gone.jsonl")
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO session_branch_merges(\
+           id,source_frame_id,branch_frame_id,checkpoint_user_index,checkpoint_kind,\
+           summary_message_seq,guard_hash,created_at\
+         ) VALUES('gone-merge','gone-main','gone-explore',0,'before_user',1,?,1)",
+    )
+    .bind(&sha)
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    store
+        .insert_global_memory(&GlobalMemory {
+            id: "mem-gone".into(),
+            content: "from deleted project".into(),
+            source_frame_id: Some("gone-main".into()),
+            source_turn_index: Some(0),
+            created_at: 1,
+            updated_at: 1,
+        })
+        .await
+        .unwrap();
+    store
+        .insert_global_memory(&GlobalMemory {
+            id: "mem-keep".into(),
+            content: "from kept project".into(),
+            source_frame_id: Some("keep-main".into()),
+            source_turn_index: Some(0),
+            created_at: 1,
+            updated_at: 1,
+        })
+        .await
+        .unwrap();
+    store
+        .create_schedule(&ScheduleRecord {
+            id: "keep-sched".into(),
+            project_id: "keep".into(),
+            frame_id: Some("keep-main".into()),
+            name: "Keep daily".into(),
+            prompt: "Keep going".into(),
+            skill: None,
+            interval_secs: 60,
+            enabled: true,
+            next_run_at: 100,
+            last_run_at: None,
+            created_at: 1,
+            updated_at: 1,
+        })
+        .await
+        .unwrap();
+
+    assert!(!store.due_schedules(500).await.unwrap().is_empty());
+    store.delete_project("gone").await.unwrap();
+
+    for (sql, label) in [
+        (
+            "SELECT COUNT(*) FROM schedules WHERE project_id=?",
+            "schedules",
+        ),
+        (
+            "SELECT COUNT(*) FROM schedule_runs WHERE schedule_id='gone-sched'",
+            "schedule_runs",
+        ),
+        (
+            "SELECT COUNT(*) FROM context_storage_prefs WHERE project_id=?",
+            "context_storage_prefs",
+        ),
+        (
+            "SELECT COUNT(*) FROM remote_staging WHERE project_id=?",
+            "remote_staging",
+        ),
+        (
+            "SELECT COUNT(*) FROM project_state_counters WHERE project_id=?",
+            "project_state_counters",
+        ),
+        (
+            "SELECT COUNT(*) FROM project_state_revisions WHERE project_id=?",
+            "project_state_revisions",
+        ),
+        (
+            "SELECT COUNT(*) FROM workspace_snapshots WHERE project_id=?",
+            "workspace_snapshots",
+        ),
+        (
+            "SELECT COUNT(*) FROM context_archives WHERE project_id=?",
+            "context_archives",
+        ),
+        (
+            "SELECT COUNT(*) FROM exploration_families WHERE project_id=?",
+            "exploration_families",
+        ),
+        (
+            "SELECT COUNT(*) FROM exploration_checkpoints WHERE project_id=?",
+            "exploration_checkpoints",
+        ),
+        (
+            "SELECT COUNT(*) FROM explorations WHERE id='gone-explore-id'",
+            "explorations",
+        ),
+        (
+            "SELECT COUNT(*) FROM exploration_baseline_entities WHERE checkpoint_id='gone-checkpoint'",
+            "exploration_baseline_entities",
+        ),
+        (
+            "SELECT COUNT(*) FROM exploration_baseline_artifact_heads WHERE checkpoint_id='gone-checkpoint'",
+            "exploration_baseline_artifact_heads",
+        ),
+        (
+            "SELECT COUNT(*) FROM exploration_effects WHERE exploration_id='gone-explore-id'",
+            "exploration_effects",
+        ),
+        (
+            "SELECT COUNT(*) FROM exploration_promotions WHERE exploration_id='gone-explore-id'",
+            "exploration_promotions",
+        ),
+        (
+            "SELECT COUNT(*) FROM artifact_heads WHERE project_id=?",
+            "artifact_heads",
+        ),
+        (
+            "SELECT COUNT(*) FROM project_plugins WHERE project_id=?",
+            "project_plugins",
+        ),
+        (
+            "SELECT COUNT(*) FROM session_branch_merges WHERE id='gone-merge'",
+            "session_branch_merges",
+        ),
+        (
+            "SELECT COUNT(*) FROM ask_user_requests WHERE frame_id='gone-main'",
+            "ask_user_requests",
+        ),
+        (
+            "SELECT COUNT(*) FROM session_imports WHERE frame_id='gone-main'",
+            "session_imports",
+        ),
+        (
+            "SELECT COUNT(*) FROM codex_imports WHERE frame_id='gone-main'",
+            "codex_imports",
+        ),
+        (
+            "SELECT COUNT(*) FROM frames WHERE project_id=?",
+            "frames",
+        ),
+    ] {
+        let bind = if sql.contains('?') { "gone" } else { "" };
+        let count = if sql.contains('?') {
+            count_bound(&store, sql, bind).await
+        } else {
+            sqlx::query_scalar(sql)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap()
+        };
+        assert_eq!(count, 0, "orphan row remains in {label}");
+    }
+
+    assert!(store
+        .due_schedules(500)
+        .await
+        .unwrap()
+        .iter()
+        .all(|row| { row.project_id != "gone" && row.id != "gone-sched" }));
+    assert_eq!(
+        store
+            .due_schedules(500)
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect::<Vec<_>>(),
+        ["keep-sched"]
+    );
+    assert!(store.get_project("keep").await.unwrap().is_some());
+    assert_eq!(
+        count_bound(
+            &store,
+            "SELECT COUNT(*) FROM project_plugins WHERE project_id=?",
+            "keep"
+        )
+        .await,
+        1
+    );
+    assert!(store
+        .get_plugin_installation("cascade-plugin", "1.0.0")
+        .await
+        .unwrap()
+        .is_some());
+    let memories = store.list_global_memories(10).await.unwrap();
+    let mem_gone = memories.iter().find(|m| m.id == "mem-gone").unwrap();
+    assert_eq!(mem_gone.source_frame_id, None);
+    let mem_keep = memories.iter().find(|m| m.id == "mem-keep").unwrap();
+    assert_eq!(mem_keep.source_frame_id.as_deref(), Some("keep-main"));
+
+    store.pool.close().await;
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
+async fn delete_session_clears_later_frame_tables() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_store_delete_session_cascade_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store.create_project("p", "proj", "").await.unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .create_frame("other", "p", "OPERON", "m")
+        .await
+        .unwrap();
+
+    let mut workflow = AgentWorkflow::new("wf", "p", "workspace", "Delivery").unwrap();
+    workflow.frame_id = Some("f".into());
+    let step = nested_test_step("step", "wf", false, 1);
+    store
+        .create_agent_workflow_plan(&workflow, &[step])
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO agent_workflow_deliveries(\
+           id,workflow_id,frame_id,generation,auto_resume,result_json,message_seq,delivered_at,\
+           resume_status,resume_error,presented_at,created_at,updated_at\
+         ) VALUES('delivery','wf','f',1,0,NULL,NULL,NULL,'disabled',NULL,NULL,1,1)",
+    )
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    store
+        .insert_ask_user_request("ask-1", "f", r#"{"q":"ok?"}"#)
+        .await
+        .unwrap();
+    store
+        .record_session_import("import-1", "f", "/tmp/session.json")
+        .await
+        .unwrap();
+    store
+        .record_codex_import("codex-1", "f", "/tmp/codex.jsonl")
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO session_branch_merges(\
+           id,source_frame_id,branch_frame_id,checkpoint_user_index,checkpoint_kind,\
+           summary_message_seq,guard_hash,created_at\
+         ) VALUES('merge-1','f','other',0,'before_user',1,'c',1)",
+    )
+    .execute(&store.pool)
+    .await
+    .unwrap();
+    store
+        .insert_global_memory(&GlobalMemory {
+            id: "mem-session".into(),
+            content: "session sourced".into(),
+            source_frame_id: Some("f".into()),
+            source_turn_index: Some(0),
+            created_at: 1,
+            updated_at: 1,
+        })
+        .await
+        .unwrap();
+    store
+        .create_schedule(&ScheduleRecord {
+            id: "sched-f".into(),
+            project_id: "p".into(),
+            frame_id: Some("f".into()),
+            name: "After session".into(),
+            prompt: "Keep firing".into(),
+            skill: None,
+            interval_secs: 60,
+            enabled: true,
+            next_run_at: 100,
+            last_run_at: None,
+            created_at: 1,
+            updated_at: 1,
+        })
+        .await
+        .unwrap();
+    store
+        .record_schedule_run(&ScheduleRunRecord {
+            id: "sched-run-f".into(),
+            schedule_id: "sched-f".into(),
+            frame_id: Some("f".into()),
+            status: "fired".into(),
+            error: None,
+            fired_at: 100,
+        })
+        .await
+        .unwrap();
+
+    store.delete_session("f", "p").await.unwrap();
+
+    for (sql, label) in [
+        (
+            "SELECT COUNT(*) FROM agent_workflow_deliveries WHERE frame_id='f'",
+            "agent_workflow_deliveries",
+        ),
+        (
+            "SELECT COUNT(*) FROM session_branch_merges WHERE id='merge-1'",
+            "session_branch_merges",
+        ),
+        (
+            "SELECT COUNT(*) FROM ask_user_requests WHERE frame_id='f'",
+            "ask_user_requests",
+        ),
+        (
+            "SELECT COUNT(*) FROM session_imports WHERE frame_id='f'",
+            "session_imports",
+        ),
+        (
+            "SELECT COUNT(*) FROM codex_imports WHERE frame_id='f'",
+            "codex_imports",
+        ),
+        ("SELECT COUNT(*) FROM frames WHERE id='f'", "frames"),
+    ] {
+        let count: i64 = sqlx::query_scalar(sql)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "orphan row remains in {label}");
+    }
+    assert!(store.get_agent_workflow("wf").await.unwrap().is_some());
+    assert_eq!(
+        store
+            .get_schedule("sched-f")
+            .await
+            .unwrap()
+            .unwrap()
+            .frame_id,
+        None
+    );
+    assert_eq!(
+        store.list_schedule_runs("sched-f", 10).await.unwrap()[0].frame_id,
+        None
+    );
+    assert_eq!(
+        store
+            .list_global_memories(10)
+            .await
+            .unwrap()
+            .iter()
+            .find(|m| m.id == "mem-session")
+            .unwrap()
+            .source_frame_id,
+        None
+    );
+
+    store.pool.close().await;
     let _ = std::fs::remove_file(&tmp);
 }
 
@@ -3798,6 +4646,17 @@ async fn remote_staging_ledger_round_trips_and_counts_external_references() {
     let _ = std::fs::remove_file(&tmp);
 }
 
+#[test]
+fn auto_harvest_skip_and_lease_hold_are_pure_helpers() {
+    assert!(!skip_auto_harvest(None));
+    assert!(skip_auto_harvest(Some(1)));
+    assert!(require_lifecycle_hold(true, "ok").is_ok());
+    assert_eq!(
+        require_lifecycle_hold(false, "Run lifecycle lease was lost").unwrap_err(),
+        "Run lifecycle lease was lost"
+    );
+}
+
 #[tokio::test]
 async fn run_harvest_state_is_recorded_once_and_survives_reopen() {
     let tmp = std::env::temp_dir().join(format!(
@@ -3818,6 +4677,7 @@ async fn run_harvest_state_is_recorded_once_and_survives_reopen() {
         .harvested_at
         .is_none());
     assert!(store.mark_run_harvested("r").await.unwrap());
+    assert!(store.get_run("r").await.unwrap().unwrap().is_harvested());
     let harvested_at = store
         .get_run("r")
         .await

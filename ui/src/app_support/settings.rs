@@ -1388,6 +1388,7 @@ mod settings_nav_group_tests {
 
 pub(crate) fn settings_section_label(loc: Locale, section: &str) -> String {
     match section {
+        "session" => t(loc, "settings.nav.session"),
         "appearance" => t(loc, "settings.nav.appearance"),
         "pet" => t(loc, "settings.nav.pet"),
         "environments" => t(loc, "settings.nav.environments"),
@@ -1408,6 +1409,18 @@ pub(crate) fn settings_section_label(loc: Locale, section: &str) -> String {
         _ => t(loc, "settings.title"),
     }
     .into()
+}
+
+#[cfg(test)]
+mod settings_section_label_tests {
+    use super::*;
+    use crate::i18n::Locale;
+
+    #[test]
+    fn session_nav_has_its_own_label() {
+        assert_eq!(settings_section_label(Locale::En, "session"), "Session");
+        assert_eq!(settings_section_label(Locale::Zh, "session"), "对话");
+    }
 }
 
 /// A field within a credential service group: (credential id, i18n label key,
@@ -1624,6 +1637,30 @@ pub(crate) fn settings_subpage_label(
     }
 }
 
+fn secret_fields_json(fields: &[ConnSecretField]) -> Vec<serde_json::Value> {
+    fields
+        .iter()
+        .filter(|field| !field.name.trim().is_empty())
+        .map(|field| {
+            let name = field.name.trim();
+            let value = field.value.trim();
+            if value.is_empty() {
+                serde_json::json!({ "name": name })
+            } else {
+                serde_json::json!({ "name": name, "value": value })
+            }
+        })
+        .collect()
+}
+
+fn secret_fields_from_entries(entries: &[McpSecretEntry]) -> Vec<ConnSecretField> {
+    let mut fields: Vec<ConnSecretField> = entries.iter().map(ConnSecretField::from_entry).collect();
+    if fields.is_empty() {
+        fields.push(ConnSecretField::default());
+    }
+    fields
+}
+
 pub(crate) fn build_conn_json(f: &ConnForm, assign_id: bool) -> serde_json::Value {
     let id = f.id.clone().unwrap_or_else(|| {
         if assign_id {
@@ -1633,33 +1670,42 @@ pub(crate) fn build_conn_json(f: &ConnForm, assign_id: bool) -> serde_json::Valu
         }
     });
     let transport = if f.kind == "http" {
-        let headers: Vec<(String, String)> = f
-            .headers
-            .lines()
-            .filter_map(|l| {
-                l.split_once(':')
-                    .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
-            })
-            .collect();
         let auth = if f.auth == "oauth" { "oauth" } else { "none" };
-        serde_json::json!({ "kind": "http", "url": f.url.trim(), "headers": headers, "auth": auth })
+        serde_json::json!({
+            "kind": "http",
+            "url": f.url.trim(),
+            "headers": secret_fields_json(&f.headers),
+            "auth": auth
+        })
     } else {
         let args: Vec<String> = f.args.split_whitespace().map(|s| s.to_string()).collect();
-        serde_json::json!({ "kind": "stdio", "command": f.command.trim(), "args": args, "env": [], "cwd": null })
+        serde_json::json!({
+            "kind": "stdio",
+            "command": f.command.trim(),
+            "args": args,
+            "env": secret_fields_json(&f.env),
+            "cwd": null
+        })
     };
     serde_json::json!({ "id": id, "name": f.name.trim(), "enabled": f.enabled, "transport": transport })
 }
 
 pub(crate) fn conn_form_from_row(row: &ConnRow) -> ConnForm {
     match &row.transport {
-        ConnTransport::Stdio { command, args, .. } => ConnForm {
+        ConnTransport::Stdio {
+            command,
+            args,
+            env,
+            ..
+        } => ConnForm {
             id: Some(row.id.clone()),
             name: row.name.clone(),
             kind: "stdio".into(),
             command: command.clone(),
             args: args.join(" "),
             url: String::new(),
-            headers: String::new(),
+            headers: vec![ConnSecretField::default()],
+            env: secret_fields_from_entries(env),
             auth: "none".into(),
             enabled: row.enabled,
         },
@@ -1670,11 +1716,8 @@ pub(crate) fn conn_form_from_row(row: &ConnRow) -> ConnForm {
             command: String::new(),
             args: String::new(),
             url: url.clone(),
-            headers: headers
-                .iter()
-                .map(|(k, v)| format!("{k}: {v}"))
-                .collect::<Vec<_>>()
-                .join("\n"),
+            headers: secret_fields_from_entries(headers),
+            env: vec![ConnSecretField::default()],
             auth: if auth == "oauth" {
                 "oauth".into()
             } else {
@@ -1682,5 +1725,56 @@ pub(crate) fn conn_form_from_row(row: &ConnRow) -> ConnForm {
             },
             enabled: row.enabled,
         },
+    }
+}
+
+#[cfg(test)]
+mod mcp_secret_form_tests {
+    use super::{build_conn_json, conn_form_from_row};
+    use crate::dto::{
+        ConnForm, ConnRow, ConnSecretField, ConnTransport, McpSecretEntry,
+    };
+
+    #[test]
+    fn build_conn_json_omits_empty_secret_values() {
+        let json = build_conn_json(
+            &ConnForm {
+                id: Some("conn-1".into()),
+                name: "remote".into(),
+                kind: "http".into(),
+                url: "https://example.test/mcp".into(),
+                headers: vec![ConnSecretField {
+                    name: "Authorization".into(),
+                    value: String::new(),
+                    has_value: true,
+                }],
+                enabled: true,
+                ..ConnForm::default()
+            },
+            false,
+        );
+        assert_eq!(
+            json["transport"]["headers"],
+            serde_json::json!([{ "name": "Authorization" }])
+        );
+        assert!(json["transport"]["headers"][0].get("value").is_none());
+    }
+
+    #[test]
+    fn conn_form_from_row_never_copies_listed_values() {
+        let row = ConnRow {
+            id: "conn-1".into(),
+            name: "remote".into(),
+            enabled: true,
+            transport: ConnTransport::Http {
+                url: "https://example.test/mcp".into(),
+                headers: vec![McpSecretEntry::plaintext("Authorization", "secret-value")],
+                auth: "none".into(),
+            },
+        };
+        let form = conn_form_from_row(&row);
+        assert_eq!(form.headers[0].name, "Authorization");
+        assert!(form.headers[0].value.is_empty());
+        assert!(form.headers[0].has_value);
     }
 }

@@ -14,8 +14,8 @@ use superscience_acp::{
     acp::schema::v1::{
         ContentBlock, McpServer, McpServerStdio, ResourceLink, SessionId, TextContent,
     },
-    AcpAgentProfile as LaunchProfile, AcpPermissionKind, AcpPermissionRequest, AcpSessionEvent,
-    AcpSessionHandle, AcpStopReason, AcpUpdateKind,
+    AcpAgentProfile as LaunchProfile, AcpAuthMethod, AcpAuthMethodKind, AcpPermissionKind,
+    AcpPermissionRequest, AcpSessionEvent, AcpSessionHandle, AcpStopReason, AcpUpdateKind,
 };
 use superscience_llm::Message;
 use tauri::{AppHandle, Emitter, State};
@@ -56,6 +56,36 @@ struct PermissionEvent {
     frame_id: String,
     tool_call: serde_json::Value,
     options: Vec<serde_json::Value>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PendingAcpPermission {
+    pub(crate) frame_id: String,
+    request: AcpPermissionRequest,
+    pub(crate) remote_request: crate::ConfirmRequest,
+}
+
+impl PendingAcpPermission {
+    fn new(frame_id: &str, request: &AcpPermissionRequest) -> Self {
+        let title = request
+            .tool_call
+            .get("title")
+            .and_then(serde_json::Value::as_str)
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or("ACP tool")
+            .to_string();
+        let preview = json_value_text(request.tool_call.get("rawInput"));
+        Self {
+            frame_id: frame_id.to_string(),
+            request: request.clone(),
+            remote_request: crate::ConfirmRequest::new(
+                frame_id,
+                format!("ACP permission request: {title}"),
+                title,
+                preview,
+            ),
+        }
+    }
 }
 
 pub(crate) struct AcpRuntime {
@@ -141,10 +171,41 @@ fn info_dto(handle: &AcpSessionHandle) -> AcpAgentInfoDto {
                     "id": method.id,
                     "name": method.name,
                     "description": method.description,
+                    "type": auth_method_kind(&method.kind),
                 })
             })
             .collect(),
     }
+}
+
+fn auth_method_kind(kind: &AcpAuthMethodKind) -> &'static str {
+    match kind {
+        AcpAuthMethodKind::Agent => "agent",
+        AcpAuthMethodKind::Terminal { .. } => "terminal",
+        AcpAuthMethodKind::Environment => "env_var",
+    }
+}
+
+fn terminal_auth_launch_spec(
+    profile: &AcpAgentProfile,
+    method: &AcpAuthMethod,
+    cwd: &Path,
+) -> Result<crate::terminal_sessions::TerminalLaunchSpec, String> {
+    let AcpAuthMethodKind::Terminal { args, env } = &method.kind else {
+        return Err("The selected ACP authentication method is not terminal-based.".into());
+    };
+    let mut launch_args = profile.args.clone();
+    launch_args.extend(args.iter().cloned());
+    Ok(crate::terminal_sessions::TerminalLaunchSpec {
+        program: profile.command.clone(),
+        args: launch_args,
+        cwd: Some(cwd.to_path_buf()),
+        display_cwd: cwd.to_string_lossy().into_owned(),
+        envs: env
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+    })
 }
 
 #[tauri::command]
@@ -270,9 +331,11 @@ pub(crate) async fn test_acp_agent(
 #[tauri::command]
 pub(crate) async fn authenticate_acp_agent(
     state: State<'_, AppState>,
+    terminals: State<'_, crate::terminal_sessions::TerminalManager>,
+    window: tauri::WebviewWindow,
     id: String,
     method_id: String,
-) -> Result<(), String> {
+) -> Result<Option<crate::terminal_sessions::TerminalSessionSummary>, String> {
     let profile = profiles(&state.store)
         .await
         .into_iter()
@@ -281,12 +344,49 @@ pub(crate) async fn authenticate_acp_agent(
     let handle = AcpSessionHandle::launch(launch_profile(&profile))
         .await
         .map_err(|error| error.to_string())?;
-    let result = handle
-        .authenticate(method_id)
-        .await
-        .map_err(|error| error.to_string());
-    handle.shutdown(Duration::from_secs(2)).await;
-    result
+    let method = handle
+        .info()
+        .auth_methods
+        .iter()
+        .find(|method| method.id == method_id)
+        .cloned();
+    let Some(method) = method else {
+        handle.shutdown(Duration::from_secs(2)).await;
+        return Err("The ACP Agent no longer advertises this authentication method.".into());
+    };
+    match &method.kind {
+        AcpAuthMethodKind::Agent => {
+            let result = handle
+                .authenticate(method_id)
+                .await
+                .map_err(|error| error.to_string());
+            handle.shutdown(Duration::from_secs(2)).await;
+            result.map(|_| None)
+        }
+        AcpAuthMethodKind::Terminal { .. } => {
+            let (project, scope) = crate::exploration_commands::working_project_for_active_frame(
+                &state,
+                window.label(),
+            )
+            .await?;
+            let spec = terminal_auth_launch_spec(&profile, &method, &project.root)?;
+            handle.shutdown(Duration::from_secs(2)).await;
+            terminals
+                .open_spec(
+                    &project.id,
+                    scope.scope_key(),
+                    &format!("acp-auth:{}", profile.id),
+                    format!("{} — {}", profile.label, method.name),
+                    "acp-auth",
+                    spec,
+                )
+                .map(Some)
+        }
+        AcpAuthMethodKind::Environment => {
+            handle.shutdown(Duration::from_secs(2)).await;
+            Err("Environment-variable ACP authentication is not supported yet.".into())
+        }
+    }
 }
 
 /// One-shot, read-only ACP answer: launch a throwaway session without MCP
@@ -788,6 +888,33 @@ fn full_permission_option(request: &AcpPermissionRequest) -> Option<String> {
         .map(|option| option.id.clone())
 }
 
+fn remote_permission_option(request: &AcpPermissionRequest, approved: bool) -> Option<String> {
+    let kind = if approved {
+        AcpPermissionKind::AllowOnce
+    } else {
+        AcpPermissionKind::RejectOnce
+    };
+    request
+        .options
+        .iter()
+        .find(|option| option.kind == kind)
+        .map(|option| option.id.clone())
+}
+
+pub(crate) async fn pending_remote_permission_requests(
+    state: &AppState,
+) -> Vec<crate::ConfirmRequest> {
+    let mut requests = state
+        .acp_permissions
+        .lock()
+        .await
+        .values()
+        .map(|pending| pending.remote_request.clone())
+        .collect::<Vec<_>>();
+    requests.sort_by(|left, right| left.approval_id.cmp(&right.approval_id));
+    requests
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AcpTurnKind {
     User,
@@ -950,7 +1077,7 @@ async fn settle_expired_asks(
         .lock()
         .await
         .values()
-        .any(|owner| owner == frame_id)
+        .any(|pending| pending.frame_id == frame_id)
     {
         state.awaiting_confirm.lock().unwrap().remove(frame_id);
         state.device_hub.resolve_needs_user(frame_id);
@@ -1120,9 +1247,15 @@ async fn run_acp_turn_inner(
                             }
                         }
                     }
-                    state.acp_permissions.lock().await.insert(request.request_id.clone(), frame_id.to_string());
+                    let pending = PendingAcpPermission::new(frame_id, &request);
+                    state
+                        .acp_permissions
+                        .lock()
+                        .await
+                        .insert(request.request_id.clone(), pending.clone());
                     state.awaiting_confirm.lock().unwrap().insert(frame_id.to_string());
                     state.device_hub.mark_needs_user(frame_id, Some(&project.id));
+                    crate::channels::publish_approval_request(&pending.remote_request);
                     let _ = app.emit("permission-request", permission_event(frame_id, &request));
                 }
                 Some(AcpSessionEvent::Exited { error }) => return Err(error.unwrap_or_else(|| "ACP Agent exited.".into())),
@@ -1296,31 +1429,50 @@ pub(crate) async fn respond_acp_permission(
     request_id: String,
     option_id: Option<String>,
 ) -> Result<(), String> {
-    let frame_id = state
+    respond_acp_permission_inner(&state, &app, request_id, option_id)
+        .await
+        .map(|_| ())
+}
+
+async fn respond_acp_permission_inner(
+    state: &AppState,
+    app: &AppHandle,
+    request_id: String,
+    option_id: Option<String>,
+) -> Result<PendingAcpPermission, String> {
+    let pending = state
         .acp_permissions
         .lock()
         .await
-        .get(&request_id)
-        .cloned()
+        .remove(&request_id)
         .ok_or_else(|| "ACP permission request is no longer pending.".to_string())?;
-    let runtime = state
-        .acp_sessions
-        .lock()
-        .await
-        .get(&frame_id)
-        .cloned()
-        .ok_or_else(|| "ACP session is no longer active.".to_string())?;
-    runtime
+    let frame_id = pending.frame_id.clone();
+    let runtime = state.acp_sessions.lock().await.get(&frame_id).cloned();
+    let Some(runtime) = runtime else {
+        state
+            .acp_permissions
+            .lock()
+            .await
+            .insert(request_id, pending);
+        return Err("ACP session is no longer active.".into());
+    };
+    if let Err(error) = runtime
         .handle
         .respond_permission(request_id.clone(), option_id)
-        .map_err(|error| error.to_string())?;
-    state.acp_permissions.lock().await.remove(&request_id);
+    {
+        state
+            .acp_permissions
+            .lock()
+            .await
+            .insert(request_id.clone(), pending.clone());
+        return Err(error.to_string());
+    }
     let frame_has_permissions = state
         .acp_permissions
         .lock()
         .await
         .values()
-        .any(|owner| owner == &frame_id);
+        .any(|pending| pending.frame_id == frame_id);
     let frame_has_asks = state
         .acp_asks
         .lock()
@@ -1338,7 +1490,48 @@ pub(crate) async fn respond_acp_permission(
             "requestId": request_id,
         }),
     );
-    Ok(())
+    Ok(pending)
+}
+
+pub(crate) async fn respond_remote_permission(
+    state: &AppState,
+    app: &AppHandle,
+    selector: &str,
+    approved: bool,
+) -> Result<crate::approval_commands::RemoteConfirmationResolution, String> {
+    let selector = selector.trim().to_ascii_lowercase();
+    if selector.len() < 6 || !selector.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err("审批编号至少需要 6 位十六进制字符。".into());
+    }
+    let (request_id, option_id) = {
+        let permissions = state.acp_permissions.lock().await;
+        let matches = permissions
+            .iter()
+            .filter(|(_, pending)| pending.remote_request.approval_id.starts_with(&selector))
+            .collect::<Vec<_>>();
+        let [entry] = matches.as_slice() else {
+            return if matches.is_empty() {
+                Err("未找到该待审批请求；它可能已经处理或失效。".into())
+            } else {
+                Err("审批编号前缀不唯一，请输入更多位。".into())
+            };
+        };
+        let option_id = remote_permission_option(&entry.1.request, approved).ok_or_else(|| {
+            if approved {
+                "该 ACP 请求没有可用的允许选项。".to_string()
+            } else {
+                "该 ACP 请求没有可用的拒绝选项。".to_string()
+            }
+        })?;
+        (entry.0.clone(), option_id)
+    };
+
+    let pending = respond_acp_permission_inner(state, app, request_id, Some(option_id)).await?;
+    Ok(crate::approval_commands::RemoteConfirmationResolution {
+        approval_id: pending.remote_request.approval_id,
+        frame_id: pending.frame_id,
+        source: crate::approval_commands::RemoteConfirmationSource::Acp,
+    })
 }
 
 /// Resolve a pending bridge `ask_user` request: write the answer for the
@@ -1385,7 +1578,7 @@ pub(crate) async fn respond_ask_user(
         .lock()
         .await
         .values()
-        .any(|owner| owner == &frame_id);
+        .any(|pending| pending.frame_id == frame_id);
     if !frame_has_asks && !frame_has_permissions {
         state.awaiting_confirm.lock().unwrap().remove(&frame_id);
         state.device_hub.resolve_needs_user(&frame_id);
@@ -1494,7 +1687,7 @@ pub(crate) async fn cancel_frame(state: &AppState, frame_id: &str) {
         .acp_permissions
         .lock()
         .await
-        .retain(|_, owner| owner != frame_id);
+        .retain(|_, pending| pending.frame_id != frame_id);
     state
         .acp_asks
         .lock()
@@ -1520,7 +1713,7 @@ pub(crate) async fn close_frame(state: &AppState, frame_id: &str) {
         .acp_permissions
         .lock()
         .await
-        .retain(|_, owner| owner != frame_id);
+        .retain(|_, pending| pending.frame_id != frame_id);
     state
         .acp_asks
         .lock()
@@ -1535,10 +1728,10 @@ async fn cancel_pending_permissions(state: &AppState, frame_id: &str, runtime: &
         let mut pending = state.acp_permissions.lock().await;
         let request_ids = pending
             .iter()
-            .filter(|(_, owner)| owner.as_str() == frame_id)
+            .filter(|(_, permission)| permission.frame_id == frame_id)
             .map(|(request_id, _)| request_id.clone())
             .collect::<Vec<_>>();
-        pending.retain(|_, owner| owner != frame_id);
+        pending.retain(|_, permission| permission.frame_id != frame_id);
         request_ids
     };
     for request_id in request_ids {
@@ -1551,6 +1744,54 @@ async fn cancel_pending_permissions(state: &AppState, frame_id: &str, runtime: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn permission_option(id: &str, kind: AcpPermissionKind) -> wisp_acp::AcpPermissionOption {
+        wisp_acp::AcpPermissionOption {
+            id: id.into(),
+            name: id.into(),
+            kind,
+        }
+    }
+
+    #[test]
+    fn remote_permission_accepts_only_one_shot_options() {
+        let request = AcpPermissionRequest {
+            request_id: "request".into(),
+            session_id: "session".into(),
+            tool_call: serde_json::json!({"title": "Run checks"}),
+            options: vec![
+                permission_option("allow-always", AcpPermissionKind::AllowAlways),
+                permission_option("allow-once", AcpPermissionKind::AllowOnce),
+                permission_option("reject-always", AcpPermissionKind::RejectAlways),
+            ],
+        };
+        assert_eq!(
+            remote_permission_option(&request, true).as_deref(),
+            Some("allow-once")
+        );
+        assert_eq!(remote_permission_option(&request, false), None);
+    }
+
+    #[test]
+    fn pending_acp_permission_builds_a_text_safe_remote_prompt() {
+        let request = AcpPermissionRequest {
+            request_id: "request".into(),
+            session_id: "session".into(),
+            tool_call: serde_json::json!({
+                "title": "Run checks",
+                "rawInput": {"command": "cargo test"}
+            }),
+            options: vec![permission_option(
+                "allow-once",
+                AcpPermissionKind::AllowOnce,
+            )],
+        };
+        let pending = PendingAcpPermission::new("frame-123456", &request);
+        assert_eq!(pending.frame_id, "frame-123456");
+        assert_eq!(pending.remote_request.tool, "Run checks");
+        assert!(pending.remote_request.preview.contains("cargo test"));
+        assert_eq!(pending.request, request);
+    }
 
     #[test]
     fn profile_validation_preserves_argument_boundaries() {
@@ -1581,6 +1822,49 @@ mod tests {
     }
 
     #[test]
+    fn terminal_auth_launch_preserves_profile_and_method_argument_boundaries() {
+        let profile = AcpAgentProfile {
+            id: "claude".into(),
+            label: "Claude ACP".into(),
+            command: "npx".into(),
+            args: vec!["-y".into(), "@agentclientprotocol/claude-agent-acp".into()],
+        };
+        let method = AcpAuthMethod {
+            id: "claude-ai-login".into(),
+            name: "Claude Subscription".into(),
+            description: None,
+            kind: AcpAuthMethodKind::Terminal {
+                args: vec![
+                    "--cli".into(),
+                    "auth".into(),
+                    "login".into(),
+                    "argument with spaces".into(),
+                ],
+                env: [("ACP_AUTH_TEST".into(), "enabled".into())]
+                    .into_iter()
+                    .collect(),
+            },
+        };
+
+        let spec = terminal_auth_launch_spec(&profile, &method, Path::new("/tmp/project"))
+            .expect("terminal auth spec");
+        assert_eq!(spec.program, "npx");
+        assert_eq!(
+            spec.args,
+            [
+                "-y",
+                "@agentclientprotocol/claude-agent-acp",
+                "--cli",
+                "auth",
+                "login",
+                "argument with spaces",
+            ]
+        );
+        assert_eq!(spec.envs, [("ACP_AUTH_TEST".into(), "enabled".into())]);
+        assert_eq!(spec.cwd.as_deref(), Some(Path::new("/tmp/project")));
+    }
+
+    #[test]
     fn acp_wire_dtos_serialize_as_camel_case() {
         let info = serde_json::to_value(AcpAgentInfoDto {
             protocol_version: 1,
@@ -1591,6 +1875,13 @@ mod tests {
         .unwrap();
         assert!(info.get("protocolVersion").is_some());
         assert!(info.get("authMethods").is_some());
+        assert_eq!(
+            auth_method_kind(&AcpAuthMethodKind::Terminal {
+                args: vec![],
+                env: Default::default(),
+            }),
+            "terminal"
+        );
         let event = serde_json::to_value(permission_event(
             "frame-1",
             &AcpPermissionRequest {

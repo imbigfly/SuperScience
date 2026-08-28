@@ -29,6 +29,8 @@ pub(super) async fn add_mcp_connection(
     if is_oauth_http(&conn) {
         return Err("OAuth connections must be authorized before saving".into());
     }
+    let mut conn = conn;
+    crate::mcp_secrets::persist_connection_secrets(&mut conn, None)?;
     let mut conns = load_mcp_connections(&state.store).await;
     conns.push(conn);
     save_mcp_connections(&state.store, &conns).await?;
@@ -46,6 +48,9 @@ pub(super) async fn update_mcp_connection(
         return Err("OAuth connections must be authorized before saving".into());
     }
     let connection_id = conn.id.clone();
+    let mut conn = conn;
+    let previous = conns.iter().find(|c| c.id == conn.id).cloned();
+    crate::mcp_secrets::persist_connection_secrets(&mut conn, previous.as_ref())?;
     let removed_oauth = match conns.iter_mut().find(|c| c.id == conn.id) {
         Some(slot) => {
             let removed_oauth = is_oauth_http(slot);
@@ -68,14 +73,12 @@ pub(super) async fn delete_mcp_connection(
     id: String,
 ) -> Result<(), String> {
     let mut conns = load_mcp_connections(&state.store).await;
-    let removed_oauth = conns
-        .iter()
-        .any(|connection| connection.id == id && is_oauth_http(connection));
+    if let Some(removed) = conns.iter().find(|connection| connection.id == id) {
+        crate::mcp_secrets::forget_connection_secrets(removed);
+    }
     conns.retain(|c| c.id != id);
     save_mcp_connections(&state.store, &conns).await?;
-    if removed_oauth {
-        crate::mcp_oauth::forget(&id);
-    }
+    crate::mcp_oauth::forget(&id);
     clear_idle_agents(&state).await;
     Ok(())
 }
@@ -293,9 +296,12 @@ fn oauth_http_config(
     match &connection.transport {
         McpTransport::Http {
             url,
-            headers,
             auth: McpHttpAuth::OAuth,
-        } if !url.trim().is_empty() => Ok((url.trim().to_string(), headers.clone())),
+            ..
+        } if !url.trim().is_empty() => Ok((
+            url.trim().to_string(),
+            crate::mcp_secrets::hydrate_headers(connection),
+        )),
         _ => Err("OAuth authorization requires a remote URL connection".into()),
     }
 }
@@ -383,6 +389,9 @@ pub(super) async fn authorize_http_connection(
         // Authorization can take minutes; reload so concurrent edits survive.
         connections = load_mcp_connections(&state.store).await;
     }
+    let mut conn = conn;
+    let previous = connections.iter().find(|item| item.id == conn.id).cloned();
+    crate::mcp_secrets::persist_connection_secrets(&mut conn, previous.as_ref())?;
     if let Some(existing) = connections.iter().position(|item| item.id == conn.id) {
         connections[existing] = conn;
     } else {

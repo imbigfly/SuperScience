@@ -1674,6 +1674,40 @@ pub struct BrowserUrlFilters {
     pub prefer: Vec<BrowserUrlFilterRule>,
 }
 
+/// One tab Wisp opened during a conversation turn, offered for cleanup.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserTabCleanupItem {
+    #[serde(default)]
+    pub session: String,
+    pub tab_id: i64,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub initial_url: String,
+}
+
+/// Prompt to close tabs Wisp opened in one turn. `tab_id` stays valid across
+/// in-tab navigations; only this turn's ids are included.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserTabCleanupPrompt {
+    pub turn_id: String,
+    pub frame_id: String,
+    #[serde(default)]
+    pub tabs: Vec<BrowserTabCleanupItem>,
+}
+
+/// Reply of `open_browser_extension_page`: bundled extension path and whether
+/// a browser was launched on its extension-manager page.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserExtensionSetup {
+    #[serde(default)]
+    pub extension_path: Option<String>,
+    #[serde(default)]
+    pub opened: bool,
+}
+
 fn default_sync_backend() -> String {
     "relay".into()
 }
@@ -1716,6 +1750,10 @@ pub struct ChannelsStatus {
     pub feishu_state: String,
     #[serde(default)]
     pub feishu_detail: String,
+    #[serde(default)]
+    pub feishu_owner_open_id: String,
+    #[serde(default)]
+    pub feishu_pending_owner_open_id: String,
     #[serde(default)]
     pub weixin_enabled: bool,
     #[serde(default)]
@@ -1952,6 +1990,8 @@ pub struct AcpAuthMethod {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
+    #[serde(default, rename = "type")]
+    pub kind: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -2831,6 +2871,85 @@ pub struct PluginRow {
     pub runtime_errors: Vec<String>,
 }
 
+/// Named HTTP header or stdio env slot. List/persist payloads include only
+/// `name` and `has_value`; `value` is write-only from the editor.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct McpSecretEntry {
+    pub name: String,
+    pub value: Option<String>,
+    pub has_value: bool,
+    /// True when the client explicitly sent `has_value: false` with no new value.
+    pub clear: bool,
+}
+
+impl McpSecretEntry {
+    pub fn plaintext(name: impl Into<String>, value: impl Into<String>) -> Self {
+        let value = value.into();
+        let has_value = !value.is_empty();
+        Self {
+            name: name.into(),
+            value: Some(value),
+            has_value,
+            clear: false,
+        }
+    }
+
+    pub fn redacted(name: impl Into<String>, has_value: bool) -> Self {
+        Self {
+            name: name.into(),
+            value: None,
+            has_value,
+            clear: false,
+        }
+    }
+}
+
+impl Serialize for McpSecretEntry {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("McpSecretEntry", 2)?;
+        state.serialize_field("name", &self.name)?;
+        state.serialize_field("has_value", &self.has_value)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for McpSecretEntry {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Pair(String, String),
+            Name(String),
+            Obj {
+                name: String,
+                #[serde(default)]
+                value: Option<String>,
+                #[serde(default)]
+                has_value: Option<bool>,
+            },
+        }
+        match Raw::deserialize(deserializer)? {
+            Raw::Pair(name, value) => Ok(Self::plaintext(name, value)),
+            Raw::Name(name) => Ok(Self::redacted(name, false)),
+            Raw::Obj {
+                name,
+                value,
+                has_value,
+            } => {
+                let inferred = value.as_deref().is_some_and(|v| !v.trim().is_empty());
+                let clear = has_value == Some(false) && !inferred;
+                Ok(Self {
+                    name,
+                    value,
+                    has_value: inferred || has_value.unwrap_or(false),
+                    clear,
+                })
+            }
+        }
+    }
+}
+
 #[derive(Clone, serde::Deserialize)]
 pub struct ConnRow {
     pub id: String,
@@ -2845,11 +2964,15 @@ pub enum ConnTransport {
         command: String,
         #[serde(default)]
         args: Vec<String>,
+        #[serde(default)]
+        env: Vec<McpSecretEntry>,
+        #[serde(default)]
+        cwd: Option<String>,
     },
     Http {
         url: String,
         #[serde(default)]
-        headers: Vec<(String, String)>,
+        headers: Vec<McpSecretEntry>,
         #[serde(default)]
         auth: String,
     },
@@ -2903,7 +3026,30 @@ pub struct ApprovalGrantRow {
     pub label: String,
 }
 
-// Simple flat form state (kind + raw text fields; args/env/headers entered as text, parsed on save).
+/// Editor row for a header or env secret. `value` is the typed replacement;
+/// empty keeps the stored secret when `has_value` is true.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct ConnSecretField {
+    pub name: String,
+    pub value: String,
+    pub has_value: bool,
+}
+
+impl ConnSecretField {
+    pub fn from_entry(entry: &McpSecretEntry) -> Self {
+        Self {
+            name: entry.name.clone(),
+            value: String::new(),
+            has_value: entry.has_value
+                || entry
+                    .value
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty()),
+        }
+    }
+}
+
+// Flat form state. Secret values are write-only; listed keys arrive as has_value.
 #[derive(Clone, Default)]
 pub struct ConnForm {
     pub id: Option<String>,
@@ -2912,9 +3058,22 @@ pub struct ConnForm {
     pub command: String,
     pub args: String,
     pub url: String,
-    pub headers: String,
+    pub headers: Vec<ConnSecretField>,
+    pub env: Vec<ConnSecretField>,
     pub auth: String,
     pub enabled: bool,
+}
+
+impl ConnForm {
+    pub fn new_connection() -> Self {
+        Self {
+            kind: "stdio".into(),
+            enabled: true,
+            headers: vec![ConnSecretField::default()],
+            env: vec![ConnSecretField::default()],
+            ..Self::default()
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -4503,4 +4662,143 @@ pub struct ShareSocialCopy {
     pub highlights: Vec<ShareSocialHighlight>,
     #[serde(default)]
     pub variants: Vec<ShareSocialVariant>,
+}
+
+/// Trajectory (轨迹) view: the whole session folded into turns of
+/// user/assistant/tool/usage cells with timing and token statistics.
+/// Returned by the `load_session_trajectory` command.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TrajectorySnapshotDto {
+    pub frame_id: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub turns: Vec<TrajectoryTurnDto>,
+    #[serde(default)]
+    pub stats: TrajectoryStatsDto,
+}
+
+/// One user turn (1-based index) with the cells produced while answering it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TrajectoryTurnDto {
+    pub index: i64,
+    /// Unix epoch milliseconds of the user message that opened the turn.
+    #[serde(default)]
+    pub started_at: Option<i64>,
+    #[serde(default)]
+    pub cells: Vec<TrajectoryCellDto>,
+}
+
+/// One cell inside a trajectory turn. `kind` is one of
+/// `"user" | "assistant" | "tool" | "usage"`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TrajectoryCellDto {
+    pub kind: String,
+    /// One-line summary shown collapsed.
+    #[serde(default)]
+    pub summary: String,
+    /// Tool cells: full arguments JSON.
+    #[serde(default)]
+    pub detail_input: Option<String>,
+    /// Tool cells: full result text; assistant cells: full text.
+    #[serde(default)]
+    pub detail_output: Option<String>,
+    #[serde(default)]
+    pub ok: Option<bool>,
+    #[serde(default)]
+    pub is_error: bool,
+    /// Unix epoch milliseconds.
+    #[serde(default)]
+    pub ts: Option<i64>,
+    /// Tool wall time in milliseconds.
+    #[serde(default)]
+    pub duration_ms: Option<i64>,
+    #[serde(default)]
+    pub usage: Option<TrajectoryUsageDto>,
+}
+
+/// Token accounting for one model round.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrajectoryUsageDto {
+    pub round: i64,
+    #[serde(default)]
+    pub model: Option<String>,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub reasoning_tokens: i64,
+    pub cached_input_tokens: i64,
+}
+
+/// Session-level aggregates for the trajectory header.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TrajectoryStatsDto {
+    pub turns: i64,
+    pub steps: i64,
+    pub llm_ms: i64,
+    pub tool_ms: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cached_input_tokens: i64,
+    /// cached / (input + cached) * 100; `None` when the denominator is zero.
+    #[serde(default)]
+    pub cache_hit_pct: Option<f64>,
+    /// output_tokens / (llm_ms / 1000); `None` when llm_ms is zero.
+    #[serde(default)]
+    pub tokens_per_sec: Option<f64>,
+}
+
+#[cfg(test)]
+mod mcp_secret_entry_tests {
+    use super::McpSecretEntry;
+    use serde_json::json;
+
+    #[test]
+    fn serialize_omits_secret_values() {
+        let entry = McpSecretEntry::plaintext("Authorization", "secret-value");
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json, json!({"name": "Authorization", "has_value": true}));
+        assert!(json.get("value").is_none());
+        assert!(!json.to_string().contains("secret-value"));
+    }
+
+    #[test]
+    fn deserialize_legacy_pair_keeps_value_for_migration() {
+        let entry: McpSecretEntry =
+            serde_json::from_value(json!(["Authorization", "secret-value"])).unwrap();
+        assert_eq!(entry.name, "Authorization");
+        assert_eq!(entry.value.as_deref(), Some("secret-value"));
+        assert!(entry.has_value);
+        assert!(!entry.clear);
+    }
+
+    #[test]
+    fn deserialize_omitted_value_keeps_existing_secret() {
+        let entry: McpSecretEntry =
+            serde_json::from_value(json!({"name": "Authorization"})).unwrap();
+        assert_eq!(entry.name, "Authorization");
+        assert_eq!(entry.value, None);
+        assert!(!entry.has_value);
+        assert!(!entry.clear);
+    }
+
+    #[test]
+    fn deserialize_explicit_has_value_false_clears() {
+        let entry: McpSecretEntry =
+            serde_json::from_value(json!({"name": "Authorization", "has_value": false})).unwrap();
+        assert!(entry.clear);
+        assert!(!entry.has_value);
+    }
+
+    #[test]
+    fn deserialize_non_empty_value_sets_even_if_has_value_false() {
+        let entry: McpSecretEntry = serde_json::from_value(json!({
+            "name": "Authorization",
+            "value": "secret-value",
+            "has_value": false
+        }))
+        .unwrap();
+        assert!(!entry.clear);
+        assert_eq!(entry.value.as_deref(), Some("secret-value"));
+        assert!(entry.has_value);
+    }
 }

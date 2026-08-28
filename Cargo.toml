@@ -18,7 +18,7 @@ members = [
 default-members = ["crates/superscience-cli"]
 
 [workspace.package]
-version = "1.5.0"
+version = "1.7.1"
 edition = "2021"
 rust-version = "1.88"
 license = "AGPL-3.0-only"
@@ -27,7 +27,7 @@ repository = "https://github.com/imbigfly/SuperScience"
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
-agent-client-protocol = "=1.2.0"
+agent-client-protocol = { version = "=1.2.0", features = ["unstable_auth_methods"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"

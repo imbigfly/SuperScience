@@ -19,6 +19,66 @@ use std::path::Path;
 use superscience_llm::{Content, Message, Part, Provider, Role, ToolCall, ToolSchema};
 use superscience_tools::ToolSchemaOrigin;
 
+/// Synthetic tool result written when history load finds assistant `tool_calls`
+/// with no matching `tool` message. Providers reject that pairing.
+pub const UNPAIRED_ON_LOAD_RESULT: &str = "interrupted (unpaired on load)";
+
+pub use superscience_llm::tool_call_pairing;
+
+/// Assistant `tool_calls` that have no matching `tool` result in `messages`.
+pub fn unpaired_tool_call_ids(messages: &[Message]) -> Vec<String> {
+    let (answered, _) = tool_call_pairing(messages);
+    messages
+        .iter()
+        .filter(|message| message.role == Role::Assistant)
+        .flat_map(|message| message.tool_calls.iter())
+        .filter(|call| !answered.contains(&call.id))
+        .map(|call| call.id.clone())
+        .collect()
+}
+
+/// Append a synthetic tool result for every unpaired assistant `tool_call` so a
+/// damaged transcript is not sent to the provider. Inserts immediately after
+/// the assistant message (and any tool results already following it).
+/// Returns how many synthetic results were added.
+pub fn repair_unpaired_tool_calls(messages: &mut Vec<Message>) -> usize {
+    let (mut answered, _) = tool_call_pairing(messages);
+    let mut added = 0usize;
+    let mut index = 0usize;
+    while index < messages.len() {
+        if messages[index].role != Role::Assistant || messages[index].tool_calls.is_empty() {
+            index += 1;
+            continue;
+        }
+        let missing: Vec<(String, String)> = messages[index]
+            .tool_calls
+            .iter()
+            .filter(|call| !answered.contains(&call.id))
+            .map(|call| (call.id.clone(), call.function.name.clone()))
+            .collect();
+        if missing.is_empty() {
+            index += 1;
+            continue;
+        }
+        let mut insert_at = index + 1;
+        while insert_at < messages.len() && messages[insert_at].role == Role::Tool {
+            insert_at += 1;
+        }
+        let synthetics: Vec<Message> = missing
+            .into_iter()
+            .map(|(id, name)| {
+                answered.insert(id.clone());
+                Message::tool(id, name, UNPAIRED_ON_LOAD_RESULT)
+            })
+            .collect();
+        let count = synthetics.len();
+        messages.splice(insert_at..insert_at, synthetics);
+        added += count;
+        index = insert_at + count;
+    }
+    added
+}
+
 /// Recent activity protected from the safe tool/media pruning pass, counted
 /// in agent rounds: one user message or one assistant tool-call batch. A
 /// single user instruction can precede hundreds of tool calls, so protecting
@@ -503,11 +563,28 @@ impl ContextManager {
         self.messages.push(m);
     }
 
+    /// Repair unpaired assistant `tool_calls` in the in-memory transcript.
+    /// Returns how many synthetic tool results were appended.
+    pub fn repair_unpaired_tool_calls(&mut self) -> usize {
+        let added = crate::context::repair_unpaired_tool_calls(&mut self.messages);
+        if added > 0 {
+            self.invalidate_last_request();
+        }
+        added
+    }
+
     pub fn load(&mut self, path: &Path) {
         self.invalidate_last_request();
         match std::fs::read_to_string(path) {
             Ok(s) => match serde_json::from_str::<Vec<Message>>(&s) {
-                Ok(v) => self.messages = v,
+                Ok(v) => {
+                    self.messages = v;
+                    if crate::context::repair_unpaired_tool_calls(&mut self.messages) > 0 {
+                        // Persist the same way a skipped-batch result would:
+                        // the repaired rows become durable history.
+                        self.save(path);
+                    }
+                }
                 Err(e) => {
                     self.backup(path);
                     self.messages.clear();
@@ -2707,5 +2784,107 @@ mod tests {
             "excerpts must stay bounded, got {} bytes",
             excerpt_section.len()
         );
+    }
+
+    fn assistant_calls(id: &str, name: &str) -> Message {
+        let mut message = Message::assistant("calling");
+        message.tool_calls = vec![superscience_llm::ToolCall {
+            id: id.into(),
+            kind: "function".into(),
+            function: superscience_llm::FunctionCall {
+                name: name.into(),
+                arguments: "{}".into(),
+            },
+        }];
+        message
+    }
+
+    #[test]
+    fn repair_unpaired_tool_calls_appends_synthetic_results() {
+        let mut messages = vec![
+            Message::user("write the file"),
+            assistant_calls("call-1", "write"),
+        ];
+        assert_eq!(unpaired_tool_call_ids(&messages), vec!["call-1"]);
+        assert_eq!(repair_unpaired_tool_calls(&mut messages), 1);
+        assert!(unpaired_tool_call_ids(&messages).is_empty());
+        assert_eq!(messages[2].role, Role::Tool);
+        assert_eq!(messages[2].tool_call_id.as_deref(), Some("call-1"));
+        assert_eq!(messages[2].tool_name.as_deref(), Some("write"));
+        assert_eq!(messages[2].content.as_text(), UNPAIRED_ON_LOAD_RESULT);
+        assert_eq!(repair_unpaired_tool_calls(&mut messages), 0);
+    }
+
+    #[test]
+    fn repair_unpaired_tool_calls_fills_only_missing_ids() {
+        let mut messages = vec![
+            Message::user("do both"),
+            {
+                let mut message = Message::assistant("calling");
+                message.tool_calls = vec![
+                    superscience_llm::ToolCall {
+                        id: "a".into(),
+                        kind: "function".into(),
+                        function: superscience_llm::FunctionCall {
+                            name: "write".into(),
+                            arguments: "{}".into(),
+                        },
+                    },
+                    superscience_llm::ToolCall {
+                        id: "b".into(),
+                        kind: "function".into(),
+                        function: superscience_llm::FunctionCall {
+                            name: "edit".into(),
+                            arguments: "{}".into(),
+                        },
+                    },
+                ];
+                message
+            },
+            Message::tool("a", "write", "ok"),
+            Message::user("continue"),
+        ];
+        assert_eq!(repair_unpaired_tool_calls(&mut messages), 1);
+        assert_eq!(
+            messages
+                .iter()
+                .filter_map(|message| message.tool_call_id.as_deref())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+        assert_eq!(messages[3].content.as_text(), UNPAIRED_ON_LOAD_RESULT);
+        assert_eq!(messages[4].role, Role::User);
+    }
+
+    #[test]
+    fn load_repairs_and_persists_an_unpaired_transcript() {
+        let root = std::env::temp_dir().join(format!(
+            "wisp-core-unpaired-load-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("session.json");
+        let damaged = vec![Message::user("go"), assistant_calls("orphan", "ok_tool")];
+        std::fs::write(&path, serde_json::to_string_pretty(&damaged).unwrap()).unwrap();
+
+        let mut ctx = ContextManager::new(8_000);
+        ctx.load(&path);
+
+        assert!(unpaired_tool_call_ids(&ctx.messages).is_empty());
+        assert_eq!(
+            ctx.messages.last().unwrap().tool_call_id.as_deref(),
+            Some("orphan")
+        );
+        assert!(ctx
+            .messages
+            .last()
+            .unwrap()
+            .content
+            .as_text()
+            .contains("unpaired on load"));
+        let reloaded: Vec<Message> =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(unpaired_tool_call_ids(&reloaded).is_empty());
+        std::fs::remove_dir_all(root).ok();
     }
 }

@@ -17,8 +17,10 @@ mod external_session_cache;
 mod global_memories;
 mod library;
 mod lineage;
+pub mod mcp_secrets;
 mod method_search;
 mod models;
+mod persist_seq;
 mod plugins;
 mod project_state_revisions;
 mod project_sync;
@@ -66,6 +68,7 @@ pub use method_search::{
     MethodStrategyStat,
 };
 pub use models::*;
+pub use persist_seq::{join_or_abort_persist, persist_seq_loop, PersistJoinError};
 pub use project_state_revisions::{ProjectStateRevision, ProjectStateRevisionSummary};
 pub use project_sync::ProjectSyncState;
 pub use project_transfer::ProjectTransferStats;
@@ -76,8 +79,8 @@ pub use schedules::{next_slot_after, ScheduleRecord, ScheduleRunRecord};
 pub use sessions::{
     ModelTokenUsage, ProjectTokenUsage, SessionBranchDeltaMessage, SessionBranchLink,
     SessionBranchMerge, SessionBranchMergeCard, SessionBranchMergePreview, SessionTokenUsage,
-    SessionTokenUsagePage, SessionTranscriptPage, SessionUiEventSnapshot, TokenUsageDay,
-    ToolCallUsage,
+    SessionTokenUsagePage, SessionTranscriptPage, SessionUiEventRecord, SessionUiEventSnapshot,
+    TokenUsageDay, ToolCallUsage,
 };
 pub use storage_prefs::{
     validate_local_results_dir, validate_remote_data_root, validate_remote_workdir_root,
@@ -830,6 +833,8 @@ impl Store {
             &[("control_state", "TEXT NOT NULL DEFAULT 'run'")],
         )
         .await?;
+        Self::add_columns_if_missing(pool, "session_ui_events", &[("created_at", "INTEGER")])
+            .await?;
         Ok(())
     }
 

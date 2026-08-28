@@ -626,6 +626,22 @@ pub(super) fn open_app_doc(app: tauri::AppHandle, page: String) -> Result<(), St
         .map_err(|e| e.to_string())
 }
 
+/// Open the first available browser on its extension manager page for the
+/// offline banner's setup button. Never fails: `opened` reports whether a
+/// browser was actually launched, so the UI can fall back to manual steps.
+#[tauri::command]
+pub(super) fn open_browser_extension_page(
+    state: State<'_, AppState>,
+) -> browser_bridge::BrowserExtensionSetup {
+    state.browser_bridge.open_extension_setup()
+}
+
+/// Live extension connection check for the offline banner's display gate.
+#[tauri::command]
+pub(super) async fn extension_connected(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.browser_bridge.extension_connected().await)
+}
+
 #[tauri::command]
 pub(super) fn reveal_in_file_manager(
     app: AppHandle,

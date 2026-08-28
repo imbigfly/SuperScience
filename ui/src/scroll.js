@@ -6,11 +6,6 @@ const chatPositions = new Map();
 // ponytail: single chat scroller, so the jump pill id is a constant.
 const JUMP_PILL_ID = "chat-jump-pill";
 
-function lastUserRow(root) {
-  const rows = root.querySelectorAll("[data-user-index]");
-  return rows.length ? rows[rows.length - 1] : null;
-}
-
 function bottomGap(el) {
   return Math.max(0, el.scrollHeight - el.clientHeight - el.scrollTop);
 }
@@ -42,6 +37,8 @@ export function attach_chat_scroll(scrollerId, contentId) {
   let activeSession = null;
   let restoreGeneration = 0;
   let hidden = false;
+  let pointerDown = false;
+  let jumping = false;
   const setFollow = (value) => {
     follow = value;
     scroller.style.overflowAnchor = value ? "none" : "auto";
@@ -54,51 +51,98 @@ export function attach_chat_scroll(scrollerId, contentId) {
   const markUser = () => {
     lastUserScroll = performance.now();
   };
+  const rememberProgrammatic = () => {
+    programmaticTop = scroller.scrollTop;
+  };
+  const snapFollow = (force = false) => {
+    // Write-only follow snap: skip the assignment when we already wrote this
+    // max. Repeated programmatic scrollTop writes suppress Chromium overflow
+    // anchoring, which #663 needs after the user scrolls away. `force` is for
+    // jump-to-latest / rebuild clamps, where scrollTop moved without max
+    // changing.
+    const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    if (force || max - programmaticTop > 2) {
+      scroller.scrollTop = max;
+    }
+    programmaticTop = max;
+    readingTop = max;
+  };
+  const restoreBookmark = () => {
+    const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    programmaticTop = Math.min(readingTop, max);
+    scroller.scrollTop = programmaticTop;
+  };
+  const parkHere = () => {
+    setFollow(false);
+    readingTop = scroller.scrollTop;
+    programmaticTop = scroller.scrollTop;
+    lastHeight = content.scrollHeight;
+    syncPill();
+  };
 
-  // Floating "Your last message" jump pill: visible only when the last user
-  // turn is off-screen and the view is scrolled away from the bottom. Class
-  // toggle on a static element — no reactive rebuild involved.
+  // Jump-to-latest pill: visible when the view is scrolled away from the
+  // bottom. Class toggle on a static element — no reactive rebuild involved.
   const syncPill = () => {
     const pill = document.getElementById(JUMP_PILL_ID);
     if (!pill) return;
-    if (follow) {
-      pill.classList.remove("visible");
-      return;
-    }
-    let show = false;
-    const row = lastUserRow(content);
-    if (row && bottomGap(scroller) > 48) {
-      const view = scroller.getBoundingClientRect();
-      const top = row.getBoundingClientRect().top;
-      show = top < view.top - 4 || top > view.bottom - 4;
-    }
-    pill.classList.toggle("visible", show);
+    pill.classList.toggle("visible", !follow && bottomGap(scroller) > 48);
   };
 
   const syncFollow = () => {
+    if (jumping) {
+      parkHere();
+      return;
+    }
+    const userGesture = pointerDown || performance.now() - lastUserScroll < 500;
     if (atBottom(scroller)) {
-      setFollow(true);
+      // A rebuild can shrink the thread to the viewport so scrollTop=0 is
+      // temporarily "at bottom". Don't resume follow-bottom from that clamp
+      // when the user was parked mid-thread.
+      if (follow || userGesture) {
+        setFollow(true);
+        rememberProgrammatic();
+        readingTop = scroller.scrollTop;
+        syncPill();
+        return;
+      }
+      restoreBookmark();
       syncPill();
       return;
     }
-    // Not at bottom: only treat it as an intentional scroll-up if a real gesture
-    // happened just now. Reflow-driven scrolls leave `follow` untouched.
-    if (performance.now() - lastUserScroll < 500) {
+    // A click/drag on the scroller (tool cards, scrollbar) keeps `pointerDown`
+    // until pointerup. Wheel/touch/key still use the 500ms window. Clicks
+    // alone must not count as a scroll-up: tool-result rebuilds clamp
+    // scrollTop to 0, and treating that click as a gesture parked the view
+    // at the top (#927).
+    if (userGesture) {
+      // A rebuild clamp jumps from the followed bottom to ~0 in one event.
+      // Don't treat that as the user scrolling to the top (#927).
+      if (
+        follow
+        && scroller.scrollTop < 8
+        && readingTop > Math.max(scroller.clientHeight, 200)
+      ) {
+        snapFollow(true);
+        syncPill();
+        return;
+      }
       setFollow(false);
       readingTop = scroller.scrollTop;
       syncPill();
       return;
     }
-    // Reflow-driven clamp while following (streaming rebuilds shrink the
-    // thread for a beat, yanking scrollTop up). Scroll events fire before
-    // paint, so an instant snap here means the clamped position is never
-    // painted — without it the view visibly bounces on every thinking delta.
+    // Reflow-driven clamp. Scroll events fire before paint, so an instant
+    // snap here means the clamped position is never painted — without it the
+    // view visibly bounces on every thinking delta. When parked, restore the
+    // bookmark if the thread collapsed toward 0 (#927); if scrollTop moved
+    // down, that is overflow-anchor compensating a prepend (#663) — keep it.
     if (follow) {
-      snapBottom(scroller);
-    } else if (scroller.scrollTop !== programmaticTop) {
-      // Parked mid-thread: any position we did not set ourselves is the
-      // user's, so it becomes the bookmark rebuilds restore to.
+      snapFollow(true);
+    } else if (scroller.scrollTop + 2 < readingTop) {
+      restoreBookmark();
+    } else {
       readingTop = scroller.scrollTop;
+      programmaticTop = scroller.scrollTop;
     }
     syncPill();
   };
@@ -116,10 +160,9 @@ export function attach_chat_scroll(scrollerId, contentId) {
       hidden = false;
       lastHeight = h;
       if (follow) {
-        snapBottom(scroller);
+        snapFollow(true);
       } else {
-        programmaticTop = Math.min(readingTop, scroller.scrollHeight - scroller.clientHeight);
-        scroller.scrollTop = programmaticTop;
+        restoreBookmark();
       }
       syncPill();
       return;
@@ -129,14 +172,18 @@ export function attach_chat_scroll(scrollerId, contentId) {
     if (follow) {
       // ResizeObserver already coalesces streaming DOM changes. Keep the hot
       // path to one bottom snap and skip the row/viewport geometry used only
-      // by the scroll-away pill.
-      snapBottom(scroller);
-      syncPill();
+      // by the scroll-away pill — reading gap geometry here forces a layout
+      // on every streaming frame, so the pill is only synced when it could
+      // actually be visible (not following).
+      snapFollow();
       return;
     }
     if (grew) {
-      programmaticTop = Math.min(readingTop, scroller.scrollHeight - scroller.clientHeight);
-      scroller.scrollTop = programmaticTop;
+      // Parked: overflow-anchor keeps the visible rows stable on prepend.
+      // Do not restoreBookmark here — that writes the pre-prepend scrollTop
+      // and undoes the compensation (#663).
+      syncPill();
+      return;
     }
     syncFollow();
   };
@@ -153,7 +200,18 @@ export function attach_chat_scroll(scrollerId, contentId) {
     { passive: true },
   );
   scroller.addEventListener("touchmove", markUser, { passive: true });
-  scroller.addEventListener("pointerdown", markUser, { passive: true });
+  scroller.addEventListener(
+    "pointerdown",
+    () => {
+      pointerDown = true;
+    },
+    { passive: true },
+  );
+  const endPointer = () => {
+    pointerDown = false;
+  };
+  window.addEventListener("pointerup", endPointer, { passive: true });
+  window.addEventListener("pointercancel", endPointer, { passive: true });
   scroller.addEventListener("keydown", markUser, { passive: true });
 
   const ro = new ResizeObserver((entries) => onGrowth(entries[0]?.contentRect.height));
@@ -162,22 +220,27 @@ export function attach_chat_scroll(scrollerId, contentId) {
   hooks.set(scrollerId, {
     ro,
     onGrowth,
-    unfollow: () => {
+    unfollow: parkHere,
+    jumpTo: (el) => {
+      jumping = true;
       setFollow(false);
-      readingTop = scroller.scrollTop;
-      lastHeight = content.scrollHeight;
+      el.scrollIntoView({ block: "start" });
+      parkHere();
+      jumping = false;
     },
     snap: () => {
       const requested = performance.now();
       setFollow(true);
-      snapBottom(scroller);
+      snapFollow(true);
       lastHeight = content.scrollHeight;
+      syncPill();
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           if (lastUserScroll < requested) {
             setFollow(true);
-            snapBottom(scroller);
+            snapFollow(true);
             lastHeight = content.scrollHeight;
+            syncPill();
           }
         });
       });
@@ -200,13 +263,11 @@ export function attach_chat_scroll(scrollerId, contentId) {
           if (generation !== restoreGeneration || activeSession !== sessionId) return;
           if (!saved || saved.follow) {
             setFollow(true);
-            snapBottom(scroller);
+            snapFollow();
           } else {
             setFollow(false);
-            const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-            readingTop = Math.min(saved.top, max);
-            programmaticTop = readingTop;
-            scroller.scrollTop = programmaticTop;
+            readingTop = saved.top;
+            restoreBookmark();
           }
           lastHeight = content.scrollHeight;
           syncPill();
@@ -216,7 +277,7 @@ export function attach_chat_scroll(scrollerId, contentId) {
   });
 
   setFollow(true);
-  snapBottom(scroller);
+  snapFollow();
 }
 
 /** Save the previous conversation and restore this conversation after render.
@@ -314,23 +375,17 @@ export function follow_run_outputs() {
   });
 }
 
-/** Scroll the latest user turn into view (the floating jump pill).
- * @param {string} scrollerId */
-export function jump_chat_scroll_last_user(scrollerId) {
-  const scroller = document.getElementById(scrollerId);
-  const target = scroller && lastUserRow(scroller);
-  if (!target) return;
-  hooks.get(scrollerId)?.unfollow();
-  target.scrollIntoView({ block: "start" });
-}
-
 /** @param {string} scrollerId @param {string} selector */
 export function jump_chat_scroll(scrollerId, selector) {
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
       const target = document.querySelector(selector);
       if (!target) return;
-      hooks.get(scrollerId)?.unfollow();
+      const hook = hooks.get(scrollerId);
+      if (hook) {
+        hook.jumpTo(target);
+        return;
+      }
       target.scrollIntoView({ block: "start" });
     });
   });

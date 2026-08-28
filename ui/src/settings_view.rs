@@ -5,11 +5,11 @@ use crate::app_support::{
     cred_group_configured, cred_group_mark, drag_session_id, endpoint_has_stored_key,
     focus_element_soon, format_relative_time, group_models_by_channel,
     import_custom_css_from_input, join_tags, js_error_text, mcp_tool_brief, model_form_entry,
-    new_acp_form, new_model_form, profiles_to_edit_form, provider_entries_are_pristine,
-    provider_mark_letter, quick_action_label, reviewer_backend_key, reviewer_backend_label,
-    reviewer_missing_acp_profile_id, select_form_row, set_reviewer_backend, settings_nav_group,
-    settings_section_label, settings_subpage_label, shorten_skill_pin, skill_matches_filter,
-    skill_update_result_message, start_session_drag,
+    new_acp_form, new_model_form, profiles_to_edit_form,
+    provider_entries_are_pristine, provider_mark_letter, quick_action_label, reviewer_backend_key,
+    reviewer_backend_label, reviewer_missing_acp_profile_id, select_form_row, set_reviewer_backend,
+    settings_nav_group, settings_section_label, settings_subpage_label, shorten_skill_pin,
+    show_toast, skill_matches_filter, skill_update_result_message, start_session_drag,
     sync_form_from_selected, CRED_GROUPS,
 };
 use crate::bindings::{invoke, invoke_checked, is_mac, is_windows};
@@ -1754,6 +1754,7 @@ pub(super) fn SettingsView(
     import_wsl_contexts: Callback<()>,
     remove_ssh_host: Callback<String>,
     probe_compute_resource: Callback<String>,
+    open_terminal_session: Callback<TerminalSessionSummary>,
 ) -> impl IntoView {
     let SettingsViewState {
         locale,
@@ -1933,6 +1934,8 @@ pub(super) fn SettingsView(
             skill_update_busy.set(false);
         });
     });
+    let browser_auto_launch = create_rw_signal(true);
+    let browser_auto_close_tabs = create_rw_signal(false);
     create_effect(move |_| {
         if show_settings.get() && settings_section.get() == "browser" {
             spawn_local(async move {
@@ -1942,6 +1945,20 @@ pub(super) fn SettingsView(
                     if let Ok(filters) = serde_wasm_bindgen::from_value::<BrowserUrlFilters>(value)
                     {
                         browser_filters.set(filters);
+                    }
+                }
+                if let Ok(value) =
+                    invoke_checked("get_browser_auto_launch", JsValue::UNDEFINED).await
+                {
+                    if let Ok(enabled) = serde_wasm_bindgen::from_value::<bool>(value) {
+                        browser_auto_launch.set(enabled);
+                    }
+                }
+                if let Ok(value) =
+                    invoke_checked("get_browser_auto_close_tabs", JsValue::UNDEFINED).await
+                {
+                    if let Ok(enabled) = serde_wasm_bindgen::from_value::<bool>(value) {
+                        browser_auto_close_tabs.set(enabled);
                     }
                 }
             });
@@ -1962,6 +1979,36 @@ pub(super) fn SettingsView(
                         )));
                     }
                 }
+                Err(err) => browser_filters_msg.set(Some((false, js_error_text(err)))),
+            }
+            browser_filters_busy.set(false);
+        });
+    });
+    let save_browser_auto_launch = Callback::new(move |enabled: bool| {
+        browser_auto_launch.set(enabled);
+        browser_filters_busy.set(true);
+        spawn_local(async move {
+            let arg = to_value(&serde_json::json!({ "enabled": enabled })).unwrap();
+            match invoke_checked("set_browser_auto_launch", arg).await {
+                Ok(_) => browser_filters_msg.set(Some((
+                    true,
+                    t(locale.get_untracked(), "browser.auto_launch_saved").into(),
+                ))),
+                Err(err) => browser_filters_msg.set(Some((false, js_error_text(err)))),
+            }
+            browser_filters_busy.set(false);
+        });
+    });
+    let save_browser_auto_close_tabs = Callback::new(move |enabled: bool| {
+        browser_auto_close_tabs.set(enabled);
+        browser_filters_busy.set(true);
+        spawn_local(async move {
+            let arg = to_value(&serde_json::json!({ "enabled": enabled })).unwrap();
+            match invoke_checked("set_browser_auto_close_tabs", arg).await {
+                Ok(_) => browser_filters_msg.set(Some((
+                    true,
+                    t(locale.get_untracked(), "browser.auto_close_tabs_saved").into(),
+                ))),
                 Err(err) => browser_filters_msg.set(Some((false, js_error_text(err)))),
             }
             browser_filters_busy.set(false);
@@ -2326,6 +2373,10 @@ pub(super) fn SettingsView(
                     <button class:active=move || settings_section.get()=="general"
                         on:click=move |_| go_settings_section.call("general".into())>
                         {move || t(locale.get(), "settings.nav.general")}</button>
+                    <button class:active=move || settings_section.get()=="session"
+                        data-testid="settings-nav-session"
+                        on:click=move |_| go_settings_section.call("session".into())>
+                        {move || t(locale.get(), "settings.nav.session")}</button>
                     <button class:active=move || settings_section.get()=="appearance"
                         on:click=move |_| go_settings_section.call("appearance".into())>
                         {move || t(locale.get(), "settings.nav.appearance")}</button>
@@ -2463,62 +2514,6 @@ pub(super) fn SettingsView(
                                 prop:value={move || settings.get().workspace_dir}
                                 placeholder=move || bootstrap.get().map(|b| b.workspace).unwrap_or_default() />
                         </label>
-                        <label class="span-2">{move || t(locale.get(), "settings.max_iter")}
-                            <input data-testid="max-iter" type="number" min="0" step="1"
-                                on:input=move |ev| settings.update(|s| {
-                                    if let Ok(value) = event_target_input(&ev).value().parse() {
-                                        s.max_iter = value;
-                                    }
-                                })
-                                prop:value=move || settings.get().max_iter.to_string() />
-                            <span class="settings-field-hint">{move || t(locale.get(), "settings.max_iter_hint")}</span>
-                        </label>
-                        <div class="span-2 appearance-config-row">
-                            <div>
-                                <strong>{move || t(locale.get(), "settings.auto_compact")}</strong>
-                                <span>{move || t(locale.get(), "settings.auto_compact_hint")}</span>
-                            </div>
-                            <label class="toggle">
-                                <input type="checkbox" data-testid="auto-compact-enabled"
-                                    prop:checked=move || settings.get().auto_compact
-                                    on:change=move |ev| settings.update(|current| current.auto_compact = event_target_checked(&ev)) />
-                                <span class="toggle-track" aria-hidden="true"></span>
-                            </label>
-                        </div>
-                        <div class="span-2 appearance-config-row">
-                            <div>
-                                <strong>{move || t(locale.get(), "settings.auto_continue")}</strong>
-                                <span>{move || t(locale.get(), "settings.auto_continue_hint")}</span>
-                            </div>
-                            <label class="toggle">
-                                <input type="checkbox" data-testid="auto-continue-enabled"
-                                    prop:checked=move || settings.get().auto_continue
-                                    on:change=move |ev| settings.update(|current| current.auto_continue = event_target_checked(&ev)) />
-                                <span class="toggle-track" aria-hidden="true"></span>
-                            </label>
-                        </div>
-                        <label class="span-2">{move || t(locale.get(), "settings.auto_continue_limit")}
-                            <input data-testid="auto-continue-limit" type="number" min="1" step="1"
-                                on:input=move |ev| settings.update(|current| {
-                                    if let Ok(value) = event_target_input(&ev).value().parse() {
-                                        current.auto_continue_limit = value;
-                                    }
-                                })
-                                prop:value=move || settings.get().auto_continue_limit.to_string() />
-                            <span class="settings-field-hint">{move || t(locale.get(), "settings.auto_continue_limit_hint")}</span>
-                        </label>
-                        <div class="span-2 appearance-config-row">
-                            <div>
-                                <strong>{move || t(locale.get(), "settings.follow_up_questions")}</strong>
-                                <span>{move || t(locale.get(), "settings.follow_up_questions_hint")}</span>
-                            </div>
-                            <label class="toggle">
-                                <input type="checkbox" data-testid="follow-up-questions-enabled"
-                                    prop:checked=move || settings.get().follow_up_questions
-                                    on:change=move |ev| settings.update(|current| current.follow_up_questions = event_target_checked(&ev)) />
-                                <span class="toggle-track" aria-hidden="true"></span>
-                            </label>
-                        </div>
                         <div class="span-2 appearance-config-row">
                             <div>
                                 <strong>{move || t(locale.get(), "settings.resume_last_session")}</strong>
@@ -2531,14 +2526,6 @@ pub(super) fn SettingsView(
                                 <span class="toggle-track" aria-hidden="true"></span>
                             </label>
                         </div>
-                        <label class="span-2">{move || t(locale.get(), "settings.proxy_url")}
-                            <input data-testid="proxy-url" placeholder="http://127.0.0.1:7890"
-                                on:input=move |ev| settings.update(|s| {
-                                    s.proxy_url = event_target_input(&ev).value();
-                                })
-                                prop:value=move || settings.get().proxy_url />
-                            <span class="settings-field-hint">{move || t(locale.get(), "settings.proxy_url_hint")}</span>
-                        </label>
                         <label class="span-2">{move || t(locale.get(), "settings.send_shortcut")}
                             <select data-testid="send-shortcut"
                                 prop:value=move || if send_with_modifier.get() { "modifier_enter" } else { "enter" }
@@ -2605,6 +2592,77 @@ pub(super) fn SettingsView(
                                 <button type="button" disabled=move || settings_busy.get() on:click=move |ev| check_updates.call(ev)>{move || t(locale.get(), "settings.check_updates")}</button>
                             <button type="button" disabled=move || settings_busy.get() on:click=move |_| show_settings.set(false)>{move || t(locale.get(), "settings.cancel")}</button>
                                 <button type="button" class="primary" disabled=move || settings_busy.get() on:click=move |ev| save_settings.call(ev)>{move || t(locale.get(), "settings.save")}</button>
+                        </div>
+                    </div>
+                }.into_view())}
+                {move || (settings_section.get() == "session").then(|| view! {
+                    <div class="settings-pane" data-testid="session-settings-pane">
+                        <div class="settings-form-grid">
+                        <label class="span-2">{move || t(locale.get(), "settings.max_iter")}
+                            <input data-testid="max-iter" type="number" min="0" step="1"
+                                on:input=move |ev| settings.update(|s| {
+                                    if let Ok(value) = event_target_input(&ev).value().parse() {
+                                        s.max_iter = value;
+                                    }
+                                })
+                                prop:value=move || settings.get().max_iter.to_string() />
+                            <span class="settings-field-hint">{move || t(locale.get(), "settings.max_iter_hint")}</span>
+                        </label>
+                        <div class="span-2 appearance-config-row">
+                            <div>
+                                <strong>{move || t(locale.get(), "settings.auto_compact")}</strong>
+                                <span>{move || t(locale.get(), "settings.auto_compact_hint")}</span>
+                            </div>
+                            <label class="toggle">
+                                <input type="checkbox" data-testid="auto-compact-enabled"
+                                    prop:checked=move || settings.get().auto_compact
+                                    on:change=move |ev| settings.update(|current| current.auto_compact = event_target_checked(&ev)) />
+                                <span class="toggle-track" aria-hidden="true"></span>
+                            </label>
+                        </div>
+                        <div class="span-2 appearance-config-row">
+                            <div>
+                                <strong>{move || t(locale.get(), "settings.auto_continue")}</strong>
+                                <span>{move || t(locale.get(), "settings.auto_continue_hint")}</span>
+                            </div>
+                            <label class="toggle">
+                                <input type="checkbox" data-testid="auto-continue-enabled"
+                                    prop:checked=move || settings.get().auto_continue
+                                    on:change=move |ev| settings.update(|current| current.auto_continue = event_target_checked(&ev)) />
+                                <span class="toggle-track" aria-hidden="true"></span>
+                            </label>
+                        </div>
+                        <label class="span-2">{move || t(locale.get(), "settings.auto_continue_limit")}
+                            <input data-testid="auto-continue-limit" type="number" min="1" step="1"
+                                on:input=move |ev| settings.update(|current| {
+                                    if let Ok(value) = event_target_input(&ev).value().parse() {
+                                        current.auto_continue_limit = value;
+                                    }
+                                })
+                                prop:value=move || settings.get().auto_continue_limit.to_string() />
+                            <span class="settings-field-hint">{move || t(locale.get(), "settings.auto_continue_limit_hint")}</span>
+                        </label>
+                        <div class="span-2 appearance-config-row">
+                            <div>
+                                <strong>{move || t(locale.get(), "settings.follow_up_questions")}</strong>
+                                <span>{move || t(locale.get(), "settings.follow_up_questions_hint")}</span>
+                            </div>
+                            <label class="toggle">
+                                <input type="checkbox" data-testid="follow-up-questions-enabled"
+                                    prop:checked=move || settings.get().follow_up_questions
+                                    on:change=move |ev| settings.update(|current| current.follow_up_questions = event_target_checked(&ev)) />
+                                <span class="toggle-track" aria-hidden="true"></span>
+                            </label>
+                        </div>
+                        </div>
+                        {move || settings_message.get().map(|(ok, text)| view! {
+                            <div class="settings-status"
+                                class:ok=move || ok
+                                class:fail=move || !ok>{text}</div>
+                        })}
+                        <div class="row settings-footer">
+                            <button type="button" disabled=move || settings_busy.get() on:click=move |_| show_settings.set(false)>{move || t(locale.get(), "settings.cancel")}</button>
+                            <button type="button" class="primary" disabled=move || settings_busy.get() on:click=move |ev| save_settings.call(ev)>{move || t(locale.get(), "settings.save")}</button>
                         </div>
                     </div>
                 }.into_view())}
@@ -3663,6 +3721,16 @@ pub(super) fn SettingsView(
                     } else {
                         view! {
                         <div class="settings-pane settings-pane-list model-settings-pane">
+                            <div class="settings-form-grid">
+                                <label class="span-2">{move || t(locale.get(), "settings.proxy_url")}
+                                    <input data-testid="proxy-url" placeholder="http://127.0.0.1:7890"
+                                        on:input=move |ev| settings.update(|s| {
+                                            s.proxy_url = event_target_input(&ev).value();
+                                        })
+                                        prop:value=move || settings.get().proxy_url />
+                                    <span class="settings-field-hint">{move || t(locale.get(), "settings.proxy_url_hint")}</span>
+                                </label>
+                            </div>
                             <div class="settings-toolbar settings-toolbar-end model-category-toolbar">
                                 <div class="settings-category-tabs" role="tablist" aria-label="Model categories">
                                     <button type="button" role="tab" class="settings-category-tab"
@@ -3805,16 +3873,27 @@ pub(super) fn SettingsView(
                                                                                 let method_id = method.id.clone();
                                                                                 view! {
                                                                                     <button type="button" data-testid="authenticate-acp-agent" title=method.description.clone().unwrap_or_default()
+                                                                                        disabled=move || settings_busy.get()
                                                                                         on:click=move |ev| {
                                                                                             ev.stop_propagation();
                                                                                             let id = id.clone();
                                                                                             let method_id = method_id.clone();
                                                                                             spawn_local(async move {
+                                                                                                settings_busy.set(true);
                                                                                                 let args = to_value(&serde_json::json!({ "id": id, "methodId": method_id })).unwrap();
                                                                                                 match invoke_checked("authenticate_acp_agent", args).await {
-                                                                                                    Ok(_) => acp_form_msg.set(Some((true, t(Locale::detect_browser(), "models.acp_auth_ok").into()))),
+                                                                                                    Ok(value) => match serde_wasm_bindgen::from_value::<Option<TerminalSessionSummary>>(value) {
+                                                                                                        Ok(Some(session)) => {
+                                                                                                            open_terminal_session.call(session);
+                                                                                                            show_settings.set(false);
+                                                                                                            show_toast(&t(locale.get_untracked(), "models.acp_auth_terminal_started"));
+                                                                                                        }
+                                                                                                        Ok(None) => acp_form_msg.set(Some((true, t(locale.get_untracked(), "models.acp_auth_ok").into()))),
+                                                                                                        Err(error) => acp_form_msg.set(Some((false, error.to_string()))),
+                                                                                                    },
                                                                                                     Err(error) => acp_form_msg.set(Some((false, js_error_text(error)))),
                                                                                                 }
+                                                                                                settings_busy.set(false);
                                                                                             });
                                                                                         }>{method.name.clone()}</button>
                                                                                 }
@@ -4058,6 +4137,15 @@ pub(super) fn SettingsView(
                                     })}
                                 }.into_view()
                             }}
+                            {move || settings_message.get().map(|(ok, text)| view! {
+                                <div class="settings-status"
+                                    class:ok=move || ok
+                                    class:fail=move || !ok>{text}</div>
+                            })}
+                            <div class="row settings-footer">
+                                <button type="button" disabled=move || settings_busy.get() on:click=move |_| show_settings.set(false)>{move || t(locale.get(), "settings.cancel")}</button>
+                                <button type="button" class="primary" disabled=move || settings_busy.get() on:click=move |ev| save_settings.call(ev)>{move || t(locale.get(), "settings.save")}</button>
+                            </div>
                         </div>
                         }.into_view()
                     }
@@ -5485,6 +5573,30 @@ pub(super) fn SettingsView(
                 }.into_view())}
                 {move || (settings_section.get() == "browser").then(|| view! {
                     <div class="settings-pane settings-pane-list browser-filter-pane" data-testid="browser-url-filters">
+                        <div class="appearance-config-row">
+                            <div>
+                                <strong>{move || t(locale.get(), "browser.auto_launch")}</strong>
+                                <span>{move || t(locale.get(), "browser.auto_launch_hint")}</span>
+                            </div>
+                            <label class="toggle">
+                                <input type="checkbox" data-testid="browser-auto-launch"
+                                    prop:checked=move || browser_auto_launch.get()
+                                    on:change=move |ev| save_browser_auto_launch.call(event_target_checked(&ev)) />
+                                <span class="toggle-track" aria-hidden="true"></span>
+                            </label>
+                        </div>
+                        <div class="appearance-config-row">
+                            <div>
+                                <strong>{move || t(locale.get(), "browser.auto_close_tabs")}</strong>
+                                <span>{move || t(locale.get(), "browser.auto_close_tabs_hint")}</span>
+                            </div>
+                            <label class="toggle">
+                                <input type="checkbox" data-testid="browser-auto-close-tabs"
+                                    prop:checked=move || browser_auto_close_tabs.get()
+                                    on:change=move |ev| save_browser_auto_close_tabs.call(event_target_checked(&ev)) />
+                                <span class="toggle-track" aria-hidden="true"></span>
+                            </label>
+                        </div>
                         <p class="settings-note">{move || t(locale.get(), "browser.filters.hint")}</p>
                         {move || browser_filters_msg.get().map(|(ok, text)| view! {
                             <div class="settings-status" class:ok=ok class:fail=move || !ok>{text}</div>
@@ -6354,6 +6466,49 @@ pub(super) fn SettingsView(
                                         <label>{move || t(locale.get(),"conn.args")}
                                             <input placeholder="arg1 arg2" prop:value=move || conn_form.get().map(|f| f.args.clone()).unwrap_or_default()
                                                 on:input=move |ev| conn_form.update(|o| if let Some(o)=o { o.args = event_target_input(&ev).value(); }) /></label>
+                                        <div class="conn-secret-fields">
+                                            <span class="conn-secret-label">{move || t(locale.get(),"conn.env")}</span>
+                                            {move || conn_form.get().map(|f| f.env).unwrap_or_default().into_iter().enumerate().map(|(idx, field)| {
+                                                let has_value = field.has_value;
+                                                view! {
+                                                    <div class="conn-secret-row">
+                                                        <input placeholder="NAME"
+                                                            prop:value=field.name
+                                                            on:input=move |ev| conn_form.update(|o| if let Some(o)=o {
+                                                                if let Some(row) = o.env.get_mut(idx) {
+                                                                    row.name = event_target_input(&ev).value();
+                                                                }
+                                                            }) />
+                                                        <input type="password" autocomplete="new-password"
+                                                            placeholder=move || if has_value {
+                                                                t(locale.get(), "conn.secret_keep").to_string()
+                                                            } else {
+                                                                t(locale.get(), "conn.secret_value").to_string()
+                                                            }
+                                                            prop:value=field.value
+                                                            on:input=move |ev| conn_form.update(|o| if let Some(o)=o {
+                                                                if let Some(row) = o.env.get_mut(idx) {
+                                                                    row.value = event_target_input(&ev).value();
+                                                                }
+                                                            }) />
+                                                        <button type="button" class="settings-list-remove"
+                                                            title=move || t(locale.get(), "conn.secret_remove")
+                                                            aria-label=move || t(locale.get(), "conn.secret_remove")
+                                                            on:click=move |_| conn_form.update(|o| if let Some(o)=o {
+                                                                if idx < o.env.len() { o.env.remove(idx); }
+                                                            })>{compose_icon("close")}</button>
+                                                    </div>
+                                                }
+                                            }).collect_view()}
+                                            <button type="button" class="settings-add-btn conn-secret-add"
+                                                on:click=move |_| conn_form.update(|o| if let Some(o)=o {
+                                                    o.env.push(ConnSecretField::default());
+                                                })>
+                                                {compose_icon("plus")}
+                                                <span>{move || t(locale.get(), "conn.secret_add_env")}</span>
+                                            </button>
+                                            <p class="hint">{move || t(locale.get(), "conn.secret_hint")}</p>
+                                        </div>
                                     })}
                                     {move || (conn_form_kind.get() == "http").then(|| view!{
                                         <label>{move || t(locale.get(),"conn.url")}
@@ -6371,15 +6526,56 @@ pub(super) fn SettingsView(
                                                 <option value="oauth">{move || t(locale.get(),"conn.auth.oauth")}</option>
                                             </select>
                                         </label>
-                                        <label>{move || t(locale.get(),"conn.headers")}
-                                            <input placeholder=move || if conn_form.get().is_some_and(|form| form.auth == "oauth") {
-                                                    "X-Custom-Header: value"
-                                                } else {
-                                                    "Authorization: Bearer token"
+                                        <div class="conn-secret-fields">
+                                            <span class="conn-secret-label">{move || t(locale.get(),"conn.headers")}</span>
+                                            {move || conn_form.get().map(|f| f.headers).unwrap_or_default().into_iter().enumerate().map(|(idx, field)| {
+                                                let has_value = field.has_value;
+                                                let oauth = conn_form.get().is_some_and(|form| form.auth == "oauth");
+                                                view! {
+                                                    <div class="conn-secret-row">
+                                                        <input placeholder=if oauth { "X-Custom-Header" } else { "Authorization" }
+                                                            prop:value=field.name
+                                                            disabled=move || oauth_authorizing.get()
+                                                            on:input=move |ev| conn_form.update(|o| if let Some(o)=o {
+                                                                if let Some(row) = o.headers.get_mut(idx) {
+                                                                    row.name = event_target_input(&ev).value();
+                                                                }
+                                                            }) />
+                                                        <input type="password" autocomplete="new-password"
+                                                            placeholder=move || if has_value {
+                                                                t(locale.get(), "conn.secret_keep").to_string()
+                                                            } else if oauth {
+                                                                "value".to_string()
+                                                            } else {
+                                                                "Bearer token".to_string()
+                                                            }
+                                                            prop:value=field.value
+                                                            disabled=move || oauth_authorizing.get()
+                                                            on:input=move |ev| conn_form.update(|o| if let Some(o)=o {
+                                                                if let Some(row) = o.headers.get_mut(idx) {
+                                                                    row.value = event_target_input(&ev).value();
+                                                                }
+                                                            }) />
+                                                        <button type="button" class="settings-list-remove"
+                                                            title=move || t(locale.get(), "conn.secret_remove")
+                                                            aria-label=move || t(locale.get(), "conn.secret_remove")
+                                                            disabled=move || oauth_authorizing.get()
+                                                            on:click=move |_| conn_form.update(|o| if let Some(o)=o {
+                                                                if idx < o.headers.len() { o.headers.remove(idx); }
+                                                            })>{compose_icon("close")}</button>
+                                                    </div>
                                                 }
-                                                prop:value=move || conn_form.get().map(|f| f.headers.clone()).unwrap_or_default()
+                                            }).collect_view()}
+                                            <button type="button" class="settings-add-btn conn-secret-add"
                                                 disabled=move || oauth_authorizing.get()
-                                                on:input=move |ev| conn_form.update(|o| if let Some(o)=o { o.headers = event_target_input(&ev).value(); }) /></label>
+                                                on:click=move |_| conn_form.update(|o| if let Some(o)=o {
+                                                    o.headers.push(ConnSecretField::default());
+                                                })>
+                                                {compose_icon("plus")}
+                                                <span>{move || t(locale.get(), "conn.secret_add_header")}</span>
+                                            </button>
+                                            <p class="hint">{move || t(locale.get(), "conn.secret_hint")}</p>
+                                        </div>
                                     })}
                                     {move || (conn_form_kind.get() == "http"
                                         && conn_form.get().is_some_and(|form| form.auth == "oauth")).then(|| view!{
@@ -6619,7 +6815,7 @@ pub(super) fn SettingsView(
                                 format!("{} ({})", t(locale.get(), "settings.nav.connections"), nb + nc)
                             }}</span>
                             <button type="button" class="settings-add-btn" on:click=move |_| {
-                                conn_form.set(Some(ConnForm { kind: "stdio".into(), enabled: true, ..Default::default() }));
+                                conn_form.set(Some(ConnForm::new_connection()));
                                 conn_test_msg.set(None);
                             }>{move || t(locale.get(), "conn.add")}</button>
                         </div>

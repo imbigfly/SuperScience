@@ -10,7 +10,7 @@
 use super::{feishu_card, pbbp2, set_status, ChannelStatus};
 use anyhow::{anyhow, bail, Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -350,6 +350,41 @@ pub struct InboundMessage {
     pub text: Option<String>,
 }
 
+/// Persisted owner identity. The first inbound sender is never written here.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub struct OwnerBinding {
+    pub open_id: String,
+    #[serde(default)]
+    pub bound_at: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SenderDecision {
+    Allow,
+    Reject,
+    /// No owner is bound yet. Record a pending pairing request; do not accept.
+    Unbound,
+}
+
+pub const NON_OWNER_REPLY: &str = "此机器人只响应已绑定的所有者。";
+pub const UNBOUND_REPLY: &str =
+    "尚未绑定所有者。请在桌面端「设置 → 远程接入 → 飞书」确认配对后，再发送消息。";
+
+/// Compare an inbound sender with the desktop-confirmed owner.
+///
+/// An empty owner is never treated as "anyone": the first messenger stays
+/// pending until the desktop confirms or an open_id is entered explicitly.
+pub fn sender_decision(sender_open_id: &str, owner_open_id: Option<&str>) -> SenderDecision {
+    if sender_open_id.is_empty() {
+        return SenderDecision::Reject;
+    }
+    match owner_open_id.map(str::trim).filter(|id| !id.is_empty()) {
+        None => SenderDecision::Unbound,
+        Some(owner) if owner == sender_open_id => SenderDecision::Allow,
+        Some(_) => SenderDecision::Reject,
+    }
+}
+
 /// Normalize an `im.message.receive_v1` event payload. Returns None for other
 /// event types, non-user senders, and group messages that do not @ the bot.
 pub fn parse_message_event(payload: &[u8], bot_open_id: &str) -> Option<InboundMessage> {
@@ -480,6 +515,13 @@ async fn connect_once(
         let rest = rest.clone();
         tokio::spawn(async move {
             while let Some(msg) = event_rx.recv().await {
+                if let Some(reply) = super::authorize_feishu_sender(&app, &msg.sender_open_id).await
+                {
+                    if let Err(e) = rest.send_text(&msg.chat_id, &reply).await {
+                        tracing::warn!(target: "wisp", channel = "feishu", error = %e, "send owner-auth reply failed");
+                    }
+                    continue;
+                }
                 let Some(text) = msg.text.as_deref().filter(|text| !text.is_empty()) else {
                     if let Err(e) = rest
                         .send_text(&msg.chat_id, "暂不支持该消息类型,请发送文本消息。")
@@ -651,6 +693,10 @@ async fn stream_progress_events(
                     super::ProgressEvent::ToolFinished { name, ok, duration_ms } => {
                         state.tool_finished(&name, ok, duration_ms);
                     }
+                    // Feishu interactive approvals remain a separate follow-up.
+                    // Its current worker cannot receive a reply while a turn is
+                    // blocked, so do not project a misleading non-actionable card.
+                    super::ProgressEvent::ApprovalRequested(_) => continue,
                 }
                 dirty = true;
             }
@@ -782,6 +828,53 @@ mod tests {
         }))
         .unwrap();
         assert!(parse_message_event(&echo, "ou_bot").is_none());
+    }
+
+    #[test]
+    fn sender_decision_never_auto_binds_the_first_messenger() {
+        assert_eq!(sender_decision("ou_user", None), SenderDecision::Unbound);
+        assert_eq!(
+            sender_decision("ou_user", Some("")),
+            SenderDecision::Unbound
+        );
+        assert_eq!(
+            sender_decision("ou_user", Some("  ")),
+            SenderDecision::Unbound
+        );
+    }
+
+    #[test]
+    fn sender_decision_allows_only_the_bound_owner() {
+        assert_eq!(
+            sender_decision("ou_owner", Some("ou_owner")),
+            SenderDecision::Allow
+        );
+        assert_eq!(
+            sender_decision("ou_stranger", Some("ou_owner")),
+            SenderDecision::Reject
+        );
+        assert_eq!(
+            sender_decision("", Some("ou_owner")),
+            SenderDecision::Reject
+        );
+    }
+
+    #[test]
+    fn parse_keeps_non_owner_payloads_for_the_auth_gate() {
+        // Auth is a separate step so group @-bot from a stranger still
+        // produces an InboundMessage, then sender_decision rejects it.
+        let mentions = json!([{"key": "@_user_1", "id": {"open_id": "ou_bot"}}]);
+        let payload = event_json("group", "text", "{\"text\":\"@_user_1 hi\"}", mentions);
+        let msg = parse_message_event(&payload, "ou_bot").unwrap();
+        assert_eq!(msg.sender_open_id, "ou_user");
+        assert_eq!(
+            sender_decision(&msg.sender_open_id, Some("ou_owner")),
+            SenderDecision::Reject
+        );
+        assert_eq!(
+            sender_decision(&msg.sender_open_id, Some("ou_user")),
+            SenderDecision::Allow
+        );
     }
 
     #[test]

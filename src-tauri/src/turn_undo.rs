@@ -461,7 +461,9 @@ pub(super) async fn undo_turn(
     }
     if let Some(runtime) = runtime {
         *runtime.agent.lock().await = None;
-        runtime.set_last_seq(target.keep_seq);
+        runtime
+            .sync_last_seq_from_store(&state.store, &frame_id)
+            .await?;
     }
     for change in applied {
         crate::emit_agent_event(

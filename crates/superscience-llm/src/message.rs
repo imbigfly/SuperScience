@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -175,6 +176,29 @@ impl Message {
             model_name: None,
         }
     }
+}
+
+/// Ids answered by a `tool` message and ids requested by assistant `tool_calls`.
+/// Used to repair or sanitize unpaired history before a provider request.
+pub fn tool_call_pairing(messages: &[Message]) -> (HashSet<String>, HashSet<String>) {
+    let mut answered = HashSet::new();
+    let mut requested = HashSet::new();
+    for message in messages {
+        match message.role {
+            Role::Tool => {
+                if let Some(id) = &message.tool_call_id {
+                    answered.insert(id.clone());
+                }
+            }
+            Role::Assistant => {
+                for call in &message.tool_calls {
+                    requested.insert(call.id.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    (answered, requested)
 }
 
 fn now() -> i64 {

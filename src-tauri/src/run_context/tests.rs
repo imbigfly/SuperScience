@@ -2,7 +2,7 @@ use super::*;
 use std::collections::VecDeque;
 #[cfg(unix)]
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 
@@ -1054,6 +1054,9 @@ async fn ssh_launch_failure_stops_after_the_first_attempt() {
         ok_output("__WISP_PREPARED__\n"),
         ok_output(""),
         Err("temporary SSH disconnect".into()),
+        // Post-failure reattach probe: nothing was submitted remotely, so the
+        // original launch error must surface and the Run must fail.
+        ok_output("__WISP_PREPARED__\n"),
     ]));
     runner
         .synthesize_launch_ack
@@ -1103,7 +1106,16 @@ async fn ssh_launch_failure_stops_after_the_first_attempt() {
             .iter()
             .filter(|command| command.script == "launch SSH Run")
             .count(),
-        1
+        1,
+        "the reattach probe must never resend the launch"
+    );
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|command| command.script == "prepare SSH Run")
+            .count(),
+        2,
+        "one prepare before launch, one reattach probe after the failure"
     );
     let _ = std::fs::remove_dir_all(&tmp);
 }
@@ -1169,6 +1181,71 @@ async fn local_launch_timeout_reattaches_when_supervisor_acknowledged() {
     let commands = runner.commands.lock().unwrap();
     assert_eq!(commands.len(), 3);
     assert!(commands[2].script.starts_with("prepare local Run"));
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn ssh_launch_timeout_reattaches_when_supervisor_acknowledged() {
+    let tmp =
+        std::env::temp_dir().join(format!("wisp_ssh_launch_reattach_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+
+    let handle = test_handle("ssh-run", false);
+    let mut run =
+        superscience_store::RunRecord::new("ssh-run", "p", "ssh:gpu", "Remote", "ssh_direct");
+    run.command = Some("long-analysis".into());
+    run.timeout_secs = Some(60);
+    run.remote_handle_json = Some(serde_json::to_string(&handle).unwrap());
+    store.create_run(&run).await.unwrap();
+    assert!(store
+        .activate_run_lifecycle(
+            "ssh-run",
+            superscience_store::RunStatus::Submitted,
+            "owner",
+            360
+        )
+        .await
+        .unwrap());
+
+    // The remote supervisor wrote `_submitted`, but the launch RPC response
+    // was lost to a transport timeout. The reattach probe must observe the
+    // existing handle instead of failing the Run.
+    let runner = ScriptedRunRunner::new(vec![
+        ok_output("__WISP_PREPARED__\n"),
+        Err("launch SSH Run timed out after 20s".into()),
+        ok_output("__WISP_HANDLE__:test-token:4242:999\n"),
+    ]);
+    let mut remote = RemoteRun {
+        run_id: "ssh-run".into(),
+        project_id: "p".into(),
+        frame_id: None,
+        command: "long-analysis".into(),
+        timeout: Duration::from_secs(60),
+        input_refs: Vec::new(),
+        output_specs: Vec::new(),
+        harvest_root: Some(tmp.clone()),
+        handle,
+    };
+
+    let confirmed = ensure_remote_started(&store, "owner", &runner, &mut remote)
+        .await
+        .unwrap();
+
+    assert!(confirmed.is_confirmed());
+    let commands = runner.commands.lock().unwrap();
+    assert_eq!(commands.len(), 3);
+    assert_eq!(commands[1].script, "launch SSH Run");
+    assert_eq!(
+        commands[2].script, "prepare SSH Run",
+        "the probe re-reads the control directory and never relaunches"
+    );
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
@@ -2511,6 +2588,7 @@ struct HarvestFakeRunner {
     manifest: String,
     files: Vec<(String, Vec<u8>)>,
     commands: StdMutex<Vec<RunCommand>>,
+    collect_hold: Option<Duration>,
 }
 
 #[async_trait::async_trait]
@@ -2524,11 +2602,16 @@ impl RunCommandRunner for HarvestFakeRunner {
         let destination = command.args.last().cloned().unwrap_or_default();
         self.commands.lock().unwrap().push(command);
         match program.as_str() {
-            "ssh" => Ok(RunCommandOutput {
-                exit_code: 0,
-                stdout: self.manifest.clone(),
-                stderr: String::new(),
-            }),
+            "ssh" => {
+                if let Some(hold) = self.collect_hold {
+                    tokio::time::sleep(hold).await;
+                }
+                Ok(RunCommandOutput {
+                    exit_code: 0,
+                    stdout: self.manifest.clone(),
+                    stderr: String::new(),
+                })
+            }
             "scp" => {
                 let root = PathBuf::from(destination).join("harvest");
                 for (relative, bytes) in &self.files {
@@ -2606,6 +2689,7 @@ async fn ssh_harvest_downloads_verifies_and_registers_selected_outputs() {
             ("bundles/bundle_1.tar.gz".into(), archive.clone()),
         ],
         commands: StdMutex::new(Vec::new()),
+        collect_hold: None,
     };
     let remote = harvest_test_remote("run-h", &tmp, harvest_specs());
 
@@ -2692,6 +2776,20 @@ async fn ssh_harvest_downloads_verifies_and_registers_selected_outputs() {
         assert!(payload.contains("tar -czf"));
         // Default remote data root derives from the project name ("proj").
         assert!(payload.contains("persist=\"$HOME/superscience/proj/data/artifacts/run-h\""));
+        assert_eq!(
+            collect.args.last().map(String::as_str),
+            Some("sh -s --"),
+            "collect must use a dedicated SSH session"
+        );
+        assert!(
+            crate::ssh_master::eligible_payload(
+                &collect.program,
+                &collect.args,
+                collect.stdin.as_deref(),
+            )
+            .is_none(),
+            "collect must not occupy the shared SSH master slot"
+        );
     }
 
     // A retried harvest re-registers nothing: same versions, same lineage rows.
@@ -2737,6 +2835,7 @@ async fn ssh_harvest_checksum_mismatch_registers_nothing() {
         manifest,
         files: vec![("files/results/out.tsv".into(), table)],
         commands: StdMutex::new(Vec::new()),
+        collect_hold: None,
     };
     let remote = harvest_test_remote(
         "run-bad",
@@ -2788,6 +2887,7 @@ async fn ssh_harvest_collect_error_reports_bundle_guidance() {
         manifest: "__WISP_HARVEST_ERROR__:output glob matched more than 500 files; set bundle:true or narrow the glob to final products\n".into(),
         files: Vec::new(),
         commands: StdMutex::new(Vec::new()),
+        collect_hold: None,
     };
     let remote = harvest_test_remote(
         "run-cap",
@@ -2815,6 +2915,355 @@ async fn ssh_harvest_collect_error_reports_bundle_guidance() {
         .unwrap()
         .harvested_at
         .is_none());
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+fn remote_only_harvest_spec() -> Vec<crate::harvest::OutputSpec> {
+    vec![crate::harvest::OutputSpec {
+        glob: "big/*.bam".into(),
+        kind: "data".into(),
+        residency: crate::harvest::OutputResidency::Remote,
+        logical_key: None,
+        max_file_mb: None,
+        max_total_mb: None,
+        bundle: false,
+    }]
+}
+
+fn remote_only_manifest(run_id: &str) -> String {
+    format!(
+        "__WISP_HARVEST__:remote:0:12345:{}:/home/alice/.wisp-science/artifacts/{run_id}/big/x.bam\n\
+         __WISP_HARVEST_DONE__\n",
+        "ab".repeat(32),
+    )
+}
+
+async fn seed_active_harvest_run(
+    tmp: &Path,
+    run_id: &str,
+    owner: &str,
+    lease_secs: i64,
+) -> superscience_store::Store {
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "proj", &tmp.to_string_lossy())
+        .await
+        .unwrap();
+    store.create_frame("f", "p", "OPERON", "m").await.unwrap();
+    store
+        .upsert_execution_context(&harvest_test_context())
+        .await
+        .unwrap();
+    let mut run =
+        superscience_store::RunRecord::new(run_id, "p", "ssh:gpu", "Remote", "ssh_direct");
+    run.frame_id = Some("f".into());
+    store.create_run(&run).await.unwrap();
+    assert!(store
+        .activate_run_lifecycle(
+            run_id,
+            superscience_store::RunStatus::Running,
+            owner,
+            lease_secs
+        )
+        .await
+        .unwrap());
+    store
+}
+
+/// Models the shared SSH master slot: non-dedicated RPCs serialize, dedicated
+/// collect does not take the lock so poll/cancel can proceed concurrently.
+struct SlotAwareHarvestRunner {
+    manifest: String,
+    slot: tokio::sync::Mutex<()>,
+    collect_started: Arc<tokio::sync::Semaphore>,
+    collect_release: Arc<tokio::sync::Semaphore>,
+    commands: StdMutex<Vec<RunCommand>>,
+}
+
+#[async_trait::async_trait]
+impl RunCommandRunner for SlotAwareHarvestRunner {
+    async fn run(
+        &self,
+        command: RunCommand,
+        _timeout: Duration,
+    ) -> Result<RunCommandOutput, String> {
+        let uses_master = crate::ssh_master::eligible_payload(
+            &command.program,
+            &command.args,
+            command.stdin.as_deref(),
+        )
+        .is_some();
+        let script = command.script.clone();
+        self.commands.lock().unwrap().push(command);
+        if script.contains("collect SSH") {
+            assert!(
+                !uses_master,
+                "collect must bypass the shared SSH master slot"
+            );
+            self.collect_started.add_permits(1);
+            let _permit = self.collect_release.acquire().await.unwrap();
+            return Ok(RunCommandOutput {
+                exit_code: 0,
+                stdout: self.manifest.clone(),
+                stderr: String::new(),
+            });
+        }
+        let _slot = self
+            .slot
+            .try_lock()
+            .map_err(|_| "shared SSH master slot is occupied".to_string())?;
+        if script.contains("poll") {
+            return ok_output(&poll_response("running", "still going", ""));
+        }
+        if script.contains("cancel") {
+            return ok_output("__WISP_CANCEL__:cancelled\n");
+        }
+        Err(format!("unexpected command: {script}"))
+    }
+}
+
+struct RefuseCollectRunner {
+    commands: StdMutex<Vec<RunCommand>>,
+}
+
+#[async_trait::async_trait]
+impl RunCommandRunner for RefuseCollectRunner {
+    async fn run(
+        &self,
+        command: RunCommand,
+        _timeout: Duration,
+    ) -> Result<RunCommandOutput, String> {
+        self.commands.lock().unwrap().push(command);
+        Err("should not collect".into())
+    }
+}
+
+#[tokio::test]
+async fn ssh_harvest_collect_renews_parent_lease_past_expiry() {
+    let tmp = std::env::temp_dir().join(format!("wisp_ssh_harvest_lease_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = seed_active_harvest_run(&tmp, "run-lease", "test-owner", 1).await;
+    let runner = HarvestFakeRunner {
+        manifest: remote_only_manifest("run-lease"),
+        files: Vec::new(),
+        commands: StdMutex::new(Vec::new()),
+        collect_hold: Some(Duration::from_millis(1500)),
+    };
+    let remote = harvest_test_remote("run-lease", &tmp, remote_only_harvest_spec());
+
+    harvest_remote::harvest_ssh_run(&store, &runner, "test-owner", &remote, true)
+        .await
+        .unwrap();
+
+    assert!(store
+        .finish_active_run_owned(
+            "run-lease",
+            "test-owner",
+            superscience_store::RunStatus::Succeeded,
+            Some(0),
+        )
+        .await
+        .unwrap());
+    let collect = runner
+        .commands
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|command| command.program == "ssh")
+        .cloned()
+        .unwrap();
+    assert_eq!(collect.args.last().map(String::as_str), Some("sh -s --"));
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn ssh_harvest_collect_renew_failure_aborts() {
+    let tmp = std::env::temp_dir().join(format!(
+        "wisp_ssh_harvest_renew_fail_{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = seed_active_harvest_run(&tmp, "run-steal", "test-owner", 30).await;
+    let runner = HarvestFakeRunner {
+        manifest: remote_only_manifest("run-steal"),
+        files: Vec::new(),
+        commands: StdMutex::new(Vec::new()),
+        collect_hold: Some(Duration::from_millis(80)),
+    };
+    let remote = harvest_test_remote("run-steal", &tmp, remote_only_harvest_spec());
+
+    let error = harvest_remote::harvest_ssh_run(&store, &runner, "other-owner", &remote, true)
+        .await
+        .unwrap_err();
+
+    assert!(error.contains("lease was lost"), "{error}");
+    assert!(store
+        .get_run("run-steal")
+        .await
+        .unwrap()
+        .unwrap()
+        .harvested_at
+        .is_none());
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn ssh_harvest_collect_does_not_block_same_host_poll_or_cancel() {
+    let tmp = std::env::temp_dir().join(format!("wisp_ssh_harvest_slot_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = seed_harvest_run(&tmp, "run-slot").await;
+    let collect_started = Arc::new(tokio::sync::Semaphore::new(0));
+    let collect_release = Arc::new(tokio::sync::Semaphore::new(0));
+    let runner = Arc::new(SlotAwareHarvestRunner {
+        manifest: remote_only_manifest("run-slot"),
+        slot: tokio::sync::Mutex::new(()),
+        collect_started: collect_started.clone(),
+        collect_release: collect_release.clone(),
+        commands: StdMutex::new(Vec::new()),
+    });
+    let remote = harvest_test_remote("run-slot", &tmp, remote_only_harvest_spec());
+    let harvest_remote_run = remote.clone();
+    let harvest = tokio::spawn({
+        let store = store.clone();
+        let runner = runner.clone();
+        async move {
+            harvest_remote::harvest_ssh_run(
+                &store,
+                runner.as_ref(),
+                "test-owner",
+                &harvest_remote_run,
+                false,
+            )
+            .await
+        }
+    });
+
+    let _started = tokio::time::timeout(Duration::from_secs(2), collect_started.acquire())
+        .await
+        .expect("collect never started")
+        .expect("collect start permit");
+    let poll = tokio::time::timeout(
+        Duration::from_secs(1),
+        poll_remote(runner.as_ref(), &remote.handle),
+    )
+    .await
+    .expect("poll blocked by harvest collect")
+    .unwrap();
+    assert_eq!(poll.state, RemotePollState::Running);
+    let cancel = tokio::time::timeout(
+        Duration::from_secs(1),
+        cancel_remote(runner.as_ref(), &remote.handle),
+    )
+    .await
+    .expect("cancel blocked by harvest collect")
+    .unwrap();
+    assert_eq!(cancel, RemoteCancel::Cancelled);
+
+    collect_release.add_permits(1);
+    harvest.await.unwrap().unwrap();
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn finish_remote_run_errors_when_lease_is_lost() {
+    let tmp = std::env::temp_dir().join(format!("wisp_ssh_finish_lease_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = seed_active_harvest_run(&tmp, "run-fin", "owner-a", 30).await;
+    let runner = RefuseCollectRunner {
+        commands: StdMutex::new(Vec::new()),
+    };
+    let remote = harvest_test_remote("run-fin", &tmp, Vec::new());
+
+    let error = finish_remote_run(
+        &store,
+        &runner,
+        "owner-b",
+        &remote,
+        superscience_store::RunStatus::Succeeded,
+        Some(0),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(error.contains("lease was lost"), "{error}");
+    assert_eq!(
+        store.get_run("run-fin").await.unwrap().unwrap().status,
+        superscience_store::RunStatus::Running
+    );
+    assert!(runner.commands.lock().unwrap().is_empty());
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[tokio::test]
+async fn auto_harvest_skips_collect_when_already_harvested() {
+    let tmp = std::env::temp_dir().join(format!("wisp_ssh_harvest_skip_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = seed_active_harvest_run(&tmp, "run-skip", "test-owner", 30).await;
+    let runner = HarvestFakeRunner {
+        manifest: remote_only_manifest("run-skip"),
+        files: Vec::new(),
+        commands: StdMutex::new(Vec::new()),
+        collect_hold: None,
+    };
+    let remote = harvest_test_remote("run-skip", &tmp, remote_only_harvest_spec());
+
+    harvest_finished_remote(&store, &runner, "test-owner", &remote, "f")
+        .await
+        .unwrap();
+    assert_eq!(
+        runner
+            .commands
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|command| command.program == "ssh")
+            .count(),
+        1
+    );
+
+    harvest_finished_remote(&store, &runner, "test-owner", &remote, "f")
+        .await
+        .unwrap();
+    assert_eq!(
+        runner
+            .commands
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|command| command.program == "ssh")
+            .count(),
+        1,
+        "second auto harvest must not collect again"
+    );
+
+    let refuse = RefuseCollectRunner {
+        commands: StdMutex::new(Vec::new()),
+    };
+    finish_remote_run(
+        &store,
+        &refuse,
+        "test-owner",
+        &remote,
+        superscience_store::RunStatus::Succeeded,
+        Some(0),
+    )
+    .await
+    .unwrap();
+    assert!(
+        refuse.commands.lock().unwrap().is_empty(),
+        "finish after harvested_at must skip collect"
+    );
+    assert_eq!(
+        store.get_run("run-skip").await.unwrap().unwrap().status,
+        superscience_store::RunStatus::Succeeded
+    );
 
     let _ = std::fs::remove_dir_all(&tmp);
 }
@@ -2970,6 +3419,7 @@ async fn ssh_harvest_uses_stored_local_results_dir_and_data_root() {
         manifest,
         files: vec![("files/results/out.tsv".into(), table.clone())],
         commands: StdMutex::new(Vec::new()),
+        collect_hold: None,
     };
     let remote = harvest_test_remote(
         "run-p",
@@ -4173,6 +4623,7 @@ async fn download_run_files_registers_one_row_per_selection() {
             ("bundles/bundle_1.tar.gz".into(), archive.clone()),
         ],
         commands: StdMutex::new(Vec::new()),
+        collect_hold: None,
     };
     let remote = harvest_test_remote("run-sel", &tmp, Vec::new());
 

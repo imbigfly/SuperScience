@@ -12,11 +12,15 @@ pub mod method_search;
 pub mod orchestration;
 pub mod output;
 pub mod provenance;
+pub mod session_locks;
 pub mod subagent;
 pub mod system_prompt;
 
 pub use agent::{agent_loop, agent_loop_continue, AgentLoopOutcome, GuidanceQueue};
-pub use context::{ContextManager, ContextToolDetail, ContextUsage, ContextUsageDetails};
+pub use context::{
+    repair_unpaired_tool_calls, tool_call_pairing, unpaired_tool_call_ids, ContextManager,
+    ContextToolDetail, ContextUsage, ContextUsageDetails, UNPAIRED_ON_LOAD_RESULT,
+};
 pub use delegation::{
     degraded_delivery_marker, is_degraded_delivery, AgentArtifact, AgentAuthorizationSnapshot,
     AgentBackend, AgentBudget, AgentDelegationLineage, AgentDelegationRequest,
@@ -99,7 +103,7 @@ impl Agent {
         vision_cfg: Option<ProviderConfig>,
         pii_firewall: bool,
     ) -> Self {
-        Self::with_pii_terms(
+        let mut agent = Self::new_without_session_file(
             cfg,
             skills,
             memory,
@@ -110,10 +114,46 @@ impl Agent {
             vision_cfg,
             pii_firewall,
             Vec::new(),
-        )
+        );
+        agent.ctx.load(&agent.session_path);
+        agent
     }
 
     pub fn with_pii_terms(
+        cfg: ProviderConfig,
+        skills: Arc<SkillIndex>,
+        memory: Arc<MemoryManager>,
+        root: PathBuf,
+        max_context: usize,
+        max_iter: usize,
+        memory_enabled: bool,
+        vision_cfg: Option<ProviderConfig>,
+        pii_firewall: bool,
+        pii_custom_terms: Vec<superscience_llm::CustomTerm>,
+    ) -> Self {
+        let mut agent = Self::new_without_session_file(
+            cfg,
+            skills,
+            memory,
+            root,
+            max_context,
+            max_iter,
+            memory_enabled,
+            vision_cfg,
+            pii_firewall,
+            pii_custom_terms,
+        );
+        agent.ctx.load(&agent.session_path);
+        agent
+    }
+
+    /// Desktop constructor: empty context, no project session.json load.
+    ///
+    /// CLI/headless should keep using [`Self::new`], which still hydrates the
+    /// project-level session file. Desktop turns load SQLite history afterward
+    /// and must fail closed if that load fails — leftover CLI or other-session
+    /// messages in the project file must never enter the model context.
+    pub fn new_without_session_file(
         cfg: ProviderConfig,
         skills: Arc<SkillIndex>,
         memory: Arc<MemoryManager>,
@@ -149,14 +189,12 @@ impl Agent {
             )),
             max_context,
         )));
-        let session_path = root.join(".superscience").join("session.json");
-        let mut ctx = ContextManager::new(max_context);
-        ctx.load(&session_path);
+        let session_path = superscience_paths::session_json_path(&root);
         Self {
             provider,
             vision_provider,
             tools,
-            ctx,
+            ctx: ContextManager::new(max_context),
             root,
             max_iter,
             session_path,
@@ -336,6 +374,17 @@ impl Agent {
     }
 }
 
+/// Map a desktop SQLite `load_messages` result into a fail-closed turn error.
+///
+/// Desktop agents are constructed with [`Agent::new_without_session_file`], so
+/// a leftover `.superscience/session.json` is never in context. Callers must not
+/// fall back to that file when this returns `Err`.
+pub fn require_sqlite_session_messages<E: std::fmt::Display>(
+    loaded: Result<Vec<superscience_llm::Message>, E>,
+) -> Result<Vec<superscience_llm::Message>, String> {
+    loaded.map_err(|error| format!("Failed to load session messages from SQLite: {error}"))
+}
+
 // --- memory tools ---
 
 pub struct SearchMemoryTool {
@@ -426,5 +475,111 @@ mod memory_tool_tests {
             "queries": [{ "text": "cohort", "kind": "exact", "extra": true }]
         }))
         .is_err());
+    }
+}
+
+#[cfg(test)]
+mod session_ctor_tests {
+    use super::*;
+    use superscience_llm::ProviderConfig;
+
+    fn leftover_root(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "wisp-session-ctor-{label}-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(superscience_paths::project_dir(&root)).unwrap();
+        root
+    }
+
+    fn leftover_cfg() -> ProviderConfig {
+        ProviderConfig::openai("http://127.0.0.1:9/v1", "sk-test", "test-model")
+    }
+
+    fn write_leftover_session(root: &std::path::Path) {
+        let mut ctx = ContextManager::new(1_000);
+        ctx.append_user("leftover from another session");
+        ctx.save(&superscience_paths::session_json_path(root));
+    }
+
+    fn construct(root: PathBuf, without_session_file: bool) -> Agent {
+        let skills = Arc::new(SkillIndex::load(&[]));
+        let memory = Arc::new(MemoryManager::new(&root));
+        if without_session_file {
+            Agent::new_without_session_file(
+                leftover_cfg(),
+                skills,
+                memory,
+                root,
+                8_000,
+                4,
+                false,
+                None,
+                false,
+                Vec::new(),
+            )
+        } else {
+            Agent::new(
+                leftover_cfg(),
+                skills,
+                memory,
+                root,
+                8_000,
+                4,
+                false,
+                None,
+                false,
+            )
+        }
+    }
+
+    #[test]
+    fn new_loads_project_session_json() {
+        let root = leftover_root("cli");
+        write_leftover_session(&root);
+        let agent = construct(root.clone(), false);
+        assert_eq!(agent.ctx.messages.len(), 1);
+        assert!(
+            agent.ctx.messages[0]
+                .content
+                .as_text()
+                .contains("leftover from another session"),
+            "CLI/headless Agent::new must still hydrate .superscience/session.json"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn new_without_session_file_ignores_leftover_session_json() {
+        let root = leftover_root("desktop");
+        write_leftover_session(&root);
+        let agent = construct(root.clone(), true);
+        assert!(
+            agent.ctx.is_empty(),
+            "desktop constructor must not read leftover .superscience/session.json"
+        );
+        assert_eq!(
+            agent.session_path,
+            superscience_paths::session_json_path(&root),
+            "session_path stays available for an explicit later save"
+        );
+        assert!(agent.session_path.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn require_sqlite_session_messages_fails_closed() {
+        let loaded: Result<Vec<superscience_llm::Message>, &str> =
+            Ok(vec![superscience_llm::Message::user("from store")]);
+        let ok = require_sqlite_session_messages(loaded);
+        assert_eq!(ok.unwrap().len(), 1);
+
+        let err = require_sqlite_session_messages::<&str>(Err("disk full")).unwrap_err();
+        assert!(
+            err.contains("Failed to load session messages from SQLite"),
+            "desktop turns must surface a clear SQLite failure: {err}"
+        );
+        assert!(err.contains("disk full"), "{err}");
     }
 }

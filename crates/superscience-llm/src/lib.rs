@@ -20,7 +20,8 @@ pub mod routed;
 pub mod scripted;
 
 pub use message::{
-    Completion, Content, FunctionCall, ImageUrl, Message, Part, Role, ToolCall, ToolSchema, Usage,
+    tool_call_pairing, Completion, Content, FunctionCall, ImageUrl, Message, Part, Role, ToolCall,
+    ToolSchema, Usage,
 };
 pub use privacy::maybe_wrap as maybe_wrap_pii_firewall;
 pub use privacy::maybe_wrap_with_terms as maybe_wrap_pii_firewall_with_terms;

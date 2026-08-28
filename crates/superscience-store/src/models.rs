@@ -1264,6 +1264,21 @@ pub struct ResearchGraph {
     pub edges: Vec<ResearchEdge>,
 }
 
+/// Automatic harvest should skip collect/transfer once outputs are registered.
+pub fn skip_auto_harvest(harvested_at: Option<i64>) -> bool {
+    harvested_at.is_some()
+}
+
+/// `renew_run_lifecycle` / `finish_active_run_owned` return false when the
+/// caller no longer holds a live lease. `message` is the hard-error text.
+pub fn require_lifecycle_hold(held: bool, message: &str) -> Result<(), String> {
+    if held {
+        Ok(())
+    } else {
+        Err(message.to_string())
+    }
+}
+
 impl RunRecord {
     pub fn new(
         id: impl Into<String>,
@@ -1303,6 +1318,10 @@ impl RunRecord {
             cleanup_error: None,
             logs_path: None,
         }
+    }
+
+    pub fn is_harvested(&self) -> bool {
+        skip_auto_harvest(self.harvested_at)
     }
 
     pub(crate) fn validate(&self) -> Result<()> {

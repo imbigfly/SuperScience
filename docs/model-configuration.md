@@ -50,6 +50,14 @@ Choosing a level saves it as the profile's default — it applies to every
 conversation using that model and is not scoped to the current conversation.
 Choosing "default" clears the value so the provider decides.
 
+The built-in Reader used by `#` session references inherits that profile's
+model and reasoning effort, but the first retrieval pass is capped at 2048
+output tokens. If hidden reasoning fills that budget, or the JSON lands in a
+thinking field instead of visible content, Reader retries once with the
+profile's full output budget and parses JSON from either field. If structured
+retrieval still fails, the cited transcript is injected in truncated form so
+the main turn can still use the reference.
+
 Model profiles describe model access and capabilities for the **built-in SuperScience
 agent**. External coding agents (Codex / Claude via ACP) are configured under
 **Settings → Models → ACP Agents** — see [ACP Agents](acp-agents.md). Do not put
@@ -163,7 +171,10 @@ entry selects the Anthropic protocol and sets its endpoint suffix to
 OpenAI-compatible reasoning streams are normalized into one reasoning channel.
 Empty `content` placeholders sent alongside Alibaba/DashScope
 `reasoning_content` chunks are ignored, so a continuous thought process remains
-one disclosure in the conversation.
+one disclosure in the conversation. If a compatible relay resends the full
+`content` or `reasoning_content` snapshot on every SSE chunk instead of a
+fragment, SuperScience keeps only the new suffix so the assembled reply and live UI
+events stay linear.
 
 If a provider ends a turn after returning only reasoning tokens—without visible
 text or a tool call—SuperScience reports a resumable error instead of showing the turn
@@ -178,7 +189,7 @@ HTTP status at 200 or appends a `[DONE]` marker. Partial output is not committed
 as a final answer, completed tool results remain available, and follow-up
 questions are not generated for that interrupted turn.
 
-**Settings → General → Automatically compact long conversations** is enabled by
+**Settings → Session → Automatically compact long conversations** is enabled by
 default. Following mangopi-cli's model-boundary approach, SuperScience checks the
 estimated context before every native-agent model call, including later calls
 after large tool results and ephemeral host/reviewer injections. At 80% it

@@ -23,6 +23,7 @@ mod session_modals;
 mod settings_view;
 mod sidebar;
 mod text;
+mod trajectory;
 mod user_center;
 mod window_titlebar;
 
@@ -30,18 +31,19 @@ use agent_workflows::{
     agent_workflows_panel, refresh_agent_resources, refresh_agent_workflows, AgentPanelState,
 };
 use app_overlays::{
-    ContextRecoveryOverlay, ContextRecoveryOverlayState, ExternalLinkConfirm, ProjectExportPrompt,
-    ProjectExportPromptState, ProjectTransferOverlay, ProjectTransferOverlayState,
-    SshConnectivityOverlay, SshConnectivityOverlayState, TurnMemoryOverlay, TurnMemoryOverlayState,
-    UpdateCheckOverlay, UpdateCheckOverlayState,
+    advance_browser_tab_cleanup, present_browser_tab_cleanup, BrowserTabCleanupOverlay,
+    BrowserTabCleanupOverlayState, ContextRecoveryOverlay, ContextRecoveryOverlayState,
+    ExternalLinkConfirm, ProjectExportPrompt, ProjectExportPromptState, ProjectTransferOverlay,
+    ProjectTransferOverlayState, SshConnectivityOverlay, SshConnectivityOverlayState,
+    TurnMemoryOverlay, TurnMemoryOverlayState, UpdateCheckOverlay, UpdateCheckOverlayState,
 };
 use bindings::{
-    attach_chat_autoscroll, cancel_saved_marks_apply, clear_selection, close_mcp_app,
-    force_chat_bottom, invoke, invoke_checked, is_mac, is_windows, jump_chat_to_item,
-    jump_chat_to_last_user, jump_chat_to_user, listen, listen_current_window,
-    listen_native_file_drop, native_drop_in_composer, open_external_url, pasted_image_count,
+    add_workspace_file_to_motif, attach_chat_autoscroll, cancel_saved_marks_apply, clear_selection,
+    close_mcp_app, force_chat_bottom, invoke, invoke_checked, is_mac, is_windows,
+    jump_chat_to_item, jump_chat_to_user, listen, listen_current_window, listen_native_file_drop,
+    native_drop_in_composer, open_browser_extension_page, open_external_url, pasted_image_count,
     preserve_chat_prepend_position, preview_selection, restore_chat_session_scroll,
-    schedule_chat_follow, set_saved_marks, CHAT_SCROLLER_ID, CHAT_THREAD_ID,
+    schedule_chat_follow, set_saved_marks, set_window_title, CHAT_SCROLLER_ID, CHAT_THREAD_ID,
 };
 use context_menu::{ContextMenuPortal, CtxMenu};
 use dto::*;
@@ -82,10 +84,11 @@ use text::{
     opens_in_system_browser, parent_path, runtime_language,
     user_message_presentation,
 };
+use trajectory::TrajectoryOverlay;
 use user_center::{refresh_tctoken_session, TctokenSession, UserCenterOverlay};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use window_titlebar::WindowTitlebar;
+use window_titlebar::{app_window_title, WindowTitlebar};
 
 /// Stable substring of the backend's missing-key error (`src-tauri` `send_message`),
 /// used to turn that failure into an actionable "open Settings" prompt.
@@ -358,6 +361,7 @@ fn App() -> impl IntoView {
     });
     let input = create_rw_signal(String::new());
     let attachments = create_rw_signal::<Vec<ComposerAttachment>>(vec![]);
+    let motif_selection = create_rw_signal(None::<MotifSelection>);
     let uploading = create_rw_signal(false);
     let remote_file_uploading = create_rw_signal(false);
     let files_drag_over = create_rw_signal(false);
@@ -474,6 +478,43 @@ fn App() -> impl IntoView {
         }
     });
     let sessions = create_rw_signal::<Vec<SessionInfo>>(vec![]);
+    // Trajectory (轨迹) modal: the fetched per-session snapshot plus lightweight
+    // live cells for the in-flight turn. The Done/Error refetch reconciles the
+    // live cells with exact backend data.
+    let trajectory_open = create_rw_signal(false);
+    let trajectory_snapshot = create_rw_signal::<Option<TrajectorySnapshotDto>>(None);
+    let trajectory_live = create_rw_signal::<Vec<TrajectoryCellDto>>(vec![]);
+    let fetch_trajectory: Rc<dyn Fn(String)> = Rc::new(move |frame_id: String| {
+        spawn_local(async move {
+            let arg = to_value(&serde_json::json!({ "frameId": frame_id })).unwrap();
+            if let Ok(value) = invoke_checked("load_session_trajectory", arg).await {
+                if let Ok(snap) = serde_wasm_bindgen::from_value::<TrajectorySnapshotDto>(value) {
+                    // A slow fetch must not overwrite a newer session's view.
+                    if active_session.get_untracked().as_deref() == Some(snap.frame_id.as_str()) {
+                        trajectory_snapshot.set(Some(snap));
+                    }
+                }
+            }
+        });
+    });
+    // Fetch when the modal opens and on session change; never let one
+    // session's timeline bleed into another.
+    let trajectory_session = create_rw_signal::<Option<String>>(None);
+    let fetch_trajectory_fx = fetch_trajectory.clone();
+    create_effect(move |_| {
+        let session = active_session.get();
+        let open = trajectory_open.get();
+        if trajectory_session.get_untracked() != session {
+            trajectory_session.set(session.clone());
+            trajectory_snapshot.set(None);
+            trajectory_live.set(vec![]);
+        }
+        if open {
+            if let Some(id) = session {
+                fetch_trajectory_fx(id);
+            }
+        }
+    });
     let active_branch_state = create_rw_signal::<Option<String>>(None);
     create_effect(move |_| {
         let active = active_session.get();
@@ -662,6 +703,24 @@ fn App() -> impl IntoView {
             })
         }
     });
+    let context_usage_flash = create_rw_signal(false);
+    {
+        let last_used = Rc::new(Cell::new(None::<usize>));
+        create_effect(move |_| {
+            let Some(snapshot) = active_context_usage.get() else {
+                last_used.set(None);
+                return;
+            };
+            let previous = last_used.replace(Some(snapshot.used));
+            if previous.is_some_and(|previous| snapshot.used < previous) {
+                context_usage_flash.set(true);
+                set_timeout(
+                    move || context_usage_flash.set(false),
+                    std::time::Duration::from_millis(700),
+                );
+            }
+        });
+    }
     create_effect(move |_| {
         let _ = active_session.get();
         context_usage_open.set(false);
@@ -811,6 +870,25 @@ fn App() -> impl IntoView {
     // Live web retrieval failed because the Chrome extension is disconnected.
     // Root-owned so Escape can dismiss it without first focusing the banner.
     let browser_offline_notice = create_rw_signal::<Option<BrowserOfflineNotice>>(None);
+    // A transcript records the connection state at tool-call time. Recheck the
+    // live bridge once whenever a notice appears so a reconnect does not leave
+    // a stale banner on screen or revive one after a session reload.
+    create_effect(move |_| {
+        let Some(notice) = browser_offline_notice.get() else {
+            return;
+        };
+        spawn_local(async move {
+            let value = invoke("extension_connected", JsValue::UNDEFINED).await;
+            if value.as_bool().unwrap_or(false) {
+                set_browser_offline_notice(browser_offline_notice, &notice.frame_id, None);
+            }
+        });
+    });
+    let browser_tab_cleanup = create_rw_signal(None::<BrowserTabCleanupPrompt>);
+    let browser_tab_cleanup_queue = create_rw_signal(Vec::<BrowserTabCleanupPrompt>::new());
+    let browser_tab_cleanup_selected = create_rw_signal(HashSet::<(String, i64)>::new());
+    let browser_tab_cleanup_busy = create_rw_signal(false);
+    let browser_tab_cleanup_error = create_rw_signal(None::<String>);
     // "不再提醒更新" opt-out; loaded on startup, mirrored by the settings toggle.
     let update_check_enabled = create_rw_signal(true);
     // Set when a send fails because no API key is configured, so the status bar
@@ -1202,8 +1280,6 @@ fn App() -> impl IntoView {
         })
     });
     let artifact_count = create_memo(move |_| artifacts.with(Vec::len));
-    let artifact_render_fingerprint =
-        create_memo(move |_| artifacts.with(|artifacts| artifacts_fingerprint(artifacts)));
     let notebook_count = create_memo(move |_| notebook_cells.with(Vec::len));
     let provenance_count = create_memo(move |_| provenance_rows.with(Vec::len));
     let highlight_count = create_memo(move |_| {
@@ -2142,6 +2218,9 @@ fn App() -> impl IntoView {
     let approval_cb = approval_pending;
     let conversation_outlines_cb = conversation_outlines;
     let transcript_projection_epoch_cb = transcript_projection_epoch;
+    let trajectory_live_cb = trajectory_live;
+    let trajectory_open_cb = trajectory_open;
+    let fetch_trajectory_cb = fetch_trajectory.clone();
     // Desktop notification for task status (#327). The backend drops it while
     // any app window is focused or when disabled in settings, so callers just
     // fire on every done/error/approval event.
@@ -2182,30 +2261,25 @@ fn App() -> impl IntoView {
     let show_right_cb = show_right;
     let mcp_apps_cb = mcp_apps;
     let show_mcp_app = Callback::new(
-        move |(frame_id, presentation_id, payload, replace): (
-            String,
-            String,
-            serde_json::Value,
-            bool,
-        )| {
-            let instance_id = mcp_app_instance_id(&frame_id, &presentation_id, &payload);
+        move |(frame_id, payload, replace): (String, serde_json::Value, bool)| {
+            let instance_id = mcp_app_instance_id(&frame_id, &payload);
             if !replace && mcp_apps_cb.with_untracked(|apps| apps.contains_key(&instance_id)) {
                 return;
             }
             let Ok(payload_json) = serde_json::to_string(&payload) else {
                 return;
             };
-            let tab = CenterFileTab::new(
-                instance_id.clone(),
-                mcp_app_title(&payload),
-                "mcp_app".into(),
-            );
+            let title = mcp_app_title(&payload);
             mcp_apps_cb.update(|apps| {
                 apps.insert(instance_id.clone(), payload_json);
             });
             center_files_cb.update(|files| {
                 if !files.iter().any(|file| file.path == instance_id) {
-                    files.push(tab);
+                    files.push(CenterFileTab::new(
+                        instance_id.clone(),
+                        title,
+                        "mcp_app".into(),
+                    ));
                 }
             });
             center_file_cb.set(Some(instance_id));
@@ -2327,6 +2401,22 @@ fn App() -> impl IntoView {
                 });
             }
         };
+        // Lightweight trajectory cells for the in-flight turn. Kept minimal on
+        // purpose: the Done/Error refetch replaces them with exact backend
+        // data, so these only bridge the live view while a turn runs.
+        let trajectory_push = |frame_id: &str, cell: TrajectoryCellDto| {
+            if active_cb.get_untracked().as_deref() == Some(frame_id) {
+                trajectory_live_cb.update(|cells| cells.push(cell));
+            }
+        };
+        let trajectory_settle = |frame_id: &str| {
+            if active_cb.get_untracked().as_deref() == Some(frame_id) {
+                trajectory_live_cb.set(vec![]);
+                if trajectory_open_cb.get_untracked() {
+                    fetch_trajectory_cb(frame_id.to_string());
+                }
+            }
+        };
         match ev {
             AgentEvent::CompactionStarted { frame_id, .. } => {
                 if active_cb.get_untracked().as_deref() == Some(frame_id.as_str()) {
@@ -2340,6 +2430,13 @@ fn App() -> impl IntoView {
                 set_pet_activity(&frame_id, "running");
                 flush_now();
                 let outline_text = text.clone();
+                let live_user_summary: String = text
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .take(160)
+                    .collect();
                 let model = session_model_label(
                     &models_cb.get_untracked(),
                     &session_models_cb.get_untracked(),
@@ -2361,6 +2458,15 @@ fn App() -> impl IntoView {
                         response_at: None,
                     });
                 });
+                if active_cb.get_untracked().as_deref() == Some(frame_id.as_str()) {
+                    // A user message opens a fresh turn: reset the live cells.
+                    trajectory_live_cb.set(vec![TrajectoryCellDto {
+                        kind: "user".to_string(),
+                        summary: live_user_summary,
+                        ts: Some(now_ms() as i64),
+                        ..Default::default()
+                    }]);
+                }
                 refresh_transcript_projections(&frame_id);
             }
             AgentEvent::MessageBoundary { frame_id, seq } => {
@@ -2418,6 +2524,25 @@ fn App() -> impl IntoView {
                         }
                     });
                 }
+                if active_cb.get_untracked().as_deref() == Some(frame_id.as_str()) {
+                    // One live assistant cell per contiguous text run, seeded
+                    // from the first delta; later deltas only stream into the
+                    // chat bubble.
+                    let seed_assistant = trajectory_live_cb.with_untracked(|cells| {
+                        cells.last().is_none_or(|cell| cell.kind != "assistant")
+                    });
+                    if seed_assistant {
+                        trajectory_push(
+                            &frame_id,
+                            TrajectoryCellDto {
+                                kind: "assistant".to_string(),
+                                summary: delta.trim().chars().take(160).collect(),
+                                ts: Some(now_ms() as i64),
+                                ..Default::default()
+                            },
+                        );
+                    }
+                }
                 queue(frame_id, PendingDelta::Text(delta));
             }
             AgentEvent::Reasoning { frame_id, delta } => {
@@ -2433,6 +2558,19 @@ fn App() -> impl IntoView {
                 finish_compaction(&frame_id);
                 set_pet_activity(&frame_id, "review");
                 flush_now();
+                trajectory_push(
+                    &frame_id,
+                    TrajectoryCellDto {
+                        kind: "tool".to_string(),
+                        summary: if preview.is_empty() {
+                            name.clone()
+                        } else {
+                            format!("{name} · {preview}")
+                        },
+                        ts: Some(now_ms() as i64),
+                        ..Default::default()
+                    },
+                );
                 route_items(active_cb, items_cb, transcripts_cb, &frame_id, |v| {
                     // The plan and question tools have no call card: their
                     // results carry the whole body, and that lands as a card.
@@ -2453,6 +2591,9 @@ fn App() -> impl IntoView {
                     );
                 });
                 refresh_transcript_projections(&frame_id);
+                if active_cb.get_untracked().as_deref() == Some(frame_id.as_str()) {
+                    schedule_chat_follow();
+                }
             }
             AgentEvent::ToolResult {
                 frame_id,
@@ -2540,11 +2681,29 @@ fn App() -> impl IntoView {
                     };
                     set_browser_offline_notice(browser_offline_cb, &frame_id, notice);
                 }
+                if active_cb.get_untracked().as_deref() == Some(frame_id.as_str()) {
+                    trajectory_live_cb.update(|cells| {
+                        if let Some(cell) = cells
+                            .iter_mut()
+                            .rev()
+                            .find(|cell| cell.kind == "tool" && cell.ok.is_none())
+                        {
+                            cell.ok = Some(ok);
+                            cell.is_error = !ok;
+                            if event_ms > 0 {
+                                cell.duration_ms = Some(event_ms as i64);
+                            }
+                        }
+                    });
+                }
                 refresh_transcript_projections(&frame_id);
+                if active_cb.get_untracked().as_deref() == Some(frame_id.as_str()) {
+                    schedule_chat_follow();
+                }
             }
             AgentEvent::ToolPresentation {
                 frame_id,
-                presentation_id,
+                presentation_id: _,
                 presentation_kind,
                 payload,
             } => {
@@ -2567,7 +2726,7 @@ fn App() -> impl IntoView {
                 } else if presentation_kind == "mcp_app"
                     && active_cb.get_untracked().as_deref() == Some(frame_id.as_str())
                 {
-                    show_mcp_app.call((frame_id, presentation_id, payload, true));
+                    show_mcp_app.call((frame_id, payload, true));
                 }
             }
             AgentEvent::Usage {
@@ -2707,6 +2866,7 @@ fn App() -> impl IntoView {
                     });
                 }
                 refresh_transcript_projections(&frame_id);
+                trajectory_settle(&frame_id);
                 approval_cb.update(|s| {
                     s.remove(&frame_id);
                 });
@@ -2830,6 +2990,7 @@ fn App() -> impl IntoView {
                     });
                 }
                 refresh_transcript_projections(&frame_id);
+                trajectory_settle(&frame_id);
                 approval_cb.update(|s| {
                     s.remove(&frame_id);
                 });
@@ -3073,6 +3234,47 @@ fn App() -> impl IntoView {
     std::mem::forget(confirm_cb);
     spawn_local(async move {
         let _ = listen("confirm-request", &confirm_js).await;
+    });
+
+    let browser_cleanup_pending = browser_tab_cleanup;
+    let browser_cleanup_queue = browser_tab_cleanup_queue;
+    let browser_cleanup_selected = browser_tab_cleanup_selected;
+    let browser_cleanup_error = browser_tab_cleanup_error;
+    let browser_cleanup_cb = Closure::wrap(Box::new(move |payload: JsValue| {
+        if let Ok(prompt) = serde_wasm_bindgen::from_value::<BrowserTabCleanupPrompt>(payload) {
+            present_browser_tab_cleanup(
+                browser_cleanup_pending,
+                browser_cleanup_queue,
+                browser_cleanup_selected,
+                browser_cleanup_error,
+                prompt,
+            );
+        }
+    }) as Box<dyn FnMut(JsValue)>);
+    let browser_cleanup_js = browser_cleanup_cb
+        .as_ref()
+        .unchecked_ref::<js_sys::Function>()
+        .clone();
+    std::mem::forget(browser_cleanup_cb);
+    spawn_local(async move {
+        let _ = listen("browser-tab-cleanup", &browser_cleanup_js).await;
+        if let Ok(value) =
+            invoke_checked("list_pending_browser_tab_cleanups", JsValue::UNDEFINED).await
+        {
+            if let Ok(prompts) =
+                serde_wasm_bindgen::from_value::<Vec<BrowserTabCleanupPrompt>>(value)
+            {
+                for prompt in prompts {
+                    present_browser_tab_cleanup(
+                        browser_cleanup_pending,
+                        browser_cleanup_queue,
+                        browser_cleanup_selected,
+                        browser_cleanup_error,
+                        prompt,
+                    );
+                }
+            }
+        }
     });
     let acp_permission_items = items;
     let acp_permission_active = active_session;
@@ -3475,6 +3677,7 @@ fn App() -> impl IntoView {
             queue_seq.set(qid);
             input.set(String::new());
             attachments.set(vec![]);
+            motif_selection.set(None);
             composer_references.set(vec![]);
             composer_quotes.set(vec![]);
             picker_mode.set(None);
@@ -3523,6 +3726,7 @@ fn App() -> impl IntoView {
         };
         input.set(String::new());
         attachments.set(vec![]);
+        motif_selection.set(None);
         composer_references.set(vec![]);
         composer_quotes.set(vec![]);
         picker_mode.set(None);
@@ -4885,7 +5089,7 @@ fn App() -> impl IntoView {
 
     let remove_specialist_fn = move |id: String| model_settings.remove_specialist(id);
 
-    let new_session = move |_| {
+    let start_new_session = Callback::new(move |_: ()| {
         if demo_mode.get_untracked() {
             return;
         }
@@ -4915,7 +5119,35 @@ fn App() -> impl IntoView {
             refresh_session_history();
             focus_composer();
         });
-    };
+    });
+    let new_session = move |_| start_new_session.call(());
+    let compact_from_usage = Callback::new(move |_: ()| {
+        let Some(id) = active_session.get_untracked() else {
+            return;
+        };
+        if busy.get_untracked() {
+            return;
+        }
+        context_usage_open.set(false);
+        spawn_local(async move {
+            let args = to_value(&SendMessageArgs {
+                session_id: Some(id),
+                message: "/compact".into(),
+                attachments: vec![],
+                references: vec![],
+                resume: false,
+                acp_agent_id: None,
+                guide: None,
+                replace: None,
+            })
+            .unwrap();
+            let _ = invoke_checked("send_message", args).await;
+        });
+    });
+    let new_session_from_usage = Callback::new(move |_: ()| {
+        context_usage_open.set(false);
+        start_new_session.call(());
+    });
 
     let start_issue_report = {
         let items = items;
@@ -5174,12 +5406,7 @@ fn App() -> impl IntoView {
                     );
                     for presentation in presentations {
                         if presentation.presentation_kind == "mcp_app" {
-                            show_mcp_app.call((
-                                id.clone(),
-                                presentation.presentation_id,
-                                presentation.payload,
-                                false,
-                            ));
+                            show_mcp_app.call((id.clone(), presentation.payload, false));
                         }
                     }
                     restore_chat_session_scroll(&id);
@@ -5774,6 +6001,7 @@ fn App() -> impl IntoView {
             // Open the share preview over the current transcript; thinking
             // rows are listed but deselected (hidden from the export).
             "share" => open_share.call(()),
+            "trajectory" => trajectory_open.set(true),
             _ => {}
         }
         true
@@ -6555,6 +6783,35 @@ fn App() -> impl IntoView {
     let runtime_object_states =
         create_rw_signal::<HashMap<String, RuntimeObjectState>>(HashMap::new());
     let run_clock = create_rw_signal(now_secs());
+    // The transfer tray needs the shared clock only while the active session
+    // has an active or briefly lingering transfer. Once the last card expires,
+    // this effect reruns with `clock_active = false` and drops its run_clock
+    // dependency; historical progress records then stay idle between run-list
+    // updates instead of rebuilding the tray every second.
+    let transfer_tray_clock_active = create_rw_signal(false);
+    let transfer_tray_now = create_rw_signal(run_clock.get_untracked());
+    create_effect(move |_| {
+        let clock_active = transfer_tray_clock_active.get();
+        let now = if clock_active {
+            run_clock.get()
+        } else {
+            run_clock.get_untracked()
+        };
+        let has_visible_transfer = active_session.get().is_some_and(|session_id| {
+            run_records.with(|records| {
+                records.iter().any(|run| {
+                    run.frame_id.as_deref() == Some(session_id.as_str())
+                        && run_progress(run).is_some_and(|progress| {
+                            transfer_progress_visible(&progress, &run.status, now)
+                        })
+                })
+            })
+        });
+        transfer_tray_now.set(now);
+        if clock_active != has_visible_transfer {
+            transfer_tray_clock_active.set(has_visible_transfer);
+        }
+    });
     let show_add_host = create_rw_signal(false);
     let host_alias = create_rw_signal(String::new());
     let host_hostname = create_rw_signal(String::new());
@@ -6774,27 +7031,27 @@ fn App() -> impl IntoView {
         });
     });
 
+    let activate_terminal_session = Callback::new(move |session: TerminalSessionSummary| {
+        let session_id = session.id.clone();
+        terminal_sessions.update(|sessions| {
+            if let Some(existing) = sessions.iter_mut().find(|item| item.id == session_id) {
+                *existing = session;
+            } else {
+                sessions.push(session);
+            }
+        });
+        active_terminal_id.set(Some(session_id));
+        terminal_panel_open.set(true);
+        terminal_add_menu_open.set(false);
+    });
+
     let open_terminal_for_context = Callback::new(move |context_id: String| {
         spawn_local(async move {
             let arg = to_value(&serde_json::json!({ "contextId": context_id })).unwrap();
             match invoke_checked("open_terminal", arg).await {
                 Ok(value) => {
                     match serde_wasm_bindgen::from_value::<TerminalSessionSummary>(value) {
-                        Ok(session) => {
-                            let session_id = session.id.clone();
-                            terminal_sessions.update(|sessions| {
-                                if let Some(existing) =
-                                    sessions.iter_mut().find(|item| item.id == session_id)
-                                {
-                                    *existing = session;
-                                } else {
-                                    sessions.push(session);
-                                }
-                            });
-                            active_terminal_id.set(Some(session_id));
-                            terminal_panel_open.set(true);
-                            terminal_add_menu_open.set(false);
-                        }
+                        Ok(session) => activate_terminal_session.call(session),
                         Err(error) => show_toast(&error.to_string()),
                     }
                 }
@@ -6870,6 +7127,28 @@ fn App() -> impl IntoView {
     });
     refresh_runtimes(runtime_infos);
     refresh_runs(run_records, locale);
+    {
+        // UI liveness heartbeat for the backend watchdog: a webview whose
+        // renderer died (process crash / WASM panic) stops beating and gets
+        // reloaded; see `run_ui_watchdog` in src-tauri/src/lib.rs.
+        let beat = Closure::wrap(Box::new(move || {
+            spawn_local(async move {
+                let _ = invoke("ui_heartbeat", JsValue::UNDEFINED).await;
+            });
+        }) as Box<dyn FnMut()>);
+        if let Some(window) = web_sys::window() {
+            let _ = window.set_interval_with_callback_and_timeout_and_arguments_0(
+                beat.as_ref().unchecked_ref(),
+                5_000,
+            );
+            let _ = window.add_event_listener_with_callback("focus", beat.as_ref().unchecked_ref());
+            if let Some(document) = window.document() {
+                let _ = document
+                    .add_event_listener_with_callback("visibilitychange", beat.as_ref().unchecked_ref());
+            }
+        }
+        beat.forget();
+    }
     {
         let ticks = Cell::new(0_u8);
         let refresh = Closure::wrap(Box::new(move || {
@@ -7107,6 +7386,36 @@ fn App() -> impl IntoView {
             ) {
                 let _ = attach_ready_path(attachments, payload);
                 focus_composer();
+                return;
+            }
+            if action == "addWorkspaceFileToMotif" {
+                if let Some(instance_id) = active_motif_instance(&mcp_apps.get_untracked()) {
+                    spawn_local(async move {
+                        match add_workspace_file_to_motif(&instance_id, &payload).await {
+                            Ok(_) => show_toast(&tf(
+                                locale.get_untracked(),
+                                "motif.added_file",
+                                &[("name", payload.rsplit(['/', '\\']).next().unwrap_or(&payload))],
+                            )),
+                            Err(error) => show_warning_toast(&js_error_text(error)),
+                        }
+                    });
+                } else {
+                    let _ = attach_ready_path(attachments, payload.clone());
+                    let filename = payload.rsplit(['/', '\\']).next().unwrap_or(&payload);
+                    input.update(|draft| {
+                        if !draft.trim().is_empty() {
+                            draft.push_str("\n\n");
+                        }
+                        draft.push_str(&tf(
+                            locale.get_untracked(),
+                            "motif.open_and_add_prompt",
+                            &[("name", filename)],
+                        ));
+                    });
+                    show_warning_toast(&t(locale.get_untracked(), "motif.open_first"));
+                    focus_composer();
+                }
                 return;
             }
             if action == "registerWorkspaceArtifact" {
@@ -7552,6 +7861,26 @@ fn App() -> impl IntoView {
             external_link_confirm.set(None);
             return;
         }
+        if browser_tab_cleanup.get().is_some() {
+            ev.prevent_default();
+            if !browser_tab_cleanup_busy.get() {
+                if let Some(prompt) = browser_tab_cleanup.get_untracked() {
+                    let turn_id = prompt.turn_id.clone();
+                    spawn_local(async move {
+                        let arg = to_value(&serde_json::json!({ "turnId": turn_id })).unwrap();
+                        let _ = invoke_checked("dismiss_browser_tab_cleanup", arg).await;
+                    });
+                }
+                advance_browser_tab_cleanup(
+                    browser_tab_cleanup,
+                    browser_tab_cleanup_queue,
+                    browser_tab_cleanup_selected,
+                    browser_tab_cleanup_error,
+                    browser_tab_cleanup_busy,
+                );
+            }
+            return;
+        }
         if turn_memory_proposal.get().is_some() {
             ev.prevent_default();
             if !turn_memory_busy.get() {
@@ -7568,6 +7897,13 @@ fn App() -> impl IntoView {
                 context_recovery_dialog.set(None);
                 context_recovery_error.set(None);
             }
+            return;
+        }
+        // The model switch confirm renders above the export/link/memory
+        // dialogs and everything below; Escape cancels the switch only.
+        if model_switch_confirm.get().is_some() {
+            ev.prevent_default();
+            model_switch_confirm.set(None);
             return;
         }
         if project_export_prompt.get().is_some() {
@@ -7588,6 +7924,11 @@ fn App() -> impl IntoView {
         if share_draft.get().is_some() {
             ev.prevent_default();
             share_draft.set(None);
+            return;
+        }
+        if trajectory_open.get() {
+            ev.prevent_default();
+            trajectory_open.set(false);
             return;
         }
         if let Some(modal) = update_check_modal.get() {
@@ -9035,6 +9376,23 @@ fn App() -> impl IntoView {
             || (project_info.get().is_some() && !show_projects.get() && !demo_mode.get())
     });
     let home_page = Signal::derive(move || show_projects.get());
+    let window_title = Signal::derive(move || {
+        if scratch_open.get() {
+            app_window_title(Some("Scratch"))
+        } else if show_projects.get() {
+            app_window_title(None)
+        } else if demo_mode.get() {
+            app_window_title(Some(&t(locale.get(), "projects.example")))
+        } else {
+            app_window_title(project_info.get().as_ref().map(|p| p.name.as_str()))
+        }
+    });
+    create_effect(move |_| {
+        let title = window_title.get();
+        spawn_local(async move {
+            set_window_title(&title).await;
+        });
+    });
     let shortcut_action = palette_action.clone();
     window_event_listener(ev::keydown, move |ev| {
         let Some(ev) = ev.dyn_ref::<web_sys::KeyboardEvent>() else {
@@ -9193,7 +9551,7 @@ fn App() -> impl IntoView {
     view! {
         {is_windows().then(|| view! {
             <WindowTitlebar locale=locale has_current_project=has_current_project
-                home=home_page on_action=palette_action.clone() />
+                home=home_page brand=window_title on_action=palette_action.clone() />
         })}
         <ActionPalette open=action_palette_open has_current_project=has_current_project
             on_action=palette_action />
@@ -9231,6 +9589,63 @@ fn App() -> impl IntoView {
         />
         <ProjectTransferOverlay state=ProjectTransferOverlayState { locale, project_transfer } />
         <ExternalLinkConfirm locale=locale pending=external_link_confirm />
+        <BrowserTabCleanupOverlay
+            state=BrowserTabCleanupOverlayState {
+                locale,
+                pending: browser_tab_cleanup,
+                selected: browser_tab_cleanup_selected,
+                busy: browser_tab_cleanup_busy,
+                error: browser_tab_cleanup_error,
+            }
+            on_keep=Callback::new(move |_| {
+                if browser_tab_cleanup_busy.get_untracked() {
+                    return;
+                }
+                let Some(prompt) = browser_tab_cleanup.get_untracked() else {
+                    return;
+                };
+                browser_tab_cleanup_busy.set(true);
+                spawn_local(async move {
+                    let arg = to_value(&serde_json::json!({ "turnId": prompt.turn_id })).unwrap();
+                    let _ = invoke_checked("dismiss_browser_tab_cleanup", arg).await;
+                    advance_browser_tab_cleanup(
+                        browser_tab_cleanup,
+                        browser_tab_cleanup_queue,
+                        browser_tab_cleanup_selected,
+                        browser_tab_cleanup_error,
+                        browser_tab_cleanup_busy,
+                    );
+                });
+            })
+            on_close=Callback::new(move |tabs: Vec<BrowserTabCleanupItem>| {
+                if browser_tab_cleanup_busy.get_untracked() {
+                    return;
+                }
+                let Some(prompt) = browser_tab_cleanup.get_untracked() else {
+                    return;
+                };
+                browser_tab_cleanup_busy.set(true);
+                spawn_local(async move {
+                    let arg = to_value(&serde_json::json!({
+                        "turnId": prompt.turn_id,
+                        "tabs": tabs,
+                    })).unwrap();
+                    match invoke_checked("confirm_browser_tab_cleanup", arg).await {
+                        Ok(_) => advance_browser_tab_cleanup(
+                            browser_tab_cleanup,
+                            browser_tab_cleanup_queue,
+                            browser_tab_cleanup_selected,
+                            browser_tab_cleanup_error,
+                            browser_tab_cleanup_busy,
+                        ),
+                        Err(err) => {
+                            browser_tab_cleanup_busy.set(false);
+                            browser_tab_cleanup_error.set(Some(js_error_text(err)));
+                        }
+                    }
+                });
+            })
+        />
         <TurnMemoryOverlay
             state=TurnMemoryOverlayState {
                 locale,
@@ -9450,6 +9865,11 @@ fn App() -> impl IntoView {
                 })}
                 <div class="center-tabs" role="tablist">
                     <button type="button" class="center-tab" class:active=move || center_file.get().is_none()
+                        title=move || if demo_mode.get() {
+                            t(locale.get(), "projects.example").into()
+                        } else {
+                            center_conversation_title.get()
+                        }
                         on:click=move |_| center_file.set(None)>
                         <span class="center-tab-label">{move || if demo_mode.get() {
                             t(locale.get(), "projects.example").into()
@@ -9468,7 +9888,7 @@ fn App() -> impl IntoView {
                             view! {
                                 <div class="center-tab-wrap">
                                     <button type="button" class="center-tab" class:active=move || center_file.get().as_ref() == Some(&path)
-                                        title=path.clone() data-center-path=path.clone()
+                                        title=label.clone() data-center-path=path.clone()
                                         on:click=move |_| center_file.set(Some(select_path.clone()))>
                                         <span class="center-tab-label">{label}</span>
                                     </button>
@@ -9548,6 +9968,13 @@ fn App() -> impl IntoView {
                     disabled=move || demo_mode.get() || !can_share.get()
                     on:click=move |_| open_share.call(())>
                     {compose_icon("share")}
+                </button>
+                <button type="button" class="icon-btn" data-testid="trajectory-topbar"
+                    title=move || t(locale.get(), "trajectory.topbar")
+                    aria-label=move || t(locale.get(), "trajectory.topbar")
+                    class:active=move || trajectory_open.get()
+                    on:click=move |_| trajectory_open.set(true)>
+                    {compose_icon("timeline")}
                 </button>
                 <div class="inbox-wrap">
                     <button class="icon-btn"
@@ -9784,7 +10211,21 @@ fn App() -> impl IntoView {
                         </div>
                         {if is_mcp_app {
                             mcp_apps.get().get(&path).cloned().map(|payload_json| view! {
-                                <McpAppPreview instance_id=path.clone() payload_json=payload_json />
+                                <McpAppPreview
+                                    instance_id=path.clone()
+                                    payload_json=payload_json
+                                    on_selection=Callback::new(move |selection: MotifSelection| {
+                                        let block = selection.composer_text();
+                                        input.update(|draft| {
+                                            if !draft.trim().is_empty() {
+                                                draft.push_str("\n\n");
+                                            }
+                                            draft.push_str(&block);
+                                        });
+                                        motif_selection.set(Some(selection));
+                                        focus_composer();
+                                    })
+                                />
                             }).into_view()
                         } else {
                             view! {
@@ -10183,7 +10624,6 @@ fn App() -> impl IntoView {
                     <For
                         each=move || {
                             use std::hash::{Hash, Hasher};
-                            let arts_fp = artifact_render_fingerprint.get();
                             let busy_now = busy.get();
                             // `load_session` deliberately swaps the visible rows before
                             // publishing their session id. Carry the id in every keyed row
@@ -10346,12 +10786,6 @@ fn App() -> impl IntoView {
                                     } else {
                                         list[i].fingerprint()
                                     };
-                                    // Assistant markdown embeds artifact chips (index + label).
-                                    if !streaming_assistant
-                                        && matches!(&list[i], ChatItem::Assistant { .. })
-                                    {
-                                        fp ^= arts_fp;
-                                    }
                                     fp ^= (commentary as u64) << 63;
                                     fp ^= (compact_assistant as u64) << 62;
                                     fp ^= timestamp.unwrap_or_default() as u64;
@@ -10443,13 +10877,6 @@ fn App() -> impl IntoView {
                                         ChatItem::Reasoning(String::new())
                                     } else {
                                         items.with_untracked(|list| list[i].clone())
-                                    };
-                                    let arts = if matches!(&item, ChatItem::Assistant { .. })
-                                        && !compact_assistant
-                                    {
-                                        artifacts.get_untracked()
-                                    } else {
-                                        Vec::new()
                                     };
                                     let on_resume = Callback::new(resume_turn);
                                     let class = if commentary {
@@ -10582,7 +11009,7 @@ fn App() -> impl IntoView {
                                                     <StreamingAssistantMessage
                                                         items=items
                                                         source_item=i
-                                                        artifacts=arts.clone()
+                                                        artifacts=artifacts.get()
                                                         on_artifact=on_artifact_select
                                                         on_file=on_file_link
                                                     />
@@ -10598,7 +11025,7 @@ fn App() -> impl IntoView {
                                                 }.into_view()
                                             } else {
                                                 render_item(
-                                                    i, &item, timestamp, &arts, on_artifact_select, on_file_link,
+                                                    i, &item, timestamp, artifacts, on_artifact_select, on_file_link,
                                                     run_records, run_clock.read_only(), busy.read_only(), compact_assistant,
                                                     active_acp_agent_id.get().is_none()
                                                         && !matches!(active_branch_state.get_untracked().as_deref(), Some("merged" | "orphaned")),
@@ -10789,8 +11216,10 @@ fn App() -> impl IntoView {
             </div>
             // Static element; scroll.js toggles `.visible` — no reactive rebuild.
             <button type="button" id="chat-jump-pill" class="chat-jump-pill"
-                on:click=move |_| jump_chat_to_last_user()>
-                {move || t(locale.get(), "chat.jump_last_user")}
+                aria-label=move || t(locale.get(), "chat.jump_bottom")
+                on:click=move |_| force_chat_bottom()>
+                {compose_icon("chevron-down")}
+                {move || t(locale.get(), "chat.jump_bottom")}
             </button>
             {move || {
                 let rows = conversation_outline.get();
@@ -10920,10 +11349,10 @@ fn App() -> impl IntoView {
             </div>
 
             {move || active_session.get().and_then(|session_id| {
-                // Finished transfers linger briefly for confirmation. Reading
-                // the shared clock makes this tray recompute after run polling
-                // stops, so settled cards cannot remain over the conversation.
-                let now = run_clock.get();
+                // Finished transfers linger briefly for confirmation. The
+                // clock-driving effect above stops updating this signal after
+                // the final card expires.
+                let now = transfer_tray_now.get();
                 let transfers = run_records.with(|records| {
                     records
                         .iter()
@@ -11014,6 +11443,33 @@ fn App() -> impl IntoView {
                                             send.call(ComposerSendAction::Normal);
                                         }>{t(locale.get(), "browser.offline.retry")}</button>
                                     <button type="button"
+                                        on:click=move |_| {
+                                            spawn_local(async move {
+                                                let reply = open_browser_extension_page().await;
+                                                let setup = from_value::<BrowserExtensionSetup>(reply)
+                                                    .unwrap_or_default();
+                                                let path = setup
+                                                    .extension_path
+                                                    .filter(|path| !path.trim().is_empty());
+                                                let has_path = path.is_some();
+                                                // Keep the remaining manual steps to one paste:
+                                                // the extension path goes onto the clipboard.
+                                                if let Some(path) = path {
+                                                    if let Some(window) = web_sys::window() {
+                                                        let _ = wasm_bindgen_futures::JsFuture::from(
+                                                            window.navigator().clipboard().write_text(&path),
+                                                        )
+                                                        .await;
+                                                    }
+                                                }
+                                                if setup.opened && has_path {
+                                                    show_actionable_toast(&t(locale.get_untracked(), "browser.offline.setup_done"));
+                                                } else {
+                                                    show_actionable_warning_toast(&t(locale.get_untracked(), "browser.offline.setup_failed"));
+                                                }
+                                            });
+                                        }>{t(locale.get(), "browser.offline.setup")}</button>
+                                    <button type="button"
                                         on:click=move |_| browser_offline_notice.set(None)>{t(locale.get(), "browser.offline.dismiss")}</button>
                                 </div>
                             </section>
@@ -11059,6 +11515,9 @@ fn App() -> impl IntoView {
                                         on_header_dblclick=on_context_usage_header_dblclick
                                         on_dock=on_context_usage_dock
                                         on_resize_start=on_context_usage_resize_start
+                                        on_compact=compact_from_usage
+                                        on_new_session=new_session_from_usage
+                                        compact_disabled=Signal::derive(move || busy.get())
                                     />
                                 </div>
                             }
@@ -11096,6 +11555,29 @@ fn App() -> impl IntoView {
                                     on:click=move |_| feedback_context.set(None)>{compose_icon("close")}</button>
                             </div>
                         </div>
+                    })}
+                    {move || motif_selection.get().map(|selection| {
+                        let selection_label = selection.feature_name.as_deref()
+                            .filter(|name| !name.trim().is_empty())
+                            .map(|name| format!("{} · {name}", selection.record_name.clone()))
+                            .unwrap_or_else(|| selection.record_name.clone());
+                        view! { <div class="composer-attachments composer-reference-chips" data-testid="motif-selection-reference">
+                            <div class="composer-attachment-row composer-reference-card motif-selection">
+                                <span class="composer-attachment-icon">{compose_icon("dna")}</span>
+                                <span class="composer-attachment-copy">
+                                    <span class="composer-attachment ready">{selection_label}</span>
+                                    <span class="composer-attachment-meta">{format!("{}-{} · {} bp", selection.start, selection.end, selection.length_bp())}</span>
+                                </span>
+                                <button type="button" class="composer-attachment-remove"
+                                    title=move || t(locale.get(), "composer.remove_attachment")
+                                    aria-label=move || t(locale.get(), "composer.remove_attachment")
+                                    on:click=move |_| {
+                                        let block = selection.composer_text();
+                                        input.update(|draft| *draft = draft.replace(&block, "").trim().to_string());
+                                        motif_selection.set(None);
+                                    }>{compose_icon("close")}</button>
+                            </div>
+                        </div> }
                     })}
                     {move || (!attachments.get().is_empty()).then(|| view! {
                         <div class="composer-attachments">
@@ -11987,12 +12469,32 @@ fn App() -> impl IntoView {
                             {move || active_context_usage.get().map(|snapshot| {
                                 let pct = context_percent(snapshot.used, snapshot.max);
                                 let gauge_angle = -90.0 + pct as f64 * 0.9;
+                                let tone = context_usage_tone(snapshot.used, snapshot.max);
+                                let percent_label = context_usage_percent_label(snapshot.used, snapshot.max);
+                                let tooltip = context_usage_tooltip(&snapshot, locale.get());
+                                let aria = if snapshot.max == 0 {
+                                    t(locale.get(), "context_usage.open_unknown")
+                                } else {
+                                    tf(
+                                        locale.get(),
+                                        "context_usage.open_pct",
+                                        &[("pct", &pct.to_string())],
+                                    )
+                                };
+                                let tone_warn = tone == ContextUsageTone::Warn;
+                                let tone_danger = tone == ContextUsageTone::Danger;
+                                let tone_unknown = tone == ContextUsageTone::Unknown;
                                 view! {
                                     <button type="button" class="context-usage-trigger"
+                                        class:is-warn=tone_warn
+                                        class:is-danger=tone_danger
+                                        class:is-unknown=tone_unknown
+                                        class:is-compacted=move || context_usage_flash.get()
                                         data-testid="context-usage-trigger"
+                                        data-tone=tone.as_str()
                                         style=format!("--context-gauge-angle:{gauge_angle:.1}deg")
-                                        title=move || t(locale.get(), "context_usage.open")
-                                        aria-label=move || t(locale.get(), "context_usage.open")
+                                        title=tooltip
+                                        aria-label=aria
                                         aria-expanded=move || context_usage_open.get().to_string()
                                         aria-controls="context-usage-panel"
                                         on:click=move |event| {
@@ -12017,6 +12519,7 @@ fn App() -> impl IntoView {
                                             }
                                         }>
                                         {compose_icon("gauge")}
+                                        <span class="context-usage-pct" data-testid="context-usage-percent">{percent_label}</span>
                                     </button>
                                 }
                             })}
@@ -12963,7 +13466,7 @@ fn App() -> impl IntoView {
                                                 None
                                             };
                                             view! {
-                                                <div class="rp-view">
+                                                <div class="rp-view" data-preview-kind=cur.kind>
                                                     <div class="rp-view-head">
                                                         <span class=format!("rp-badge {}", cur.kind)>{cur.kind.to_string()}</span>
                                                         <span class="rp-view-name">{cur.name.clone()}</span>
@@ -14110,6 +14613,9 @@ fn App() -> impl IntoView {
                             on_header_dblclick=on_context_usage_header_dblclick
                             on_dock=on_context_usage_dock
                             on_resize_start=on_context_usage_resize_start
+                            on_compact=compact_from_usage
+                            on_new_session=new_session_from_usage
+                            compact_disabled=Signal::derive(move || busy.get())
                         />
                     }
                 })
@@ -14663,6 +15169,7 @@ fn App() -> impl IntoView {
                     probing_context_id.set(None);
                 });
             })
+            open_terminal_session=activate_terminal_session
         />
 
         {(!is_windows()).then(|| view! {
@@ -14708,6 +15215,13 @@ fn App() -> impl IntoView {
             locale=locale
             draft=share_draft
         />
+        <TrajectoryOverlay
+            open=trajectory_open
+            snapshot=trajectory_snapshot
+            live=trajectory_live
+            busy=busy
+            session_id=active_session
+        />
         <CapabilitiesOverlay
             locale=locale show_capabilities=show_capabilities
             bootstrap=bootstrap caps=caps busy=busy open_settings_section=open_capability_settings
@@ -14735,8 +15249,30 @@ fn App() -> impl IntoView {
     }
 }
 
+/// `console_error_panic_hook` plus one deliberate downgrade: leptos 0.6
+/// runs a `create_effect`'s first pass in a microtask bound to its owner, and
+/// an owner disposed in between makes `with_owner` panic with
+/// `OwnerDisposed`. Keyed rows (streaming turns, artifact-card rebuilds) hit
+/// that race routinely; under release `panic = "abort"` it used to take the
+/// whole renderer down — a dead window with the backend still running. A
+/// disposed-owner effect has nothing left to update, so the correct handling
+/// is to drop it with a console warning instead of aborting.
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(move |info| {
+        let message = format!("{info}");
+        if message.contains("OwnerDisposed") {
+            web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&format!(
+                "dropped reactive effect for a disposed owner: {message}"
+            )));
+            return;
+        }
+        // Everything else keeps the standard hook behavior (error + stack).
+        console_error_panic_hook::hook(info);
+    }));
+}
+
 pub fn main() {
-    console_error_panic_hook::set_once();
+    install_panic_hook();
     let is_pet_window = window().location().search().ok().is_some_and(|query| {
         query
             .split('&')

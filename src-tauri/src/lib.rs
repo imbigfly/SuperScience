@@ -55,6 +55,7 @@ mod library_commands;
 mod mcp_bridge;
 pub use mcp_bridge::run_mcp_bridge_cli;
 mod mcp_oauth;
+mod mcp_secrets;
 mod memory_commands;
 mod method_search;
 mod method_search_coordinator;
@@ -109,6 +110,8 @@ mod ssh_master;
 mod storage_prefs;
 mod tctoken;
 mod terminal_sessions;
+mod trajectory;
+mod trajectory_export;
 mod turn_memory;
 mod turn_undo;
 mod video_generation_tool;
@@ -269,8 +272,11 @@ enum AgentEvent {
     },
 }
 
-#[derive(Serialize, Clone)]
-struct ConfirmRequest {
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+pub(crate) struct ConfirmRequest {
+    /// Opaque, one-shot capability used by text-only remote approval surfaces.
+    /// The desktop continues to route by `frame_id` for backward compatibility.
+    approval_id: String,
     frame_id: String,
     message: String,
     /// Tool name when known (`python`, `r`, `shell`, …).
@@ -279,6 +285,23 @@ struct ConfirmRequest {
     /// Code / command preview for the inline approval card.
     #[serde(default)]
     preview: String,
+}
+
+impl ConfirmRequest {
+    fn new(frame_id: &str, message: String, tool: impl Into<String>, preview: String) -> Self {
+        Self {
+            approval_id: Uuid::new_v4().simple().to_string(),
+            frame_id: frame_id.to_string(),
+            message,
+            tool: tool.into(),
+            preview,
+        }
+    }
+}
+
+fn emit_confirm_request(app: &AppHandle, request: &ConfirmRequest) {
+    let _ = app.emit("confirm-request", request.clone());
+    channels::publish_approval_request(request);
 }
 
 type ConfirmSender = tokio::sync::oneshot::Sender<superscience_tools::ConfirmDecision>;
@@ -300,12 +323,14 @@ async fn request_image_resize_confirmation(
     message: String,
 ) -> bool {
     let (tx, rx) = tokio::sync::oneshot::channel();
+    let request = ConfirmRequest::new(frame_id, message, "image_resize", String::new());
     state.confirms.lock().unwrap().insert(
         frame_id.to_string(),
         PendingConfirm {
             tx,
             grant: None,
             project_id: project_id.to_string(),
+            request: request.clone(),
         },
     );
     state
@@ -314,15 +339,7 @@ async fn request_image_resize_confirmation(
         .unwrap()
         .insert(frame_id.to_string());
     state.device_hub.mark_needs_user(frame_id, Some(project_id));
-    let _ = app.emit(
-        "confirm-request",
-        ConfirmRequest {
-            frame_id: frame_id.to_string(),
-            message,
-            tool: "image_resize".into(),
-            preview: String::new(),
-        },
-    );
+    emit_confirm_request(app, &request);
     let approved = receive_confirm_decision(rx).await.approved();
     state.confirms.lock().unwrap().remove(frame_id);
     state.awaiting_confirm.lock().unwrap().remove(frame_id);
@@ -334,6 +351,7 @@ struct PendingConfirm {
     tx: ConfirmSender,
     grant: Option<ApprovalGrantKey>,
     project_id: String,
+    request: ConfirmRequest,
 }
 
 type ConfirmMap = Arc<StdMutex<HashMap<String, PendingConfirm>>>;
@@ -465,6 +483,22 @@ fn approval_grant_key(message: &str) -> Option<ApprovalGrantKey> {
     })
 }
 
+pub(crate) const BUNDLED_DEV_MCP_CONNECTOR_ID: &str = "dev-mcp";
+pub(crate) const BUNDLED_BIO_MCP_CONNECTOR_ID: &str = "mcp_bio";
+
+/// Always-allow key for an MCP App `tools/call`. Empty connector ids are
+/// refused so bundled sources cannot share a `_:{tool}` grant.
+fn mcp_app_approval_grant_key(connector_id: &str, tool: &str) -> Option<ApprovalGrantKey> {
+    let connector = connector_id.trim();
+    if connector.is_empty() {
+        return None;
+    }
+    Some(ApprovalGrantKey {
+        kind: "mcp_app_tool".into(),
+        target: format!("{connector}:{tool}"),
+    })
+}
+
 #[cfg(any(target_os = "macos", test))]
 fn should_hide_app_on_macos_close(window_label: &str, app_is_exiting: bool) -> bool {
     !app_is_exiting && window_label == "main"
@@ -484,7 +518,7 @@ fn parse_confirm_payload(message: &str) -> (String, String) {
         return ("image_resize".to_string(), rest.to_string());
     }
     if let Some(rest) = message.strip_prefix("Run tool '") {
-        if let Some((tool, _)) = rest.split_once("'?") {
+        if let Some((tool, _)) = rest.split_once('\'') {
             return (tool.to_string(), String::new());
         }
     }
@@ -618,20 +652,23 @@ enum McpTransport {
         #[serde(default)]
         args: Vec<String>,
         #[serde(default)]
-        env: Vec<(String, String)>,
+        env: Vec<superscience_dto::McpSecretEntry>,
         #[serde(default)]
         cwd: Option<String>,
     },
     Http {
         url: String,
         #[serde(default)]
-        headers: Vec<(String, String)>,
+        headers: Vec<superscience_dto::McpSecretEntry>,
         #[serde(default)]
         auth: McpHttpAuth,
     },
 }
 
 /// A user-configured MCP server connection.
+///
+/// Header/env values are write-only. Persisted JSON and list payloads contain
+/// names and `has_value` only; actual values live in the OS keyring.
 #[derive(Serialize, Deserialize, Clone)]
 struct McpConnection {
     id: String,
@@ -2214,6 +2251,367 @@ async fn update_mcp_app_context(
     Ok(())
 }
 
+/// Hard ceiling on a single MCP App `tools/call` argument JSON blob.
+// Live scientific viewers can legitimately receive bounded sequence payloads
+// (Motif caps text input at 2,000,000 bytes). Keep this below the result cap
+// while allowing the host's explicit local-file import path.
+const MAX_MCP_APP_ARGUMENT_BYTES: usize = 3 * 1024 * 1024;
+/// Hard ceiling on a single MCP App `tools/call` result JSON blob.
+const MAX_MCP_APP_RESULT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_MCP_APP_TOOL_NAME_BYTES: usize = 256;
+/// Host-side App `tools/call` ceiling, independent of the 120s transport
+/// timeout. Expiry fails this iframe call only; it does not tear down stdio.
+const MCP_APP_TOOL_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const MCP_APP_STALE_INSTANCE_ERROR: &str =
+    "stale-instance: the MCP App is no longer bound to a live MCP server";
+
+pub(crate) async fn invoke_mcp_app_server_tool(
+    server: &dyn superscience_tools::McpAppServer,
+    name: &str,
+    arguments: &serde_json::Value,
+    timeout: std::time::Duration,
+) -> Result<serde_json::Value, String> {
+    match tokio::time::timeout(timeout, server.call_tool(name, arguments)).await {
+        Ok(result) => result,
+        Err(_) => Err(format!(
+            "MCP App tool '{name}' timed out after {}s",
+            timeout.as_secs()
+        )),
+    }
+}
+
+fn audit_mcp_app_tool(
+    event: &str,
+    instance_id: &str,
+    frame_id: &str,
+    connector_id: &str,
+    tool: &str,
+    duration_ms: u64,
+    error_code: &str,
+) {
+    tracing::info!(
+        audit_event = event,
+        invocation_source = "mcp_app",
+        session = frame_id,
+        app_instance = instance_id,
+        connector = connector_id,
+        tool = tool,
+        duration_ms = duration_ms,
+        error_code = error_code,
+    );
+}
+
+async fn request_mcp_app_tool_confirmation(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    frame_id: &str,
+    project_id: &str,
+    message: String,
+    tool: &str,
+    preview: String,
+    grant: Option<ApprovalGrantKey>,
+) -> superscience_tools::ConfirmDecision {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let request = ConfirmRequest::new(frame_id, message, tool, preview);
+    state.confirms.lock().unwrap().insert(
+        frame_id.to_string(),
+        PendingConfirm {
+            tx,
+            grant,
+            project_id: project_id.to_string(),
+            request: request.clone(),
+        },
+    );
+    state
+        .awaiting_confirm
+        .lock()
+        .unwrap()
+        .insert(frame_id.to_string());
+    state.device_hub.mark_needs_user(frame_id, Some(project_id));
+    emit_confirm_request(app, &request);
+    let decision = receive_confirm_decision(rx).await;
+    state.confirms.lock().unwrap().remove(frame_id);
+    state.awaiting_confirm.lock().unwrap().remove(frame_id);
+    state.device_hub.resolve_needs_user(frame_id);
+    decision
+}
+
+/// MCP Apps `serverTools`: run `tools/call` from an App iframe on the MCP
+/// server that presented the app, reusing the original connection. The bridge
+/// validates instance liveness, same-server tool visibility, plan-mode, and
+/// the normal approval policy before dispatch, and returns the complete
+/// CallToolResult (`content`, `structuredContent`, `_meta`, `isError`).
+#[tauri::command]
+async fn call_mcp_app_tool(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    instance_id: String,
+    name: String,
+    arguments: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let frame_id = mcp_app_frame_id(&instance_id)?.to_string();
+    if name.is_empty() || name.len() > MAX_MCP_APP_TOOL_NAME_BYTES {
+        return Err("MCP App tool name is empty or too long.".into());
+    }
+    if !arguments.is_object() {
+        return Err("MCP App tool arguments must be a JSON object.".into());
+    }
+    let argument_bytes = serde_json::to_vec(&arguments)
+        .map_err(|error| format!("Invalid MCP App tool arguments: {error}"))?
+        .len();
+    if argument_bytes > MAX_MCP_APP_ARGUMENT_BYTES {
+        return Err(format!(
+            "MCP App tool arguments exceed the {} KiB limit.",
+            MAX_MCP_APP_ARGUMENT_BYTES / 1024
+        ));
+    }
+    let Some(bridge) = state.mcp_app_bridge(&instance_id) else {
+        audit_mcp_app_tool(
+            "mcp_app.tool_call_failed",
+            &instance_id,
+            &frame_id,
+            "",
+            &name,
+            0,
+            "stale-instance",
+        );
+        return Err(MCP_APP_STALE_INSTANCE_ERROR.into());
+    };
+    if bridge.frame_id != frame_id {
+        return Err(MCP_APP_STALE_INSTANCE_ERROR.into());
+    }
+    if !bridge.server.visible_to_app(&name) {
+        return Err(format!(
+            "MCP App tool '{name}' is not visible to apps on this server."
+        ));
+    }
+    if let Some(schema) = bridge.server.input_schema(&name) {
+        superscience_mcp::validate_tool_arguments(&schema, &arguments)?;
+    }
+    let _permit = bridge.limiter.try_acquire()?;
+    let project_id = state
+        .store
+        .frame_project_id(&frame_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| MCP_APP_STALE_INSTANCE_ERROR.to_string())?;
+    // Plan mode and frozen-project gates match agent tool calls: read-only
+    // tools stay available, everything else refuses.
+    if plan_mode::session_plan_mode(&state.store, &frame_id).await
+        && !bridge.server.read_only(&name)
+    {
+        return Err(format!(
+            "Tool '{name}' is blocked in plan mode. Plan mode only allows read-only tools."
+        ));
+    }
+    let host_approval = state
+        .approvals
+        .read()
+        .map(|policy| policy.mode_for(&name))
+        .unwrap_or(superscience_tools::Approval::Allow);
+    let full_permission = state
+        .full_permission_sessions
+        .read()
+        .map(|sessions| sessions.contains(&frame_id))
+        .unwrap_or(false);
+    let approval = if host_approval == superscience_tools::Approval::Deny {
+        superscience_tools::Approval::Deny
+    } else if full_permission {
+        superscience_tools::Approval::Allow
+    } else if host_approval == superscience_tools::Approval::Ask || bridge.server.require_approval()
+    {
+        superscience_tools::Approval::Ask
+    } else {
+        superscience_tools::Approval::Allow
+    };
+    if approval == superscience_tools::Approval::Deny {
+        audit_mcp_app_tool(
+            "mcp_app.tool_call_failed",
+            &instance_id,
+            &frame_id,
+            bridge.server.connector_id(),
+            &name,
+            0,
+            "blocked-by-policy",
+        );
+        return Err(format!("tool '{name}' is blocked by the approval policy"));
+    }
+    let started = std::time::Instant::now();
+    audit_mcp_app_tool(
+        "mcp_app.tool_call_requested",
+        &instance_id,
+        &frame_id,
+        bridge.server.connector_id(),
+        &name,
+        0,
+        "",
+    );
+    if approval == superscience_tools::Approval::Ask {
+        let preview = bounded_ui_tool_input(&arguments.to_string());
+        let connector_id = bridge.server.connector_id();
+        let grant_key = mcp_app_approval_grant_key(connector_id, &name);
+        let message = format!(
+            "Run tool '{name}' from MCP App '{}' (connector '{connector_id}')?",
+            bridge.server.app_name()
+        );
+        let granted = grant_key.as_ref().is_some_and(|key| {
+            state
+                .approval_grants
+                .lock()
+                .map(|grants| grants.allows(&frame_id, &project_id, key))
+                .unwrap_or(false)
+        });
+        if !granted {
+            let decision = request_mcp_app_tool_confirmation(
+                &app,
+                &state,
+                &frame_id,
+                &project_id,
+                message,
+                &name,
+                preview,
+                grant_key,
+            )
+            .await;
+            if !decision.approved() {
+                audit_mcp_app_tool(
+                    "mcp_app.tool_call_failed",
+                    &instance_id,
+                    &frame_id,
+                    bridge.server.connector_id(),
+                    &name,
+                    started.elapsed().as_millis() as u64,
+                    "denied-by-user",
+                );
+                return Err(format!("MCP App tool '{name}' was denied by the user."));
+            }
+        }
+    }
+    audit_mcp_app_tool(
+        "mcp_app.tool_call_approved",
+        &instance_id,
+        &frame_id,
+        bridge.server.connector_id(),
+        &name,
+        started.elapsed().as_millis() as u64,
+        "",
+    );
+    match invoke_mcp_app_server_tool(
+        bridge.server.as_ref(),
+        &name,
+        &arguments,
+        MCP_APP_TOOL_CALL_TIMEOUT,
+    )
+    .await
+    {
+        Ok(result) => {
+            let result_bytes = serde_json::to_vec(&result)
+                .map_err(|error| format!("Invalid MCP App tool result: {error}"))?
+                .len();
+            if result_bytes > MAX_MCP_APP_RESULT_BYTES {
+                audit_mcp_app_tool(
+                    "mcp_app.tool_call_failed",
+                    &instance_id,
+                    &frame_id,
+                    bridge.server.connector_id(),
+                    &name,
+                    started.elapsed().as_millis() as u64,
+                    "result-too-large",
+                );
+                return Err(format!(
+                    "MCP App tool result exceeds the {} MiB limit.",
+                    MAX_MCP_APP_RESULT_BYTES / 1024 / 1024
+                ));
+            }
+            audit_mcp_app_tool(
+                "mcp_app.tool_call_completed",
+                &instance_id,
+                &frame_id,
+                bridge.server.connector_id(),
+                &name,
+                started.elapsed().as_millis() as u64,
+                "",
+            );
+            Ok(result)
+        }
+        Err(error) => {
+            let timed_out = error.contains("timed out after");
+            audit_mcp_app_tool(
+                "mcp_app.tool_call_failed",
+                &instance_id,
+                &frame_id,
+                bridge.server.connector_id(),
+                &name,
+                started.elapsed().as_millis() as u64,
+                if timed_out { "timeout" } else { "tool-error" },
+            );
+            if timed_out {
+                Err(error)
+            } else {
+                Err(format!("mcp app tool '{name}' error: {error}"))
+            }
+        }
+    }
+}
+
+/// MCP Apps `serverTools`: the app-visible tool catalog of the same server
+/// (the host validates against it, so the iframe never receives connection
+/// details).
+#[tauri::command]
+async fn list_mcp_app_tools(
+    state: State<'_, AppState>,
+    instance_id: String,
+) -> Result<serde_json::Value, String> {
+    let frame_id = mcp_app_frame_id(&instance_id)?.to_string();
+    let Some(bridge) = state.mcp_app_bridge(&instance_id) else {
+        return Err(MCP_APP_STALE_INSTANCE_ERROR.into());
+    };
+    if bridge.frame_id != frame_id {
+        return Err(MCP_APP_STALE_INSTANCE_ERROR.into());
+    }
+    let tools = bridge
+        .server
+        .tools()
+        .into_iter()
+        .filter(|tool| {
+            tool.get("name")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|name| bridge.server.visible_to_app(name))
+        })
+        .collect::<Vec<_>>();
+    Ok(serde_json::json!({ "tools": tools }))
+}
+
+/// Cheap live-bridge probe so `ui/initialize` only advertises `serverTools`
+/// when this instance can actually forward `tools/call`.
+#[tauri::command]
+async fn mcp_app_has_server_tools(
+    state: State<'_, AppState>,
+    instance_id: String,
+) -> Result<bool, String> {
+    let frame_id = mcp_app_frame_id(&instance_id)?;
+    Ok(state
+        .mcp_app_bridge(&instance_id)
+        .is_some_and(|bridge| bridge.frame_id == frame_id))
+}
+
+/// Revoke an MCP App instance's host-side bridge when the iframe tears down
+/// (user close, replacement, or session navigation). Later `tools/call`
+/// requests then fail with a stale-instance error. Also drops the instance's
+/// model-context injection so a closed app cannot keep feeding the next turn.
+#[tauri::command]
+async fn close_mcp_app(state: State<'_, AppState>, instance_id: String) -> Result<bool, String> {
+    let removed = state.close_mcp_app_bridge(&instance_id);
+    if removed {
+        if let Ok(frame_id) = mcp_app_frame_id(&instance_id) {
+            if let Some(runtime) = state.sessions.lock().await.get(frame_id).cloned() {
+                runtime.set_mcp_app_context(instance_id, None);
+            }
+        }
+    }
+    Ok(removed)
+}
+
 /// Ensure `dir` exists and is usable; fall back to `app_data/workspace` if not.
 /// Never panics unless even the fallback can't be created.
 fn ensure_writable(dir: PathBuf, app_data: &std::path::Path) -> PathBuf {
@@ -2274,6 +2672,15 @@ struct TauriOutput {
     /// and persisted as an `execution_log` row by a background drain task.
     /// `None` disables it.
     prov: Option<tokio::sync::mpsc::UnboundedSender<superscience_core::ProvenanceRecord>>,
+    /// Root frame id of this conversation tree; producing-tool windows of the
+    /// same scope are not foreign to each other when disambiguating
+    /// concurrent workspace writes (#911).
+    provenance_scope: String,
+    /// Per-send_message id used to attribute real-browser tabs to this turn.
+    turn_id: String,
+    /// IM turns force Ask on mutating tools and skip Full Permission
+    /// auto-approval so an unattended Feishu/WeChat message cannot write/shell.
+    force_ask_mutations: bool,
 }
 
 impl TauriOutput {
@@ -2307,7 +2714,7 @@ impl TauriOutput {
         message: &str,
         allow_full_permission: bool,
     ) -> superscience_tools::ConfirmDecision {
-        if allow_full_permission && self.full_permission() {
+        if allow_full_permission && self.full_permission() && !self.force_ask_mutations {
             return superscience_tools::ConfirmDecision::Approved;
         }
         let (tool, preview) = parse_confirm_payload(message);
@@ -2323,12 +2730,14 @@ impl TauriOutput {
             return superscience_tools::ConfirmDecision::Approved;
         }
         let (tx, rx) = tokio::sync::oneshot::channel();
+        let request = ConfirmRequest::new(&self.frame_id, message.into(), tool, preview);
         self.confirms.lock().unwrap().insert(
             self.frame_id.clone(),
             PendingConfirm {
                 tx,
                 grant,
                 project_id: self.project_id.clone(),
+                request: request.clone(),
             },
         );
         self.awaiting_confirm
@@ -2337,15 +2746,7 @@ impl TauriOutput {
             .insert(self.frame_id.clone());
         self.device_hub
             .mark_needs_user(&self.frame_id, Some(&self.project_id));
-        let _ = self.app.emit(
-            "confirm-request",
-            ConfirmRequest {
-                frame_id: self.frame_id.clone(),
-                message: message.into(),
-                tool,
-                preview,
-            },
-        );
+        emit_confirm_request(&self.app, &request);
 
         // There is deliberately no timeout: lack of approval must never be
         // converted into a denial that lets the same agent turn continue.
@@ -2468,10 +2869,33 @@ impl Output for TauriOutput {
             duration_ms,
         });
     }
-    fn tool_presentation(&self, kind: &str, payload: &serde_json::Value) {
+    fn tool_presentation(
+        &self,
+        kind: &str,
+        payload: &serde_json::Value,
+        server: Option<std::sync::Arc<dyn superscience_tools::McpAppServer>>,
+    ) {
+        let presentation_id = Uuid::new_v4().to_string();
+        if kind == "mcp_app" && !payload.is_null() {
+            if let Some(server) = server {
+                // Same formula as ui/src/mcp_app.rs: resource URI (or tool
+                // name), not the unique presentation UUID, so a later Open/
+                // Search of the same app replaces the live bridge instead of
+                // stacking another center tab.
+                let instance_id = mcp_app_instance_id(&self.frame_id, payload);
+                self.app.state::<AppState>().register_mcp_app_bridge(
+                    instance_id,
+                    McpAppToolBridge {
+                        frame_id: self.frame_id.clone(),
+                        server,
+                        limiter: McpAppCallLimiter::new(),
+                    },
+                );
+            }
+        }
         self.emit(AgentEvent::ToolPresentation {
             frame_id: self.frame_id.clone(),
-            presentation_id: Uuid::new_v4().to_string(),
+            presentation_id,
             presentation_kind: kind.into(),
             payload: payload.clone(),
         });
@@ -2625,10 +3049,16 @@ impl Output for TauriOutput {
         })
     }
     fn approval_bypass(&self) -> bool {
-        self.full_permission()
+        self.full_permission() && !self.force_ask_mutations
     }
     fn danger_auto_approve(&self) -> bool {
+        if self.force_ask_mutations {
+            return false;
+        }
         self.full_permission() || self.approvals.read().map(|p| p.full()).unwrap_or(false)
+    }
+    fn force_ask_mutations(&self) -> bool {
+        self.force_ask_mutations
     }
     fn plan_mode(&self) -> bool {
         self.plan_mode
@@ -2659,6 +3089,15 @@ impl Output for TauriOutput {
         if let Some(tx) = &self.prov {
             let _ = tx.send(rec.clone());
         }
+    }
+    fn provenance_scope(&self) -> Option<String> {
+        Some(self.provenance_scope.clone())
+    }
+    fn turn_id(&self) -> Option<&str> {
+        Some(self.turn_id.as_str())
+    }
+    fn frame_id(&self) -> Option<&str> {
+        Some(self.frame_id.as_str())
     }
     fn preflight_local_execution(&self, source: &str) -> Result<(), String> {
         match &self.exploration_isolation {
@@ -3553,17 +3992,40 @@ fn sync_prompt_section(prompt: &mut String, start: &str, end: &str, section: &st
 }
 
 async fn load_mcp_connections(store: &Store) -> Vec<McpConnection> {
-    store
+    let mut conns = store
         .get_setting("mcp_connections")
         .await
         .ok()
         .flatten()
         .and_then(|s| serde_json::from_str::<Vec<McpConnection>>(&s).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    match mcp_secrets::migrate_loaded(&mut conns) {
+        Ok(true) => {
+            if let Err(error) = save_mcp_connections(store, &conns).await {
+                tracing::warn!("failed to rewrite MCP connections after secret migration: {error}");
+            }
+        }
+        Ok(false) => {}
+        Err(error) => {
+            tracing::warn!("failed to migrate MCP connection secrets: {error}");
+        }
+    }
+    for conn in &mut conns {
+        mcp_secrets::strip_secret_values(conn);
+    }
+    mcp_secrets::refresh_listed_has_value(&mut conns);
+    conns
 }
 
 async fn save_mcp_connections(store: &Store, conns: &[McpConnection]) -> Result<(), String> {
-    let json = serde_json::to_string(conns).map_err(|e| format!("{e}"))?;
+    let mut redacted = conns.to_vec();
+    for conn in &mut redacted {
+        mcp_secrets::strip_secret_values(conn);
+    }
+    if !mcp_secrets::stored_json_is_redacted(&redacted) {
+        return Err("Refusing to store MCP connection secrets in the database.".into());
+    }
+    let json = serde_json::to_string(&redacted).map_err(|e| format!("{e}"))?;
     store
         .set_setting("mcp_connections", &json)
         .await
@@ -3903,14 +4365,13 @@ fn memory_file_path(memory: &MemoryManager, name: &str) -> Result<std::path::Pat
 
 /// Build an `McpClient` from a user-configured connection. Stdio connections
 /// carry their own command/env/cwd (unrelated to the bundled Python venv).
+/// Header/env values are hydrated from the keyring here and never written back.
 async fn connect_mcp(conn: &McpConnection) -> anyhow::Result<superscience_mcp::McpClient> {
     match &conn.transport {
         McpTransport::Stdio {
-            command,
-            args,
-            env,
-            cwd,
+            command, args, cwd, ..
         } => {
+            let env = mcp_secrets::hydrate_env(conn);
             let mut cmd = tokio::process::Command::new(command);
             cmd.args(args);
             for (k, v) in env {
@@ -3924,10 +4385,13 @@ async fn connect_mcp(conn: &McpConnection) -> anyhow::Result<superscience_mcp::M
             superscience_tools::process::hide_console_async(&mut cmd);
             superscience_mcp::McpClient::launch_with_command(cmd).await
         }
-        McpTransport::Http { url, headers, auth } => match auth {
-            McpHttpAuth::None => superscience_mcp::McpClient::connect_http(url, headers).await,
-            McpHttpAuth::OAuth => mcp_oauth::connect(&conn.id, url, headers).await,
-        },
+        McpTransport::Http { url, auth, .. } => {
+            let headers = mcp_secrets::hydrate_headers(conn);
+            match auth {
+                McpHttpAuth::None => superscience_mcp::McpClient::connect_http(url, &headers).await,
+                McpHttpAuth::OAuth => mcp_oauth::connect(&conn.id, url, &headers).await,
+            }
+        }
     }
 }
 
@@ -4270,7 +4734,13 @@ async fn wire_runtimes_and_mcp(
         if !parts.is_empty() {
             let args: Vec<String> = parts[1..].to_vec();
             match superscience_mcp::McpClient::launch(&parts[0], &args).await {
-                Ok(client) => match register_mcp(registry, std::sync::Arc::new(client)).await {
+                Ok(client) => match register_mcp(
+                    registry,
+                    std::sync::Arc::new(client),
+                    BUNDLED_DEV_MCP_CONNECTOR_ID,
+                )
+                .await
+                {
                     Ok(names) => result.added_tools.extend(names),
                     Err(error) => result.errors.push(error),
                 },
@@ -4300,7 +4770,13 @@ async fn wire_runtimes_and_mcp(
                 .await
             {
                 Ok(client) => {
-                    match register_mcp_filtered(registry, std::sync::Arc::new(client), &skip).await
+                    match register_mcp_filtered(
+                        registry,
+                        std::sync::Arc::new(client),
+                        BUNDLED_BIO_MCP_CONNECTOR_ID,
+                        &skip,
+                    )
+                    .await
                     {
                         Ok(names) => result.added_tools.extend(names),
                         Err(error) => result.errors.push(error),
@@ -4390,17 +4866,19 @@ async fn finish_custom_mcp_wiring(
             .or_default();
         let index = next_index;
         next_index += 1;
+        let connector_id = launch.connector_id.clone();
         set.spawn(async move {
             let name = launch.display_name.clone();
             let res = connect_plugin_mcp(&launch).await;
-            (index, name, Some(plugin_id), true, res)
+            (index, name, Some(plugin_id), connector_id, true, res)
         });
     }
     for (i, conn) in conns.into_iter().enumerate() {
         let index = next_index + i;
+        let connector_id = conn.id.clone();
         set.spawn(async move {
             let res = connect_mcp(&conn).await;
-            (index, conn.name, None, false, res)
+            (index, conn.name, None, connector_id, false, res)
         });
     }
     let mut results = Vec::new();
@@ -4409,12 +4887,13 @@ async fn finish_custom_mcp_wiring(
             results.push(r);
         }
     }
-    results.sort_by_key(|(i, _, _, _, _)| *i);
-    for (_, name, plugin_id, require_approval, res) in results {
+    results.sort_by_key(|(i, _, _, _, _, _)| *i);
+    for (_, name, plugin_id, connector_id, require_approval, res) in results {
         match res {
             Ok(client) => match register_mcp_with_approval(
                 registry,
                 std::sync::Arc::new(client),
+                &connector_id,
                 require_approval,
             )
             .await
@@ -4451,16 +4930,25 @@ async fn finish_custom_mcp_wiring(
 async fn register_mcp(
     registry: &mut superscience_tools::Registry,
     client: std::sync::Arc<superscience_mcp::McpClient>,
+    connector_id: &str,
 ) -> Result<Vec<String>, String> {
-    register_mcp_with_approval(registry, client, false).await
+    register_mcp_with_approval(registry, client, connector_id, false).await
 }
 
 async fn register_mcp_with_approval(
     registry: &mut superscience_tools::Registry,
     client: std::sync::Arc<superscience_mcp::McpClient>,
+    connector_id: &str,
     require_approval: bool,
 ) -> Result<Vec<String>, String> {
-    register_mcp_filtered_with_approval(registry, client, &HashSet::new(), require_approval).await
+    register_mcp_filtered_with_approval(
+        registry,
+        client,
+        connector_id,
+        &HashSet::new(),
+        require_approval,
+    )
+    .await
 }
 
 /// Like `register_mcp`, but skips any tool whose name is in `skip` (used to drop
@@ -4468,17 +4956,24 @@ async fn register_mcp_with_approval(
 async fn register_mcp_filtered(
     registry: &mut superscience_tools::Registry,
     client: std::sync::Arc<superscience_mcp::McpClient>,
+    connector_id: &str,
     skip: &HashSet<String>,
 ) -> Result<Vec<String>, String> {
-    register_mcp_filtered_with_approval(registry, client, skip, false).await
+    register_mcp_filtered_with_approval(registry, client, connector_id, skip, false).await
 }
 
 async fn register_mcp_filtered_with_approval(
     registry: &mut superscience_tools::Registry,
     client: std::sync::Arc<superscience_mcp::McpClient>,
+    connector_id: &str,
     skip: &HashSet<String>,
     require_approval: bool,
 ) -> Result<Vec<String>, String> {
+    if connector_id.trim().is_empty() {
+        tracing::warn!(
+            "registering MCP tools with an empty connector_id; Always-allow grants will not be offered"
+        );
+    }
     match client.tools_list().await {
         Ok(tools) => {
             let collisions: Vec<_> = tools
@@ -4493,16 +4988,34 @@ async fn register_mcp_filtered_with_approval(
             if !collisions.is_empty() {
                 return Err(format!("tool name collision: {}", collisions.join(", ")));
             }
+            // Shared catalog for App bridges: skipped (disabled-domain) tools
+            // stay out so an App cannot call a connector the user turned off.
+            let catalog = std::sync::Arc::new(
+                tools
+                    .into_iter()
+                    .filter(|tool| !skip.contains(&tool.name))
+                    .collect::<Vec<_>>(),
+            );
             let mut names = Vec::new();
-            for t in tools {
-                if skip.contains(&t.name) || !t.visible_to_model() {
+            for t in catalog.iter() {
+                if !t.visible_to_model() {
                     continue;
                 }
                 names.push(t.name.clone());
                 let tool = if require_approval {
-                    superscience_mcp::McpTool::new_requiring_approval(t, client.clone())
+                    superscience_mcp::McpTool::with_catalog_requiring_approval(
+                        t.clone(),
+                        client.clone(),
+                        connector_id,
+                        std::sync::Arc::clone(&catalog),
+                    )
                 } else {
-                    superscience_mcp::McpTool::new(t, client.clone())
+                    superscience_mcp::McpTool::with_catalog(
+                        t.clone(),
+                        client.clone(),
+                        connector_id,
+                        std::sync::Arc::clone(&catalog),
+                    )
                 };
                 registry.add(Box::new(tool));
             }
@@ -5076,6 +5589,10 @@ async fn automatic_review(
                 agent.ctx.clear_runtime_injections();
                 if let Err(error) = correction {
                     tracing::warn!("automatic correction failed for {frame_id}: {error}");
+                    output.emit(AgentEvent::ReviewFailed {
+                        frame_id: frame_id.to_string(),
+                        message: format!("correction turn failed: {error}"),
+                    });
                     report.set_status("unaddressed");
                 } else {
                     match generate_review(state, frame_id, &agent.ctx.messages, Some(cancel)).await
@@ -5087,6 +5604,10 @@ async fn automatic_review(
                             tracing::warn!(
                                 "automatic follow-up review failed for {frame_id}: {error}"
                             );
+                            output.emit(AgentEvent::ReviewFailed {
+                                frame_id: frame_id.to_string(),
+                                message: format!("follow-up review failed: {error}"),
+                            });
                             report.set_status("unaddressed");
                         }
                     }
@@ -5167,6 +5688,13 @@ async fn automatic_review_acp(
                         .await;
                 if let Err(error) = correction {
                     tracing::warn!("automatic ACP correction failed for {frame_id}: {error}");
+                    emit_agent_event(
+                        app,
+                        AgentEvent::ReviewFailed {
+                            frame_id: frame_id.to_string(),
+                            message: format!("correction turn failed: {error}"),
+                        },
+                    );
                     report.set_status("unaddressed");
                 } else {
                     match state.store.load_messages(frame_id).await {
@@ -5179,6 +5707,13 @@ async fn automatic_review_acp(
                                     tracing::warn!(
                                     "automatic ACP follow-up review failed for {frame_id}: {error}"
                                 );
+                                    emit_agent_event(
+                                        app,
+                                        AgentEvent::ReviewFailed {
+                                            frame_id: frame_id.to_string(),
+                                            message: format!("follow-up review failed: {error}"),
+                                        },
+                                    );
                                     report.set_status("unaddressed");
                                 }
                             }
@@ -5186,6 +5721,13 @@ async fn automatic_review_acp(
                         Err(error) => {
                             tracing::warn!(
                                 "load corrected ACP transcript failed for {frame_id}: {error}"
+                            );
+                            emit_agent_event(
+                                app,
+                                AgentEvent::ReviewFailed {
+                                    frame_id: frame_id.to_string(),
+                                    message: format!("load corrected transcript failed: {error}"),
+                                },
                             );
                             report.set_status("unaddressed");
                         }
@@ -5478,7 +6020,18 @@ async fn side_chat(
         snapshot_version = messages.last().map(|(seq, _)| *seq).unwrap_or_default();
         history = side_chat::history_from_messages(&messages);
     }
-    let evidence = side_chat::retrieve_evidence(question, &history);
+    let http_llm = side_chat_http_provider(&state).await;
+    let intent = match &http_llm {
+        Ok(llm) => side_chat::classify_intent(llm.as_ref(), question).await?,
+        Err(error) => {
+            if acp_agent_id.as_deref().is_some_and(|id| !id.is_empty()) {
+                side_chat::SideChatIntent::session_fallback(question)
+            } else {
+                return Err(error.clone());
+            }
+        }
+    };
+    let evidence = side_chat::retrieve_evidence(question, &history, &intent);
     if evidence.is_empty() {
         return Ok(side_chat::SideChatResponse {
             answer: String::new(),
@@ -5488,34 +6041,24 @@ async fn side_chat(
             no_evidence: true,
         });
     }
-    let prompt = side_chat::answer_prompt(frame_id, snapshot_version, question, &evidence);
+    let prompt = side_chat::answer_prompt(frame_id, snapshot_version, question, &evidence, &intent);
     // ACP side chat: one-shot, read-only answer from the selected ACP Agent,
     // running in the active project root. Never touches the main thread.
     let answer = if let Some(agent_id) = acp_agent_id.as_deref().filter(|id| !id.is_empty()) {
         let cwd = state.active(window.label()).root;
         acp::acp_side_chat_once(&state, &cwd, agent_id, &prompt).await?
     } else {
-        let (provider, api_url, model, api_key) = load_settings(&state.store).await;
-        let (max_tokens, reasoning_effort) = models::active_llm_advanced(&state.store).await;
-        let cfg = build_provider_config(
-            &provider,
-            &api_url,
-            &api_key,
-            &model,
-            max_tokens,
-            &reasoning_effort,
-        )?;
-        let llm = superscience_llm::build(cfg);
-        llm.complete(
-            &[
-                Message::system(side_chat::SYSTEM_PROMPT),
-                Message::user(prompt),
-            ],
-            &[],
-        )
-        .await
-        .map_err(|e| format!("{e}"))?
-        .content
+        http_llm?
+            .complete(
+                &[
+                    Message::system(side_chat::SYSTEM_PROMPT),
+                    Message::user(prompt),
+                ],
+                &[],
+            )
+            .await
+            .map_err(|e| format!("{e}"))?
+            .content
     };
     Ok(side_chat::SideChatResponse {
         answer,
@@ -5524,6 +6067,22 @@ async fn side_chat(
         evidence,
         no_evidence: false,
     })
+}
+
+async fn side_chat_http_provider(
+    state: &AppState,
+) -> Result<Box<dyn superscience_llm::Provider>, String> {
+    let (provider, api_url, model, api_key) = load_settings(&state.store).await;
+    let (max_tokens, reasoning_effort) = models::active_llm_advanced(&state.store).await;
+    let cfg = build_provider_config(
+        &provider,
+        &api_url,
+        &api_key,
+        &model,
+        max_tokens,
+        &reasoning_effort,
+    )?;
+    Ok(superscience_llm::build(cfg))
 }
 
 fn mcp_lib_dir(_root: &std::path::Path) -> Option<PathBuf> {
@@ -5776,6 +6335,78 @@ pub(crate) fn startup_report_summary() -> String {
         .lock()
         .map(|report| report.summary())
         .unwrap_or_default()
+}
+
+/// Frontend `ui_heartbeat` timer. Silence on a focused window means the
+/// renderer died; reload recovers because sessions live in SQLite.
+static UI_HEARTBEAT: StdMutex<Option<std::time::Instant>> = StdMutex::new(None);
+static UI_WATCHDOG_LAST_RELOAD: StdMutex<Option<std::time::Instant>> = StdMutex::new(None);
+const UI_HEARTBEAT_STALE: std::time::Duration = std::time::Duration::from_secs(60);
+const UI_WATCHDOG_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(120);
+
+#[tauri::command]
+fn ui_heartbeat() {
+    if let Ok(mut last) = UI_HEARTBEAT.lock() {
+        *last = Some(std::time::Instant::now());
+    }
+}
+
+fn ui_watchdog_requires_reload(
+    secs_since_beat: Option<u64>,
+    secs_since_reload: Option<u64>,
+) -> bool {
+    match secs_since_beat {
+        Some(secs) if secs >= UI_HEARTBEAT_STALE.as_secs() => match secs_since_reload {
+            Some(secs) => secs >= UI_WATCHDOG_COOLDOWN.as_secs(),
+            None => true,
+        },
+        _ => false,
+    }
+}
+
+/// Backgrounded webviews throttle JS timers, so elapsed time is not a death
+/// signal. Refresh the clock while unfocused so a later focus does not look
+/// immediately stale. Leave `None` alone: that means "wait for a real beat".
+fn ui_watchdog_note_unfocused(last_beat: &mut Option<std::time::Instant>) {
+    if last_beat.is_some() {
+        *last_beat = Some(std::time::Instant::now());
+    }
+}
+
+async fn run_ui_watchdog(app: tauri::AppHandle) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        let secs_since_beat = UI_HEARTBEAT
+            .lock()
+            .ok()
+            .and_then(|last| last.map(|instant| instant.elapsed().as_secs()));
+        let secs_since_reload = UI_WATCHDOG_LAST_RELOAD
+            .lock()
+            .ok()
+            .and_then(|last| last.map(|instant| instant.elapsed().as_secs()));
+        if !ui_watchdog_requires_reload(secs_since_beat, secs_since_reload) {
+            continue;
+        }
+        let Some(window) = app.get_webview_window("main") else {
+            continue;
+        };
+        if !window.is_focused().unwrap_or(false) {
+            if let Ok(mut last) = UI_HEARTBEAT.lock() {
+                ui_watchdog_note_unfocused(&mut last);
+            }
+            continue;
+        }
+        tracing::warn!(target: "wisp", secs_since_beat = secs_since_beat.unwrap_or_default(),
+            "main webview stopped heartbeating; reloading to recover the UI");
+        if window.reload().is_ok() {
+            if let Ok(mut last) = UI_WATCHDOG_LAST_RELOAD.lock() {
+                *last = Some(std::time::Instant::now());
+            }
+            if let Ok(mut last) = UI_HEARTBEAT.lock() {
+                *last = None;
+            }
+        }
+    }
 }
 
 /// Windows creates the main WebView2 before `setup` runs but cannot service it
@@ -6054,6 +6685,7 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             let main_builder = main_builder.decorations(false).shadow(true);
             main_builder.build().expect("create main window");
+            tauri::async_runtime::spawn(run_ui_watchdog(app.handle().clone()));
             let mut startup = StartupTimeline::default();
             if let Ok(res) = app.path().resource_dir() {
                 superscience_paths::set_resource_root(res);
@@ -6176,6 +6808,7 @@ pub fn run() {
             let browser_bridge = startup.record("browser_bridge", || {
                 tauri::async_runtime::block_on(browser_bridge::BrowserBridge::start(
                     browser_extension_dir,
+                    store.clone(),
                 ))
             });
             let device_hub = Arc::new(device_hub::DeviceHub::default());
@@ -6209,6 +6842,7 @@ pub fn run() {
                 completion_dispatches: tokio::sync::Mutex::new(HashSet::new()),
                 project_activity: ProjectActivityLocks::default(),
                 resource_leases: resource_leases::ProjectResourceCoordinator::default(),
+                mcp_app_tool_bridges: McpAppBridges::default(),
                 active_frame: std::sync::RwLock::new(HashMap::new()),
                 notification_window: std::sync::RwLock::new(HashMap::new()),
                 confirms: Arc::new(StdMutex::new(HashMap::new())),
@@ -6282,6 +6916,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             agent_turn::send_message,
             update_mcp_app_context,
+            call_mcp_app_tool,
+            list_mcp_app_tools,
+            mcp_app_has_server_tools,
+            close_mcp_app,
             agent_turn::enqueue_turn,
             agent_turn::queued_turn_action,
             agent_turn::stop_agent,
@@ -6291,6 +6929,9 @@ pub fn run() {
             channels::feishu_bind_poll,
             channels::feishu_bind_cancel,
             channels::feishu_unbind,
+            channels::set_feishu_owner,
+            channels::confirm_feishu_pending_owner,
+            channels::reject_feishu_pending_owner,
             channels::set_weixin_channel,
             channels::weixin_bind_start,
             channels::weixin_bind_poll,
@@ -6458,6 +7099,8 @@ pub fn run() {
             publication_capsule::build_publication_capsule,
             publication_freeze::freeze_publication_revision,
             session_commands::load_session,
+            session_commands::load_session_trajectory,
+            trajectory_export::export_session_trajectory,
             session_commands::rewind_session,
             turn_undo::preview_turn_undo,
             turn_undo::undo_turn,
@@ -6494,6 +7137,13 @@ pub fn run() {
             approval_commands::set_session_full_permission,
             browser_url_filters::get_browser_url_filters,
             browser_url_filters::set_browser_url_filters,
+            browser_url_filters::get_browser_auto_launch,
+            browser_url_filters::set_browser_auto_launch,
+            browser_url_filters::get_browser_auto_close_tabs,
+            browser_url_filters::set_browser_auto_close_tabs,
+            browser_bridge::list_pending_browser_tab_cleanups,
+            browser_bridge::confirm_browser_tab_cleanup,
+            browser_bridge::dismiss_browser_tab_cleanup,
             settings_commands::get_settings,
             settings_commands::set_settings,
             configure::get_appearance_prefs,
@@ -6588,6 +7238,10 @@ pub fn run() {
             app_updates::download_update,
             app_updates::install_update,
             app_commands::open_external_url,
+            app_commands::open_app_doc,
+            app_commands::open_browser_extension_page,
+            app_commands::extension_connected,
+            ui_heartbeat,
             app_commands::reveal_in_file_manager,
             connector_commands::list_mcp_connections,
             connector_commands::add_mcp_connection,

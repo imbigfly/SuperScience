@@ -473,14 +473,17 @@ pub(crate) fn share_png_payload(
     .to_string()
 }
 
-/// One selected row for the PNG renderer, with assistant Markdown already
-/// split into canvas blocks.
+/// One selected row for the PNG renderer. Assistant Markdown is sent as the
+/// same HTML chat uses (`md_to_html`) so the canvas can rasterize tables and
+/// KaTeX instead of flattening them. `blocks` stay as a fallback if the HTML
+/// snapshot fails.
 pub(crate) fn share_png_row(role: ShareRole, label: &str, text: &str) -> Value {
     let mut row = json!({
         "kind": role.tag(),
         "label": label,
     });
     if role == ShareRole::Assistant {
+        row["html"] = json!(crate::text::md_to_html(text));
         row["blocks"] = json!(share_markdown_blocks(text));
     } else {
         row["text"] = json!(text);
@@ -601,11 +604,10 @@ struct TableState {
     cell: String,
 }
 
-/// Parse assistant Markdown into the flat block list the JS canvas renderer
-/// draws: headings, paragraphs, list items, quotes, code blocks, tables
-/// (flattened to monospace lines) and horizontal rules, with inline runs
-/// styled bold/italic/code/link. Mirrors the options chat rendering uses so
-/// the exported image matches what the user saw.
+/// Parse assistant Markdown into the flat block list used only when the HTML
+/// snapshot path cannot run. Headings, paragraphs, lists, quotes, code, and
+/// rules are preserved; tables stay flattened to monospace lines. Prefer the
+/// `html` field on the PNG row so the export matches chat (tables + KaTeX).
 pub(crate) fn share_markdown_blocks(text: &str) -> Vec<Value> {
     use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
@@ -995,6 +997,23 @@ mod share_tests {
         assert_eq!(share_png_width(" 640 "), 640);
         assert_eq!(share_png_width("10"), SHARE_PNG_MIN_WIDTH);
         assert_eq!(share_png_width("99999"), SHARE_PNG_MAX_WIDTH);
+    }
+
+    #[test]
+    fn png_row_includes_chat_html_for_tables_and_math() {
+        let row = share_png_row(
+            ShareRole::Assistant,
+            "助手",
+            "| 项目 | 数值 |\n| --- | --- |\n| A | 1 |\n| B | 2 |\n\n质能 $E = mc^2$\n\n$$\\int_0^1 x^2 dx$$\n",
+        );
+        let html = row["html"].as_str().expect("assistant row should carry chat HTML");
+        assert!(html.contains("<table>"), "{html}");
+        assert!(html.contains("<th>"), "{html}");
+        assert!(html.contains("项目"), "{html}");
+        assert!(html.contains(r#"class="math math-inline""#), "{html}");
+        assert!(html.contains(r#"class="math math-display""#), "{html}");
+        assert!(html.contains("E = mc^2"), "{html}");
+        assert!(row["blocks"].is_array());
     }
 
     #[test]

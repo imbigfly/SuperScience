@@ -229,6 +229,10 @@ Lifecycle rules:
   explicitly.
 - Stop/restart is destructive to in-memory state and must be represented as such in
   the UI.
+- A stop owns the worker's whole process tree, not just the direct child. An
+  interpreter is often a launcher — Windows `Rscript.exe` re-launches
+  `bin\x64\Rscript.exe` through `cmd.exe` — so the real interpreter and anything a
+  cell started in the background go away with it.
 
 Unlike the current `KernelClient`, the manager must retain the child handle rather
 than intentionally forgetting it. Process cleanup and status detection require an
@@ -340,8 +344,9 @@ plugin registry.
 - A macOS GUI app may not inherit the user's interactive shell `PATH`. Runtime
   discovery must support an explicitly configured interpreter path and report an
   actionable error when discovery fails.
-- Native Windows and WSL are separate contexts. Do not silently translate Windows
-  paths into Linux paths or vice versa.
+- Native Windows and WSL are separate contexts. Do not heuristically translate
+  arbitrary paths. The one explicit bridge is the registered project root: WSL
+  terminals, Runs, and interactive runtimes translate it with `wslpath`.
 
 ### 9.2 WSL and SSH worker deployment
 
@@ -361,10 +366,13 @@ therefore marks the runtime `dead` and loses its in-memory state.
 ### 9.3 Working directory
 
 - Local runtimes start in the project root.
-- WSL/SSH runtimes use the context's configured default workdir when present,
+- WSL runtimes start in the same project root translated with `wslpath`, because
+  WSL shares the Windows filesystem and project-relative writes participate in
+  local provenance, undo, and publication records.
+- SSH runtimes use the context's configured default workdir when present,
   otherwise the probed context home/current directory.
-- v1 does not create or synchronize a remote mirror of the local project.
-- Remote data should be addressed with paths meaningful inside that context.
+- v1 does not create or synchronize an SSH mirror of the local project. Remote
+  data should be addressed with paths meaningful inside that context.
 
 A future project-to-context workspace binding may provide a stable remote project
 root without changing runtime identity.
@@ -396,6 +404,19 @@ Interpreter selection is user/context configuration, not executable code input.
 Project-specific pixi, conda, virtualenv, or `renv` profiles are future environment
 selection work. A v1 user may explicitly configure the interpreter from such an
 environment.
+
+An explicitly configured interpreter must actually be launchable. When it lives
+inside a conda-style prefix — a directory containing `conda-meta`, which conda,
+mamba, and pixi all write — the worker is launched with that prefix on its own
+`PATH`. On Windows an interpreter's shared libraries live in the prefix rather than
+beside the executable, so without this a conda-forge `Rscript.exe` exits with
+`STATUS_DLL_NOT_FOUND`, or faults on a mismatched library found elsewhere on `PATH`.
+This is the launched child's environment only; the host environment is never
+modified, and remote contexts keep whatever their own shell provides.
+
+On Windows, `<R>\bin\Rscript.exe` is an architecture shim that re-launches
+`<R>\bin\x64\Rscript.exe` through `cmd.exe`. Local launches resolve to the real
+binary so the interpreter is the app's direct child.
 
 ## 11. Worker protocol
 
@@ -645,7 +666,11 @@ artifacts, not hidden runtime checkpoints.
   silently claiming old state survived. Lazy start applies to missing runtimes, not
   dead generations.
 - SSH disconnect is terminal in v1.
-- Application shutdown closes stdin, waits briefly, then kills attached processes.
+- Stopping a runtime closes stdin so the worker can exit on its own, then kills it,
+  then terminates its whole process tree. Every step has a deadline, and the total
+  budget for one stop request is shared across the runtimes it covers: a worker that
+  refuses to exit must never block an Agent turn, a project switch, or app exit.
+  Stopping therefore also reclaims a background process a cell left running.
 - Arbitrary Python/R execution continues to use the existing approval system.
 - Code travels over inherited local/WSL/SSH stdio, not an unauthenticated listening
   port.

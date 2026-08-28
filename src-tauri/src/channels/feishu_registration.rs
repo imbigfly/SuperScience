@@ -36,6 +36,8 @@ struct BeginResponse {
 #[derive(Debug, Default, Deserialize, PartialEq, Eq)]
 struct UserInfo {
     #[serde(default)]
+    open_id: String,
+    #[serde(default)]
     tenant_brand: String,
 }
 
@@ -218,6 +220,7 @@ impl RegistrationFlow {
                         app_id: response.client_id,
                         app_secret: response.client_secret,
                         international: self.international,
+                        owner_open_id: response.user_info.open_id,
                     });
                 }
                 Decision::SwitchToLark => {
@@ -260,6 +263,7 @@ pub enum RegistrationPoll {
         app_id: String,
         app_secret: String,
         international: bool,
+        owner_open_id: String,
     },
     Denied,
     Expired,
@@ -345,6 +349,7 @@ mod tests {
         let response = PollResponse {
             user_info: UserInfo {
                 tenant_brand: "lark".into(),
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -360,6 +365,7 @@ mod tests {
         .unwrap();
         assert_eq!(response.client_id, "cli_9");
         assert_eq!(response.user_info.tenant_brand, "feishu");
+        assert_eq!(response.user_info.open_id, "ou_1");
         assert_eq!(decide(&response, false), Decision::Success);
     }
 }

@@ -1,16 +1,34 @@
 ---
 name: browser-use
-description: "Use this skill to drive the user's real, persistent Chrome/Chromium session — open pages, read them, click, fill and submit forms, navigate, switch tabs, or scrape content that needs the user's existing cookies and login state. Triggers when the user asks to do something in their browser, log into a site and act inside it, fill out a web form, click through a flow, or extract data from a page that requires being signed in. Tools: browser_setup (check/connect the extension), web_open_tab (open a URL), web_scan (read visible content + actionable elements with ready-made selectors), web_execute_js (click/type/navigate, or a JSON command for tabs/CDP), web_screenshot (see what the tab is showing — layout, charts, canvas, QR codes). Not for the built-in read-only web fetch — this is for interacting with a live browser."
+description: "Use this skill to drive Wisp Browser Runtime sessions (shared daily Chrome or workspace Chrome) — open pages, read them, click, fill and submit forms, navigate, switch tabs, or scrape content that needs the user's existing cookies and login state. Triggers when the user asks to do something in their browser, log into a site and act inside it, fill out a web form, click through a flow, or extract data from a page that requires being signed in. Tools: browser_setup (check/connect the extension), web_open_tab (open a URL), web_scan (read visible content + actionable elements with ready-made selectors), web_execute_js (click/type/navigate, or a JSON command for tabs/CDP), web_screenshot (see what the tab is showing — layout, charts, canvas, QR codes). Not for the built-in read-only web fetch — this is for interacting with a live browser."
 fold_cue: "instead_of=guessing-selectors use=web_scan first — it returns a unique CSS selector and rect for every actionable element; never invent selectors"
 ---
 
 # Browser Use — act inside the user's real Chrome
 
-Wisp does **not** launch an automation browser. It talks to a small
-extension inside the user's own Chrome/Chromium, so every action runs in
-their real profile — existing cookies, logins, extensions, and normal
-fingerprint all apply. That is the whole point: you can operate pages the
-user is already signed into.
+Wisp talks to the **Browser Runtime**. Shared mode uses the user's daily
+Chrome via the unpacked extension — every action runs in their real
+profile: existing cookies, logins, extensions, and normal fingerprint all
+apply. Workspace mode can launch a separate Chrome profile. If both are
+connected, pass `session: "shared"` or `session: "workspace"`. If
+Settings → Browser has **Open browser automatically** enabled (the
+default) and no extension is connected, Wisp may start the installed
+Chrome/Chromium/Edge so the extension can reconnect. That is still the
+user's profile, not Playwright or Selenium.
+
+**Shared is the default; workspace is not a fallback.** Google Chrome 137
+and later ignore `--load-extension`, so on a machine with only branded
+Chrome the workspace window cannot load the Wisp extension at all.
+`browser_setup {"action":"start_workspace"}` therefore returns only once
+the workspace extension has connected, and otherwise closes the window
+and fails with `WORKSPACE_EXTENSION_BLOCKED`. On that error: relay the
+message, do not retry `start_workspace`, do not claim any workspace page
+was opened or read, and get the shared session working instead.
+
+For figures/code extraction use `web_scan` with `mode: "article"` then
+`web_save_assets`. For an already-logged-in in-browser chat (ChatGPT,
+Gemini, or Google AI Mode at `google.com/search?udm=50`) use
+`web_agent_send`, `web_agent_wait`, `web_agent_read` on that tab.
 
 Every `web_scan` and `web_execute_js` call needs the user's approval by
 design. Do not treat that as a bug to route around.
@@ -24,6 +42,18 @@ current, or URL-specific questions from prior knowledge. Tell the user
 this turn contains no live web retrieval and wait until the popup shows
 *Connected to Wisp*. Only continue from memory if they explicitly ask
 for a knowledge-only answer. Never invent the path.
+
+Two fields say *why* a browser that looks connected is not usable —
+never report a bare "not connected" when either is set:
+
+- `refused_connection` — something reached the bridge port and Wisp
+  refused it (usually a different extension id, or another loopback
+  bridge holding the port). Its popup can still read *Connected to Wisp*.
+  Relay `refused_connection.explanation`.
+- `reload_required` — a connected extension is older than the protocol
+  this build needs. Have the user open `chrome://extensions` and
+  **Reload** Wisp Real Browser Bridge from `extension_path`; Chrome does
+  not auto-update an unpacked extension.
 
 One exception: the user says the extension is already installed. Chrome
 suspends its service worker when idle and reconnects on a one-minute
@@ -70,6 +100,22 @@ relay the install steps only if that call fails too.
 Prefer plain JS. Reach for `cmd:cdp` only when a page blocks synthetic
 events or you truly need trusted input.
 
+## In-browser chat — `web_agent_send` / `web_agent_wait` / `web_agent_read`
+
+Use these on an **already signed-in** tab. They are not a new Wisp agent;
+they drive the chat composer in the user's Chrome.
+
+Supported tabs (HTTPS, exact host, no lookalikes):
+
+- ChatGPT: `chatgpt.com` / `chat.openai.com`
+- Gemini: `gemini.google.com`
+- Google AI Mode: `google.com/search?udm=50` (plain Google Search without
+  `udm=50` is refused)
+
+Flow: `web_agent_send {prompt}` → `web_agent_wait` → `web_agent_read`. The
+read result is `{answer_text, citations, status, site}`. If the page is
+login or CAPTCHA, stop and let the user finish it in that tab.
+
 ## Seeing the page — `web_screenshot`
 
 `web_scan` gives text and elements; **`web_screenshot`** gives sight. Use it
@@ -83,25 +129,26 @@ Pass `question` to say what to read out of it, e.g.
 It goes through the configured vision model, so `web_scan` stays the cheaper
 default — screenshot when you need eyes, not for every step.
 
-## Tab hygiene — track what you open, offer to close it
+## Tab hygiene — the app tracks what you open
 
-Browsing tasks (searching papers, opening a dozen results) leave the user
-with a pile of tabs to close by hand. So:
+Browsing tasks (searching papers, opening a dozen results) used to leave the
+user with a pile of tabs. **Do not ask in chat whether to close them.** The
+desktop records every tab `web_open_tab` (and tab-create commands) opened in
+this turn, including after URL changes, and never includes tabs that were
+already open.
 
-1. Every `web_open_tab` returns `tab.id`. **Keep a running list of the ids
-   you opened in this task**, in your own message text — e.g. after a batch
-   write `opened tabs: 1234, 1235, 1236`. `{"cmd":"tabs"}` cannot tell you
-   which tabs are yours, only what exists.
-2. When the task is done, before your final answer, **ask the user**:
-   name the count and offer to close them, e.g. *"我为这次检索开了 6 个标签
-   页，需要我关掉吗？"* Do not close anything without a yes.
-3. On a yes, close them in one call:
-   `{"cmd":"tabs","method":"close","tabIds":[1234,1235,1236]}`. Report
-   `closed`; ids already gone are skipped silently.
+- If Settings → Browser has **Automatically close browser tabs** on
+  (`browser_setup.auto_close_tabs=true`), the app closes this turn's tabs
+  when the turn ends. Do not also close them yourself unless the user asks
+  mid-task.
+- If that setting is off, the app shows a confirmation after the turn
+  (default: close all this-turn tabs; the user can uncheck pages to keep).
+- You may still close a tab **mid-task** with
+  `{"cmd":"tabs","method":"close","tabIds":[...]}` if a later step does not
+  need it, or if the user explicitly asks now.
 
 Close **only ids you opened yourself**. Tabs the user had open, or ones
-they opened during the task, are theirs — never include them, and never
-close a tab mid-task that later steps still need.
+they opened during the task, are theirs.
 
 ## Stop conditions (do not automate through these)
 

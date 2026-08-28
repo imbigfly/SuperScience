@@ -1,3 +1,5 @@
+> **Runtime note (0.3.0):** see [browser-runtime-architecture.md](browser-runtime-architecture.md) and [browser-runtime-acceptance.md](browser-runtime-acceptance.md). The extension is Protocol v2. Shared Chrome stays on `ws://127.0.0.1:18765`; workspace Chrome uses a dedicated profile and `18766`. Reload the unpacked extension after upgrading.
+
 # Real-browser automation
 
 > **Acknowledgement:** this feature is inspired by GenericAgent's
@@ -33,9 +35,26 @@ exact extension directory on that installation, and the following steps.
 If the extension is not connected, live page retrieval fails closed. SuperScience
 shows a chat banner that the current answer includes no live web results,
 and the Agent must stop on live, latest, current, or URL-specific requests
-instead of answering from memory. After Chrome is open and the popup shows
-**Connected to SuperScience**, use **Retry after connecting** to run the same
-request again.
+instead of answering from memory. The banner's **Set up browser** button
+opens the browser's extension page and copies the bundled path so the
+remaining steps are Developer mode and Load unpacked. After Chrome is open
+and the popup shows **Connected to SuperScience**, use **Retry after connecting**
+to run the same request again.
+
+**Settings → Browser → Open browser automatically** is on by default. When a
+browser tool needs the real session and Chrome/Chromium/Edge is not running,
+SuperScience starts that installed browser with the existing user profile so the
+unpacked extension can reconnect. Turn the setting off to keep SuperScience from
+launching a browser.
+
+**Settings → Browser → Automatically close browser tabs** is off by default.
+SuperScience records tabs it created during the current turn (by `tab_id`, including
+after in-tab navigation) and never includes tabs that were already open.
+When the setting is on, those tabs are closed when the turn ends (completed,
+stopped, or failed). When it is off, a confirmation lists them, all selected
+by default; uncheck any to keep, then close the rest or keep all. If the
+extension is disconnected at the end of the turn, the pending list is kept
+until it reconnects.
 
 The banner describes the answer on screen, not the session. It is derived from
 the browser tool results of the latest turn only, and a single successful
@@ -125,6 +144,11 @@ These settings must be changed manually because internal settings pages such as
   for document `complete` before capturing. It captures the viewport only;
   scroll with `web_execute_js` to reach content below the fold. It needs a
   vision-capable model configured in **Settings → Models**, like `view_image`.
+- `web_agent_send` / `web_agent_wait` / `web_agent_read`: one-shot send, wait,
+  and read against an already-logged-in in-browser chat tab. Supported HTTPS
+  hosts are `chatgpt.com` / `chat.openai.com`, `gemini.google.com`, and
+  `google.com` with `udm=50` (Google AI Mode). Login and CAPTCHA pages stop
+  for the user; SuperScience does not type passwords or bypass those gates.
 
 Both tools normally require at least one SuperScience approval. The approval can be
 granted once, for the session, for the project, or globally through the existing

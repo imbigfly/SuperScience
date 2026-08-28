@@ -66,6 +66,69 @@ pub(crate) fn context_percent(used: usize, max: usize) -> usize {
     }
 }
 
+/// Default bands from #931: under 70% is idle, 70–90% is a warning, above
+/// 90% is danger. A missing window must not look like 0%.
+pub(crate) const CONTEXT_USAGE_WARN_PCT: usize = 70;
+pub(crate) const CONTEXT_USAGE_DANGER_PCT: usize = 90;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ContextUsageTone {
+    Unknown,
+    Ok,
+    Warn,
+    Danger,
+}
+
+impl ContextUsageTone {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Ok => "ok",
+            Self::Warn => "warn",
+            Self::Danger => "danger",
+        }
+    }
+}
+
+pub(crate) fn context_usage_tone(used: usize, max: usize) -> ContextUsageTone {
+    if max == 0 {
+        return ContextUsageTone::Unknown;
+    }
+    let pct = context_percent(used, max);
+    if pct > CONTEXT_USAGE_DANGER_PCT {
+        ContextUsageTone::Danger
+    } else if pct >= CONTEXT_USAGE_WARN_PCT {
+        ContextUsageTone::Warn
+    } else {
+        ContextUsageTone::Ok
+    }
+}
+
+pub(crate) fn context_usage_percent_label(used: usize, max: usize) -> String {
+    if max == 0 {
+        "—".into()
+    } else {
+        format!("{}%", context_percent(used, max))
+    }
+}
+
+pub(crate) fn context_usage_tooltip(snapshot: &ContextUsageSnapshot, locale: Locale) -> String {
+    if snapshot.max == 0 {
+        return t(locale, "context_usage.tooltip_unknown").into();
+    }
+    let used = fmt_context_tokens(snapshot.used);
+    let max = fmt_context_limit(snapshot.max);
+    tf(
+        locale,
+        if snapshot.estimated {
+            "context_usage.tooltip_estimated"
+        } else {
+            "context_usage.tooltip_exact"
+        },
+        &[("used", &used), ("max", &max)],
+    )
+}
+
 pub(crate) fn fmt_context_tokens(tokens: usize) -> String {
     if tokens < 1_000 {
         tokens.to_string()
@@ -161,8 +224,9 @@ pub(crate) fn context_usage_detail_text(details: &ContextUsageDetails, color: &s
 #[cfg(test)]
 mod token_format_tests {
     use super::{
-        context_percent, context_usage_rows, fmt_context_limit, fmt_context_tokens, fmt_tokens,
-        renders_nothing,
+        context_percent, context_usage_percent_label, context_usage_rows, context_usage_tone,
+        context_usage_tooltip, fmt_context_limit, fmt_context_tokens, fmt_tokens, renders_nothing,
+        ContextUsageTone,
     };
     use crate::dto::{ContextUsage, ContextUsageSnapshot};
     use crate::i18n::Locale;
@@ -189,6 +253,40 @@ mod token_format_tests {
         assert_eq!(fmt_context_tokens(6_000), "6.0K");
         assert_eq!(fmt_context_tokens(79_900), "79.9K");
         assert_eq!(fmt_context_limit(300_000), "300K");
+    }
+
+    #[test]
+    fn context_usage_tone_uses_warn_and_danger_bands() {
+        assert_eq!(context_usage_tone(0, 0), ContextUsageTone::Unknown);
+        assert_eq!(context_usage_tone(69, 100), ContextUsageTone::Ok);
+        assert_eq!(context_usage_tone(70, 100), ContextUsageTone::Warn);
+        assert_eq!(context_usage_tone(90, 100), ContextUsageTone::Warn);
+        assert_eq!(context_usage_tone(91, 100), ContextUsageTone::Danger);
+        assert_eq!(context_usage_percent_label(0, 0), "—");
+        assert_eq!(context_usage_percent_label(79_900, 128_000), "62%");
+        let tooltip = context_usage_tooltip(
+            &ContextUsageSnapshot {
+                used: 79_900,
+                max: 128_000,
+                breakdown: None,
+                estimated: true,
+            },
+            Locale::En,
+        );
+        assert!(tooltip.contains("79.9K"));
+        assert!(tooltip.contains("128K"));
+        assert_eq!(
+            context_usage_tooltip(
+                &ContextUsageSnapshot {
+                    used: 1_200,
+                    max: 0,
+                    breakdown: None,
+                    estimated: false,
+                },
+                Locale::En,
+            ),
+            "Context window unknown for this model"
+        );
     }
 
     #[test]
@@ -1363,7 +1461,7 @@ pub(crate) fn render_item(
     ui_index: usize,
     item: &ChatItem,
     timestamp: Option<i64>,
-    artifacts: &[Artifact],
+    artifacts: Memo<Vec<Artifact>>,
     on_artifact: Callback<usize>,
     on_file: Callback<ModalArtifact>,
     runs: RwSignal<Vec<RunSummary>>,
@@ -1444,14 +1542,15 @@ pub(crate) fn render_item(
         ChatItem::Assistant { text, .. } if compact_assistant => {
             let project_root = use_context::<ReadSignal<Option<ProjectInfo>>>()
                 .and_then(|project| project.get().map(|project| project.root));
+            let arts = artifacts.get();
             let html = enrich_md_html(
                 md_to_html(text),
-                artifacts,
+                &arts,
                 &[],
                 locale.get(),
                 project_root.as_deref(),
             );
-            let arts_for_click = artifacts.to_vec();
+            let arts_for_click = arts;
             view! {
                 <div class="assistant-wrap">
                     <div class="body md compact-markdown"
@@ -1471,7 +1570,7 @@ pub(crate) fn render_item(
                 model=model.clone()
                 timestamp=timestamp
                 resources=resources.clone()
-                artifacts=artifacts.to_vec()
+                artifacts=artifacts
                 source_item=ui_index
                 on_artifact=on_artifact
                 on_file=on_file

@@ -553,6 +553,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   ];
   let sessionSpecialists: Record<string, string> = {};
   let mockBrowserUrlFilters = { block: [] as { host: string; reason?: string }[], prefer: [] as { host: string; reason?: string }[] };
+  let mockBrowserAutoLaunch = true;
+  let mockBrowserAutoCloseTabs = false;
+  let mockPendingBrowserTabCleanups: any[] = [];
   let mockQuickActions = [{
     id: "literature_research",
     name: "Research literature",
@@ -1136,6 +1139,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     feishu_has_secret: false,
     feishu_state: "stopped",
     feishu_detail: "",
+    feishu_owner_open_id: "",
+    feishu_pending_owner_open_id: "ou_pending",
     weixin_enabled: false,
     weixin_bound: false,
     weixin_state: "stopped",
@@ -1963,6 +1968,48 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return demo;
           case "copy_demo_to_project":
             return `copied-${String(arg("id") ?? "demo")}`;
+          case "load_session_trajectory": {
+            const frameId = String(arg("frameId") ?? "t1");
+            const override = (window as any).__trajectorySnapshot;
+            if (override) return { ...override, frame_id: frameId };
+            return {
+              frame_id: frameId,
+              model: "deepseek-v4-pro",
+              turns: [
+                {
+                  index: 1,
+                  started_at: 1755000000000,
+                  cells: [
+                    { kind: "user", summary: "Analyze the ESR1 dataset", detail_input: null, detail_output: "Analyze the ESR1 dataset", ok: null, is_error: false, ts: 1755000000000, duration_ms: null, usage: null },
+                    { kind: "assistant", summary: "I will inspect the counts matrix first.", detail_input: null, detail_output: "I will inspect the counts matrix first.", ok: null, is_error: false, ts: 1755000000500, duration_ms: 1200, usage: null },
+                    { kind: "tool", summary: "python · df.describe()", detail_input: "{\"code\": \"df.describe()\"}", detail_output: "count  612.0\nmean  4.2", ok: true, is_error: false, ts: 1755000002000, duration_ms: 3400, usage: null },
+                    { kind: "usage", summary: "", detail_input: null, detail_output: null, ok: null, is_error: false, ts: 1755000005600, duration_ms: null, usage: { round: 1, model: "deepseek-v4-pro", input_tokens: 12300, output_tokens: 1400, reasoning_tokens: 300, cached_input_tokens: 9225 } },
+                  ],
+                },
+                {
+                  index: 2,
+                  started_at: 1755000060000,
+                  cells: [
+                    { kind: "user", summary: "Now plot the volcano", detail_input: null, detail_output: null, ok: null, is_error: false, ts: 1755000060000, duration_ms: null, usage: null },
+                    { kind: "tool", summary: "python · sns.scatterplot()", detail_input: "{\"code\": \"sns.scatterplot()\"}", detail_output: "ValueError: missing column log2fc", ok: false, is_error: true, ts: 1755000060500, duration_ms: 800, usage: null },
+                    { kind: "assistant", summary: "The plot failed; retrying with matplotlib.", detail_input: null, detail_output: "The plot failed; retrying with matplotlib.", ok: null, is_error: false, ts: 1755000061500, duration_ms: 2100, usage: null },
+                    { kind: "usage", summary: "", detail_input: null, detail_output: null, ok: null, is_error: false, ts: 1755000064000, duration_ms: null, usage: { round: 2, model: "deepseek-v4-pro", input_tokens: 15000, output_tokens: 900, reasoning_tokens: 0, cached_input_tokens: 12000 } },
+                  ],
+                },
+              ],
+              stats: {
+                turns: 2,
+                steps: 4,
+                llm_ms: 3300,
+                tool_ms: 4200,
+                input_tokens: 27300,
+                output_tokens: 2300,
+                cached_input_tokens: 21225,
+                cache_hit_pct: 75.0,
+                tokens_per_sec: 12.5,
+              },
+            };
+          }
           case "load_session":
             if (mockExplorationFlow && String(arg("id") ?? "").startsWith("exploration-")) {
               activeMockFrame = String(arg("id"));
@@ -2098,7 +2145,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                         addEventListener("message", (event) => {
                           const message = event.data || {};
                           if (message.id === 1 && message.result?.hostInfo?.name === "superscience") {
-                            document.getElementById("state").textContent = "restored";
+                            document.getElementById("state").textContent =
+                              message.result?.hostCapabilities?.serverTools ? "restored-with-tools" : "restored";
                             parent.postMessage({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} }, "*");
                           }
                         });
@@ -2556,6 +2604,28 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             };
           case "get_browser_url_filters":
             return mockBrowserUrlFilters;
+          case "get_browser_auto_launch":
+            return mockBrowserAutoLaunch;
+          case "set_browser_auto_launch":
+            mockBrowserAutoLaunch = Boolean(arg("enabled"));
+            return mockBrowserAutoLaunch;
+          case "get_browser_auto_close_tabs":
+            return mockBrowserAutoCloseTabs;
+          case "set_browser_auto_close_tabs":
+            mockBrowserAutoCloseTabs = Boolean(arg("enabled"));
+            return mockBrowserAutoCloseTabs;
+          case "list_pending_browser_tab_cleanups":
+            return mockPendingBrowserTabCleanups;
+          case "confirm_browser_tab_cleanup": {
+            const turnId = String(arg("turnId") ?? "");
+            mockPendingBrowserTabCleanups = mockPendingBrowserTabCleanups.filter((row: any) => row.turn_id !== turnId);
+            return (arg("tabs") ?? []).map((tab: any) => Number(tab.tab_id)).filter((id: number) => Number.isInteger(id));
+          }
+          case "dismiss_browser_tab_cleanup": {
+            const turnId = String(arg("turnId") ?? "");
+            mockPendingBrowserTabCleanups = mockPendingBrowserTabCleanups.filter((row: any) => row.turn_id !== turnId);
+            return null;
+          }
           case "set_browser_url_filters": {
             const next = plain(arg("filters") ?? {});
             mockBrowserUrlFilters = {
@@ -2948,6 +3018,19 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             mockAcpAgents = mockAcpAgents.filter((agent) => agent.id !== arg("id"));
             return mockAcpAgents;
           case "test_acp_agent":
+            if (query.get("mockAcpTerminalAuth") === "1") {
+              return {
+                protocolVersion: 1,
+                implementation: { name: "fake-claude-acp", title: "Claude Agent", version: "0.69.0" },
+                capabilities: {},
+                authMethods: [{
+                  id: "claude-ai-login",
+                  name: "Claude Subscription",
+                  description: "Use Claude subscription",
+                  type: "terminal",
+                }],
+              };
+            }
             return {
               protocolVersion: 1,
               implementation: { name: "fake-acp", title: "Fake ACP", version: "1.0" },
@@ -2955,6 +3038,19 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               authMethods: [{ id: "browser", name: "Sign in", description: "Authenticate in browser" }],
             };
           case "authenticate_acp_agent":
+            if (query.get("mockAcpTerminalAuth") === "1") {
+              const profile = mockAcpAgents.find((agent) => agent.id === arg("id"));
+              return {
+                id: `terminal-mock-${++terminalCounter}`,
+                projectId: activeProjectId,
+                contextId: `acp-auth:${String(arg("id") ?? "agent")}`,
+                title: `${String(profile?.label ?? "ACP Agent")} — Claude Subscription`,
+                kind: "acp-auth",
+                displayCwd: "/mock/root",
+                processId: 1234,
+                running: true,
+              };
+            }
             return null;
           case "set_acp_session_config": {
             const configId = String(arg("configId") ?? "");
@@ -3014,6 +3110,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             mockChannels.feishu_bound = true;
             mockChannels.feishu_has_secret = true;
             mockChannels.feishu_app_id = "cli_scan_created";
+            mockChannels.feishu_owner_open_id = "ou_scan_owner";
+            mockChannels.feishu_pending_owner_open_id = "";
             mockChannels.feishu_international = Boolean(arg("international") ?? mockChannels.feishu_international);
             return { state: "confirmed", retry_after_ms: 0, app_id: mockChannels.feishu_app_id };
           case "feishu_bind_cancel":
@@ -3023,7 +3121,20 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             mockChannels.feishu_enabled = false;
             mockChannels.feishu_has_secret = false;
             mockChannels.feishu_app_id = "";
+            mockChannels.feishu_owner_open_id = "";
+            mockChannels.feishu_pending_owner_open_id = "";
             mockChannels.feishu_state = "stopped";
+            return null;
+          case "set_feishu_owner":
+            mockChannels.feishu_owner_open_id = String(arg("openId") ?? "").trim();
+            mockChannels.feishu_pending_owner_open_id = "";
+            return null;
+          case "confirm_feishu_pending_owner":
+            mockChannels.feishu_owner_open_id = mockChannels.feishu_pending_owner_open_id;
+            mockChannels.feishu_pending_owner_open_id = "";
+            return null;
+          case "reject_feishu_pending_owner":
+            mockChannels.feishu_pending_owner_open_id = "";
             return null;
           case "set_weixin_channel":
             mockChannels.weixin_enabled = Boolean(arg("enabled"));
@@ -4144,6 +4255,12 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             if (path.includes(".docx")) return base64Bytes(docxBase64);
             if (path.includes(".xlsx") && xlsxBase64) return base64Bytes(xlsxBase64);
             if (path.includes(".pptx") && pptxBase64) return base64Bytes(pptxBase64);
+            // Chat media (generated-image/video cards, artifact thumbnails)
+            // fetches bytes through the blob-object-URL pipeline.
+            if (/\.(png|jpe?g|gif|webp|svg)$/.test(path)) {
+              return base64Bytes("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z0mAAAAAASUVORK5CYII=");
+            }
+            if (path.includes(".mp4")) return base64Bytes(mp4Base64);
             throw new Error("Binary fixture not found");
           }
           case "read_artifact":
@@ -4196,6 +4313,12 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           }
           case "export_session":
             return "/mock/export.zip";
+          case "export_session_trajectory":
+            if ((window as any).__trajectoryExportCancel) return null;
+            if ((window as any).__trajectoryExportError) {
+              throw new Error(String((window as any).__trajectoryExportError));
+            }
+            return "/mock/wisp-trajectory.html";
           case "save_share_image":
             return "/mock/wisp-share.png";
           case "save_share_html":
@@ -4775,6 +4898,18 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               }, 30);
               return fid;
             }
+            if (String(msg).includes("SHARETABLEMATH")) {
+              setTimeout(() => {
+                emit("agent", { kind: "User", frame_id: fid, text: msg });
+                emit("agent", {
+                  kind: "Text",
+                  frame_id: fid,
+                  delta: "| 项目 | 数值 |\n| --- | --- |\n| A | 1 |\n| B | 2 |\n\n质能方程 $E = mc^2$\n\n$$\\int_0^1 x^2 dx$$",
+                });
+                emit("agent", { kind: "Done", frame_id: fid, stop_reason: "end_turn" });
+              }, 30);
+              return fid;
+            }
             if (String(msg).includes("SHARETHINK")) {
               // Fixture for /share: a turn with a visible thinking block, so
               // the share dialog lists it (deselected by default). The reply
@@ -4973,6 +5108,32 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 }, 30);
               });
             }
+            // Long-conversation tool returns (#927): large tool bodies remount
+            // the live step row and briefly collapse the thread. Follow-bottom
+            // must survive those rebuilds. Checked before SCROLLTEST because
+            // that name is a substring of this one.
+            if (String(arg("message") ?? "").includes("TOOLSCROLLTEST")) {
+              const bulky = (n: number) => Array.from(
+                { length: 40 },
+                (_, i) => `tool result block ${n} line ${i} ${"x".repeat(80)}`,
+              ).join("\n");
+              return new Promise<string>((resolve) => {
+                setTimeout(() => {
+                  emit("agent", { kind: "Text", frame_id: fid, delta: "I’ll inspect the files next.\n" });
+                  emit("agent", { kind: "ToolCall", frame_id: fid, name: "read", preview: "matrix.tsv" });
+                }, 20);
+                setTimeout(() => {
+                  emit("agent", { kind: "ToolResult", frame_id: fid, name: "read", ok: true, content: bulky(1) });
+                  emit("agent", { kind: "ToolCall", frame_id: fid, name: "python", preview: "df.describe()" });
+                }, 80);
+                setTimeout(() => {
+                  emit("agent", { kind: "ToolResult", frame_id: fid, name: "python", ok: true, content: bulky(2) });
+                  emit("agent", { kind: "Text", frame_id: fid, delta: "Tools finished at the tail." });
+                  emit("agent", { kind: "Done", frame_id: fid });
+                  resolve(fid);
+                }, 200);
+              });
+            }
             // Long-stream path (#61 regression test): drip many text deltas so the
             // thread re-renders repeatedly and grows well past the viewport.
             if (String(arg("message") ?? "").includes("SCROLLTEST")) {
@@ -5057,6 +5218,44 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                   resolve(fid);
                 }, 1_200);
               });
+            }
+            if (String(arg("message") ?? "").includes("CONTEXTUSAGEWARN")) {
+              setTimeout(() => {
+                emit("agent", { kind: "User", frame_id: fid, text: msg });
+                emit("agent", { kind: "Text", frame_id: fid, delta: "Context is getting full." });
+                emit("agent", {
+                  kind: "Usage",
+                  frame_id: fid,
+                  round: 1,
+                  input: 90_000,
+                  output: 1_520,
+                  reasoning: 0,
+                  cached: 0,
+                  ctx_tokens: 91_520,
+                  max_context: 128_000,
+                });
+                emit("agent", { kind: "Done", frame_id: fid });
+              }, 30);
+              return fid;
+            }
+            if (String(arg("message") ?? "").includes("CONTEXTUSAGEDANGER")) {
+              setTimeout(() => {
+                emit("agent", { kind: "User", frame_id: fid, text: msg });
+                emit("agent", { kind: "Text", frame_id: fid, delta: "Context is almost full." });
+                emit("agent", {
+                  kind: "Usage",
+                  frame_id: fid,
+                  round: 1,
+                  input: 114_000,
+                  output: 1_840,
+                  reasoning: 0,
+                  cached: 0,
+                  ctx_tokens: 115_840,
+                  max_context: 128_000,
+                });
+                emit("agent", { kind: "Done", frame_id: fid });
+              }, 30);
+              return fid;
             }
             if (String(arg("message") ?? "").includes("CONTEXTUSAGE")) {
               setTimeout(() => {
@@ -5358,6 +5557,19 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               }, 30);
               return fid;
             }
+            if (String(arg("message") ?? "").includes("MDLEADBAR")) {
+              const md = [
+                "**结论**：字号已经跟随设置。",
+                "",
+                "表格字号现在跟随外观设置，不再写死。",
+              ].join("\n");
+              setTimeout(() => {
+                emit("agent", { kind: "User", frame_id: fid, text: msg });
+                emit("agent", { kind: "Text", frame_id: fid, delta: md });
+                emit("agent", { kind: "Done", frame_id: fid });
+              }, 30);
+              return fid;
+            }
             if (String(arg("message") ?? "").includes("MDTABLE")) {
               const md = [
                 "| Tissue | TPM |",
@@ -5412,6 +5624,12 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           case "open_external_url":
             if (arg("url")) window.open(String(arg("url")), "_blank", "noopener,noreferrer");
             return null;
+          case "open_browser_extension_page":
+            return { extension_path: "/mock/wisp/browser-extension", opened: false };
+          case "extension_connected":
+            return Boolean((window as any).__extensionConnected);
+          case "ui_heartbeat":
+            return null;
           case "list_specialists":
             return mockSpecialists;
           case "save_specialist_cmd": {
@@ -5456,6 +5674,33 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return null;
           case "get_session_specialist":
             return mockSpecialists.find((s) => s.id === sessionSpecialists[arg("frameId")]) ?? null;
+          case "mcp_app_has_server_tools":
+            return Boolean((window as any).__mcpAppLiveBridges);
+          case "list_mcp_app_tools":
+            if (!(window as any).__mcpAppLiveBridges) {
+              throw new Error("stale-instance: the MCP App is no longer bound to a live MCP server");
+            }
+            return {
+              tools: (window as any).__mcpAppTools ?? [{
+                name: "figure_preview_exact",
+                inputSchema: { type: "object" },
+              }],
+            };
+          case "call_mcp_app_tool": {
+            if (!(window as any).__mcpAppLiveBridges) {
+              throw new Error("stale-instance: the MCP App is no longer bound to a live MCP server");
+            }
+            const name = String(arg("name") ?? "");
+            const canned = (window as any).__mcpAppToolResults;
+            if (canned && canned[name]) return canned[name];
+            return {
+              content: [{ type: "text", text: "exact preview" }],
+              structuredContent: { preview: true, tool: name },
+              isError: false,
+            };
+          }
+          case "close_mcp_app":
+            return true;
           default:
             return null;
         }
@@ -5488,6 +5733,10 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
         },
         close: async () => {
           ((window as any).__skillInvokeLog ??= []).push({ cmd: "close" });
+        },
+        setTitle: async (title: string) => {
+          document.title = String(title);
+          ((window as any).__skillInvokeLog ??= []).push({ cmd: "set-title", args: { title } });
         },
       }),
     },
@@ -5663,6 +5912,9 @@ export function parallelMock(): void {
           case "read_file": return { path: "x", mime: "text/plain", text: "", base64: null };
           case "missing_files": return [];
           case "export_session": return "/mock/export.zip";
+          case "export_session_trajectory":
+            if ((window as any).__trajectoryExportCancel) return null;
+            return "/mock/wisp-trajectory.html";
           case "import_session_archive": return {
             frame_id: "imported-frame", status: "imported",
             message_count: 3, artifact_count: 0, missing_artifacts: [],
@@ -5785,6 +6037,12 @@ export function parallelMock(): void {
           case "open_external_url":
             if (arg("url")) window.open(String(arg("url")), "_blank", "noopener,noreferrer");
             return null;
+          case "open_browser_extension_page":
+            return { extension_path: "/mock/wisp/browser-extension", opened: false };
+          case "extension_connected":
+            return Boolean((window as any).__extensionConnected);
+          case "ui_heartbeat":
+            return null;
           default: return null;
         }
       },
@@ -5800,6 +6058,10 @@ export function parallelMock(): void {
         listen: async (event: string, cb: (e: { payload: unknown }) => void) => {
           windowListeners[event] = cb;
           return () => { windowListeners[event] = undefined; };
+        },
+        setTitle: async (title: string) => {
+          document.title = String(title);
+          ((window as any).__skillInvokeLog ??= []).push({ cmd: "set-title", args: { title } });
         },
       }),
     },

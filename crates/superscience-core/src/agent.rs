@@ -432,6 +432,28 @@ async fn agent_loop_inner(
             anyhow::bail!(EMPTY_RESPONSE_MESSAGE);
         }
 
+        // Stuck-loop guard: a degenerate model re-issues the exact same call
+        // (same name + args), each returning the same result, making no
+        // progress. max_iter only caps the waste; this cuts it off early.
+        // Scans a recent window rather than only consecutive turns, so an
+        // interspersed loop (A/B/A/B, or bouncing among a few calls) trips it
+        // too — not just a byte-for-byte repeat run.
+        //
+        // Check *before* persisting the assistant tool_calls: bailing after
+        // append_assistant left unpaired calls that crash the next provider
+        // request (#979).
+        if !comp.tool_calls.is_empty() {
+            let sig = tool_call_signature(&comp.tool_calls);
+            let repeats = recent_sigs.iter().filter(|s| *s == &sig).count() + 1;
+            if repeats >= STUCK_REPEAT_LIMIT {
+                anyhow::bail!(STUCK_LOOP_MESSAGE);
+            }
+            recent_sigs.push_back(sig);
+            if recent_sigs.len() > STUCK_WINDOW {
+                recent_sigs.pop_front();
+            }
+        }
+
         ctx.append_assistant(
             comp.content.clone(),
             comp.tool_calls.clone(),
@@ -461,24 +483,12 @@ async fn agent_loop_inner(
             return Ok(AgentLoopOutcome::Completed);
         }
 
-        // Stuck-loop guard: a degenerate model re-issues the exact same call
-        // (same name + args), each returning the same result, making no
-        // progress. max_iter only caps the waste; this cuts it off early.
-        // Scans a recent window rather than only consecutive turns, so an
-        // interspersed loop (A/B/A/B, or bouncing among a few calls) trips it
-        // too — not just a byte-for-byte repeat run.
-        let sig = tool_call_signature(&comp.tool_calls);
-        let repeats = recent_sigs.iter().filter(|s| *s == &sig).count() + 1;
-        recent_sigs.push_back(sig);
-        if recent_sigs.len() > STUCK_WINDOW {
-            recent_sigs.pop_front();
-        }
-        if repeats >= STUCK_REPEAT_LIMIT {
-            anyhow::bail!(STUCK_LOOP_MESSAGE);
-        }
-
         let mut batch_control = ToolControl::Continue;
         for (index, tc) in comp.tool_calls.iter().enumerate() {
+            if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                append_interrupted_tool_results(ctx, tools, output, &comp.tool_calls[index..]);
+                anyhow::bail!(STOPPED_BY_USER);
+            }
             let name = tc.function.name.clone();
             let args = tc.args_value();
             let producing = provenance::is_producing(&name);
@@ -486,7 +496,10 @@ async fn agent_loop_inner(
             let source = provenance::source_of(&name, &args);
             // Registered before the pre-snapshot so concurrent sessions of the
             // same workspace can tell which of each other's writes are theirs.
-            let window = root.as_deref().map(provenance::begin_window);
+            let scope = output.provenance_scope();
+            let window = root
+                .as_deref()
+                .map(|root| provenance::begin_window(root, scope.as_deref()));
             let before = if let Some(root) = root.clone() {
                 tokio::task::spawn_blocking(move || provenance::snapshot(&root))
                     .await
@@ -507,6 +520,9 @@ async fn agent_loop_inner(
             };
             let t0 = std::time::Instant::now();
             let result = tools.run(&name, &args, &env).await;
+            // Drain even for non-producing calls so a stale kernel report
+            // cannot leak into the next call's provenance record.
+            let reported = env.take_reported_writes();
             let control = result.control;
             let duration_ms = t0.elapsed().as_millis() as u64;
             if let Some(root) = &root {
@@ -514,15 +530,17 @@ async fn agent_loop_inner(
                 let after = tokio::task::spawn_blocking(move || provenance::snapshot(&root2))
                     .await
                     .unwrap_or_default();
-                let overlapping = window.map(provenance::ProducingWindow::finish);
+                let finished = window.map(provenance::ProducingWindow::finish);
                 let (mut written, mut read) = provenance::diff(&before, &after, root, &source);
-                provenance::retain_unambiguous_writes(
-                    &mut written,
-                    &after,
-                    root,
-                    &source,
-                    overlapping.as_deref().unwrap_or_default(),
-                );
+                if let Some(finished) = &finished {
+                    provenance::retain_unambiguous_writes(
+                        &mut written,
+                        &after,
+                        root,
+                        &source,
+                        finished,
+                    );
+                }
                 provenance::augment_written_paths(
                     &name,
                     root,
@@ -531,6 +549,10 @@ async fn agent_loop_inner(
                     &preimages,
                     &mut written,
                 );
+                // After retain: a kernel-reported path survives an ambiguity
+                // drop, and a report never widens what retain kept for
+                // unreported paths.
+                provenance::union_reported_writes(&mut written, &reported);
                 read.retain(|path| !written.contains(path));
                 if !written.is_empty() {
                     let file_changes =
@@ -548,17 +570,32 @@ async fn agent_loop_inner(
                 }
             }
             let (content, tool_text, ok) = if let Some(img) = &result.image {
-                match vision_provider {
-                    Some(vision) => match describe_image(vision, img, &name, &args).await {
-                        Ok(text) => (Content::text(text.clone()), text, true),
-                        Err(e) => {
-                            let text = format!("{name} error: vision model failed: {e}");
+                if ctx.supports_vision {
+                    // Fast path: the active model reads images natively, so
+                    // attach the picture directly to the tool result. The old
+                    // path round-tripped every view_image through a vision
+                    // describer first — one extra LLM call per image that, on
+                    // a reasoning vision model, averaged ~18s (p90 154s) per
+                    // look. The label text keeps the transcript readable and
+                    // `age_images` keeps old images bounded in context.
+                    (
+                        image_content(&img.label, &img.data_url),
+                        img.label.clone(),
+                        true,
+                    )
+                } else {
+                    match vision_provider {
+                        Some(vision) => match describe_image(vision, img, &name, &args).await {
+                            Ok(text) => (Content::text(text.clone()), text, true),
+                            Err(e) => {
+                                let text = format!("{name} error: vision model failed: {e}");
+                                (Content::text(text.clone()), text, false)
+                            }
+                        },
+                        None => {
+                            let text = format!("{name} error: no vision model is configured. Mark an API model as vision-capable in Settings -> Models and set it for image analysis.");
                             (Content::text(text.clone()), text, false)
                         }
-                    },
-                    None => {
-                        let text = format!("{name} error: no vision model is configured. Mark an API model as vision-capable in Settings -> Models and set it for image analysis.");
-                        (Content::text(text.clone()), text, false)
                     }
                 }
             } else {
@@ -618,6 +655,28 @@ async fn agent_loop_inner(
     }
 }
 
+const INTERRUPTED_BY_USER: &str = "interrupted by user";
+
+fn append_synthetic_tool_results(
+    ctx: &mut ContextManager,
+    tools: &Registry,
+    output: &dyn Output,
+    calls: &[ToolCall],
+    reason: &str,
+) {
+    for tc in calls {
+        let name = &tc.function.name;
+        let args = tc.args_value();
+        let event_name = tools.event_name(name, &args);
+        output.tool_call(&event_name, reason);
+        output.tool_result(&event_name, false, reason, 0);
+        ctx.append_tool(&tc.id, name, Content::text(reason.to_string()));
+        if let Some(message) = ctx.messages.last() {
+            output.on_message(message);
+        }
+    }
+}
+
 fn append_skipped_tool_results(
     ctx: &mut ContextManager,
     tools: &Registry,
@@ -635,17 +694,16 @@ fn append_skipped_tool_results(
         ),
         ToolControl::Continue => return,
     };
-    for tc in skipped {
-        let name = &tc.function.name;
-        let args = tc.args_value();
-        let event_name = tools.event_name(name, &args);
-        output.tool_call(&event_name, &reason);
-        output.tool_result(&event_name, false, &reason, 0);
-        ctx.append_tool(&tc.id, name, Content::text(reason.clone()));
-        if let Some(message) = ctx.messages.last() {
-            output.on_message(message);
-        }
-    }
+    append_synthetic_tool_results(ctx, tools, output, skipped, &reason);
+}
+
+fn append_interrupted_tool_results(
+    ctx: &mut ContextManager,
+    tools: &Registry,
+    output: &dyn Output,
+    remaining: &[ToolCall],
+) {
+    append_synthetic_tool_results(ctx, tools, output, remaining, INTERRUPTED_BY_USER);
 }
 
 fn iteration_limit_reached(iteration: usize, max_iter: usize) -> bool {
@@ -2052,6 +2110,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn vision_primary_view_image_attaches_without_describer_round_trip() {
+        // A vision-capable primary must receive the view_image result as a
+        // native image part in the next request. The old path forwarded every
+        // image through the vision describer first — one extra LLM call per
+        // look (~18s median on a reasoning vision model).
+        // A real tiny PNG on disk: view_image is a real tool, not a stub.
+        let dir = std::env::temp_dir().join(format!("wisp-view-image-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("plot.png"),
+            include_bytes!("../tests/fixtures/1x1.png"),
+        )
+        .unwrap();
+
+        let script = format!(
+            r#"{{"tool_calls": [{{"name": "view_image", "arguments": {{"path": "{}"}}}}]}} "#,
+            dir.join("plot.png").to_string_lossy().replace('\\', "\\\\")
+        );
+        let steps: Vec<superscience_llm::scripted::ScriptedCompletion> =
+            serde_json::from_str(&format!(
+                "[{}, {{\"content\": \"The plot shows a rising curve.\"}}]",
+                script.trim()
+            ))
+            .unwrap();
+        let primary = superscience_llm::scripted::ScriptedProvider::new("scripted-primary", steps);
+        let fallback = RecordingProvider::new("vision-fallback", "describer text");
+        let mut ctx = ContextManager::new(100_000);
+        ctx.supports_vision = true;
+        let tools = Registry::builtins();
+
+        let outcome = agent_loop(
+            &mut ctx,
+            &primary,
+            Some(&fallback),
+            &tools,
+            &dir,
+            &NullOutput,
+            "check the plot",
+            8,
+            None,
+        )
+        .await;
+        std::fs::remove_dir_all(&dir).ok();
+        outcome.unwrap();
+
+        // The describer must never run.
+        assert!(
+            fallback.complete_messages.lock().unwrap().is_empty(),
+            "vision-capable primary must not round-trip view_image through the describer"
+        );
+        // And the follow-up request carries the image part on the tool row.
+        let requests = primary.snapshot().requests;
+        let second = &requests[1].messages;
+        let tool_row = second
+            .iter()
+            .rev()
+            .find(|m| m.role == superscience_llm::Role::Tool)
+            .expect("tool result row in second request");
+        let has_image = match &tool_row.content {
+            superscience_llm::Content::Parts(parts) => parts.iter().any(|p| {
+                matches!(p, superscience_llm::Part::Image { image_url, .. }
+                    if image_url.url.starts_with("data:image"))
+            }),
+            _ => false,
+        };
+        assert!(
+            has_image,
+            "view_image result should be an image part, got {:?}",
+            tool_row.content
+        );
+    }
+
+    #[tokio::test]
     async fn text_primary_receives_automatic_vision_observations() {
         let primary = RecordingProvider::new("text-primary", "done");
         let fallback = RecordingProvider::new("vision-fallback", "a labeled scatter plot");
@@ -2549,6 +2680,11 @@ mod tests {
             err.to_string().contains("identical tool call"),
             "unexpected error: {err}"
         );
+        assert!(
+            crate::unpaired_tool_call_ids(&ctx.messages).is_empty(),
+            "stuck abort must not leave unpaired tool_calls: {:?}",
+            crate::unpaired_tool_call_ids(&ctx.messages)
+        );
         std::fs::remove_dir_all(root).ok();
     }
 
@@ -2819,7 +2955,168 @@ mod tests {
             err.to_string().contains("identical tool call"),
             "unexpected error: {err}"
         );
+        assert!(
+            crate::unpaired_tool_call_ids(&ctx.messages).is_empty(),
+            "stuck abort must not leave unpaired tool_calls: {:?}",
+            crate::unpaired_tool_call_ids(&ctx.messages)
+        );
         std::fs::remove_dir_all(root).ok();
+    }
+
+    struct CancelOnRunTool {
+        name: &'static str,
+        runs: Arc<AtomicUsize>,
+        cancel: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl Tool for CancelOnRunTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn schema(&self) -> ToolSchema {
+            ToolSchema::new(
+                self.name,
+                "sets cancel after starting",
+                serde_json::json!({"type": "object"}),
+            )
+        }
+
+        async fn run(&self, _args: &serde_json::Value, _env: &dyn ToolEnv) -> ToolResult {
+            self.runs.fetch_add(1, Ordering::SeqCst);
+            self.cancel.store(true, Ordering::SeqCst);
+            ToolResult::ok("ran")
+        }
+    }
+
+    struct CancelOnAssistantTools<'a> {
+        cancel: &'a AtomicBool,
+    }
+
+    impl Output for CancelOnAssistantTools<'_> {
+        fn on_message(&self, message: &Message) {
+            if message.role == Role::Assistant && !message.tool_calls.is_empty() {
+                self.cancel.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_after_first_tool_starts_skips_the_rest_of_the_batch() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let first_runs = Arc::new(AtomicUsize::new(0));
+        let second_runs = Arc::new(AtomicUsize::new(0));
+        let provider = SequenceProvider::new([Completion {
+            tool_calls: vec![
+                call("first", "first", serde_json::json!({})),
+                call("second", "second", serde_json::json!({})),
+            ],
+            finish_reason: Some("tool_calls".into()),
+            ..Completion::default()
+        }]);
+        let mut tools = Registry::builtins().filtered(&[]);
+        tools.add(Box::new(CancelOnRunTool {
+            name: "first",
+            runs: first_runs.clone(),
+            cancel: cancel.clone(),
+        }));
+        tools.add(Box::new(CountingTool {
+            name: "second",
+            runs: second_runs.clone(),
+        }));
+        let mut ctx = ContextManager::new(100_000);
+        let root = std::env::temp_dir().join(format!(
+            "wisp-core-stop-mid-batch-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let err = agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            &root,
+            &NullOutput,
+            "do both",
+            0,
+            Some(cancel.as_ref()),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains(STOPPED_BY_USER),
+            "unexpected error: {err}"
+        );
+        assert_eq!(first_runs.load(Ordering::SeqCst), 1);
+        assert_eq!(second_runs.load(Ordering::SeqCst), 0);
+        assert_eq!(tool_result_ids(&ctx), vec!["first", "second"]);
+        assert!(ctx
+            .messages
+            .iter()
+            .find(|message| message.tool_call_id.as_deref() == Some("second"))
+            .unwrap()
+            .content
+            .as_text()
+            .contains(INTERRUPTED_BY_USER));
+        assert!(crate::unpaired_tool_call_ids(&ctx.messages).is_empty());
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[tokio::test]
+    async fn stop_before_first_tool_runs_none_and_pairs_all_calls() {
+        let cancel = AtomicBool::new(false);
+        let first_runs = Arc::new(AtomicUsize::new(0));
+        let second_runs = Arc::new(AtomicUsize::new(0));
+        let provider = SequenceProvider::new([Completion {
+            tool_calls: vec![
+                call("first", "first", serde_json::json!({})),
+                call("second", "second", serde_json::json!({})),
+            ],
+            finish_reason: Some("tool_calls".into()),
+            ..Completion::default()
+        }]);
+        let mut tools = Registry::builtins().filtered(&[]);
+        tools.add(Box::new(CountingTool {
+            name: "first",
+            runs: first_runs.clone(),
+        }));
+        tools.add(Box::new(CountingTool {
+            name: "second",
+            runs: second_runs.clone(),
+        }));
+        let mut ctx = ContextManager::new(100_000);
+        let output = CancelOnAssistantTools { cancel: &cancel };
+
+        let err = agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            Path::new("."),
+            &output,
+            "do both",
+            0,
+            Some(&cancel),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains(STOPPED_BY_USER),
+            "unexpected error: {err}"
+        );
+        assert_eq!(first_runs.load(Ordering::SeqCst), 0);
+        assert_eq!(second_runs.load(Ordering::SeqCst), 0);
+        assert_eq!(tool_result_ids(&ctx), vec!["first", "second"]);
+        assert!(ctx
+            .messages
+            .iter()
+            .filter(|m| m.role == Role::Tool)
+            .all(|message| message.content.as_text().contains(INTERRUPTED_BY_USER)));
+        assert!(crate::unpaired_tool_call_ids(&ctx.messages).is_empty());
     }
 
     /// Streams like a real provider: each turn's content is pushed into the
@@ -3046,5 +3343,163 @@ mod tests {
             "recovered after overload",
             "the recovered turn's content must land in context intact"
         );
+    }
+
+    /// Stands in for the `python` tool: reports paths the way a local kernel
+    /// does, without touching the filesystem.
+    struct ReportingTool {
+        paths: Vec<String>,
+    }
+
+    #[async_trait]
+    impl Tool for ReportingTool {
+        fn name(&self) -> &str {
+            "python"
+        }
+
+        fn schema(&self) -> ToolSchema {
+            ToolSchema::new(
+                "python",
+                "run python",
+                serde_json::json!({"type": "object"}),
+            )
+        }
+
+        async fn run(&self, _args: &serde_json::Value, env: &dyn ToolEnv) -> ToolResult {
+            env.report_written_paths(&self.paths);
+            ToolResult::ok("ran")
+        }
+    }
+
+    #[derive(Default)]
+    struct ProvenanceRecorder {
+        records: Mutex<Vec<provenance::ProvenanceRecord>>,
+    }
+
+    impl Output for ProvenanceRecorder {
+        fn provenance(&self, rec: &provenance::ProvenanceRecord) {
+            self.records.lock().unwrap().push(rec.clone());
+        }
+    }
+
+    impl ProvenanceRecorder {
+        fn recorded_tools(&self) -> Vec<String> {
+            self.records
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|rec| rec.tool.clone())
+                .collect()
+        }
+    }
+
+    fn tool_call_turn(id: &str, name: &str) -> Completion {
+        Completion {
+            tool_calls: vec![call(id, name, serde_json::json!({"code": "import helper"}))],
+            finish_reason: Some("tool_calls".into()),
+            ..Completion::default()
+        }
+    }
+
+    fn final_turn() -> Completion {
+        Completion {
+            content: "done".into(),
+            finish_reason: Some("stop".into()),
+            ..Completion::default()
+        }
+    }
+
+    /// A root whose `notes.txt` is older than the turn — the snapshot diff
+    /// finds nothing to attribute — plus bytecode under a snapshot-skipped
+    /// directory.
+    fn reported_writes_root(tag: &str) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("wisp-reported-{tag}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("__pycache__")).unwrap();
+        std::fs::write(root.join("notes.txt"), b"unchanged").unwrap();
+        std::fs::write(root.join("__pycache__/helper.cpython-312.pyc"), b"bytecode").unwrap();
+        root
+    }
+
+    /// End-to-end fold-in (#937): a record exists at all only because the loop
+    /// unions the kernel report into the diff-derived list. The reported
+    /// `__pycache__` bytecode, which the snapshot deliberately skips, must not
+    /// ride along.
+    #[tokio::test]
+    async fn kernel_report_reaches_the_record_without_snapshot_skipped_paths() {
+        let root = reported_writes_root("foldin");
+        let provider = SequenceProvider::new([tool_call_turn("call_1", "python"), final_turn()]);
+        let mut tools = Registry::builtins();
+        tools.add(Box::new(ReportingTool {
+            paths: vec![
+                "notes.txt".into(),
+                "__pycache__/helper.cpython-312.pyc".into(),
+            ],
+        }));
+        let output = ProvenanceRecorder::default();
+        let mut ctx = ContextManager::new(100_000);
+
+        agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            &root,
+            &output,
+            "write the notes",
+            10,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let records = output.records.lock().unwrap();
+        assert_eq!(records.len(), 1, "the fold-in must produce one record");
+        assert_eq!(records[0].tool, "python");
+        assert_eq!(records[0].files_written, vec!["notes.txt".to_string()]);
+        drop(records);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The loop drains the report buffer after every tool call, so the second
+    /// producing call — which reported nothing and wrote nothing — must not
+    /// inherit the first call's paths.
+    #[tokio::test]
+    async fn a_kernel_report_never_leaks_into_the_next_tool_call() {
+        let root = reported_writes_root("drain");
+        let provider = SequenceProvider::new([
+            tool_call_turn("call_1", "python"),
+            tool_call_turn("call_2", "r"),
+            final_turn(),
+        ]);
+        let mut tools = Registry::builtins();
+        tools.add(Box::new(ReportingTool {
+            paths: vec!["notes.txt".into()],
+        }));
+        let runs = Arc::new(AtomicUsize::new(0));
+        tools.add(Box::new(CountingTool {
+            name: "r",
+            runs: runs.clone(),
+        }));
+        let output = ProvenanceRecorder::default();
+        let mut ctx = ContextManager::new(100_000);
+
+        agent_loop(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            &root,
+            &output,
+            "write the notes",
+            10,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(runs.load(Ordering::SeqCst), 1, "the r tool must have run");
+        assert_eq!(output.recorded_tools(), vec!["python".to_string()]);
+        std::fs::remove_dir_all(&root).ok();
     }
 }

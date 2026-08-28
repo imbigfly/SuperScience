@@ -264,7 +264,21 @@ pub(super) async fn merge_session_branch_summary(
         .map_err(|error| error.to_string())?;
     let ids = [preview.main_session_id.clone(), id.clone()];
     if session_branch_is_busy(&state, &ids).await {
-        return Err("Wait for the branch and main conversation to finish before merging.".into());
+        return Err(BRANCH_MERGE_BUSY.into());
+    }
+
+    // A finishing turn drops `running_turns` before persist/compaction, but
+    // still holds `rt.workflow`. Collect existing runtimes (never insert) and
+    // wait for those locks so merge cannot detach a frame the old Arc still
+    // owns — that would let a new turn `or_insert_with` a second runtime.
+    let runtimes = {
+        let sessions = state.sessions.lock().await;
+        superscience_core::session_locks::existing_in_lock_order(&sessions, &ids)
+    };
+    let (_workflow_locks, mut agent_guards) = lock_session_branch_merge_runtimes(&runtimes).await;
+
+    if session_branch_is_busy(&state, &ids).await {
+        return Err(BRANCH_MERGE_BUSY.into());
     }
     if state
         .store
@@ -280,29 +294,58 @@ pub(super) async fn merge_session_branch_summary(
         .merge_session_branch_summary(&id, &project.id, &expected_guard_hash, &summary)
         .await
         .map_err(|error| error.to_string())?;
-    state.sessions.lock().await.remove(&merged.main_session_id);
+    // Main history changed. Drop the cached agent but keep the Arc so a turn
+    // that already cloned it cannot `or_insert_with` a second runtime.
+    for ((session_id, runtime), agent) in runtimes.iter().zip(agent_guards.iter_mut()) {
+        if session_id == &merged.main_session_id {
+            agent.take();
+            let generation = runtime
+                .agent_config_generation
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                .saturating_add(1);
+            runtime
+                .cached_agent_generation
+                .store(generation, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
     state.set_active_frame(window.label(), Some(merged.main_session_id.clone()));
     Ok(merged)
 }
 
 const BRANCH_SUMMARY_OUTPUT_TOKENS: u64 = 4_096;
 const BRANCH_SUMMARY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+const BRANCH_MERGE_BUSY: &str =
+    "Wait for the branch and main conversation to finish before merging.";
 
-fn session_branch_is_waiting(state: &AppState, ids: &[String]) -> bool {
-    let awaiting = state.awaiting_confirm.lock().unwrap();
-    let reviewing = state.reviewing.lock().unwrap();
-    ids.iter()
-        .any(|id| awaiting.contains(id) || reviewing.contains(id))
+/// Workflow then agent, in the already-sorted runtime list (lexicographic ids).
+/// Matches transfer/delete lock order per session; missing runtimes were skipped.
+async fn lock_session_branch_merge_runtimes(
+    runtimes: &[(String, Arc<SessionRuntime>)],
+) -> (
+    Vec<tokio::sync::OwnedMutexGuard<()>>,
+    Vec<tokio::sync::MutexGuard<'_, Option<Agent>>>,
+) {
+    let ids: Vec<String> = runtimes.iter().map(|(id, _)| id.clone()).collect();
+    let workflows = runtimes
+        .iter()
+        .map(|(id, rt)| (id.clone(), rt.workflow.clone()))
+        .collect();
+    let workflow = superscience_core::session_locks::lock_existing_in_order(&workflows, &ids).await;
+    let mut agent = Vec::with_capacity(runtimes.len());
+    for (_, rt) in runtimes {
+        agent.push(rt.agent.lock().await);
+    }
+    (workflow, agent)
 }
 
 async fn session_branch_is_busy(state: &AppState, ids: &[String]) -> bool {
-    state
-        .running_turns
-        .lock()
-        .await
-        .iter()
-        .any(|running| ids.contains(running))
-        || session_branch_is_waiting(state, ids)
+    let running = state.running_turns.lock().await.clone();
+    superscience_core::session_locks::session_targets_busy(
+        &running,
+        &state.awaiting_confirm.lock().unwrap(),
+        &state.reviewing.lock().unwrap(),
+        ids,
+    )
 }
 
 #[tauri::command]
@@ -754,6 +797,10 @@ pub(super) async fn delete_session(
         sessions.remove(&id);
     }
     state.remove_notification_window(&id);
+    // MCP Apps presented by this conversation must lose their tool bridge so a
+    // later `tools/call` (e.g. from a reloaded iframe) fails stale instead of
+    // pinning the MCP server process.
+    state.remove_mcp_app_bridges_for_frame(&id);
     if state.active_frame(window.label()).as_deref() == Some(id.as_str()) {
         state.set_active_frame(window.label(), None);
     }
@@ -923,7 +970,7 @@ pub(super) async fn rewind_session(
         .await
         .map_err(|e| format!("{e}"))?;
     if let Some(rt) = state.sessions.lock().await.get(&frame_id) {
-        rt.set_last_seq(keep as i64);
+        rt.sync_last_seq_from_store(&state.store, &frame_id).await?;
     }
     Ok(())
 }
@@ -1249,6 +1296,7 @@ pub(super) async fn load_session(
         state.set_active_frame(window.label(), Some(id.clone()));
         let _ = state.store.mark_frame_seen(&id).await;
         if let Some(rt) = state.sessions.lock().await.get(&id).cloned() {
+            // latest_seq is COALESCE(MAX(seq),0) from this page load.
             rt.set_last_seq(page.latest_seq);
         }
     }
@@ -1265,6 +1313,41 @@ pub(super) async fn load_session(
         branches,
         branch_state,
     })
+}
+
+/// Reload a session's persisted messages and UI events, then fold them into
+/// a trajectory snapshot. The HTML export command repeats this same store
+/// read so it never depends on the frontend's filtered inspector view.
+async fn folded_session_trajectory(
+    store: &superscience_store::Store,
+    frame_id: &str,
+) -> Result<trajectory::TrajectorySnapshot, String> {
+    let messages = store
+        .load_messages_with_seq(frame_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let events = store
+        .load_session_ui_events_timed(frame_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let model = store
+        .frame_model(frame_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(trajectory::fold_trajectory(
+        frame_id, model, &messages, &events,
+    ))
+}
+
+/// Fold a session's stored messages and persisted UI events into the
+/// trajectory (轨迹) view: turns of user/assistant/tool/usage cells with
+/// timing and token statistics. Read-only; does not touch window state.
+#[tauri::command]
+pub(super) async fn load_session_trajectory(
+    state: State<'_, AppState>,
+    frame_id: String,
+) -> Result<trajectory::TrajectorySnapshot, String> {
+    folded_session_trajectory(&state.store, &frame_id).await
 }
 
 /// Mark which session this window is viewing without loading it. The UI calls

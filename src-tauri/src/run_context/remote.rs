@@ -59,8 +59,33 @@ pub(super) fn ssh_script_command(
     label: &str,
     payload: String,
 ) -> Result<RunCommand, String> {
+    ssh_script_command_inner(connection, label, payload, false)
+}
+
+/// Long harvest RPCs (collect) must not occupy the shared per-host master slot.
+/// `sh -s --` is the existing dedicated-session shape in `eligible_payload`:
+/// stdin is present and the trailing remote command is not exactly `sh -s`, so
+/// ProcessRunRunner spawns a private ssh process.
+pub(super) fn ssh_dedicated_script_command(
+    connection: &crate::ssh_hosts::SshConnection,
+    label: &str,
+    payload: String,
+) -> Result<RunCommand, String> {
+    ssh_script_command_inner(connection, label, payload, true)
+}
+
+fn ssh_script_command_inner(
+    connection: &crate::ssh_hosts::SshConnection,
+    label: &str,
+    payload: String,
+    dedicated: bool,
+) -> Result<RunCommand, String> {
     let mut args = connection.ssh_args()?;
-    args.push("sh -s".into());
+    args.push(if dedicated {
+        "sh -s --".into()
+    } else {
+        "sh -s".into()
+    });
     Ok(RunCommand {
         context_id: format!("ssh:{}", connection.alias),
         program: "ssh".into(),
@@ -672,18 +697,22 @@ pub(super) async fn ensure_remote_started(
             }
             match launch_remote(runner, &remote.handle).await {
                 Ok(handle) => Ok(handle),
-                Err(launch_error) if remote.handle.is_local_detached() => {
-                    // The Windows launch host can time out after its detached
-                    // supervisor has already acknowledged the command. Re-read
-                    // the idempotent control directory before declaring the Run
-                    // failed; this observes an existing handle but never starts
-                    // the command a second time.
+                Err(launch_error) => {
+                    // The launch RPC can fail after the remote supervisor has
+                    // already acknowledged the command: the Windows launch
+                    // host can time out on its detached supervisor, and an
+                    // SSH response can be lost to a transport timeout or
+                    // disconnect after `_submitted` was written. Re-read the
+                    // idempotent control directory before declaring the Run
+                    // failed; this observes an existing handle but never
+                    // starts the command a second time. A genuine remote
+                    // script failure leaves no `_submitted`, so the original
+                    // launch error still surfaces.
                     match prepare_remote(runner, remote).await {
                         Ok(PrepareRemote::Existing(handle)) => Ok(handle),
                         _ => Err(launch_error),
                     }
                 }
-                Err(error) => Err(error),
             }
         }
     }

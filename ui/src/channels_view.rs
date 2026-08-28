@@ -4,13 +4,15 @@
 //! and fetched on mount.
 
 use crate::app_support::{compose_icon, copy_text, js_error_text};
-use crate::bindings::invoke_checked;
+use crate::bindings::{invoke_checked, listen};
 use crate::dto::{ChannelsStatus, FeishuBindPoll, FeishuBindStart, WeixinBindStart};
 use crate::i18n::{localize_backend, t, Locale};
 use crate::text::{event_target_checked, event_target_input};
 use leptos::*;
 use serde_wasm_bindgen::to_value;
 use std::net::Ipv4Addr;
+use wasm_bindgen::closure::Closure;
+use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 
 const DEFAULT_DEVICE_BRIDGE_PORT: u16 = 18_766;
@@ -70,6 +72,7 @@ pub(super) fn ChannelsPane(
     let status = create_rw_signal(None::<ChannelsStatus>);
     let feishu_app_id = create_rw_signal(String::new());
     let feishu_secret = create_rw_signal(String::new());
+    let feishu_owner_id = create_rw_signal(String::new());
     let feishu_international = create_rw_signal(false);
     let feishu_qr = create_rw_signal(None::<FeishuBindStart>);
     let feishu_bind_state = create_rw_signal(String::new());
@@ -95,6 +98,16 @@ pub(super) fn ChannelsPane(
         });
     });
     refresh.call(());
+    {
+        let refresh = refresh;
+        spawn_local(async move {
+            let callback = Closure::wrap(Box::new(move |_event: JsValue| {
+                refresh.call(());
+            }) as Box<dyn FnMut(JsValue)>);
+            let _ = listen("channels-updated", callback.as_ref().unchecked_ref()).await;
+            callback.forget();
+        });
+    }
 
     let save_feishu = Callback::new(move |enabled: bool| {
         let arg = to_value(&serde_json::json!({
@@ -244,6 +257,7 @@ pub(super) fn ChannelsPane(
                 Ok(_) => {
                     let _ = feishu_app_id.try_set(String::new());
                     let _ = feishu_secret.try_set(String::new());
+                    let _ = feishu_owner_id.try_set(String::new());
                     let _ = msg.try_set(Some((
                         true,
                         t(locale.get_untracked(), "channels.feishu.unbound").into(),
@@ -255,6 +269,86 @@ pub(super) fn ChannelsPane(
                         localize_backend(locale.get_untracked(), &js_error_text(error)),
                     )));
                 }
+            }
+            refresh.call(());
+        });
+    });
+
+    let save_feishu_owner = Callback::new(move |_: ()| {
+        let arg = to_value(&serde_json::json!({
+            "openId": feishu_owner_id.get_untracked().trim(),
+        }))
+        .unwrap();
+        spawn_local(async move {
+            match invoke_checked("set_feishu_owner", arg).await {
+                Ok(_) => {
+                    let _ = msg.try_set(Some((
+                        true,
+                        t(locale.get_untracked(), "channels.feishu.owner_saved").into(),
+                    )));
+                }
+                Err(error) => {
+                    let _ = msg.try_set(Some((
+                        false,
+                        localize_backend(locale.get_untracked(), &js_error_text(error)),
+                    )));
+                }
+            }
+            refresh.call(());
+        });
+    });
+
+    let clear_feishu_owner = Callback::new(move |_: ()| {
+        let arg = to_value(&serde_json::json!({ "openId": "" })).unwrap();
+        spawn_local(async move {
+            match invoke_checked("set_feishu_owner", arg).await {
+                Ok(_) => {
+                    let _ = feishu_owner_id.try_set(String::new());
+                    let _ = msg.try_set(Some((
+                        true,
+                        t(locale.get_untracked(), "channels.feishu.owner_cleared").into(),
+                    )));
+                }
+                Err(error) => {
+                    let _ = msg.try_set(Some((
+                        false,
+                        localize_backend(locale.get_untracked(), &js_error_text(error)),
+                    )));
+                }
+            }
+            refresh.call(());
+        });
+    });
+
+    let confirm_feishu_pending = Callback::new(move |_: ()| {
+        spawn_local(async move {
+            match invoke_checked("confirm_feishu_pending_owner", JsValue::UNDEFINED).await {
+                Ok(_) => {
+                    let _ = msg.try_set(Some((
+                        true,
+                        t(locale.get_untracked(), "channels.feishu.owner_saved").into(),
+                    )));
+                }
+                Err(error) => {
+                    let _ = msg.try_set(Some((
+                        false,
+                        localize_backend(locale.get_untracked(), &js_error_text(error)),
+                    )));
+                }
+            }
+            refresh.call(());
+        });
+    });
+
+    let reject_feishu_pending = Callback::new(move |_: ()| {
+        spawn_local(async move {
+            if let Err(error) =
+                invoke_checked("reject_feishu_pending_owner", JsValue::UNDEFINED).await
+            {
+                let _ = msg.try_set(Some((
+                    false,
+                    localize_backend(locale.get_untracked(), &js_error_text(error)),
+                )));
             }
             refresh.call(());
         });
@@ -657,6 +751,68 @@ pub(super) fn ChannelsPane(
                             on:input=move |ev| feishu_secret.set(event_target_input(&ev).value()) />
                     </label>
                 </div>
+                <div class="channel-divider">
+                    <span>{move || t(locale.get(), "channels.feishu.owner_title")}</span>
+                </div>
+                {move || {
+                    let pending = status.get().unwrap_or_default().feishu_pending_owner_open_id;
+                    let loc = locale.get();
+                    (!pending.is_empty()).then(move || {
+                        let pending_label = pending.clone();
+                        view! {
+                            <div class="channel-bind-row" data-testid="feishu-pending-owner">
+                                <div>
+                                    <strong>{t(loc, "channels.feishu.pending_title")}</strong>
+                                    <p>{format!("{} ({pending_label})", t(loc, "channels.feishu.pending_hint"))}</p>
+                                </div>
+                                <div class="row channel-bind-actions">
+                                    <button type="button" class="primary" data-testid="feishu-pending-confirm"
+                                        on:click=move |_| confirm_feishu_pending.call(())>
+                                        {t(loc, "channels.feishu.pending_confirm")}
+                                    </button>
+                                    <button type="button" data-testid="feishu-pending-reject"
+                                        on:click=move |_| reject_feishu_pending.call(())>
+                                        {t(loc, "channels.feishu.pending_reject")}
+                                    </button>
+                                </div>
+                            </div>
+                        }
+                    })
+                }}
+                <div class="channel-bind-row">
+                    <div>
+                        <strong data-testid="feishu-owner-status">{move || {
+                            let owner = status.get().unwrap_or_default().feishu_owner_open_id;
+                            if owner.is_empty() {
+                                t(locale.get(), "channels.feishu.owner_not_bound").to_string()
+                            } else {
+                                format!("{} · {owner}", t(locale.get(), "channels.feishu.owner_bound"))
+                            }
+                        }}</strong>
+                        <p>{move || t(locale.get(), "channels.feishu.owner_hint")}</p>
+                    </div>
+                    {move || status.get().map(|s| !s.feishu_owner_open_id.is_empty()).unwrap_or(false).then(|| view! {
+                        <button type="button" data-testid="feishu-owner-clear"
+                            on:click=move |_| clear_feishu_owner.call(())>
+                            {move || t(locale.get(), "channels.feishu.owner_clear")}
+                        </button>
+                    })}
+                </div>
+                <div class="settings-form-grid">
+                    <label class="span-2">
+                        <span>{move || t(locale.get(), "channels.feishu.owner_open_id")}</span>
+                        <input type="text" data-testid="feishu-owner-id"
+                            placeholder="ou_xxxxxxxx"
+                            prop:value=move || feishu_owner_id.get()
+                            on:input=move |ev| feishu_owner_id.set(event_target_input(&ev).value()) />
+                    </label>
+                </div>
+                <div class="row" style="justify-content:flex-start;">
+                    <button type="button" data-testid="feishu-owner-save"
+                        on:click=move |_| save_feishu_owner.call(())>
+                        {move || t(locale.get(), "channels.feishu.owner_save")}
+                    </button>
+                </div>
                 {move || {
                     let detail = status.get().unwrap_or_default().feishu_detail;
                     (!detail.is_empty()).then(|| view! { <p class="settings-field-hint">{detail}</p> })
@@ -872,7 +1028,12 @@ pub(super) fn ChannelsPane(
                                     {feishu_badge}
                                 </strong>
                                 <span class="channel-card-sub">{move || {
-                                    if status.get().map(|s| s.feishu_bound).unwrap_or(false) {
+                                    let s = status.get().unwrap_or_default();
+                                    if !s.feishu_pending_owner_open_id.is_empty() {
+                                        t(locale.get(), "channels.feishu.pending_title").to_string()
+                                    } else if s.feishu_bound && s.feishu_owner_open_id.is_empty() {
+                                        t(locale.get(), "channels.feishu.owner_missing").to_string()
+                                    } else if s.feishu_bound {
                                         feishu_region()
                                     } else {
                                         t(locale.get(), "channels.feishu.subtitle").to_string()

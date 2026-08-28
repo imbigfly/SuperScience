@@ -89,23 +89,7 @@ impl OpenAiProvider {
     /// call.
     fn sanitize(messages: &[Message]) -> Vec<Value> {
         // ids answered by a `tool` message, and ids requested by an assistant.
-        let mut answered = std::collections::HashSet::new();
-        let mut requested = std::collections::HashSet::new();
-        for m in messages {
-            match m.role {
-                Role::Tool => {
-                    if let Some(id) = &m.tool_call_id {
-                        answered.insert(id.clone());
-                    }
-                }
-                Role::Assistant => {
-                    for tc in &m.tool_calls {
-                        requested.insert(tc.id.clone());
-                    }
-                }
-                _ => {}
-            }
-        }
+        let (answered, requested) = crate::tool_call_pairing(messages);
         // Never replay chain-of-thought. Re-sending historical `reasoning_content`
         // bloats the request (~37% of an 86K kimi-k3 session) and feeds a
         // "thinking" model its own past flailing, reinforcing repeat loops.
@@ -116,9 +100,19 @@ impl OpenAiProvider {
         // provider's prompt cache keeps hitting. (Keeping "only the last turn's"
         // would mutate a message once it's no longer last, breaking the prefix.)
         // Same stance as pi / grok-build, which never bulk-replay raw CoT.
-        messages
-            .iter()
-            .filter_map(|m| match m.role {
+        let mut out = Vec::new();
+        // Chat Completions only accepts text content on `role: tool`. Keep
+        // every tool result in its strict pairing position, then append the
+        // images from the complete contiguous result batch as one multimodal
+        // user message. Flushing only after the batch matters when an
+        // assistant issued several parallel tool calls: no user message may
+        // split their corresponding tool rows.
+        let mut pending_tool_image_parts = Vec::new();
+        for m in messages {
+            if m.role != Role::Tool {
+                flush_tool_images(&mut out, &mut pending_tool_image_parts);
+            }
+            let wire = match m.role {
                 Role::System => Some(json!({ "role": "system", "content": m.content.as_text() })),
                 Role::User => {
                     Some(json!({ "role": "user", "content": sanitize_user_content(&m.content) }))
@@ -136,16 +130,30 @@ impl OpenAiProvider {
                             tc
                         })
                         .collect();
-                    let mut o = json!({ "role": "assistant", "content": m.content.as_text() });
-                    if !kept.is_empty() {
-                        o["tool_calls"] = serde_json::to_value(&kept).unwrap_or(Value::Null);
+                    let text = m.content.as_text();
+                    // Reasoning-only / interrupted turns persist as empty
+                    // assistant messages and replay as `content: ""`, which
+                    // strict endpoints reject — kimi-k3 400s with "the message
+                    // ... must not be empty" (verified live; DeepSeek
+                    // tolerates it). Nothing replayable is left, so drop the
+                    // turn. Empty text alongside tool_calls is fine on both.
+                    if kept.is_empty() && text.is_empty() {
+                        None
+                    } else {
+                        let mut o = json!({ "role": "assistant", "content": text });
+                        if !kept.is_empty() {
+                            o["tool_calls"] = serde_json::to_value(&kept).unwrap_or(Value::Null);
+                        }
+                        Some(o)
                     }
-                    Some(o)
                 }
                 Role::Tool => {
                     let id = m.tool_call_id.clone().unwrap_or_default();
                     if !requested.contains(&id) {
-                        return None;
+                        continue;
+                    }
+                    if let Some(parts) = tool_image_parts(&m.content) {
+                        pending_tool_image_parts.extend(parts);
                     }
                     Some(json!({
                         "role": "tool",
@@ -153,8 +161,13 @@ impl OpenAiProvider {
                         "content": m.content.as_text(),
                     }))
                 }
-            })
-            .collect()
+            };
+            if let Some(wire) = wire {
+                out.push(wire);
+            }
+        }
+        flush_tool_images(&mut out, &mut pending_tool_image_parts);
+        out
     }
 
     fn build_body(&self, messages: &[Message], tools: &[ToolSchema], stream: bool) -> Value {
@@ -259,18 +272,85 @@ impl OpenAiProvider {
 fn sanitize_user_content(c: &Content) -> Value {
     match c {
         Content::Text(s) => json!(s),
-        Content::Parts(parts) => {
-            let arr: Vec<Value> = parts
-                .iter()
-                .map(|p| match p {
-                    Part::Text { text, .. } => json!({ "type": "text", "text": text }),
-                    Part::Image { image_url, .. } => {
-                        json!({ "type": "image_url", "image_url": { "url": image_url.url } })
-                    }
-                })
-                .collect();
-            json!(arr)
+        Content::Parts(parts) => json!(openai_content_parts(parts)),
+    }
+}
+
+fn openai_content_parts(parts: &[Part]) -> Vec<Value> {
+    parts
+        .iter()
+        .map(|p| match p {
+            Part::Text { text, .. } => json!({ "type": "text", "text": text }),
+            Part::Image { image_url, .. } => {
+                json!({ "type": "image_url", "image_url": { "url": image_url.url } })
+            }
+        })
+        .collect()
+}
+
+fn tool_image_parts(content: &Content) -> Option<Vec<Value>> {
+    let Content::Parts(parts) = content else {
+        return None;
+    };
+    parts
+        .iter()
+        .any(|part| matches!(part, Part::Image { .. }))
+        .then(|| openai_content_parts(parts))
+}
+
+fn flush_tool_images(out: &mut Vec<Value>, pending: &mut Vec<Value>) {
+    if !pending.is_empty() {
+        out.push(json!({
+            "role": "user",
+            "content": std::mem::take(pending),
+        }));
+    }
+}
+
+/// Visible assistant text from a Chat Completions `message`.
+///
+/// Compatible gateways do not agree on the JSON type: a string, `null`, an
+/// array of text parts, or (when the model was asked for JSON) a parsed
+/// object. `as_str()` alone turns every non-string into `""`, which made
+/// Reader report "no JSON object" on an otherwise successful call (#1019).
+fn extract_message_content(msg: &Value) -> String {
+    match msg.get("content") {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(parts)) => extract_content_array(parts),
+        Some(Value::Object(_)) | Some(Value::Number(_)) | Some(Value::Bool(_)) => {
+            msg["content"].to_string()
         }
+        Some(Value::Null) | None => String::new(),
+    }
+}
+
+fn extract_content_array(parts: &[Value]) -> String {
+    let mut text = String::new();
+    let mut saw_part = false;
+    for part in parts {
+        if let Some(piece) = content_part_text(part) {
+            saw_part = true;
+            text.push_str(&piece);
+        }
+    }
+    if saw_part {
+        text
+    } else {
+        Value::Array(parts.to_vec()).to_string()
+    }
+}
+
+fn content_part_text(part: &Value) -> Option<String> {
+    if let Some(text) = part.as_str() {
+        return Some(text.to_string());
+    }
+    match part.get("type").and_then(Value::as_str) {
+        Some("text") | Some("output_text") | None => part
+            .get("text")
+            .or_else(|| part.get("output_text"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        _ => None,
     }
 }
 
@@ -411,6 +491,34 @@ fn in_band_stream_error(val: &Value) -> Option<LlmError> {
     })
 }
 
+/// Merge one SSE `content` / `reasoning_content` value into the assembled
+/// string. Compatible relays disagree on whether the field is a fragment or
+/// the full snapshot so far; treating snapshots as fragments is O(n²) in both
+/// the assembled text and every live UI event (#985).
+///
+/// Returns the byte offset of the newly appended suffix, or `None` when the
+/// chunk is empty or a duplicate snapshot.
+fn apply_stream_delta(acc: &mut String, incoming: &str) -> Option<usize> {
+    if incoming.is_empty() || incoming == acc.as_str() {
+        return None;
+    }
+    if incoming.starts_with(acc.as_str()) {
+        let start = acc.len();
+        acc.push_str(&incoming[start..]);
+        return (start < acc.len()).then_some(start);
+    }
+    let start = acc.len();
+    acc.push_str(incoming);
+    Some(start)
+}
+
+fn stream_reasoning_delta(delta: &Value) -> Option<&str> {
+    delta
+        .get("reasoning_content")
+        .and_then(|v| v.as_str())
+        .or_else(|| delta.get("reasoning").and_then(|v| v.as_str()))
+}
+
 fn append_stream_content_delta(
     delta: &Value,
     content: &mut String,
@@ -420,22 +528,18 @@ fn append_stream_content_delta(
     // Some compatible endpoints (notably Alibaba/DashScope thinking streams)
     // include `content: ""` beside every non-empty `reasoning_content` delta.
     // Emitting that empty text event breaks an otherwise contiguous reasoning
-    // run into one UI disclosure per token fragment.
-    if let Some(t) = delta
-        .get("content")
-        .and_then(|v| v.as_str())
-        .filter(|t| !t.is_empty())
-    {
-        content.push_str(t);
-        sink.on_text(t);
+    // run into one UI disclosure per token fragment. `apply_stream_delta`
+    // already drops empty strings; keep using it so a snapshot replay of the
+    // same text also stays silent.
+    if let Some(t) = delta.get("content").and_then(|v| v.as_str()) {
+        if let Some(start) = apply_stream_delta(content, t) {
+            sink.on_text(&content[start..]);
+        }
     }
-    if let Some(r) = delta
-        .get("reasoning_content")
-        .and_then(|v| v.as_str())
-        .filter(|r| !r.is_empty())
-    {
-        reasoning.push_str(r);
-        sink.on_reasoning(r);
+    if let Some(r) = stream_reasoning_delta(delta) {
+        if let Some(start) = apply_stream_delta(reasoning, r) {
+            sink.on_reasoning(&reasoning[start..]);
+        }
     }
 }
 
@@ -458,11 +562,7 @@ impl Provider for OpenAiProvider {
             .cloned()
             .unwrap_or(Value::Null);
         let msg = choice.get("message").cloned().unwrap_or(Value::Null);
-        let content = msg
-            .get("content")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        let content = extract_message_content(&msg);
         let reasoning = extract_reasoning(&msg);
         let tool_calls = normalize_tool_calls(&msg);
         ensure_named_tool_calls(&tool_calls)?;
@@ -748,6 +848,65 @@ mod tests {
         );
     }
 
+    #[test]
+    fn extract_message_content_joins_text_parts() {
+        let msg = json!({
+            "content": [
+                {"type": "text", "text": "{\"summary\":"},
+                {"type": "text", "text": "\"hit\"}"}
+            ]
+        });
+        assert_eq!(extract_message_content(&msg), "{\"summary\":\"hit\"}");
+    }
+
+    #[test]
+    fn extract_message_content_serializes_object_payload() {
+        let msg = json!({ "content": { "summary": "hit", "evidence": [] } });
+        let parsed: Value = serde_json::from_str(&extract_message_content(&msg)).unwrap();
+        assert_eq!(parsed["summary"], "hit");
+        assert_eq!(parsed["evidence"], json!([]));
+    }
+
+    #[test]
+    fn extract_message_content_treats_null_as_empty() {
+        assert_eq!(extract_message_content(&json!({ "content": null })), "");
+    }
+
+    #[tokio::test]
+    async fn complete_reads_array_content_parts() {
+        let (base_url, requests) = serve_responses(vec![(
+            "200 OK",
+            "application/json",
+            r#"{"choices":[{"message":{"content":[{"type":"text","text":"OK"}]},"finish_reason":"stop"}]}"#,
+        )])
+        .await;
+        let provider = local_provider(&base_url);
+        let completion = provider
+            .complete(&[Message::user("Reply with OK.")], &[])
+            .await
+            .unwrap();
+        assert_eq!(completion.content, "OK");
+        assert_eq!(requests.await.unwrap(), ["/chat/completions"]);
+    }
+
+    #[tokio::test]
+    async fn complete_keeps_reasoning_when_content_is_null() {
+        let (base_url, requests) = serve_responses(vec![(
+            "200 OK",
+            "application/json",
+            r#"{"choices":[{"message":{"content":null,"reasoning_content":"think"},"finish_reason":"stop"}]}"#,
+        )])
+        .await;
+        let provider = local_provider(&base_url);
+        let completion = provider
+            .complete(&[Message::user("Reply with OK.")], &[])
+            .await
+            .unwrap();
+        assert_eq!(completion.content, "");
+        assert_eq!(completion.reasoning.as_deref(), Some("think"));
+        assert_eq!(requests.await.unwrap(), ["/chat/completions"]);
+    }
+
     #[tokio::test]
     async fn stream_falls_back_from_html_site_to_v1_api() {
         let (base_url, requests) = serve_responses(vec![
@@ -881,6 +1040,85 @@ mod tests {
     }
 
     #[test]
+    fn apply_stream_delta_keeps_true_fragments() {
+        let mut acc = String::new();
+        assert_eq!(apply_stream_delta(&mut acc, "Hel"), Some(0));
+        assert_eq!(apply_stream_delta(&mut acc, "lo"), Some(3));
+        assert_eq!(apply_stream_delta(&mut acc, " world"), Some(5));
+        assert_eq!(acc, "Hello world");
+    }
+
+    #[test]
+    fn apply_stream_delta_collapses_growing_snapshots() {
+        let mut acc = String::new();
+        let mut emitted = String::new();
+        for snap in ["H", "He", "Hel", "Hell", "Hello", "Hello", "Hello!"] {
+            if let Some(start) = apply_stream_delta(&mut acc, snap) {
+                emitted.push_str(&acc[start..]);
+            }
+        }
+        assert_eq!(acc, "Hello!");
+        assert_eq!(emitted, "Hello!");
+    }
+
+    #[test]
+    fn apply_stream_delta_snapshot_replay_is_linear() {
+        let mut acc = String::new();
+        let mut emitted = 0usize;
+        for n in 1..=256 {
+            let snap = "x".repeat(n);
+            if let Some(start) = apply_stream_delta(&mut acc, &snap) {
+                emitted += acc.len() - start;
+            }
+        }
+        assert_eq!(acc.len(), 256);
+        assert_eq!(emitted, 256);
+    }
+
+    #[test]
+    fn append_stream_collapses_cumulative_content_and_reasoning() {
+        let mut content = String::new();
+        let mut reasoning = String::new();
+        let mut sink = RecordingSink::default();
+
+        for delta in [
+            json!({"content": "", "reasoning_content": "think"}),
+            json!({"content": "", "reasoning_content": "think more"}),
+            json!({"content": "Hi", "reasoning_content": "think more"}),
+            json!({"content": "Hi there", "reasoning_content": "think more"}),
+            json!({"content": "Hi there", "reasoning_content": "think more", "reasoning": "ignored"}),
+        ] {
+            append_stream_content_delta(&delta, &mut content, &mut reasoning, &mut sink);
+        }
+
+        assert_eq!(content, "Hi there");
+        assert_eq!(reasoning, "think more");
+        assert_eq!(sink.text, ["Hi", " there"]);
+        assert_eq!(sink.reasoning, ["think", " more"]);
+    }
+
+    #[test]
+    fn append_stream_accepts_qwen_reasoning_field() {
+        let mut content = String::new();
+        let mut reasoning = String::new();
+        let mut sink = RecordingSink::default();
+        append_stream_content_delta(
+            &json!({"reasoning": "step"}),
+            &mut content,
+            &mut reasoning,
+            &mut sink,
+        );
+        append_stream_content_delta(
+            &json!({"reasoning": "step 2"}),
+            &mut content,
+            &mut reasoning,
+            &mut sink,
+        );
+        assert_eq!(reasoning, "step 2");
+        assert_eq!(sink.reasoning, ["step", " 2"]);
+    }
+
+    #[test]
     fn parses_cache_hits_across_providers() {
         // OpenAI / GLM / Moonshot: prompt_tokens_details.cached_tokens.
         let openai = json!({"prompt_tokens": 1000, "completion_tokens": 50,
@@ -909,6 +1147,51 @@ mod tests {
                 arguments: "{}".into(),
             },
         }
+    }
+
+    fn image_tool_result(id: &str) -> Message {
+        let mut message = Message::tool(id, "view_image", "plot.png");
+        message.content = Content::Parts(vec![
+            Part::Text {
+                kind: "text".into(),
+                text: "plot.png".into(),
+            },
+            Part::Image {
+                kind: "image_url".into(),
+                image_url: crate::ImageUrl {
+                    url: "data:image/png;base64,AAAA".into(),
+                },
+            },
+        ]);
+        message
+    }
+
+    #[test]
+    fn native_tool_images_follow_the_complete_chat_tool_result_batch() {
+        let mut asst = Message::assistant("");
+        asst.tool_calls = vec![call("image"), call("text")];
+        let out = OpenAiProvider::sanitize(&[
+            asst,
+            image_tool_result("image"),
+            Message::tool("text", "read", "ok"),
+        ]);
+
+        let roles: Vec<_> = out.iter().map(|message| message["role"].as_str()).collect();
+        assert_eq!(
+            roles,
+            [Some("assistant"), Some("tool"), Some("tool"), Some("user")]
+        );
+        assert_eq!(out[1]["tool_call_id"], "image");
+        assert_eq!(out[1]["content"], "plot.png");
+        assert_eq!(out[2]["tool_call_id"], "text");
+        let image_message = out[3]["content"].as_array().unwrap();
+        assert_eq!(image_message[0]["type"], "text");
+        assert_eq!(image_message[0]["text"], "plot.png");
+        assert_eq!(image_message[1]["type"], "image_url");
+        assert_eq!(
+            image_message[1]["image_url"]["url"],
+            "data:image/png;base64,AAAA"
+        );
     }
 
     // #74: a turn interrupted after GLM emitted `tool_calls` but before its
@@ -1000,6 +1283,36 @@ mod tests {
             out[0]["tool_calls"][0]["function"]["arguments"],
             "{\"path\":\"/tmp/x\"}"
         );
+    }
+
+    /// Reasoning-only / interrupted turns persist as empty assistant messages;
+    /// replayed as `content: ""` they 400 on strict endpoints (kimi-k3: "the
+    /// message ... must not be empty", verified live). With nothing
+    /// replayable left, the turn must be dropped.
+    #[test]
+    fn drops_empty_assistant_turn_without_tool_calls() {
+        let msgs = vec![
+            Message::user("hi"),
+            Message::assistant(""),
+            Message::user("continue"),
+        ];
+        let out = OpenAiProvider::sanitize(&msgs);
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|m| m["role"] != "assistant"));
+    }
+
+    /// Empty text alongside tool_calls is accepted by both DeepSeek and kimi
+    /// (verified live), so the call turn stays — only truly empty turns drop.
+    #[test]
+    fn keeps_empty_text_assistant_with_answered_tool_calls() {
+        let mut asst = Message::assistant("");
+        asst.tool_calls = vec![call("a")];
+        let msgs = vec![Message::user("run"), asst, Message::tool("a", "read", "ok")];
+        let out = OpenAiProvider::sanitize(&msgs);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[1]["role"], "assistant");
+        assert_eq!(out[1]["content"], "");
+        assert_eq!(out[1]["tool_calls"].as_array().unwrap().len(), 1);
     }
 
     #[test]

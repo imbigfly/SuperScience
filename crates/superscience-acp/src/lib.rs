@@ -14,8 +14,9 @@ use std::{
 use agent_client_protocol::{
     schema::{
         v1::{
-            AuthMethod, AuthenticateRequest, CancelNotification, CloseSessionRequest, ContentBlock,
-            Implementation, InitializeRequest, LoadSessionRequest, McpServer, NewSessionRequest,
+            AuthCapabilities, AuthMethod, AuthenticateRequest, CancelNotification,
+            ClientCapabilities, CloseSessionRequest, ContentBlock, Implementation,
+            InitializeRequest, LoadSessionRequest, McpServer, NewSessionRequest,
             PermissionOptionId, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
             RequestPermissionResponse, ResumeSessionRequest, SelectedPermissionOutcome,
             SessionConfigOption, SessionConfigOptionValue, SessionId, SessionModeState,
@@ -89,6 +90,17 @@ pub struct AcpAuthMethod {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
+    pub kind: AcpAuthMethodKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AcpAuthMethodKind {
+    Agent,
+    Terminal {
+        args: Vec<String>,
+        env: BTreeMap<String, String>,
+    },
+    Environment,
 }
 
 /// Information negotiated during ACP initialization.
@@ -567,10 +579,17 @@ async fn run_actor(
             agent_client_protocol::on_receive_request!(),
         )
         .connect_with(process, async move |connection| {
+            let client_capabilities =
+                ClientCapabilities::new().auth(AuthCapabilities::new().terminal(true));
             let initialized = connection
-                .send_request(InitializeRequest::new(ProtocolVersion::V1).client_info(
-                    Implementation::new("superscience", env!("CARGO_PKG_VERSION")),
-                ))
+                .send_request(
+                    InitializeRequest::new(ProtocolVersion::V1)
+                        .client_capabilities(client_capabilities)
+                        .client_info(Implementation::new(
+                            "superscience",
+                            env!("CARGO_PKG_VERSION"),
+                        )),
+                )
                 .block_task()
                 .await?;
             if initialized.protocol_version != ProtocolVersion::V1 {
@@ -773,10 +792,23 @@ fn agent_info(response: agent_client_protocol::schema::v1::InitializeResponse) -
 }
 
 fn auth_method(method: AuthMethod) -> AcpAuthMethod {
+    let id = method.id().to_string();
+    let name = method.name().to_string();
+    let description = method.description().map(str::to_string);
+    let kind = match method {
+        AuthMethod::Agent(_) => AcpAuthMethodKind::Agent,
+        AuthMethod::Terminal(method) => AcpAuthMethodKind::Terminal {
+            args: method.args,
+            env: method.env.into_iter().collect(),
+        },
+        AuthMethod::EnvVar(_) => AcpAuthMethodKind::Environment,
+        _ => AcpAuthMethodKind::Environment,
+    };
     AcpAuthMethod {
-        id: method.id().to_string(),
-        name: method.name().to_string(),
-        description: method.description().map(str::to_string),
+        id,
+        name,
+        description,
+        kind,
     }
 }
 

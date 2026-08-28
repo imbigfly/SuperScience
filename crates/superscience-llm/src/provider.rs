@@ -49,24 +49,74 @@ fn error_chain(e: &reqwest::Error) -> String {
     s
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum LlmError {
-    #[error("http: {}", error_chain(.0))]
-    Http(#[from] reqwest::Error),
-    #[error("decode: {0}")]
-    Decode(#[from] serde_json::Error),
-    #[error("api: {status} {body}")]
-    Api { status: u16, body: String },
-    #[error("config: {0}")]
+    Http(reqwest::Error),
+    Decode(serde_json::Error),
+    Api {
+        status: u16,
+        body: String,
+    },
     Config(String),
-    #[error("stream ended without completion")]
     Incomplete,
     /// A Responses-API turn that ended in a terminal status other than
     /// `completed` (HTTP 200, but `incomplete`/`failed`/`cancelled`). Carries
     /// the wire detail (`incomplete_details.reason` or `error.message`) so
     /// callers can tell an exhausted output budget from a genuine failure.
-    #[error("response ended with status '{status}' ({reason})")]
-    NotCompleted { status: String, reason: String },
+    NotCompleted {
+        status: String,
+        reason: String,
+    },
+}
+
+impl std::fmt::Display for LlmError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            // Provider envelopes bury the actionable sentence inside JSON
+            // (`{"error":{"message":"..."}}`); show just that sentence on the
+            // error card. The raw body stays on the struct untouched —
+            // `is_retriable` / `is_context_overflow` pattern-match on it.
+            LlmError::Api { status, body } => {
+                write!(f, "api: {status} {}", api_error_body_summary(body))
+            }
+            LlmError::Http(error) => write!(f, "http: {}", error_chain(error)),
+            LlmError::Decode(error) => write!(f, "decode: {error}"),
+            LlmError::Config(message) => write!(f, "config: {message}"),
+            LlmError::Incomplete => write!(f, "stream ended without completion"),
+            LlmError::NotCompleted { status, reason } => {
+                write!(f, "response ended with status '{status}' ({reason})")
+            }
+        }
+    }
+}
+
+impl std::error::Error for LlmError {}
+
+impl From<reqwest::Error> for LlmError {
+    fn from(error: reqwest::Error) -> Self {
+        LlmError::Http(error)
+    }
+}
+
+impl From<serde_json::Error> for LlmError {
+    fn from(error: serde_json::Error) -> Self {
+        LlmError::Decode(error)
+    }
+}
+
+/// Extract the one actionable sentence from a provider's JSON error envelope
+/// (`error.message`, or a top-level `message`). Unparseable bodies pass
+/// through unchanged.
+fn api_error_body_summary(body: &str) -> String {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return body.to_string();
+    };
+    value
+        .pointer("/error/message")
+        .and_then(|v| v.as_str())
+        .or_else(|| value.get("message").and_then(|v| v.as_str()))
+        .map(str::to_string)
+        .unwrap_or_else(|| body.to_string())
 }
 
 pub type Result<T> = std::result::Result<T, LlmError>;
@@ -248,7 +298,28 @@ pub struct ProviderConfig {
 }
 
 /// Shared reqwest client for all providers, honoring `cfg.proxy`.
+/// Process-wide connection pool for the default proxy configuration. Review /
+/// follow-up / memory side calls used to build a fresh `reqwest::Client` per
+/// call — every one of them paid a new TLS handshake before this cache. Explicit
+/// proxy configs stay per-client because they vary by profile.
+static SHARED_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+
 pub(crate) fn http_client(cfg: &ProviderConfig) -> reqwest::Client {
+    http_client_from_pool(cfg, &SHARED_CLIENT)
+}
+
+fn http_client_from_pool(
+    cfg: &ProviderConfig,
+    shared: &std::sync::OnceLock<reqwest::Client>,
+) -> reqwest::Client {
+    let proxy = cfg.proxy.as_deref().map(str::trim);
+    if matches!(proxy, None | Some("")) {
+        return shared.get_or_init(|| build_http_client(cfg)).clone();
+    }
+    build_http_client(cfg)
+}
+
+fn build_http_client(cfg: &ProviderConfig) -> reqwest::Client {
     let mut b = reqwest::Client::builder()
         .user_agent("superscience")
         // A total request timeout also caps a healthy, actively streaming SSE
@@ -460,6 +531,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn default_proxy_configuration_reuses_one_client_pool() {
+        let shared = std::sync::OnceLock::new();
+        let cfg = ProviderConfig::openai("https://api.example.com", "k", "m");
+
+        let _first = http_client_from_pool(&cfg, &shared);
+        let initialized = shared
+            .get()
+            .expect("default client initializes shared pool") as *const _;
+        let _second = http_client_from_pool(&cfg, &shared);
+        let reused = shared.get().expect("shared pool remains initialized") as *const _;
+
+        assert_eq!(initialized, reused);
+
+        let direct_pool = std::sync::OnceLock::new();
+        let mut direct = cfg;
+        direct.proxy = Some("none".into());
+        let _ = http_client_from_pool(&direct, &direct_pool);
+        assert!(
+            direct_pool.get().is_none(),
+            "explicit proxy modes must not reuse the default connection pool"
+        );
+    }
+
     // #437: a stream that closes without a terminal marker is a cut, EXCEPT
     // when the user hit Stop — that must keep returning the partial (#58).
     #[test]
@@ -490,6 +585,32 @@ mod tests {
             body: "rate_limit".into()
         }
         .is_context_overflow());
+    }
+
+    #[test]
+    fn api_display_surfaces_the_envelope_message() {
+        let error = LlmError::Api {
+            status: 400,
+            body: r#"{"type":"error","error":{"type":"invalid_request_error","message":"messages: roles must alternate between \"user\" and \"assistant\""}}"#.into(),
+        };
+        assert_eq!(
+            error.to_string(),
+            "api: 400 messages: roles must alternate between \"user\" and \"assistant\""
+        );
+        // The raw body stays on the struct for pattern-based classifiers.
+        let LlmError::Api { body, .. } = &error else {
+            panic!()
+        };
+        assert!(body.contains("invalid_request_error"));
+    }
+
+    #[test]
+    fn api_display_passes_through_non_json_bodies() {
+        let error = LlmError::Api {
+            status: 500,
+            body: "upstream connection reset".into(),
+        };
+        assert_eq!(error.to_string(), "api: 500 upstream connection reset");
     }
 
     #[test]

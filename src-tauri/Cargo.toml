@@ -65,6 +65,9 @@ superscience-acp = { workspace = true }
 superscience-paths = { workspace = true }
 superscience-sync = { workspace = true }
 superscience-tools = { workspace = true }
+# Shared UI ⇄ Tauri invoke/event DTOs. Contract tests still round-trip backend
+# payloads into these types; live commands such as browser tab cleanup emit them.
+superscience-dto = { workspace = true }
 tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 futures-util.workspace = true
@@ -76,11 +79,6 @@ lettre = { version = "0.11", default-features = false, features = [
     "tokio1",
     "tokio1-rustls-tls",
 ] }
-
-[dev-dependencies]
-# Contract tests: backend command payloads must deserialize into the shared
-# UI DTOs (crates/superscience-dto) to catch serde drift across the invoke boundary.
-superscience-dto = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

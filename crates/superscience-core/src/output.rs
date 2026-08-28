@@ -39,7 +39,13 @@ pub trait Output: Send + Sync {
     fn diff(&self, _path: &str, _old: &str, _new: &str) {}
     fn file_changed(&self, _path: &str) {}
     fn stdout_chunk(&self, _chunk: &str) {}
-    fn tool_presentation(&self, _kind: &str, _payload: &Value) {}
+    fn tool_presentation(
+        &self,
+        _kind: &str,
+        _payload: &Value,
+        _server: Option<std::sync::Arc<dyn superscience_tools::McpAppServer>>,
+    ) {
+    }
     /// Blocking confirmation prompt for destructive actions.
     fn confirm(&self, _message: &str) -> bool {
         true
@@ -84,6 +90,12 @@ pub trait Output: Send + Sync {
     fn approval_bypass(&self) -> bool {
         false
     }
+    /// When true, mutating tools require Ask even if the host policy is Allow
+    /// and even if [`Self::approval_bypass`] is set. Used for unattended IM
+    /// turns that share the desktop approval UI.
+    fn force_ask_mutations(&self) -> bool {
+        false
+    }
     fn restrict_read_paths_to_project(&self) -> bool {
         false
     }
@@ -109,6 +121,21 @@ pub trait Output: Send + Sync {
     /// Fired once per producing tool call that wrote ≥1 file, with the code,
     /// result text, and diffed inputs/outputs. Default: no-op (CLI ignores it).
     fn provenance(&self, _rec: &crate::provenance::ProvenanceRecord) {}
+    /// Opaque identity of the conversation tree this loop belongs to (a root
+    /// frame id). Producing-tool windows of the same scope — one conversation
+    /// and its subagents — are not foreign to each other when disambiguating
+    /// concurrent writes (#911). Default `None`: every other window is foreign.
+    fn provenance_scope(&self) -> Option<String> {
+        None
+    }
+    /// Host-owned id of the in-flight user-visible turn. Default `None`.
+    fn turn_id(&self) -> Option<&str> {
+        None
+    }
+    /// Conversation frame this loop belongs to. Default `None`.
+    fn frame_id(&self) -> Option<&str> {
+        None
+    }
     /// Hard host-owned boundary checked before free-form source reaches a
     /// local shell or language runtime.
     fn preflight_local_execution(&self, _source: &str) -> Result<(), String> {
@@ -134,6 +161,14 @@ pub struct ToolEnvAdapter<'a> {
     /// Mid-turn guidance queue (`GuidanceQueue`). Typed as the mutex so this
     /// module does not depend on `agent`.
     guidance: Option<&'a std::sync::Mutex<Vec<(u64, String)>>>,
+    /// Kernel-reported writes for the in-flight tool call.
+    ///
+    /// Tool calls within one agent loop run strictly sequentially, so
+    /// drain-per-call is race-free; parallel subagent loops each construct
+    /// their own adapter, so reports cannot cross loops. The buffer must be
+    /// drained unconditionally after every tool call so a stale report can
+    /// never leak into the next call's record.
+    reported_writes: std::sync::Mutex<Vec<String>>,
 }
 
 impl<'a> ToolEnvAdapter<'a> {
@@ -143,6 +178,7 @@ impl<'a> ToolEnvAdapter<'a> {
             out,
             cancel: None,
             guidance: None,
+            reported_writes: std::sync::Mutex::new(Vec::new()),
         }
     }
     /// Like `new`, but tools can poll `is_cancelled()` to stop mid-execution.
@@ -156,7 +192,17 @@ impl<'a> ToolEnvAdapter<'a> {
             out,
             cancel: Some(cancel),
             guidance: None,
+            reported_writes: std::sync::Mutex::new(Vec::new()),
         }
+    }
+    /// Drain kernel-reported writes accumulated during the current tool call.
+    pub(crate) fn take_reported_writes(&self) -> Vec<String> {
+        std::mem::take(
+            &mut *self
+                .reported_writes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
     }
     /// Let long-running tools see that the host has queued mid-turn guidance
     /// without draining it. The agent loop still injects at the iteration
@@ -194,6 +240,9 @@ impl<'a> superscience_tools::ToolEnv for ToolEnvAdapter<'a> {
     fn approval_bypass(&self) -> bool {
         self.out.approval_bypass()
     }
+    fn force_ask_mutations(&self) -> bool {
+        self.out.force_ask_mutations()
+    }
     fn danger_auto_approve(&self) -> bool {
         self.out.danger_auto_approve()
     }
@@ -224,6 +273,18 @@ impl<'a> superscience_tools::ToolEnv for ToolEnvAdapter<'a> {
     fn note_shell_outcome(&self, cmd: &str, success: bool, detail: &str) {
         self.out.note_shell_outcome(cmd, success, detail);
     }
+    fn report_written_paths(&self, paths: &[String]) {
+        self.reported_writes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .extend(paths.iter().cloned());
+    }
+    fn turn_id(&self) -> Option<&str> {
+        self.out.turn_id()
+    }
+    fn frame_id(&self) -> Option<&str> {
+        self.out.frame_id()
+    }
     async fn emit(&self, event: superscience_tools::ToolEvent) {
         match event {
             superscience_tools::ToolEvent::Call { name, preview } => {
@@ -234,9 +295,11 @@ impl<'a> superscience_tools::ToolEnv for ToolEnvAdapter<'a> {
             }
             superscience_tools::ToolEvent::FileChanged { path } => self.out.file_changed(&path),
             superscience_tools::ToolEvent::Stdout { chunk } => self.out.stdout_chunk(&chunk),
-            superscience_tools::ToolEvent::Presentation { kind, payload } => {
-                self.out.tool_presentation(&kind, &payload)
-            }
+            superscience_tools::ToolEvent::Presentation {
+                kind,
+                payload,
+                server,
+            } => self.out.tool_presentation(&kind, &payload, server),
             superscience_tools::ToolEvent::Result { ok: _ } => {}
         }
         let _ = Value::Null;
@@ -379,5 +442,22 @@ mod tests {
         assert!(!superscience_tools::ToolEnv::guidance_pending(
             &ToolEnvAdapter::new(std::path::PathBuf::from("."), &out)
         ));
+    }
+
+    #[test]
+    fn reported_writes_accumulate_then_drain_empty() {
+        let out = NullOutput;
+        let env = ToolEnvAdapter::new(std::path::PathBuf::from("."), &out);
+        superscience_tools::ToolEnv::report_written_paths(&env, &["a.txt".into(), "b.txt".into()]);
+        superscience_tools::ToolEnv::report_written_paths(&env, &["c.txt".into()]);
+        assert_eq!(
+            env.take_reported_writes(),
+            vec![
+                "a.txt".to_string(),
+                "b.txt".to_string(),
+                "c.txt".to_string()
+            ]
+        );
+        assert!(env.take_reported_writes().is_empty());
     }
 }

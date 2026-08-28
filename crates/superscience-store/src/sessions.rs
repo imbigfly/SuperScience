@@ -110,6 +110,16 @@ pub struct SessionUiEventSnapshot {
     pub events: Vec<(i64, String)>,
 }
 
+/// One persisted visual-transcript event with its wall-clock stamp.
+/// `created_at` is unix epoch milliseconds; `None` for rows written before
+/// the column existed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionUiEventRecord {
+    pub seq: i64,
+    pub created_at: Option<i64>,
+    pub event_json: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct SessionBranchDeltaMessage {
     pub seq: i64,
@@ -449,7 +459,34 @@ async fn delete_session_rows(tx: &mut Transaction<'_, Sqlite>, frame_id: &str) -
     .execute(&mut **tx)
     .await?;
 
+    sqlx::query(
+        "UPDATE global_memories SET source_frame_id=NULL \
+         WHERE source_frame_id IN (SELECT id FROM frames WHERE root_frame_id=?)",
+    )
+    .bind(frame_id)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        "UPDATE schedules SET frame_id=NULL \
+         WHERE frame_id IN (SELECT id FROM frames WHERE root_frame_id=?)",
+    )
+    .bind(frame_id)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        "UPDATE schedule_runs SET frame_id=NULL \
+         WHERE frame_id IN (SELECT id FROM frames WHERE root_frame_id=?)",
+    )
+    .bind(frame_id)
+    .execute(&mut **tx)
+    .await?;
+
     for statement in [
+        "DELETE FROM agent_workflow_deliveries WHERE frame_id IN (SELECT id FROM frames WHERE root_frame_id=?)",
+        "DELETE FROM session_branch_merges WHERE EXISTS (SELECT 1 FROM frames frame WHERE frame.root_frame_id=? AND (frame.id=session_branch_merges.source_frame_id OR frame.id=session_branch_merges.branch_frame_id))",
+        "DELETE FROM ask_user_requests WHERE frame_id IN (SELECT id FROM frames WHERE root_frame_id=?)",
+        "DELETE FROM session_imports WHERE frame_id IN (SELECT id FROM frames WHERE root_frame_id=?)",
+        "DELETE FROM codex_imports WHERE frame_id IN (SELECT id FROM frames WHERE root_frame_id=?)",
         "DELETE FROM session_execution_contexts WHERE frame_id IN (SELECT id FROM frames WHERE root_frame_id=?)",
         "DELETE FROM session_reviews WHERE frame_id IN (SELECT id FROM frames WHERE root_frame_id=?)",
         "DELETE FROM session_ui_events WHERE frame_id IN (SELECT id FROM frames WHERE root_frame_id=?)",
@@ -800,52 +837,22 @@ impl Store {
     }
 
     pub async fn append_message(&self, frame_id: &str, seq: i64, msg: &Message) -> Result<()> {
-        let id = uuid::Uuid::new_v4().to_string();
-        let role = if msg.role == superscience_llm::Role::User
-            && msg.tool_name.as_deref() == Some(super::AGENT_WORKFLOW_COMPLETION_TOOL)
-        {
-            "internal".into()
-        } else {
-            format!("{:?}", msg.role).to_ascii_lowercase()
-        };
-        let content = serde_json::to_string(&msg.content)?;
-        let tool_calls = if msg.tool_calls.is_empty() {
-            None
-        } else {
-            Some(serde_json::to_string(&msg.tool_calls)?)
-        };
-        sqlx::query("INSERT INTO messages(id,frame_id,seq,role,content,tool_calls,tool_call_id,tool_name,reasoning,ts,model_name) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
-            .bind(id).bind(frame_id).bind(seq).bind(role).bind(content)
-            .bind(tool_calls)
-            .bind(msg.tool_call_id.as_deref())
-            .bind(msg.tool_name.as_deref())
-            .bind(msg.reasoning.as_deref())
-            .bind(msg.ts)
-            .bind(msg.model_name.as_deref())
-            .execute(&self.pool).await?;
-        Ok(())
+        insert_message_row(&self.pool, frame_id, seq, msg).await
     }
 
-    /// Replace a frame's model context wholesale (user-triggered /compact).
-    /// Only the `messages` rows are rewritten — the session_ui_events visual
-    /// transcript keeps the full history on purpose. Resource links anchor to
-    /// message seqs, which a rewrite invalidates, so they are dropped too.
+    /// Replace a frame's model context wholesale (user-triggered /compact and
+    /// automatic compaction). Only the `messages` rows are rewritten — the
+    /// session_ui_events visual transcript keeps the full history on purpose.
+    /// Resource links and turn undo anchor to message seqs, which a rewrite
+    /// invalidates, so they are dropped too. Remapping `turn_file_undo` onto
+    /// the rewritten seqs would need a stable turn/message id (known #973
+    /// limitation); do not expand that here. Deletes and inserts share one
+    /// write transaction: an interruption mid-replace leaves the previous
+    /// transcript fully intact instead of an emptied or half-written frame.
     pub async fn replace_messages(&self, frame_id: &str, msgs: &[Message]) -> Result<()> {
-        sqlx::query("DELETE FROM message_resource_links WHERE frame_id=?")
-            .bind(frame_id)
-            .execute(&self.pool)
-            .await?;
-        sqlx::query("DELETE FROM turn_file_undo WHERE frame_id=?")
-            .bind(frame_id)
-            .execute(&self.pool)
-            .await?;
-        sqlx::query("DELETE FROM messages WHERE frame_id=?")
-            .bind(frame_id)
-            .execute(&self.pool)
-            .await?;
-        for (i, msg) in msgs.iter().enumerate() {
-            self.append_message(frame_id, (i + 1) as i64, msg).await?;
-        }
+        let mut tx = self.begin_write().await?;
+        replace_message_rows(&mut tx, frame_id, msgs).await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -906,6 +913,19 @@ impl Store {
         )
     }
 
+    /// Durable seq cursor for a frame: `COALESCE(MAX(seq), 0)`.
+    ///
+    /// This is the source of truth for `last_seq` recovery. Do not use
+    /// `messages.len()` or `COUNT(*)` — gaps make those diverge from `MAX(seq)`.
+    pub async fn max_message_seq(&self, frame_id: &str) -> Result<i64> {
+        Ok(
+            sqlx::query_scalar("SELECT COALESCE(MAX(seq),0) FROM messages WHERE frame_id=?")
+                .bind(frame_id)
+                .fetch_one(&self.pool)
+                .await?,
+        )
+    }
+
     /// Drop persisted turns after `keep` (seq is 1-based; keep=3 retains seq 1..=3).
     pub async fn truncate_messages(&self, frame_id: &str, keep: i64) -> Result<()> {
         let mut tx = self.begin_write().await?;
@@ -922,6 +942,75 @@ impl Store {
     ) -> Result<()> {
         truncate_message_rows(tx, frame_id, keep).await
     }
+
+    #[cfg(test)]
+    pub(crate) async fn replace_message_rows_for_test(
+        tx: &mut Transaction<'_, Sqlite>,
+        frame_id: &str,
+        msgs: &[Message],
+    ) -> Result<()> {
+        replace_message_rows(tx, frame_id, msgs).await
+    }
+}
+
+async fn insert_message_row<'e, E>(
+    executor: E,
+    frame_id: &str,
+    seq: i64,
+    msg: &Message,
+) -> Result<()>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
+    let id = uuid::Uuid::new_v4().to_string();
+    let role = if msg.role == superscience_llm::Role::User
+        && msg.tool_name.as_deref() == Some(super::AGENT_WORKFLOW_COMPLETION_TOOL)
+    {
+        "internal".into()
+    } else {
+        format!("{:?}", msg.role).to_ascii_lowercase()
+    };
+    let content = serde_json::to_string(&msg.content)?;
+    let tool_calls = if msg.tool_calls.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(&msg.tool_calls)?)
+    };
+    sqlx::query("INSERT INTO messages(id,frame_id,seq,role,content,tool_calls,tool_call_id,tool_name,reasoning,ts,model_name) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+        .bind(id).bind(frame_id).bind(seq).bind(role).bind(content)
+        .bind(tool_calls)
+        .bind(msg.tool_call_id.as_deref())
+        .bind(msg.tool_name.as_deref())
+        .bind(msg.reasoning.as_deref())
+        .bind(msg.ts)
+        .bind(msg.model_name.as_deref())
+        .execute(executor).await?;
+    Ok(())
+}
+
+async fn replace_message_rows(
+    tx: &mut Transaction<'_, Sqlite>,
+    frame_id: &str,
+    msgs: &[Message],
+) -> Result<()> {
+    sqlx::query("DELETE FROM message_resource_links WHERE frame_id=?")
+        .bind(frame_id)
+        .execute(&mut **tx)
+        .await?;
+    // #973/#978: undo rows key off pre-compaction seqs. Mapping them onto the
+    // rewritten 1..n seqs needs a stable turn/message id; wipe instead.
+    sqlx::query("DELETE FROM turn_file_undo WHERE frame_id=?")
+        .bind(frame_id)
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query("DELETE FROM messages WHERE frame_id=?")
+        .bind(frame_id)
+        .execute(&mut **tx)
+        .await?;
+    for (i, msg) in msgs.iter().enumerate() {
+        insert_message_row(&mut **tx, frame_id, (i + 1) as i64, msg).await?;
+    }
+    Ok(())
 }
 
 /// Reconcile branch provenance before removing a mainline suffix.
@@ -1280,11 +1369,7 @@ impl Store {
         .bind(start_seq)
         .fetch_one(&self.pool)
         .await?;
-        let latest_seq: i64 =
-            sqlx::query_scalar("SELECT COALESCE(MAX(seq),0) FROM messages WHERE frame_id=?")
-                .bind(frame_id)
-                .fetch_one(&self.pool)
-                .await?;
+        let latest_seq = self.max_message_seq(frame_id).await?;
 
         let start_event_seq: i64 = sqlx::query_scalar(
             "SELECT COALESCE(MAX(seq),0) FROM session_ui_events WHERE frame_id=? \
@@ -1445,12 +1530,18 @@ impl Store {
         seq: i64,
         event_json: &str,
     ) -> Result<()> {
-        sqlx::query("INSERT INTO session_ui_events(frame_id,seq,event_json) VALUES(?,?,?)")
-            .bind(frame_id)
-            .bind(seq)
-            .bind(event_json)
-            .execute(&self.pool)
-            .await?;
+        // Unix epoch milliseconds; ui events join against second-granularity
+        // message timestamps, so the trajectory view needs finer resolution.
+        let created_at = chrono::Utc::now().timestamp_millis();
+        sqlx::query(
+            "INSERT INTO session_ui_events(frame_id,seq,event_json,created_at) VALUES(?,?,?,?)",
+        )
+        .bind(frame_id)
+        .bind(seq)
+        .bind(event_json)
+        .bind(created_at)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -1462,6 +1553,31 @@ impl Store {
                 .await?;
         rows.into_iter()
             .map(|row| row.try_get("event_json").map_err(Into::into))
+            .collect()
+    }
+
+    /// Load the persisted visual transcript with per-event wall-clock stamps
+    /// (unix epoch milliseconds; `None` for rows written before the column
+    /// existed). Used by the trajectory view, which reconstructs timing.
+    pub async fn load_session_ui_events_timed(
+        &self,
+        frame_id: &str,
+    ) -> Result<Vec<SessionUiEventRecord>> {
+        let rows = sqlx::query(
+            "SELECT seq,created_at,event_json FROM session_ui_events \
+             WHERE frame_id=? ORDER BY seq",
+        )
+        .bind(frame_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(SessionUiEventRecord {
+                    seq: row.try_get("seq")?,
+                    created_at: row.try_get("created_at")?,
+                    event_json: row.try_get("event_json")?,
+                })
+            })
             .collect()
     }
 

@@ -129,6 +129,7 @@ async fn run_scheduled_turn(
         None,
         None,
         None,
+        crate::TurnOrigin::Desktop,
     )
     .await
     .map(Some)

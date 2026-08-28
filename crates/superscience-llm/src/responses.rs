@@ -94,23 +94,7 @@ impl OpenAiResponsesProvider {
 /// chat-completions path already strips these (#74). Symmetrically drop tool
 /// outputs with no preceding call.
 fn sanitize_messages(messages: &[Message]) -> Vec<Message> {
-    let mut answered = std::collections::HashSet::new();
-    let mut requested = std::collections::HashSet::new();
-    for m in messages {
-        match m.role {
-            Role::Tool => {
-                if let Some(id) = &m.tool_call_id {
-                    answered.insert(id.clone());
-                }
-            }
-            Role::Assistant => {
-                for tc in &m.tool_calls {
-                    requested.insert(tc.id.clone());
-                }
-            }
-            _ => {}
-        }
-    }
+    let (answered, requested) = crate::tool_call_pairing(messages);
     messages
         .iter()
         .filter_map(|m| match m.role {
@@ -166,7 +150,11 @@ fn message_to_input(m: &Message) -> Vec<Value> {
         Role::Tool => vec![json!({
             "type": "function_call_output",
             "call_id": m.tool_call_id.clone().unwrap_or_default(),
-            "output": m.content.as_text(),
+            // Responses accepts text, image, and file input parts directly in
+            // a function output. Preserve multipart view_image results here;
+            // flattening with `as_text()` silently hid the image from the
+            // vision-capable primary.
+            "output": content_to_responses(&m.content),
         })],
     }
 }
@@ -363,6 +351,23 @@ mod tests {
             .collect()
     }
 
+    fn image_tool_result(id: &str) -> Message {
+        let mut message = Message::tool(id, "view_image", "plot.png");
+        message.content = Content::Parts(vec![
+            Part::Text {
+                kind: "text".into(),
+                text: "plot.png".into(),
+            },
+            Part::Image {
+                kind: "image_url".into(),
+                image_url: crate::ImageUrl {
+                    url: "data:image/png;base64,AAAA".into(),
+                },
+            },
+        ]);
+        message
+    }
+
     /// Regression: a tool-call turn must be replayed as a `function_call` item so
     /// the following `function_call_output` has a matching `call_id`. Without it
     /// the Responses API rejects with "No tool call found for function call output".
@@ -392,6 +397,26 @@ mod tests {
             output["call_id"], "call_abc",
             "output must match the emitted call_id"
         );
+    }
+
+    #[test]
+    fn native_tool_image_is_serialized_in_function_call_output() {
+        let messages = vec![
+            Message::user("inspect"),
+            assistant_with_call("", "call_image", "view_image", "{\"path\":\"plot.png\"}"),
+            image_tool_result("call_image"),
+        ];
+        let input = wire_input(&messages);
+        let output = input
+            .iter()
+            .find(|item| item["type"] == "function_call_output")
+            .expect("function output");
+        assert_eq!(output["call_id"], "call_image");
+        let content = output["output"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "input_text");
+        assert_eq!(content[0]["text"], "plot.png");
+        assert_eq!(content[1]["type"], "input_image");
+        assert_eq!(content[1]["image_url"], "data:image/png;base64,AAAA");
     }
 
     /// History arguments can be invalid JSON (compaction truncates oversized

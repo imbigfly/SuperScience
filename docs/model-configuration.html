@@ -1,10 +1,26 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-page="models">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="SuperScience 模型配置说明：OpenAI 兼容、OpenAI Responses 和 Anthropic API。">
   <title>模型配置 | SuperScience</title>
+  <script>
+    (function () {
+      var lang = "zh";
+      try {
+        var q = new URLSearchParams(location.search).get("lang");
+        if (q === "en" || q === "zh") lang = q;
+        else {
+          var s = localStorage.getItem("wisp-pages-lang");
+          if (s === "en" || s === "zh") lang = s;
+        }
+      } catch (e) {}
+      document.documentElement.lang = lang === "en" ? "en" : "zh-CN";
+      document.documentElement.dataset.lang = lang;
+    })();
+  </script>
+  <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;600&family=Noto+Serif+SC:wght@400;500;600;700&family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;1,400&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&display=swap" rel="stylesheet">
@@ -15,18 +31,22 @@
       <a class="brand" href="index.html#top">
         <span class="brand-name">SuperScience</span>
       </a>
-      <nav class="nav-links" aria-label="页面导航">
-        <a href="index.html#features">功能</a>
-        <a href="index.html#usecases">场景</a>
-        <a href="index.html#stack">生态</a>
-        <a href="model-configuration.html" aria-current="page">模型配置</a>
-        <a href="acp-agents.html">ACP</a>
-        <a href="index.html#faq">FAQ</a>
-        <a href="https://github.com/imbigfly/SuperScience/blob/main/README.md">文档</a>
+      <nav class="nav-links" data-i18n-aria="nav.aria" aria-label="页面导航">
+        <a href="index.html#features" data-i18n="nav.features">功能</a>
+        <a href="index.html#usecases" data-i18n="nav.usecases">场景</a>
+        <a href="index.html#stack" data-i18n="nav.stack">生态</a>
+        <a href="model-configuration.html" aria-current="page" data-i18n="nav.models">模型配置</a>
+        <a href="acp-agents.html" data-i18n="nav.acp">ACP</a>
+        <a href="index.html#faq" data-i18n="nav.faq">FAQ</a>
+        <a href="https://github.com/imbigfly/SuperScience/blob/main/README.md" data-i18n="nav.docs">文档</a>
       </nav>
       <div class="nav-cta">
+        <div class="lang-switch" role="group" data-i18n-aria="lang.aria" aria-label="语言">
+          <button type="button" data-lang="zh" aria-pressed="true">中文</button>
+          <button type="button" data-lang="en" aria-pressed="false">EN</button>
+        </div>
         <a class="btn btn-secondary" href="https://github.com/imbigfly/SuperScience">GitHub</a>
-        <a class="btn btn-primary" href="https://www.tctoken.cn/downloads/"><span class="btn-label-full">下载桌面版</span><span class="btn-label-short">下载</span></a>
+        <a class="btn btn-primary" href="https://www.tctoken.cn/downloads/"><span class="btn-label-full" data-i18n="nav.downloadFull">下载桌面版</span><span class="btn-label-short" data-i18n="nav.downloadShort">下载</span></a>
       </div>
     </div>
   </header>
@@ -36,14 +56,14 @@
       <div class="container">
         <div class="eyebrow">Settings -> Models</div>
         <h1>模型配置</h1>
-        <p class="lead">
+        <p class="lead" data-i18n="models.lead">
           SuperScience 的桌面版使用模型 profile 管理远程 API 后端。每个 profile
           可以配置 provider、API URL、模型 ID、高级参数和独立 API key。
         </p>
         <div class="hero-actions">
-          <a class="btn btn-primary" href="https://www.tctoken.cn/downloads/">下载最新版</a>
-          <a class="btn btn-secondary" href="acp-agents.html">ACP Agent 配置</a>
-          <a class="btn btn-secondary" href="https://github.com/imbigfly/SuperScience/blob/main/docs/model-configuration.md">查看 Markdown 文档</a>
+          <a class="btn btn-primary" href="https://www.tctoken.cn/downloads/" data-i18n="models.download">下载最新版</a>
+          <a class="btn btn-secondary" href="acp-agents.html" data-i18n="models.acpCta">ACP Agent 配置</a>
+          <a class="btn btn-secondary" href="https://github.com/imbigfly/SuperScience/blob/main/docs/model-configuration.md" data-i18n="models.md">查看 Markdown 文档</a>
         </div>
       </div>
     </section>
@@ -57,19 +77,19 @@
         <div class="feature-list doc-card-grid">
           <div class="feature-list-item">
             <h4>OpenAI-compatible</h4>
-            <p>DeepSeek、GLM、本地网关，或任何兼容 <code>/chat/completions</code> 的服务。需要 API URL、Model ID 和 API key。</p>
+            <p data-i18n="models.compatBody">DeepSeek、GLM、本地网关，或任何兼容 <code>/chat/completions</code> 的服务。需要 API URL、Model ID 和 API key。</p>
           </div>
           <div class="feature-list-item">
             <h4>OpenAI Responses</h4>
-            <p>通过 <code>/v1/responses</code> 使用 OpenAI reasoning / tool-call 模型。需要 API URL、Model ID 和 API key。</p>
+            <p data-i18n="models.respBody">通过 <code>/v1/responses</code> 使用 OpenAI reasoning / tool-call 模型。需要 API URL、Model ID 和 API key。</p>
           </div>
           <div class="feature-list-item">
             <h4>Anthropic API</h4>
-            <p>通过 <code>/v1/messages</code> 使用 Claude API。需要 API URL、Model ID 和 API key。</p>
+            <p data-i18n="models.anthBody">通过 <code>/v1/messages</code> 使用 Claude API。需要 API URL、Model ID 和 API key。</p>
           </div>
           <div class="feature-list-item">
             <h4>Keyring + SQLite</h4>
-            <p>API key 存入系统 keyring；profile 名称、provider、URL、模型 ID 和能力标注存入项目的 <code>.superscience/superscience.sqlite</code>。</p>
+            <p data-i18n="models.keyBody">API key 存入系统 keyring；profile 名称、provider、URL、模型 ID 和能力标注存入项目的 <code>.superscience/superscience.sqlite</code>。</p>
           </div>
         </div>
       </div>
@@ -82,8 +102,8 @@
           <span>Fields</span>
         </div>
         <div class="section-head">
-          <h2>常用字段</h2>
-          <p>桌面版在 Settings -> Models 中配置。多个 profile 可以并存，随时切换 active profile。</p>
+          <h2 data-i18n="models.fieldsHeading">常用字段</h2>
+          <p data-i18n="models.fieldsLead">桌面版在 Settings -> Models 中配置。多个 profile 可以并存，随时切换 active profile。</p>
         </div>
         <div class="table-wrap">
           <table class="doc-table">
@@ -148,14 +168,15 @@ export SUPERSCIENCE_API_KEY=&lt;your provider key&gt;</pre>
       </a>
       <nav class="footer-links">
         <a href="https://github.com/imbigfly/SuperScience">GitHub</a>
-        <a href="model-configuration.html">模型配置</a>
-        <a href="acp-agents.html">ACP</a>
+        <a href="model-configuration.html" data-i18n="nav.models">模型配置</a>
+        <a href="acp-agents.html" data-i18n="nav.acp">ACP</a>
         <a href="https://www.tctoken.cn/downloads/">Releases</a>
         <a href="https://github.com/imbigfly/SuperScience/issues">Issues</a>
         <a href="https://github.com/imbigfly/SuperScience/blob/main/LICENSE">AGPL-3.0-only</a>
       </nav>
-      <p class="footer-copy">© 2026 SuperScience · 开源科学计算 Agent</p>
+      <p class="footer-copy" data-i18n="footer.copy">© 2026 SuperScience · 开源科学计算 Agent</p>
     </div>
   </footer>
+  <script src="assets/i18n.js"></script>
 </body>
 </html>

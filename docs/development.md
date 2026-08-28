@@ -211,3 +211,11 @@ serde alias on the parser.
 - `kernels/kernel_worker.py` protocol adapted from the upstream operon kernel
   worker, with POSIX-only `resource`/`/proc`/`SIGINT` machinery dropped for
   Windows.
+- `docs/assets/trusted-logos/meduniwien.svg` from
+  [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Meduni-wien.svg)
+  (public domain; the mark itself is trademarked), cropped to the circular
+  emblem.
+- Institution marks in `docs/assets/trusted-logos/` (Cornell, Michigan, UCLA,
+  Yale, Tsinghua, Zhejiang, WashU, SLU, SJTU, PKU, CAS) match the set served by
+  [wispscience.com](https://wispscience.com/institutions/), plus Medical
+  University of Vienna. The marks themselves remain trademarked by their owners.
