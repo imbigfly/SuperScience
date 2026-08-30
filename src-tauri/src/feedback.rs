@@ -696,25 +696,4 @@ password = "from-local-file"
         assert_eq!(sanitize_filename("/tmp/notes.txt").unwrap(), "notes.txt");
         assert!(sanitize_filename("...").is_err());
     }
-
-    #[tokio::test]
-    #[ignore]
-    async fn send_live_test_feedback_email() {
-        send_feedback_email(
-            "【自动测试】这是一封天成科研助手「反馈」功能连通性测试邮件，可忽略。\n\
-             发送时间：2026-08-30 22:18（本地）。"
-                .into(),
-            Some(
-                "SuperScience version: 1.7.1\n\
-                 OS / architecture: macos / aarch64\n\
-                 Model profile: test\n\
-                 Startup timings: not recorded"
-                    .into(),
-            ),
-            Some("功能连通性测试".into()),
-            None,
-        )
-        .await
-        .expect("live feedback email should send");
-    }
 }
