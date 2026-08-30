@@ -85,6 +85,12 @@ extern "C" {
     pub(crate) async fn arm_caption_drag(start_x: f64, start_y: f64);
     #[wasm_bindgen(js_name = upload_pasted_images)]
     pub(crate) async fn upload_pasted_images(event: JsValue) -> JsValue;
+    #[wasm_bindgen(js_name = read_feedback_clipboard_files)]
+    pub(crate) async fn read_feedback_clipboard_files(event: JsValue) -> JsValue;
+    #[wasm_bindgen(js_name = read_feedback_drop_files)]
+    pub(crate) async fn read_feedback_drop_files(event: JsValue) -> JsValue;
+    #[wasm_bindgen(js_name = read_feedback_input_files)]
+    pub(crate) async fn read_feedback_input_files(input_id: &str) -> JsValue;
     #[wasm_bindgen(js_name = native_drop_in_composer)]
     pub(crate) fn native_drop_in_composer(payload: JsValue) -> bool;
     #[wasm_bindgen(js_name = native_drop_remote_target)]

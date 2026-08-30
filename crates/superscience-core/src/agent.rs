@@ -2110,6 +2110,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forced_vision_specialist_keeps_pixels_off_a_vision_primary() {
+        // Frame override (handwriting-extract): agent_turn sets
+        // provider_supports_vision=false when the bound model is not the
+        // session primary, even if that primary can also see images.
+        let primary = RecordingProvider::new("vision-primary", "done");
+        let specialist = RecordingProvider::new("assigned-vision", "handwritten table rows");
+        let mut ctx = ContextManager::new(100_000);
+        let tools = Registry::builtins();
+
+        agent_loop_with_images(
+            &mut ctx,
+            &primary,
+            Some(&specialist),
+            &tools,
+            Path::new("."),
+            &NullOutput,
+            "Extract the table",
+            &[test_image()],
+            false,
+            1,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(specialist.complete_messages.lock().unwrap().len(), 1);
+        let calls = primary.stream_messages.lock().unwrap();
+        assert_eq!(calls[0][0].content.as_text(), "Extract the table");
+        assert!(
+            !matches!(calls[0][0].content, Content::Parts(_)),
+            "primary must not receive native image parts when a specialist is forced"
+        );
+        assert!(calls[0][1]
+            .content
+            .as_text()
+            .contains("handwritten table rows"));
+    }
+
+    #[tokio::test]
     async fn vision_primary_view_image_attaches_without_describer_round_trip() {
         // A vision-capable primary must receive the view_image result as a
         // native image part in the next request. The old path forwarded every
@@ -2180,6 +2220,75 @@ mod tests {
             "view_image result should be an image part, got {:?}",
             tool_row.content
         );
+    }
+
+    #[tokio::test]
+    async fn forced_vision_specialist_describes_view_image_instead_of_native_parts() {
+        let dir =
+            std::env::temp_dir().join(format!("wisp-view-image-forced-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("plot.png"),
+            include_bytes!("../tests/fixtures/1x1.png"),
+        )
+        .unwrap();
+
+        let script = format!(
+            r#"{{"tool_calls": [{{"name": "view_image", "arguments": {{"path": "{}"}}}}]}} "#,
+            dir.join("plot.png").to_string_lossy().replace('\\', "\\\\")
+        );
+        let steps: Vec<superscience_llm::scripted::ScriptedCompletion> =
+            serde_json::from_str(&format!(
+                "[{}, {{\"content\": \"The plot shows a rising curve.\"}}]",
+                script.trim()
+            ))
+            .unwrap();
+        let primary = superscience_llm::scripted::ScriptedProvider::new("scripted-primary", steps);
+        let specialist = RecordingProvider::new("assigned-vision", "describer text");
+        let mut ctx = ContextManager::new(100_000);
+        ctx.supports_vision = false;
+        let tools = Registry::builtins();
+
+        let outcome = agent_loop(
+            &mut ctx,
+            &primary,
+            Some(&specialist),
+            &tools,
+            &dir,
+            &NullOutput,
+            "check the plot",
+            8,
+            None,
+        )
+        .await;
+        std::fs::remove_dir_all(&dir).ok();
+        outcome.unwrap();
+
+        assert_eq!(
+            specialist.complete_messages.lock().unwrap().len(),
+            1,
+            "forced specialist must describe view_image instead of attaching pixels"
+        );
+        let requests = primary.snapshot().requests;
+        let second = &requests[1].messages;
+        let tool_row = second
+            .iter()
+            .rev()
+            .find(|m| m.role == superscience_llm::Role::Tool)
+            .expect("tool result row in second request");
+        let has_image = match &tool_row.content {
+            superscience_llm::Content::Parts(parts) => parts.iter().any(|p| {
+                matches!(p, superscience_llm::Part::Image { image_url, .. }
+                    if image_url.url.starts_with("data:image"))
+            }),
+            _ => false,
+        };
+        assert!(
+            !has_image,
+            "forced specialist path must not attach an image part, got {:?}",
+            tool_row.content
+        );
+        assert!(tool_row.content.as_text().contains("describer text"));
     }
 
     #[tokio::test]

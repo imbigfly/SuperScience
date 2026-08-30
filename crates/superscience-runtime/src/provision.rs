@@ -23,7 +23,8 @@ pub struct ProvisionItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeProvisionState {
-    pub show: bool,
+    /// Offered once after first-run welcome. Not an every-launch open flag.
+    pub first_run: bool,
     pub done: bool,
     pub running: bool,
     pub items: Vec<ProvisionItem>,

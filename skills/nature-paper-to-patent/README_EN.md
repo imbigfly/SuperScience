@@ -52,6 +52,6 @@
 
 ## Related Skills
 
-- `nature-reader`: turn the paper into traceable reading material first.
+- `nature-reader`: turn the paper into a traceable bilingual HTML report first.
 - `nature-writing`: extract contribution and technical narrative.
 - `nature-figure`: draft patent flowcharts or structural schematics.

@@ -1368,7 +1368,7 @@ pub(crate) fn model_form_to_settings(form: &ModelForm, has_api_key: bool) -> Set
 pub(crate) fn settings_nav_group(section: &str) -> &'static str {
     match section {
         "models" | "quick-actions" | "workflows" | "specialists" | "memory" | "skills"
-        | "plugins" | "browser" | "connections" | "channels" => "capabilities",
+        | "plugins" | "browser" | "connections" | "channels" | "knowledge" => "capabilities",
         _ => "workspace",
     }
 }
@@ -1383,6 +1383,7 @@ mod settings_nav_group_tests {
         assert_eq!(settings_nav_group("usage"), "workspace");
         assert_eq!(settings_nav_group("models"), "capabilities");
         assert_eq!(settings_nav_group("channels"), "capabilities");
+        assert_eq!(settings_nav_group("knowledge"), "capabilities");
     }
 }
 
@@ -1402,6 +1403,7 @@ pub(crate) fn settings_section_label(loc: Locale, section: &str) -> String {
         "browser" => t(loc, "settings.nav.browser"),
         "connections" => t(loc, "settings.nav.connections"),
         "channels" => t(loc, "settings.nav.channels"),
+        "knowledge" => t(loc, "settings.nav.knowledge"),
         "credentials" => t(loc, "settings.nav.credentials"),
         "permissions" => t(loc, "settings.nav.permissions"),
         "storage" => t(loc, "settings.nav.storage"),
@@ -1420,6 +1422,15 @@ mod settings_section_label_tests {
     fn session_nav_has_its_own_label() {
         assert_eq!(settings_section_label(Locale::En, "session"), "Session");
         assert_eq!(settings_section_label(Locale::Zh, "session"), "对话");
+    }
+
+    #[test]
+    fn knowledge_nav_has_its_own_label() {
+        assert_eq!(
+            settings_section_label(Locale::En, "knowledge"),
+            "Knowledge Base"
+        );
+        assert_eq!(settings_section_label(Locale::Zh, "knowledge"), "知识库");
     }
 }
 
@@ -1654,7 +1665,8 @@ fn secret_fields_json(fields: &[ConnSecretField]) -> Vec<serde_json::Value> {
 }
 
 fn secret_fields_from_entries(entries: &[McpSecretEntry]) -> Vec<ConnSecretField> {
-    let mut fields: Vec<ConnSecretField> = entries.iter().map(ConnSecretField::from_entry).collect();
+    let mut fields: Vec<ConnSecretField> =
+        entries.iter().map(ConnSecretField::from_entry).collect();
     if fields.is_empty() {
         fields.push(ConnSecretField::default());
     }
@@ -1693,10 +1705,7 @@ pub(crate) fn build_conn_json(f: &ConnForm, assign_id: bool) -> serde_json::Valu
 pub(crate) fn conn_form_from_row(row: &ConnRow) -> ConnForm {
     match &row.transport {
         ConnTransport::Stdio {
-            command,
-            args,
-            env,
-            ..
+            command, args, env, ..
         } => ConnForm {
             id: Some(row.id.clone()),
             name: row.name.clone(),
@@ -1731,9 +1740,7 @@ pub(crate) fn conn_form_from_row(row: &ConnRow) -> ConnForm {
 #[cfg(test)]
 mod mcp_secret_form_tests {
     use super::{build_conn_json, conn_form_from_row};
-    use crate::dto::{
-        ConnForm, ConnRow, ConnSecretField, ConnTransport, McpSecretEntry,
-    };
+    use crate::dto::{ConnForm, ConnRow, ConnSecretField, ConnTransport, McpSecretEntry};
 
     #[test]
     fn build_conn_json_omits_empty_secret_values() {

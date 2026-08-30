@@ -43,4 +43,4 @@
 ## 相关技能
 
 - `nature-academic-search`：一次性多源检索、引用指标和严格他引审计。
-- `nature-reader`：把候选论文做成全文中英对照阅读材料。
+- `nature-reader`：把候选论文做成全文中英对照 HTML 报告。

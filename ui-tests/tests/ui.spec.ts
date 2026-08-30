@@ -690,64 +690,64 @@ test("storage separates project paths and filters usage when a project is clicke
     .toContainText("120.0 MB");
 });
 
-test("sidebar Feedback opens a blank conversation and waits for the user's first turn (#596)", async ({ page }) => {
+test("sidebar Feedback opens the email dialog with system information", async ({ page }) => {
   await enterApp(page);
-  await page.setInputFiles("#composer-file-input", {
-    name: "counts.csv",
-    mimeType: "text/csv",
-    buffer: Buffer.from("a,b\n1,2"),
-  });
-  await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible();
-  await page.getByRole("button", { name: "Toggle panel" }).click();
-  const tile = page.locator('.rp-tile[data-artifact-name="counts.csv"]');
-  await tile.click({ button: "right" });
-  await page.locator(".ctx-menu").getByRole("button", { name: "Open in center" }).click();
-  await expect(page.locator(".center-tab.active")).toContainText("counts.csv");
   const sendsBefore = (await invokeArgsList(page, "send_message")).length;
   const sessionsBefore = (await invokeArgsList(page, "new_session")).length;
 
   await page.getByTestId("report-problem-entry").click();
+  const dialog = page.getByTestId("feedback-overlay");
+  await expect(dialog).toBeVisible();
   await expect(page.getByTestId("feedback-context")).toContainText("System information");
   await expect(page.getByTestId("feedback-context")).toContainText("Attached automatically");
-  await expect(page.locator("#composer-input")).toBeFocused();
-  await expect(page.locator(".center-file-preview")).toHaveCount(0);
+  await expect(page.getByTestId("feedback-message")).toBeFocused();
   expect((await invokeArgsList(page, "send_message")).length).toBe(sendsBefore);
   expect((await invokeArgsList(page, "new_session")).length).toBe(sessionsBefore);
 
-  await page.locator("#composer-input").fill("The app freezes when I open a document");
-  await page.getByRole("button", { name: "Send" }).click();
-  await expect.poll(() => invokeArgsList(page, "new_session")).toHaveLength(sessionsBefore + 1);
-  await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
-    message: expect.stringContaining("The app freezes when I open a document"),
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator(".app")).toBeVisible();
+
+  await page.getByTestId("report-problem-entry").click();
+  await expect(page.getByTestId("feedback-overlay")).toBeVisible();
+  await page.getByTestId("feedback-message").fill("The app freezes when I open a document");
+  await page.getByTestId("feedback-send").click();
+  await expect.poll(() => lastInvokeArgs(page, "send_feedback_email")).toMatchObject({
+    message: "The app freezes when I open a document",
   });
-  const sent = await lastInvokeArgs(page, "send_message");
-  expect(sent?.message).toContain("Feedback context:");
-  expect(sent?.message).toContain("GitHub issue");
-  expect(sent?.message).toMatch(/SuperScience version: 0\.29\.0/);
-  expect(sent?.message).toMatch(/OS \/ architecture: windows \/ x86_64/);
-  expect(sent?.message).toMatch(/Model profile: deepseek-v4-pro/);
-  expect(sent?.message).not.toMatch(/\/mock\/root/);
-  await expect(page.getByTestId("feedback-context")).toHaveCount(0);
-  const userBubble = page.locator(".msg.user").last();
-  await expect(userBubble).toContainText("The app freezes when I open a document");
-  await expect(userBubble).not.toContainText("Feedback context");
-  await expect(userBubble).not.toContainText("GitHub issue");
+  const sent = await lastInvokeArgs(page, "send_feedback_email");
+  expect(sent?.diagnostics).toMatch(/SuperScience version: 0\.29\.0/);
+  expect(sent?.diagnostics).toMatch(/OS \/ architecture: windows \/ x86_64/);
+  expect(sent?.diagnostics).toMatch(/Model profile: deepseek-v4-pro/);
+  expect(sent?.diagnostics).not.toMatch(/\/mock\/root/);
+  expect(sent?.diagnostics).not.toMatch(/GitHub/);
+  await expect(page.getByTestId("feedback-overlay")).toHaveCount(0);
+  await expect(page.locator(".copy-toast")).toContainText("Feedback sent");
 });
 
-test("Feedback send shows the new_session error instead of a {msg} placeholder", async ({ page }) => {
+test("Feedback send shows the email error in the dialog", async ({ page }) => {
   await enterApp(page);
   await page.getByTestId("report-problem-entry").click();
   await expect(page.getByTestId("feedback-context")).toContainText("System information");
   await page.evaluate(() => {
-    (window as any).__failNextNewSession("Project not found");
+    (window as any).__failNextFeedback = "SMTP authentication failed";
   });
-  await page.locator("#composer-input").fill("The send button does nothing");
-  await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.locator(".topbar .hint")).toHaveText("Send failed: Project not found");
-  await expect(page.locator(".topbar .hint")).not.toContainText("{msg}");
-  await expect(page.getByTestId("feedback-context")).toBeVisible();
-  await expect(page.locator("#composer-input")).toHaveValue("The send button does nothing");
+  await page.getByTestId("feedback-message").fill("The send button does nothing");
+  await page.getByTestId("feedback-send").click();
+  await expect(page.getByTestId("feedback-status")).toContainText("SMTP authentication failed");
+  await expect(page.getByTestId("feedback-overlay")).toBeVisible();
+  await expect(page.getByTestId("feedback-message")).toHaveValue("The send button does nothing");
+});
+
+test("command palette Report an issue opens the feedback dialog", async ({ page }) => {
+  await enterApp(page);
+  await page.keyboard.press("Control+p");
+  const input = page.locator("#action-palette-input");
+  await expect(input).toBeVisible();
+  await input.fill("report an issue");
+  await input.press("Enter");
+  await expect(page.getByTestId("feedback-overlay")).toBeVisible();
+  await expect(page.getByTestId("feedback-context")).toContainText("System information");
 });
 
 test("Memory settings show the active project name", async ({ page }) => {
@@ -886,6 +886,125 @@ test("settings nav highlights Workspace and Capabilities as parent groups", asyn
   await expect(capabilities).toHaveClass(/active/);
   await expect(workspace).not.toHaveClass(/active/);
   await expect(nav.locator("button.active")).toHaveText("Models");
+});
+
+test("knowledge base settings can choose WeKnora and save", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Knowledge Base");
+  const pane = page.getByTestId("knowledge-settings");
+  await expect(pane).toBeVisible();
+  const provider = page.getByTestId("knowledge-provider");
+  await expect(provider).toHaveValue("weknora");
+  await expect(provider.locator("option")).toHaveText(["WeKnora"]);
+  await page.getByTestId("knowledge-base-url").fill("http://localhost:8080");
+  await page.getByTestId("knowledge-api-key").fill("sk-test");
+  await page.getByTestId("knowledge-base-ids").fill("kb-00000001");
+  await page.getByTestId("knowledge-save").click();
+  await expect.poll(() => lastInvokeArgs(page, "set_knowledge_settings")).toMatchObject({
+    settings: {
+      provider: "weknora",
+      weknora: {
+        base_url: "http://localhost:8080",
+        api_key: "sk-test",
+        knowledge_base_ids: "kb-00000001",
+      },
+    },
+  });
+  await expect(pane.locator(".settings-status.ok")).toContainText("Knowledge base settings saved.");
+  await page.getByTestId("knowledge-test").click();
+  await expect.poll(() => lastInvokeArgs(page, "test_knowledge_connection")).toBeTruthy();
+  await expect(page.getByTestId("knowledge-bases")).toContainText("kb-00000001");
+});
+
+async function openKnowledgeHome(page: Page, path = "/") {
+  await page.goto(path);
+  await expect(page.getByTestId("capability-scene")).toBeVisible();
+  await page.getByRole("tab", { name: "Efficiency tools" }).click();
+  await expect(page.getByTestId("cap-tile-knowledge")).toBeVisible();
+  await expect(page.getByTestId("cap-tile-settings-knowledge")).toBeVisible();
+}
+
+test("knowledge gear opens settings without starting a chat", async ({ page }) => {
+  await openKnowledgeHome(page);
+  const sendsBefore = await invokeCount(page, "send_message");
+  await page.getByTestId("cap-tile-settings-knowledge").click();
+  const overlay = page.getByTestId("knowledge-settings-overlay");
+  await expect(overlay).toBeVisible();
+  await expect(overlay.getByTestId("knowledge-provider")).toHaveValue("weknora");
+  await overlay.getByTestId("knowledge-base-url").fill("http://localhost:8080");
+  await overlay.getByTestId("knowledge-api-key").fill("sk-test");
+  await overlay.getByTestId("knowledge-base-ids").fill("kb-00000001");
+  await overlay.getByTestId("knowledge-save").click();
+  await expect(overlay).toHaveCount(0);
+  await expect.poll(() => lastInvokeArgs(page, "set_knowledge_settings")).toMatchObject({
+    settings: {
+      provider: "weknora",
+      weknora: {
+        base_url: "http://localhost:8080",
+        api_key: "sk-test",
+        knowledge_base_ids: "kb-00000001",
+      },
+    },
+  });
+  await page.getByTestId("cap-tile-settings-knowledge").click();
+  await expect(overlay.getByTestId("knowledge-base-ids")).toHaveValue("kb-00000001");
+  await page.keyboard.press("Escape");
+  await expect(overlay).toHaveCount(0);
+  await expect(page.getByTestId("capability-scene")).toBeVisible();
+  expect(await invokeCount(page, "send_message")).toBe(sendsBefore);
+});
+
+test("knowledge tile opens settings when the knowledge base is not connected", async ({ page }) => {
+  await openKnowledgeHome(page);
+  const sendsBefore = await invokeCount(page, "send_message");
+  await page.getByTestId("cap-tile-knowledge").click();
+  const overlay = page.getByTestId("knowledge-settings-overlay");
+  await expect(overlay).toBeVisible();
+  await expect(overlay.getByTestId("knowledge-settings-status")).toBeVisible();
+  expect(await invokeCount(page, "send_message")).toBe(sendsBefore);
+  await expect(page.getByTestId("capability-scene")).toBeVisible();
+
+  await overlay.getByTestId("knowledge-api-key").fill("sk-test");
+  await overlay.getByTestId("knowledge-base-ids").fill("kb-00000001");
+  await overlay.getByTestId("knowledge-save").click();
+  await expect(overlay).toHaveCount(0);
+  await expect.poll(() => lastInvokeArgs(page, "set_knowledge_settings")).toMatchObject({
+    settings: {
+      provider: "weknora",
+      weknora: {
+        api_key: "sk-test",
+        knowledge_base_ids: "kb-00000001",
+      },
+    },
+  });
+  await expect.poll(() => invokeCount(page, "send_message"), { timeout: 15_000 }).toBeGreaterThan(sendsBefore);
+  const sent = await lastInvokeArgs(page, "send_message");
+  expect(String(sent?.message ?? "")).toContain("Capability coaching");
+  expect(String(sent?.message ?? "")).toContain("knowledge_search");
+  await expect.poll(() => lastInvokeArgs(page, "rename_session")).toMatchObject({
+    title: expect.stringMatching(/^Knowledge base · /),
+  });
+});
+
+test("knowledge tile starts guided chat when WeKnora is already connected", async ({ page }) => {
+  await openKnowledgeHome(page, "/?mockKnowledgeReady=1");
+  const sendsBefore = await invokeCount(page, "send_message");
+  await page.getByTestId("cap-tile-knowledge").click();
+  await expect(page.getByTestId("knowledge-settings-overlay")).toHaveCount(0);
+  await expect.poll(() => invokeCount(page, "send_message"), { timeout: 15_000 }).toBeGreaterThan(sendsBefore);
+  const sent = await lastInvokeArgs(page, "send_message");
+  expect(String(sent?.message ?? "")).toContain("Search my local knowledge base");
+  expect(String(sent?.message ?? "")).toContain("Capability coaching");
+});
+
+test("knowledge tile opens settings when the saved connection fails", async ({ page }) => {
+  await openKnowledgeHome(page, "/?mockKnowledgeReady=1&mockKnowledgeFail=1");
+  const sendsBefore = await invokeCount(page, "send_message");
+  await page.getByTestId("cap-tile-knowledge").click();
+  const overlay = page.getByTestId("knowledge-settings-overlay");
+  await expect(overlay).toBeVisible();
+  await expect(overlay.getByTestId("knowledge-settings-status")).toContainText("Could not reach WeKnora");
+  expect(await invokeCount(page, "send_message")).toBe(sendsBefore);
 });
 
 test("Memory project picker consumes Escape before leaving Settings", async ({ page }) => {
@@ -8389,6 +8508,14 @@ test("runtime setup skip persists and does not auto-open again", async ({ page }
   await expect(page.getByTestId("runtime-setup-chip")).toHaveCount(0);
 });
 
+test("runtime setup does not auto-open on later launches", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByTestId("capability-scene")).toBeVisible();
+  await expect(page.getByTestId("onboard-overlay")).toHaveCount(0);
+  await expect(page.getByTestId("runtime-setup-panel")).toHaveCount(0);
+  await expect(page.getByTestId("runtime-setup-chip")).toHaveCount(0);
+});
+
 test("Escape collapses runtime setup without skipping", async ({ page }) => {
   await page.goto("/?mockOnboarding=1");
   await expect(page.getByTestId("onboard-overlay")).toBeVisible();
@@ -8403,20 +8530,24 @@ test("Escape collapses runtime setup without skipping", async ({ page }) => {
   await expect(page.getByTestId("capability-scene")).toBeVisible();
 });
 
-test("env-setup tile reopens the same runtime panel without a new chat", async ({ page }) => {
-  await page.goto("/?mockRuntimeProvision=1");
-  await expect(page.getByTestId("runtime-setup-panel")).toBeVisible();
+test("env-setup tile opens the runtime panel without a new chat", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByTestId("runtime-setup-panel")).toHaveCount(0);
   await expect(page.getByTestId("capability-scene")).toBeVisible();
-  await page.getByTestId("runtime-setup-collapse").click();
-  await expect(page.getByTestId("runtime-setup-chip")).toBeVisible();
   await page.getByRole("tab", { name: "Data cleaning" }).click();
   await page.getByTestId("cap-tile-env-setup").click();
   await expect(page.getByTestId("runtime-setup-panel")).toBeVisible();
   await expect(page.locator(".msg.user")).toHaveCount(0);
+  await page.getByTestId("runtime-setup-collapse").click();
+  await expect(page.getByTestId("runtime-setup-chip")).toBeVisible();
+  await page.getByTestId("cap-tile-env-setup").click();
+  await expect(page.getByTestId("runtime-setup-panel")).toBeVisible();
 });
 
 test("runtime setup stays open while using other capabilities", async ({ page }) => {
-  await page.goto("/?mockRuntimeProvision=1");
+  await page.goto("/");
+  await page.getByRole("tab", { name: "Data cleaning" }).click();
+  await page.getByTestId("cap-tile-env-setup").click();
   await expect(page.getByTestId("runtime-setup-panel")).toBeVisible();
   await page.getByTestId("runtime-setup-start").click();
   await expect.poll(() => page.evaluate(() =>
@@ -9078,6 +9209,117 @@ test("Escape closes the PII firewall page before the capabilities overlay", asyn
   await page.keyboard.press("Escape");
   await expect(pii).toHaveCount(0);
   await expect(capabilities).toBeVisible();
+});
+
+async function openHandwritingExtractHome(page: Page, path = "/") {
+  await page.goto(path);
+  await expect(page.getByTestId("capability-scene")).toBeVisible();
+  await page.getByRole("tab", { name: "Efficiency tools" }).click();
+  await expect(page.getByTestId("cap-tile-handwriting-extract")).toBeVisible();
+  await expect(page.getByTestId("cap-tile-settings-handwriting-extract")).toBeVisible();
+}
+
+test("handwriting extract gear opens vision settings without starting a chat", async ({ page }) => {
+  await openHandwritingExtractHome(page);
+  const sendsBefore = await invokeCount(page, "send_message");
+  await expect(page.getByTestId("cap-tile-handwriting-vision-label")).toHaveCount(0);
+  await page.getByTestId("cap-tile-settings-handwriting-extract").click();
+  const overlay = page.getByTestId("handwriting-vision-overlay");
+  await expect(overlay).toBeVisible();
+  await expect(overlay.getByTestId("handwriting-vision-select")).toHaveValue("default");
+  await expect(overlay.getByTestId("handwriting-calibration-select")).toHaveValue("default");
+  await overlay.getByTestId("handwriting-vision-select").selectOption("opus");
+  await overlay.getByTestId("handwriting-calibration-select").selectOption("opus");
+  await overlay.getByTestId("handwriting-vision-save").click();
+  await expect(overlay).toHaveCount(0);
+  await expect.poll(() => lastInvokeArgs(page, "set_handwriting_extract_vision_model")).toMatchObject({
+    modelId: "opus",
+  });
+  await expect.poll(() => lastInvokeArgs(page, "set_handwriting_extract_calibration_model")).toMatchObject({
+    modelId: "opus",
+  });
+  await page.getByTestId("cap-tile-settings-handwriting-extract").click();
+  await expect(overlay.getByTestId("handwriting-vision-select")).toHaveValue("opus");
+  await expect(overlay.getByTestId("handwriting-calibration-select")).toHaveValue("opus");
+  await page.keyboard.press("Escape");
+  await expect(overlay).toHaveCount(0);
+  await expect(page.getByTestId("capability-scene")).toBeVisible();
+  expect(await invokeCount(page, "send_message")).toBe(sendsBefore);
+});
+
+test("handwriting extract opens settings instead of chat when no vision model is saved", async ({ page }) => {
+  await openHandwritingExtractHome(page, "/?mockHandwritingVisionUnset=1");
+  const sendsBefore = await invokeCount(page, "send_message");
+  await page.getByTestId("cap-tile-handwriting-extract").click();
+  const overlay = page.getByTestId("handwriting-vision-overlay");
+  await expect(overlay).toBeVisible();
+  await expect(overlay.getByTestId("handwriting-vision-select")).toHaveValue("");
+  await expect(overlay.getByTestId("handwriting-calibration-select")).toBeVisible();
+  expect(await invokeCount(page, "send_message")).toBe(sendsBefore);
+  await expect(page.getByTestId("capability-scene")).toBeVisible();
+
+  await overlay.getByTestId("handwriting-vision-save").click();
+  await expect(overlay.getByTestId("handwriting-vision-notice")).toBeVisible();
+  expect(await invokeCount(page, "send_message")).toBe(sendsBefore);
+
+  await overlay.getByTestId("handwriting-vision-select").selectOption("default");
+  await overlay.getByTestId("handwriting-calibration-select").selectOption("default");
+  await overlay.getByTestId("handwriting-vision-save").click();
+  await expect(overlay).toHaveCount(0);
+  await expect.poll(() => lastInvokeArgs(page, "set_handwriting_extract_vision_model")).toMatchObject({
+    modelId: "default",
+  });
+  await expect.poll(() => lastInvokeArgs(page, "set_handwriting_extract_calibration_model")).toMatchObject({
+    modelId: "default",
+  });
+  await expect.poll(() => invokeCount(page, "send_message"), { timeout: 15_000 }).toBeGreaterThan(sendsBefore);
+  await expect.poll(() => lastInvokeArgs(page, "set_session_specialist")).toMatchObject({
+    id: "handwriting_extract",
+  });
+  await expect.poll(() => lastInvokeArgs(page, "set_frame_vision_model")).toMatchObject({
+    modelId: "default",
+  });
+  const sent = await lastInvokeArgs(page, "send_message");
+  expect(JSON.stringify(sent?.references ?? [])).toContain("handwriting-extract");
+  await expect.poll(() => lastInvokeArgs(page, "rename_session")).toMatchObject({
+    title: expect.stringMatching(/^Handwritten data extract · /),
+  });
+});
+
+test("capability card prefixes the new session title with the card name", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByTestId("capability-scene")).toBeVisible();
+  await page.getByRole("tab", { name: "Efficiency tools" }).click();
+  await page.getByTestId("cap-tile-topic-coach").click();
+  await expect.poll(() => lastInvokeArgs(page, "rename_session"), { timeout: 15_000 }).toMatchObject({
+    title: expect.stringMatching(/^Topic coach · /),
+  });
+  await expect(page.locator('[data-session-title^="Topic coach · "]')).toBeVisible();
+  await expect.poll(() => invokeCount(page, "send_message")).toBeGreaterThan(0);
+});
+
+test("capability card hides coaching frame from the user bubble", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByTestId("capability-scene")).toBeVisible();
+  await page.getByRole("tab", { name: "Efficiency tools" }).click();
+  await page.getByTestId("cap-tile-topic-coach").click();
+  await expect.poll(() => invokeCount(page, "send_message"), { timeout: 15_000 }).toBeGreaterThan(0);
+  const sent = await lastInvokeArgs(page, "send_message");
+  expect(String(sent?.message ?? "")).toContain("Capability coaching");
+  const bubble = page.locator(".msg.user").first();
+  await expect(bubble).toBeVisible();
+  await expect(bubble).not.toContainText("Capability coaching");
+  await expect(bubble).toContainText("Inventory the data and materials");
+});
+
+test("handwriting extract opens settings instead of chat when no calibration model is saved", async ({ page }) => {
+  await openHandwritingExtractHome(page, "/?mockHandwritingCalibrationUnset=1");
+  const sendsBefore = await invokeCount(page, "send_message");
+  await page.getByTestId("cap-tile-handwriting-extract").click();
+  const overlay = page.getByTestId("handwriting-vision-overlay");
+  await expect(overlay).toBeVisible();
+  await expect(overlay.getByTestId("handwriting-calibration-select")).toHaveValue("");
+  expect(await invokeCount(page, "send_message")).toBe(sendsBefore);
 });
 
 test("PPT Master shows install confirm before guided chat", async ({ page }) => {
@@ -11373,11 +11615,10 @@ test("Windows uses the integrated title bar without covering the project landing
   await expect(page.getByRole("menuitem", { name: "Documentation" })).toHaveCount(0);
   await expect(page.getByRole("menuitem", { name: "Star us" })).toHaveCount(0);
   await page.getByRole("menuitem", { name: "Report an issue" }).click();
-  await expect.poll(async () => page.evaluate(() =>
-    ((window as any).__skillInvokeLog ?? [])
-      .filter((c: any) => c.cmd === "open_external_url")
-      .map((c: any) => (c.args instanceof Map ? c.args.get("url") : c.args?.url))
-  )).toContain("https://github.com/imbigfly/SuperScience/issues");
+  await expect(page.getByTestId("feedback-overlay")).toBeVisible();
+  await expect(page.getByTestId("feedback-context")).toContainText("System information");
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("feedback-overlay")).toHaveCount(0);
 
   await context.close();
 });
@@ -11950,16 +12191,17 @@ test("session settings enable automatic context compaction by default", async ({
   });
 });
 
-test("session settings configure truncated-output auto-continue", async ({ page }) => {
+test("session settings enable truncated-output auto-continue by default", async ({ page }) => {
   await page.goto("/");
   await openSettingsSection(page, "Session");
   const toggle = page.getByTestId("auto-continue-enabled");
-  await expect(toggle).not.toBeChecked();
+  await expect(toggle).toBeChecked();
   await toggle.locator("..").click();
+  await expect(toggle).not.toBeChecked();
   await page.getByTestId("auto-continue-limit").fill("4");
   await page.locator(".settings-footer").getByRole("button", { name: "Save" }).click();
   await expect.poll(() => lastInvokeArgs(page, "set_settings")).toMatchObject({
-    settings: { auto_continue: true, auto_continue_limit: 4 },
+    settings: { auto_continue: false, auto_continue_limit: 4 },
   });
 });
 

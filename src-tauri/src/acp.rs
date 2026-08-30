@@ -1745,8 +1745,11 @@ async fn cancel_pending_permissions(state: &AppState, frame_id: &str, runtime: &
 mod tests {
     use super::*;
 
-    fn permission_option(id: &str, kind: AcpPermissionKind) -> wisp_acp::AcpPermissionOption {
-        wisp_acp::AcpPermissionOption {
+    fn permission_option(
+        id: &str,
+        kind: AcpPermissionKind,
+    ) -> superscience_acp::AcpPermissionOption {
+        superscience_acp::AcpPermissionOption {
             id: id.into(),
             name: id.into(),
             kind,

@@ -3,7 +3,9 @@
 
 use crate::app_support::{compose_icon, save_view_pref};
 use crate::bindings::{invoke, invoke_checked};
+use crate::dto::ModelProfile;
 use crate::i18n::{t, Locale};
+use crate::knowledge_settings::{probe_knowledge_ready, KnowledgeSettingsOverlay};
 use crate::text::{event_target_checked, event_target_value};
 use crate::window_capture_escape;
 use leptos::*;
@@ -288,6 +290,13 @@ pub(crate) enum CapabilityToggle {
     PiiFirewall,
 }
 
+/// Optional on-card settings entry. Keep per-tile; do not grow a generic framework.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CapabilityCardSettings {
+    HandwritingModels,
+    Knowledge,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CapabilityHelp {
     en: &'static str,
@@ -317,6 +326,14 @@ pub(crate) struct CapabilityTile {
     pub(crate) icon: &'static str,
     pub(crate) action: CapabilityAction,
     pub(crate) toggle: Option<CapabilityToggle>,
+    pub(crate) card_settings: Option<CapabilityCardSettings>,
+}
+
+impl CapabilityTile {
+    const fn with_settings(mut self, settings: CapabilityCardSettings) -> Self {
+        self.card_settings = Some(settings);
+        self
+    }
 }
 
 const fn skill_tile(
@@ -342,6 +359,7 @@ const fn skill_tile(
             specialist: None,
         },
         toggle: None,
+        card_settings: None,
     }
 }
 
@@ -369,6 +387,7 @@ const fn specialist_skill_tile(
             specialist: Some(specialist),
         },
         toggle: None,
+        card_settings: None,
     }
 }
 
@@ -395,6 +414,7 @@ const fn specialist_tile(
             specialist: Some(specialist),
         },
         toggle: None,
+        card_settings: None,
     }
 }
 
@@ -417,6 +437,7 @@ const fn install_then_guided_tile(
         icon,
         action: CapabilityAction::InstallThenGuided { prompt_key, skill },
         toggle: None,
+        card_settings: None,
     }
 }
 
@@ -442,6 +463,7 @@ const fn guided_tile(
             specialist: None,
         },
         toggle: None,
+        card_settings: None,
     }
 }
 
@@ -696,6 +718,7 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
             icon: "image",
             action: CapabilityAction::ComingSoon,
             toggle: None,
+            card_settings: None,
         },
         CapabilityTile {
             id: "editable-figure",
@@ -709,6 +732,7 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
             icon: "edit",
             action: CapabilityAction::ComingSoon,
             toggle: None,
+            card_settings: None,
         },
         CapabilityTile {
             id: "bioinfo-figure-layout",
@@ -722,6 +746,7 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
             icon: "grid",
             action: CapabilityAction::ComingSoon,
             toggle: None,
+            card_settings: None,
         },
         skill_tile(
             "nature-paper2ppt",
@@ -775,6 +800,7 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
             icon: "shield",
             action: CapabilityAction::None,
             toggle: Some(CapabilityToggle::PiiFirewall),
+            card_settings: None,
         },
         skill_tile(
             "journal-prescreen",
@@ -789,19 +815,21 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
                 "把稿子和目标杂志给它。它对照投稿须知，标出格式、伦理、字数等问题，并给出改法。",
             ),
         ),
-        skill_tile(
+        specialist_skill_tile(
             "handwriting-extract",
             CapabilityGroup::Efficiency,
             "caps.skill.handwriting_extract.title",
             "caps.skill.handwriting_extract.blurb",
             "caps.skill.handwriting_extract.prompt",
             "handwriting-extract",
+            "handwriting_extract",
             "grid",
             help(
-                "Upload photos of handwritten lab notes or CRF pages. It reads them into a CSV and flags cells it is not sure about.",
-                "上传手写实验本或 CRF 照片。它识别成 CSV，并把读不准的格子标出来。",
+                "Upload photos of handwritten lab notes or CRF pages. The handwriting expert reads them with the analysis model, calibrates flagged cells with the calibration model, and marks uncertain spots.",
+                "上传手写实验本或 CRF 照片。手写提取专家用图片分析模型识图，再用校准模型核对存疑格子，并标出位置。",
             ),
-        ),
+        )
+        .with_settings(CapabilityCardSettings::HandwritingModels),
         skill_tile(
             "topic-coach",
             CapabilityGroup::Efficiency,
@@ -815,6 +843,19 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
                 "先盘点你已有的数据和资料，再给出几个对准目标期刊的选题候选，并评一下下一步该做什么。",
             ),
         ),
+        guided_tile(
+            "knowledge",
+            CapabilityGroup::Efficiency,
+            "caps.tile.knowledge.title",
+            "caps.tile.knowledge.blurb",
+            "caps.prompt.knowledge",
+            "book",
+            help(
+                "Search your local WeKnora knowledge base and cite excerpts. Use the gear if the connection is not ready.",
+                "检索本机 WeKnora 知识库并引用片段。连不上时点右上角齿轮先配好接口。",
+            ),
+        )
+        .with_settings(CapabilityCardSettings::Knowledge),
         CapabilityTile {
             id: "env-setup",
             group: CapabilityGroup::DataCleaning,
@@ -827,6 +868,7 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
             icon: "gear",
             action: CapabilityAction::OpenRuntimeSetup,
             toggle: None,
+            card_settings: None,
         },
         // —— 研究实施与数据分析；知识图谱 / 生物库归选题 ——
         skill_tile(
@@ -905,6 +947,7 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
                 section: "environments",
             },
             toggle: None,
+            card_settings: None,
         },
         // —— 结构预测 / 单细胞（实施）——
         guided_tile(
@@ -941,8 +984,8 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
             "academic-search-pro",
             "book",
             help(
-                "Give it keywords. It searches several free paper databases, removes duplicates, and returns a literature table or BibTeX.",
-                "给关键词。它同时查多个免费文献库，去掉重复，给你文献表或 BibTeX。",
+                "Give keywords, plus year or language if you have them. It searches free libraries such as OpenAlex, PubMed, arXiv, and Crossref, uses lawful web search for Chinese sources, then dedupes and returns a literature matrix or BibTeX. Metadata only: no full-text reading, no citation checks or other-citation audits.",
+                "给关键词，可加年份或语种。同时查 OpenAlex、PubMed、arXiv、Crossref 等免费库，中文走合规网页检索；跨库去重后交出文献矩阵或 BibTeX。只给题录，不读全文，也不核引用、不做他引。",
             ),
         ),
         skill_tile(
@@ -954,8 +997,8 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
             "nature-academic-search",
             "search",
             help(
-                "Give it a topic. It searches multiple sources and can also check who cites whom, not just return a raw hit list.",
-                "给一个主题。它从多个来源检索，还能看谁引用了谁，不只是甩搜索结果。",
+                "Give a topic, a DOI, or a paper to check. Besides searching sources, it can verify references, build a MeSH strategy, count strict other-citations, and show who cited the paper—including high-profile citers. Use this for citation relationships and audits, not a deduped literature table.",
+                "给主题、DOI，或一篇要核查的文献。除了多来源检索，还能核参考文献、做 MeSH 策略、查严格他引，以及谁引用了这篇、有没有高影响引用者。要的是引用关系和核验，不是一张去重文献表。",
             ),
         ),
         skill_tile(
@@ -1006,8 +1049,8 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
             "nature-reader",
             "doc",
             help(
-                "Give it a PDF. It builds a Chinese–English side-by-side reading draft and pays attention to the figures.",
-                "给一份 PDF。它做成中英对照阅读稿，图也会对着看。",
+                "Give it a PDF or DOI. It writes one Chinese–English HTML report you can open: original and translation side by side, figures near the first mention, and clickable source anchors. It does not paste the full paper into chat.",
+                "给一份 PDF 或 DOI。它写成一份可打开的中英对照 HTML 报告：原文和译文左右对照，图放在首次提到的附近，来源锚点可点。不会把全文贴进对话。",
             ),
         ),
         skill_tile(
@@ -1036,6 +1079,7 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
             icon: "branch",
             action: CapabilityAction::OpenPanel(CapabilityPanel::Graph),
             toggle: None,
+            card_settings: None,
         },
         CapabilityTile {
             id: "publication",
@@ -1049,6 +1093,7 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
             icon: "doc",
             action: CapabilityAction::OpenPanel(CapabilityPanel::Publication),
             toggle: None,
+            card_settings: None,
         },
         CapabilityTile {
             id: "files-library",
@@ -1062,6 +1107,7 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
             icon: "folder",
             action: CapabilityAction::OpenPanel(CapabilityPanel::Files),
             toggle: None,
+            card_settings: None,
         },
         CapabilityTile {
             id: "demo",
@@ -1075,6 +1121,7 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
             icon: "star",
             action: CapabilityAction::OpenDemo,
             toggle: None,
+            card_settings: None,
         },
         // —— 协作扩展 ——
         CapabilityTile {
@@ -1091,6 +1138,7 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
                 section: "channels",
             },
             toggle: None,
+            card_settings: None,
         },
         guided_tile(
             "browser",
@@ -1129,6 +1177,7 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
             icon: "plus",
             action: CapabilityAction::OpenSettings { section: "plugins" },
             toggle: None,
+            card_settings: None,
         },
     ];
     CATALOG
@@ -1200,19 +1249,109 @@ fn capability_help_button(
     }
 }
 
+fn capability_settings_aria_key(tile: &CapabilityTile) -> &'static str {
+    match tile.card_settings {
+        Some(CapabilityCardSettings::Knowledge) => "caps.tile.knowledge.settings.aria",
+        _ => "caps.skill.handwriting_extract.settings.aria",
+    }
+}
+
+fn capability_settings_button(
+    tile: &'static CapabilityTile,
+    locale: RwSignal<Locale>,
+    on_settings: Callback<&'static CapabilityTile>,
+) -> impl IntoView {
+    let id = tile.id;
+    let aria_key = capability_settings_aria_key(tile);
+    view! {
+        <button type="button" class="cap-tile-settings"
+            data-testid=format!("cap-tile-settings-{id}")
+            aria-label=move || t(locale.get(), aria_key)
+            title=move || t(locale.get(), aria_key)
+            on:click=move |ev| {
+                ev.prevent_default();
+                ev.stop_propagation();
+                on_settings.call(tile);
+            }>
+            {compose_icon("gear")}
+        </button>
+    }
+}
+
+fn vision_chat_models(models: &[ModelProfile]) -> Vec<ModelProfile> {
+    models
+        .iter()
+        .filter(|model| model.supports_vision && model.is_chat_model())
+        .cloned()
+        .collect()
+}
+
+fn handwriting_saved_model_id(candidates: &[ModelProfile], id: &str) -> String {
+    candidates
+        .iter()
+        .find(|model| model.id == id)
+        .map(|model| model.id.clone())
+        .unwrap_or_default()
+}
+
+fn handwriting_models_ready(vision_id: &str, calib_id: &str) -> bool {
+    !vision_id.trim().is_empty() && !calib_id.trim().is_empty()
+}
+
+fn remember_handwriting_picks(
+    models: RwSignal<Vec<ModelProfile>>,
+    vision_pick: RwSignal<String>,
+    calib_pick: RwSignal<String>,
+    candidates: Vec<ModelProfile>,
+    vision: String,
+    calib: String,
+) {
+    models.set(candidates);
+    vision_pick.set(vision);
+    calib_pick.set(calib);
+}
+
+async fn load_handwriting_model_picks() -> (Vec<ModelProfile>, String, String) {
+    let models_v = invoke("list_models", JsValue::UNDEFINED).await;
+    let models = serde_wasm_bindgen::from_value::<Vec<ModelProfile>>(models_v).unwrap_or_default();
+    let candidates = vision_chat_models(&models);
+    let vision_v = invoke("get_handwriting_extract_vision_model", JsValue::UNDEFINED).await;
+    let vision = serde_wasm_bindgen::from_value::<Option<String>>(vision_v)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let calib_v = invoke(
+        "get_handwriting_extract_calibration_model",
+        JsValue::UNDEFINED,
+    )
+    .await;
+    let calib = serde_wasm_bindgen::from_value::<Option<String>>(calib_v)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let vision_id = handwriting_saved_model_id(&candidates, &vision);
+    let calib_id = handwriting_saved_model_id(&candidates, &calib);
+    (candidates, vision_id, calib_id)
+}
+
 fn capability_action_tile(
     tile: &'static CapabilityTile,
     locale: RwSignal<Locale>,
     on_activate: Callback<CapabilityAction>,
     on_help: Callback<&'static CapabilityTile>,
+    on_settings: Option<Callback<&'static CapabilityTile>>,
 ) -> impl IntoView {
     let action = tile.action;
     let icon = tile.icon;
     let title_key = tile.title_key;
     let blurb_key = tile.blurb_key;
     let id = tile.id;
+    let show_settings = tile.card_settings.is_some();
     view! {
         <div class="cap-tile-wrap" role="listitem">
+            {on_settings.filter(|_| show_settings).map(|on_settings| {
+                view! { {capability_settings_button(tile, locale, on_settings)} }.into_view()
+            })}
             {capability_help_button(tile, locale, on_help)}
             <button type="button" class="cap-tile"
                 data-testid=format!("cap-tile-{id}")
@@ -1267,12 +1406,10 @@ pub(crate) fn title_key_for_capability_action(action: &CapabilityAction) -> Opti
             .map(|tile| tile.title_key),
         CapabilityAction::InstallThenGuided { .. }
         | CapabilityAction::NewChat
-        | CapabilityAction::OpenRuntimeSetup => {
-            capability_catalog()
-                .iter()
-                .find(|tile| tile.action == *action)
-                .map(|tile| tile.title_key)
-        }
+        | CapabilityAction::OpenRuntimeSetup => capability_catalog()
+            .iter()
+            .find(|tile| tile.action == *action)
+            .map(|tile| tile.title_key),
         _ => None,
     }
 }
@@ -1311,6 +1448,140 @@ mod tests {
     }
 
     #[test]
+    fn catalog_openers_do_not_repeat_interview_boilerplate() {
+        const BANNED: &[&str] = &[
+            "禁止无休止追问",
+            "do not interview endlessly",
+            "总共最多五个问题",
+            "At most five questions",
+        ];
+        for tile in capability_catalog() {
+            let prompt_key = match tile.action {
+                CapabilityAction::GuidedChat { prompt_key, .. }
+                | CapabilityAction::InstallThenGuided { prompt_key, .. } => prompt_key,
+                _ => continue,
+            };
+            for locale in [Locale::En, Locale::Zh] {
+                let text = t(locale, prompt_key);
+                assert_ne!(
+                    text,
+                    prompt_key,
+                    "missing opener {} for {}",
+                    locale.code(),
+                    tile.id
+                );
+                for phrase in BANNED {
+                    assert!(
+                        !text.contains(phrase),
+                        "{} opener for {} still has {phrase:?}: {text}",
+                        locale.code(),
+                        tile.id
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn literature_search_help_distinguishes_matrix_from_citation_audit() {
+        let matrix = capability_catalog()
+            .iter()
+            .find(|tile| tile.id == "academic-search-pro")
+            .expect("academic-search-pro tile");
+        let audit = capability_catalog()
+            .iter()
+            .find(|tile| tile.id == "nature-academic-search")
+            .expect("nature-academic-search tile");
+
+        let zh_matrix = matrix.help.get(Locale::Zh);
+        let zh_audit = audit.help.get(Locale::Zh);
+        assert!(
+            zh_matrix.contains("文献矩阵") && zh_matrix.contains("BibTeX"),
+            "matrix help should name the table/BibTeX deliverable: {zh_matrix}"
+        );
+        assert!(
+            zh_matrix.contains("不做他引") && zh_matrix.contains("不核引用"),
+            "matrix help should say it does not audit citations: {zh_matrix}"
+        );
+        assert!(
+            zh_audit.contains("他引") && zh_audit.contains("高影响引用者"),
+            "audit help should name citation-audit work: {zh_audit}"
+        );
+        assert!(
+            zh_audit.contains("不是一张去重文献表"),
+            "audit help should contrast with the matrix card: {zh_audit}"
+        );
+
+        let en_matrix = matrix.help.get(Locale::En);
+        let en_audit = audit.help.get(Locale::En);
+        assert!(
+            en_matrix.contains("literature matrix") && en_matrix.contains("BibTeX"),
+            "matrix help should name the table/BibTeX deliverable: {en_matrix}"
+        );
+        assert!(
+            en_matrix.contains("no citation checks"),
+            "matrix help should say it does not audit citations: {en_matrix}"
+        );
+        assert!(
+            en_audit.contains("other-citations") && en_audit.contains("high-profile citers"),
+            "audit help should name citation-audit work: {en_audit}"
+        );
+        assert!(
+            en_audit.contains("not a deduped literature table"),
+            "audit help should contrast with the matrix card: {en_audit}"
+        );
+    }
+
+    #[test]
+    fn nature_reader_copy_names_html_report() {
+        let tile = capability_catalog()
+            .iter()
+            .find(|tile| tile.id == "nature-reader")
+            .expect("nature-reader tile");
+
+        let zh_help = tile.help.get(Locale::Zh);
+        let en_help = tile.help.get(Locale::En);
+        assert!(
+            zh_help.contains("HTML 报告") && zh_help.contains("左右对照"),
+            "zh help should name the openable HTML report: {zh_help}"
+        );
+        assert!(
+            !zh_help.contains("阅读稿") && !zh_help.contains("Markdown"),
+            "zh help should not call the deliverable a Markdown draft: {zh_help}"
+        );
+        assert!(
+            en_help.contains("HTML report") && en_help.contains("side by side"),
+            "en help should name the openable HTML report: {en_help}"
+        );
+        assert!(
+            !en_help.contains("reading draft") && !en_help.contains("Markdown"),
+            "en help should not call the deliverable a Markdown draft: {en_help}"
+        );
+
+        let zh_blurb = t(Locale::Zh, tile.blurb_key);
+        let en_blurb = t(Locale::En, tile.blurb_key);
+        assert!(
+            zh_blurb.contains("HTML 报告"),
+            "zh blurb should name the HTML report: {zh_blurb}"
+        );
+        assert!(
+            en_blurb.contains("HTML report"),
+            "en blurb should name the HTML report: {en_blurb}"
+        );
+
+        let zh_prompt = t(Locale::Zh, "caps.skill.nature_reader.prompt");
+        let en_prompt = t(Locale::En, "caps.skill.nature_reader.prompt");
+        assert!(
+            zh_prompt.contains("HTML 报告") && zh_prompt.contains("reader.html"),
+            "zh prompt should deliver reader.html: {zh_prompt}"
+        );
+        assert!(
+            en_prompt.contains("HTML report") && en_prompt.contains("reader.html"),
+            "en prompt should deliver reader.html: {en_prompt}"
+        );
+    }
+
+    #[test]
     fn capability_actions_resolve_session_title_keys() {
         assert_eq!(
             title_key_for_capability_action(&CapabilityAction::GuidedChat {
@@ -1319,6 +1590,14 @@ mod tests {
                 specialist: None,
             }),
             Some("caps.tile.python_r.title")
+        );
+        assert_eq!(
+            title_key_for_capability_action(&CapabilityAction::GuidedChat {
+                prompt_key: "caps.prompt.knowledge",
+                skill: None,
+                specialist: None,
+            }),
+            Some("caps.tile.knowledge.title")
         );
         assert_eq!(
             title_key_for_capability_action(&CapabilityAction::GuidedChat {
@@ -1384,6 +1663,7 @@ mod tests {
             "journal-prescreen",
             "handwriting-extract",
             "topic-coach",
+            "knowledge",
             "env-setup",
         ] {
             assert!(ids.contains(&id), "missing capability tile {id}");
@@ -1395,6 +1675,46 @@ mod tests {
         assert_eq!(pii.group, CapabilityGroup::Efficiency);
         assert_eq!(pii.toggle, Some(CapabilityToggle::PiiFirewall));
         assert_eq!(pii.action, CapabilityAction::None);
+        let handwriting = capability_catalog()
+            .iter()
+            .find(|t| t.id == "handwriting-extract")
+            .expect("handwriting tile");
+        assert_eq!(
+            handwriting.card_settings,
+            Some(CapabilityCardSettings::HandwritingModels)
+        );
+        match handwriting.action {
+            CapabilityAction::GuidedChat {
+                skill: Some("handwriting-extract"),
+                specialist: Some("handwriting_extract"),
+                ..
+            } => {}
+            other => panic!("expected handwriting specialist+skill tile, got {other:?}"),
+        }
+        let knowledge = capability_catalog()
+            .iter()
+            .find(|t| t.id == "knowledge")
+            .expect("knowledge tile");
+        assert_eq!(
+            knowledge.card_settings,
+            Some(CapabilityCardSettings::Knowledge)
+        );
+        match knowledge.action {
+            CapabilityAction::GuidedChat {
+                prompt_key: "caps.prompt.knowledge",
+                skill: None,
+                specialist: None,
+            } => {}
+            other => panic!("expected knowledge guided chat, got {other:?}"),
+        }
+        assert_eq!(
+            capability_catalog()
+                .iter()
+                .filter(|tile| tile.card_settings.is_some())
+                .map(|tile| tile.id)
+                .collect::<Vec<_>>(),
+            vec!["handwriting-extract", "knowledge"]
+        );
         assert!(!ids.contains(&"nature-shared"));
         assert!(!ids.contains(&"academic-research"));
         assert!(!ids.contains(&"nature-skills"));
@@ -1718,6 +2038,7 @@ mod tests {
                 "journal-prescreen",
                 "handwriting-extract",
                 "topic-coach",
+                "knowledge",
             ]
         );
     }
@@ -1868,6 +2189,47 @@ mod tests {
             t(Locale::Zh, "caps.tile.pii_firewall.terms_preview_title"),
             "系统占位词"
         );
+        for locale in [Locale::En, Locale::Zh] {
+            for key in [
+                "caps.skill.handwriting_extract.settings.aria",
+                "caps.skill.handwriting_extract.settings.title",
+                "caps.skill.handwriting_extract.settings.lead",
+                "caps.skill.handwriting_extract.settings.model",
+                "caps.skill.handwriting_extract.settings.calibration",
+                "caps.skill.handwriting_extract.settings.placeholder",
+                "caps.skill.handwriting_extract.settings.empty",
+                "caps.skill.handwriting_extract.settings.required",
+                "caps.skill.handwriting_extract.settings.save",
+                "caps.skill.handwriting_extract.settings.close",
+                "caps.tile.knowledge.settings.aria",
+                "caps.tile.knowledge.settings.title",
+                "caps.tile.knowledge.settings.close",
+                "caps.tile.knowledge.settings.required",
+                "caps.prompt.knowledge",
+                "caps.prompt.knowledge.spec",
+            ] {
+                assert_ne!(t(locale, key), key, "missing {} {key}", locale.code());
+            }
+        }
+        assert_eq!(
+            t(Locale::Zh, "caps.skill.handwriting_extract.settings.title"),
+            "手写提取模型"
+        );
+        assert_eq!(
+            t(Locale::En, "caps.skill.handwriting_extract.settings.title"),
+            "Handwritten extract models"
+        );
+        assert_eq!(
+            t(Locale::Zh, "caps.tile.knowledge.settings.title"),
+            "知识库设置"
+        );
+        assert_eq!(
+            t(Locale::Zh, "caps.prompt.knowledge"),
+            "帮我检索本机知识库并引用出处。先问我想查什么，不要空讲功能。"
+        );
+        assert!(!handwriting_models_ready("", "vl"));
+        assert!(!handwriting_models_ready("vl", ""));
+        assert!(handwriting_models_ready("vl", "vl"));
     }
 }
 
@@ -1922,8 +2284,130 @@ pub(crate) fn CapabilityTileGrid(
     let pii_terms_dirty = create_rw_signal(false);
     let help_tile = create_rw_signal(None::<&'static CapabilityTile>);
     let coming_soon_tile = create_rw_signal(None::<&'static CapabilityTile>);
+    let handwriting_vision_open = create_rw_signal(false);
+    let handwriting_vision_pick = create_rw_signal(String::new());
+    let handwriting_calib_pick = create_rw_signal(String::new());
+    let handwriting_vision_models = create_rw_signal(Vec::<ModelProfile>::new());
+    let handwriting_vision_notice = create_rw_signal(String::new());
+    let handwriting_pending_launch = create_rw_signal(None::<CapabilityAction>);
+    let knowledge_settings_open = create_rw_signal(false);
+    let knowledge_pending_launch = create_rw_signal(None::<CapabilityAction>);
+    let knowledge_notice = create_rw_signal(None::<(bool, String)>);
+    let close_handwriting_settings = Callback::new(move |_: ()| {
+        handwriting_vision_open.set(false);
+        handwriting_pending_launch.set(None);
+        handwriting_vision_notice.set(String::new());
+    });
+    let close_knowledge_settings = Callback::new(move |_: ()| {
+        knowledge_settings_open.set(false);
+        knowledge_pending_launch.set(None);
+        knowledge_notice.set(None);
+    });
+    let on_knowledge_connected = Callback::new(move |_: ()| {
+        let action = knowledge_pending_launch.get_untracked();
+        knowledge_settings_open.set(false);
+        knowledge_pending_launch.set(None);
+        knowledge_notice.set(None);
+        if let Some(action) = action {
+            on_activate.call(action);
+        }
+    });
     let on_help = Callback::new(move |tile: &'static CapabilityTile| {
         help_tile.set(Some(tile));
+    });
+    let on_card_settings =
+        Callback::new(
+            move |tile: &'static CapabilityTile| match tile.card_settings {
+                Some(CapabilityCardSettings::Knowledge) => {
+                    knowledge_pending_launch.set(None);
+                    knowledge_notice.set(None);
+                    knowledge_settings_open.set(true);
+                }
+                Some(CapabilityCardSettings::HandwritingModels) => {
+                    handwriting_pending_launch.set(None);
+                    spawn_local(async move {
+                        let (candidates, vision, calib) = load_handwriting_model_picks().await;
+                        remember_handwriting_picks(
+                            handwriting_vision_models,
+                            handwriting_vision_pick,
+                            handwriting_calib_pick,
+                            candidates,
+                            vision,
+                            calib,
+                        );
+                        handwriting_vision_notice.set(String::new());
+                        handwriting_vision_open.set(true);
+                    });
+                }
+                None => {}
+            },
+        );
+    let gated_activate = Callback::new(move |action: CapabilityAction| {
+        if matches!(
+            action,
+            CapabilityAction::GuidedChat {
+                skill: Some("handwriting-extract"),
+                ..
+            }
+        ) {
+            spawn_local(async move {
+                let (candidates, vision, calib) = load_handwriting_model_picks().await;
+                remember_handwriting_picks(
+                    handwriting_vision_models,
+                    handwriting_vision_pick,
+                    handwriting_calib_pick,
+                    candidates,
+                    vision.clone(),
+                    calib.clone(),
+                );
+                if handwriting_models_ready(&vision, &calib) {
+                    handwriting_pending_launch.set(None);
+                    on_activate.call(action);
+                    return;
+                }
+                handwriting_vision_notice.set(String::new());
+                handwriting_pending_launch.set(Some(action));
+                handwriting_vision_open.set(true);
+            });
+            return;
+        }
+        if matches!(
+            action,
+            CapabilityAction::GuidedChat {
+                prompt_key: "caps.prompt.knowledge",
+                ..
+            }
+        ) {
+            spawn_local(async move {
+                match probe_knowledge_ready().await {
+                    Ok(result) if result.ok => {
+                        knowledge_pending_launch.set(None);
+                        on_activate.call(action);
+                    }
+                    Ok(result) => {
+                        let text = if result.message.trim().is_empty() {
+                            t(
+                                locale.get_untracked(),
+                                "caps.tile.knowledge.settings.required",
+                            )
+                            .into()
+                        } else {
+                            result.message
+                        };
+                        knowledge_notice.set(Some((false, text)));
+                        knowledge_pending_launch.set(Some(action));
+                        knowledge_settings_open.set(true);
+                    }
+                    Err(err) => {
+                        knowledge_notice.set(Some((false, err)));
+                        knowledge_pending_launch.set(Some(action));
+                        knowledge_settings_open.set(true);
+                    }
+                }
+            });
+            return;
+        }
+        on_activate.call(action);
     });
     let persist_pii_terms = move || {
         let terms = parse_pii_keyword_lines(&pii_terms_text.get_untracked());
@@ -1975,7 +2459,13 @@ pub(crate) fn CapabilityTileGrid(
         });
     });
     window_capture_escape(move || {
-        if help_tile.get_untracked().is_some() {
+        if knowledge_settings_open.get_untracked() {
+            close_knowledge_settings.call(());
+            true
+        } else if handwriting_vision_open.get_untracked() {
+            close_handwriting_settings.call(());
+            true
+        } else if help_tile.get_untracked().is_some() {
             help_tile.set(None);
             true
         } else if coming_soon_tile.get_untracked().is_some() {
@@ -2053,9 +2543,20 @@ pub(crate) fn CapabilityTileGrid(
                         let open_soon = Callback::new(move |_| {
                             coming_soon_tile.set(Some(tile));
                         });
-                        capability_action_tile(tile, locale, open_soon, on_help).into_view()
+                        capability_action_tile(tile, locale, open_soon, on_help, None)
+                            .into_view()
                     } else {
-                        capability_action_tile(tile, locale, on_activate, on_help).into_view()
+                        let settings = tile
+                            .card_settings
+                            .map(|_| on_card_settings);
+                        capability_action_tile(
+                            tile,
+                            locale,
+                            gated_activate,
+                            on_help,
+                            settings,
+                        )
+                        .into_view()
                     }
                 }).collect_view()
             }}
@@ -2065,7 +2566,7 @@ pub(crate) fn CapabilityTileGrid(
             (!footer.is_empty()).then(|| view! {
                 <div class="cap-tile-grid cap-tile-grid-footer" data-testid="capability-tile-grid-footer" role="list">
                     {footer.into_iter().map(|tile| {
-                        capability_action_tile(tile, locale, on_activate, on_help)
+                        capability_action_tile(tile, locale, gated_activate, on_help, None)
                     }).collect_view()}
                 </div>
             })
@@ -2126,6 +2627,184 @@ pub(crate) fn CapabilityTileGrid(
                                 data-testid="cap-help-close"
                                 on:click=move |_| help_tile.set(None)>
                                 {move || t(locale.get(), "caps.help.close")}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            }
+        })}
+        {move || knowledge_settings_open.get().then(|| {
+            let require_connection = knowledge_pending_launch.get().is_some();
+            view! {
+                <KnowledgeSettingsOverlay
+                    locale=locale
+                    require_connection=require_connection
+                    notice=knowledge_notice
+                    on_close=close_knowledge_settings
+                    on_connected=on_knowledge_connected
+                />
+            }
+        })}
+        {move || handwriting_vision_open.get().then(|| {
+            let candidates = handwriting_vision_models.get();
+            let empty = candidates.is_empty();
+            view! {
+                <div class="overlay" data-testid="handwriting-vision-overlay"
+                    on:click=move |_| close_handwriting_settings.call(())>
+                    <div class="modal cap-info-modal" role="dialog" aria-modal="true"
+                        aria-labelledby="handwriting-vision-title"
+                        on:click=move |ev| ev.stop_propagation()>
+                        <div class="ps-head">
+                            <h2 id="handwriting-vision-title">
+                                {move || t(locale.get(), "caps.skill.handwriting_extract.settings.title")}
+                            </h2>
+                            <button type="button" class="ps-close"
+                                aria-label=move || t(locale.get(), "caps.skill.handwriting_extract.settings.close")
+                                on:click=move |_| close_handwriting_settings.call(())>
+                                {compose_icon("close")}
+                            </button>
+                        </div>
+                        <p class="cap-info-lead">
+                            {move || t(locale.get(), "caps.skill.handwriting_extract.settings.lead")}
+                        </p>
+                        {if empty {
+                            view! {
+                                <p class="hint" data-testid="handwriting-vision-empty">
+                                    {move || t(locale.get(), "caps.skill.handwriting_extract.settings.empty")}
+                                </p>
+                            }.into_view()
+                        } else {
+                            let calib_candidates = candidates.clone();
+                            view! {
+                                <label class="cap-field">
+                                    <span>{move || t(locale.get(), "caps.skill.handwriting_extract.settings.model")}</span>
+                                    <select data-testid="handwriting-vision-select"
+                                        prop:value=move || handwriting_vision_pick.get()
+                                        on:change=move |ev| {
+                                            handwriting_vision_pick.set(event_target_value(&ev));
+                                        }>
+                                        <option value=""
+                                            prop:selected=move || handwriting_vision_pick.get().is_empty()>
+                                            {move || t(locale.get(), "caps.skill.handwriting_extract.settings.placeholder")}
+                                        </option>
+                                        {candidates.into_iter().map(|model| {
+                                            let id = model.id.clone();
+                                            let selected_id = id.clone();
+                                            let label = if model.label.trim().is_empty() {
+                                                model.model.clone()
+                                            } else {
+                                                model.label.clone()
+                                            };
+                                            view! {
+                                                <option value=id
+                                                    prop:selected=move || handwriting_vision_pick.get() == selected_id>
+                                                    {label}
+                                                </option>
+                                            }
+                                        }).collect_view()}
+                                    </select>
+                                </label>
+                                <label class="cap-field">
+                                    <span>{move || t(locale.get(), "caps.skill.handwriting_extract.settings.calibration")}</span>
+                                    <select data-testid="handwriting-calibration-select"
+                                        prop:value=move || handwriting_calib_pick.get()
+                                        on:change=move |ev| {
+                                            handwriting_calib_pick.set(event_target_value(&ev));
+                                        }>
+                                        <option value=""
+                                            prop:selected=move || handwriting_calib_pick.get().is_empty()>
+                                            {move || t(locale.get(), "caps.skill.handwriting_extract.settings.placeholder")}
+                                        </option>
+                                        {calib_candidates.into_iter().map(|model| {
+                                            let id = model.id.clone();
+                                            let selected_id = id.clone();
+                                            let label = if model.label.trim().is_empty() {
+                                                model.model.clone()
+                                            } else {
+                                                model.label.clone()
+                                            };
+                                            view! {
+                                                <option value=id
+                                                    prop:selected=move || handwriting_calib_pick.get() == selected_id>
+                                                    {label}
+                                                </option>
+                                            }
+                                        }).collect_view()}
+                                    </select>
+                                </label>
+                            }.into_view()
+                        }}
+                        {move || {
+                            let notice = handwriting_vision_notice.get();
+                            (!notice.is_empty()).then(|| view! {
+                                <div class="settings-status fail" data-testid="handwriting-vision-notice">{notice}</div>
+                            })
+                        }}
+                        <div class="row">
+                            <button type="button"
+                                on:click=move |_| close_handwriting_settings.call(())>
+                                {move || t(locale.get(), "caps.skill.handwriting_extract.settings.close")}
+                            </button>
+                            <button type="button" class="primary"
+                                data-testid="handwriting-vision-save"
+                                disabled=empty
+                                on:click=move |_| {
+                                    let pick = handwriting_vision_pick.get_untracked();
+                                    let calib = handwriting_calib_pick.get_untracked();
+                                    if pick.is_empty() || calib.is_empty() {
+                                        handwriting_vision_notice.set(
+                                            t(locale.get_untracked(), "caps.skill.handwriting_extract.settings.required"),
+                                        );
+                                        return;
+                                    }
+                                    spawn_local(async move {
+                                        let vision_ok = match invoke_checked(
+                                            "set_handwriting_extract_vision_model",
+                                            to_value(&serde_json::json!({ "modelId": pick })).unwrap(),
+                                        )
+                                        .await
+                                        {
+                                            Ok(value) => {
+                                                if let Ok(saved) = serde_wasm_bindgen::from_value::<String>(value) {
+                                                    handwriting_vision_pick.set(saved);
+                                                }
+                                                true
+                                            }
+                                            Err(_) => false,
+                                        };
+                                        let calib_ok = if vision_ok {
+                                            match invoke_checked(
+                                                "set_handwriting_extract_calibration_model",
+                                                to_value(&serde_json::json!({ "modelId": calib })).unwrap(),
+                                            )
+                                            .await
+                                            {
+                                                Ok(value) => {
+                                                    if let Ok(saved) = serde_wasm_bindgen::from_value::<String>(value) {
+                                                        handwriting_calib_pick.set(saved);
+                                                    }
+                                                    true
+                                                }
+                                                Err(_) => false,
+                                            }
+                                        } else {
+                                            false
+                                        };
+                                        if vision_ok && calib_ok {
+                                            handwriting_vision_notice.set(String::new());
+                                            handwriting_vision_open.set(false);
+                                            if let Some(action) = handwriting_pending_launch.get_untracked() {
+                                                handwriting_pending_launch.set(None);
+                                                on_activate.call(action);
+                                            }
+                                        } else {
+                                            handwriting_vision_notice.set(
+                                                t(locale.get_untracked(), "caps.skill.handwriting_extract.settings.required"),
+                                            );
+                                        }
+                                    });
+                                }>
+                                {move || t(locale.get(), "caps.skill.handwriting_extract.settings.save")}
                             </button>
                         </div>
                     </div>

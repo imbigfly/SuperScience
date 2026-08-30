@@ -48,9 +48,13 @@ mod exploration_commands;
 mod exploration_isolation;
 mod exploration_promotion;
 mod exploration_workspace;
+mod feedback;
 mod file_browser;
+mod handwriting_calibrate;
 mod harvest;
 mod image_generation_tool;
+mod knowledge;
+mod knowledge_search_tool;
 mod library_commands;
 mod mcp_bridge;
 pub use mcp_bridge::run_mcp_bridge_cli;
@@ -1935,7 +1939,7 @@ struct Settings {
     #[serde(default = "default_auto_compact")]
     auto_compact: bool,
     /// Retry native-model responses that stop at their output-token ceiling.
-    #[serde(default)]
+    #[serde(default = "default_auto_continue")]
     auto_continue: bool,
     #[serde(default = "default_auto_continue_limit")]
     auto_continue_limit: u64,
@@ -1988,6 +1992,10 @@ const fn default_max_iter_setting() -> i64 {
 }
 
 const fn default_auto_compact() -> bool {
+    true
+}
+
+const fn default_auto_continue() -> bool {
     true
 }
 
@@ -4158,6 +4166,54 @@ async fn set_pii_firewall_enabled(state: State<'_, AppState>, enabled: bool) -> 
     Ok(())
 }
 
+#[tauri::command]
+async fn get_handwriting_extract_vision_model(
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    Ok(models::handwriting_extract_vision_id(&state.store).await)
+}
+
+#[tauri::command]
+async fn set_handwriting_extract_vision_model(
+    state: State<'_, AppState>,
+    model_id: String,
+) -> Result<String, String> {
+    models::set_handwriting_extract_vision_id(&state.store, &model_id).await
+}
+
+#[tauri::command]
+async fn get_handwriting_extract_calibration_model(
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    Ok(specialists::handwriting_extract_calibration_id(&state.store).await)
+}
+
+#[tauri::command]
+async fn set_handwriting_extract_calibration_model(
+    state: State<'_, AppState>,
+    model_id: String,
+) -> Result<String, String> {
+    let saved = models::set_handwriting_extract_calibration_id(&state.store, &model_id).await?;
+    if let Some(mut spec) =
+        specialists::get(&state.store, specialists::HANDWRITING_EXTRACT_ID).await
+    {
+        if spec.model_id != saved {
+            spec.model_id = saved.clone();
+            specialists::upsert(&state.store, spec).await?;
+        }
+    }
+    Ok(saved)
+}
+
+#[tauri::command]
+async fn set_frame_vision_model(
+    state: State<'_, AppState>,
+    frame_id: String,
+    model_id: String,
+) -> Result<String, String> {
+    models::set_frame_vision_id(&state.store, &frame_id, &model_id).await
+}
+
 pub(crate) async fn load_pii_custom_terms(store: &Store) -> Vec<superscience_llm::CustomTerm> {
     store
         .get_setting("pii_custom_terms")
@@ -4280,7 +4336,8 @@ async fn load_auto_continue_settings(store: &Store) -> (bool, usize) {
         .await
         .ok()
         .flatten()
-        .is_some_and(|value| value == "true");
+        .map(|value| value != "false")
+        .unwrap_or(true);
     let limit = store
         .get_setting("auto_continue_limit")
         .await
@@ -4484,16 +4541,54 @@ fn add_configured_video_generation_tool(
     }
 }
 
-async fn build_vision_provider_config(store: &Store) -> Option<ProviderConfig> {
+pub(crate) async fn build_vision_provider_config(store: &Store) -> Option<ProviderConfig> {
     let (provider, api_url, model, api_key, max_tokens, reasoning_effort) =
         models::vision_config(store).await?;
-    match build_provider_config(
+    vision_provider_config_from_parts(
         &provider,
         &api_url,
-        &api_key,
         &model,
+        &api_key,
         max_tokens,
         &reasoning_effort,
+    )
+}
+
+pub(crate) async fn build_assigned_vision_provider_config(
+    store: &Store,
+    profile_id: &str,
+) -> Result<ProviderConfig, String> {
+    let (provider, api_url, model, api_key, max_tokens, reasoning_effort) =
+        models::assigned_vision_config(store, profile_id)
+            .await
+            .ok_or_else(|| {
+                "The handwriting-extract vision model is missing or invalid. Choose one in the capability card settings.".to_string()
+            })?;
+    build_provider_config(
+        &provider,
+        &api_url,
+        &model,
+        &api_key,
+        max_tokens,
+        &reasoning_effort,
+    )
+}
+
+fn vision_provider_config_from_parts(
+    provider: &str,
+    api_url: &str,
+    model: &str,
+    api_key: &str,
+    max_tokens: u64,
+    reasoning_effort: &str,
+) -> Option<ProviderConfig> {
+    match build_provider_config(
+        provider,
+        api_url,
+        model,
+        api_key,
+        max_tokens,
+        reasoning_effort,
     ) {
         Ok(cfg) => Some(cfg),
         Err(e) => {
@@ -6915,6 +7010,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             agent_turn::send_message,
+            feedback::send_feedback_email,
             update_mcp_app_context,
             call_mcp_app_tool,
             list_mcp_app_tools,
@@ -7146,6 +7242,9 @@ pub fn run() {
             browser_bridge::dismiss_browser_tab_cleanup,
             settings_commands::get_settings,
             settings_commands::set_settings,
+            knowledge::get_knowledge_settings,
+            knowledge::set_knowledge_settings,
+            knowledge::test_knowledge_connection,
             configure::get_appearance_prefs,
             configure::set_appearance_prefs,
             settings_commands::get_storage_usage,
@@ -7264,6 +7363,11 @@ pub fn run() {
             specialists::get_session_specialist,
             get_pii_firewall_enabled,
             set_pii_firewall_enabled,
+            get_handwriting_extract_vision_model,
+            set_handwriting_extract_vision_model,
+            get_handwriting_extract_calibration_model,
+            set_handwriting_extract_calibration_model,
+            set_frame_vision_model,
             get_pii_custom_terms,
             set_pii_custom_terms,
             tctoken::tctoken_session_cmd,

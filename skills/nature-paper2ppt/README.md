@@ -39,6 +39,6 @@
 
 ## 相关技能
 
-- `nature-reader`：先建立全文中英对照和图表 source map。
+- `nature-reader`：先建立全文中英对照 HTML 报告和图表 source map。
 - `nature-figure`：重画汇报中的机制图或方法图。
 - `presentations`：对生成的 PPTX 做进一步版式编辑。

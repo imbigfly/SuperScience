@@ -1,16 +1,22 @@
 use crate::app_support::{
-    compose_icon, js_error_text, parse_redact_keywords, redact_text, refresh_execution_contexts,
-    refresh_runs, refresh_runtimes, share_html_document, share_png_payload, share_png_row,
-    share_png_width, show_toast, ShareExportFormat, ShareHtmlRow, ShareHtmlTheme, ShareMessage,
-    ShareRole,
+    compose_icon, focus_element_soon, js_error_text, merge_feedback_attachments,
+    parse_redact_keywords, redact_text, refresh_execution_contexts, refresh_runs, refresh_runtimes,
+    share_html_document, share_png_payload, share_png_row, share_png_width, show_toast,
+    FeedbackAttachError, FeedbackDraftFile, ShareExportFormat, ShareHtmlRow, ShareHtmlTheme,
+    ShareMessage, ShareRole,
 };
-use crate::bindings::{invoke, invoke_checked, render_share_png, snapshot_share_theme};
-use wasm_bindgen::JsValue;
+use crate::bindings::{
+    drag_has_files, invoke, invoke_checked, read_feedback_clipboard_files,
+    read_feedback_drop_files, read_feedback_input_files, render_share_png, set_drag_copy,
+    snapshot_share_theme,
+};
 use crate::dto::*;
 use crate::i18n::{brand_product_name, localize_backend, t, tf, Locale};
 use crate::text::{dom_value, event_target_value, file_kind, format_bytes};
 use leptos::*;
 use serde_wasm_bindgen::to_value;
+use wasm_bindgen::JsCast;
+use wasm_bindgen::JsValue;
 
 #[component]
 pub(super) fn AddHostOverlay(
@@ -1321,10 +1327,7 @@ fn provision_status_label(locale: Locale, status: &str) -> String {
 }
 
 fn provision_counts(items: &[ProvisionItem]) -> (usize, usize) {
-    let auto: Vec<_> = items
-        .iter()
-        .filter(|item| item.id != "sci_key")
-        .collect();
+    let auto: Vec<_> = items.iter().filter(|item| item.id != "sci_key").collect();
     let done = auto
         .iter()
         .filter(|item| matches!(item.status.as_str(), "ready" | "passed"))
@@ -1350,11 +1353,9 @@ pub(super) fn RuntimeSetupPanel(
     let start = move |_| {
         spawn_local(async move {
             let _ = invoke("start_runtime_provision", JsValue::UNDEFINED).await;
-            if let Ok(next) =
-                serde_wasm_bindgen::from_value::<RuntimeProvisionState>(
-                    invoke("get_runtime_provision_state", JsValue::UNDEFINED).await,
-                )
-            {
+            if let Ok(next) = serde_wasm_bindgen::from_value::<RuntimeProvisionState>(
+                invoke("get_runtime_provision_state", JsValue::UNDEFINED).await,
+            ) {
                 state.set(Some(next));
             }
         });
@@ -1490,6 +1491,253 @@ fn items_has_sci_key_prompt(state: Option<RuntimeProvisionState>) -> bool {
                 .map(|item| item.status == "needs_user")
         })
         .unwrap_or(false)
+}
+
+#[component]
+pub(super) fn FeedbackOverlay(
+    locale: RwSignal<Locale>,
+    open: RwSignal<bool>,
+    diagnostics: RwSignal<String>,
+) -> impl IntoView {
+    let message = create_rw_signal(String::new());
+    let attachments = create_rw_signal(Vec::<FeedbackDraftFile>::new());
+    let sending = create_rw_signal(false);
+    let status = create_rw_signal(None::<(bool, String)>);
+    let drag_over = create_rw_signal(false);
+
+    create_effect(move |_| {
+        if open.get() {
+            message.set(String::new());
+            attachments.set(Vec::new());
+            sending.set(false);
+            status.set(None);
+            drag_over.set(false);
+            focus_element_soon("feedback-message");
+        }
+    });
+
+    let close = move || {
+        if sending.get_untracked() {
+            return;
+        }
+        open.set(false);
+    };
+
+    let attach_error_key = |error: FeedbackAttachError| match error {
+        FeedbackAttachError::TooMany => "feedback.too_many",
+        FeedbackAttachError::TooLarge => "feedback.too_large",
+        FeedbackAttachError::BlockedType => "feedback.blocked_type",
+    };
+
+    let add_files = move |incoming: Vec<FeedbackDraftFile>| match merge_feedback_attachments(
+        &attachments.get_untracked(),
+        incoming,
+    ) {
+        Ok(next) => {
+            attachments.set(next);
+            status.set(None);
+        }
+        Err(error) => {
+            status.set(Some((
+                false,
+                t(locale.get_untracked(), attach_error_key(error)).to_string(),
+            )));
+        }
+    };
+
+    let on_paste = move |ev: web_sys::Event| {
+        let event: JsValue = ev.clone().into();
+        if pasted_image_count_safe(&event) == 0 {
+            return;
+        }
+        ev.prevent_default();
+        spawn_local(async move {
+            let value = read_feedback_clipboard_files(event).await;
+            if let Ok(files) = serde_wasm_bindgen::from_value::<Vec<FeedbackDraftFile>>(value) {
+                add_files(files);
+            }
+        });
+    };
+
+    let on_drag_over = move |ev: web_sys::DragEvent| {
+        let event: JsValue = ev.clone().into();
+        if !drag_has_files(event.clone()) {
+            return;
+        }
+        ev.prevent_default();
+        set_drag_copy(event);
+        drag_over.set(true);
+    };
+
+    let on_drop = move |ev: web_sys::DragEvent| {
+        let event: JsValue = ev.clone().into();
+        if !drag_has_files(event.clone()) {
+            return;
+        }
+        ev.prevent_default();
+        drag_over.set(false);
+        spawn_local(async move {
+            let value = read_feedback_drop_files(event).await;
+            if let Ok(files) = serde_wasm_bindgen::from_value::<Vec<FeedbackDraftFile>>(value) {
+                add_files(files);
+            }
+        });
+    };
+
+    let on_files_selected = move |_| {
+        spawn_local(async move {
+            let value = read_feedback_input_files("feedback-file-input").await;
+            if let Ok(files) = serde_wasm_bindgen::from_value::<Vec<FeedbackDraftFile>>(value) {
+                add_files(files);
+            }
+        });
+    };
+
+    let send = move |_| {
+        let text = message.get().trim().to_string();
+        if text.is_empty() {
+            status.set(Some((false, t(locale.get(), "feedback.empty").to_string())));
+            return;
+        }
+        if sending.get() {
+            return;
+        }
+        sending.set(true);
+        status.set(None);
+        let diagnostics = diagnostics.get();
+        let files = attachments.get();
+        spawn_local(async move {
+            let payload = serde_json::json!({
+                "message": text,
+                "diagnostics": diagnostics,
+                "subject": text.lines().next().unwrap_or("").trim(),
+                "attachments": files.iter().map(FeedbackDraftFile::to_payload).collect::<Vec<_>>(),
+            });
+            match invoke_checked("send_feedback_email", to_value(&payload).unwrap()).await {
+                Ok(_) => {
+                    sending.set(false);
+                    open.set(false);
+                    show_toast(&t(locale.get(), "feedback.success"));
+                }
+                Err(error) => {
+                    sending.set(false);
+                    status.set(Some((
+                        false,
+                        localize_backend(locale.get(), &js_error_text(error)),
+                    )));
+                }
+            }
+        });
+    };
+
+    move || {
+        open.get().then(|| view! {
+            <div class="overlay feedback-overlay" data-testid="feedback-overlay"
+                on:click=move |ev| {
+                    if ev.target() == ev.current_target() { close(); }
+                }>
+                <div class="modal feedback-modal" role="dialog" aria-modal="true"
+                    aria-labelledby="feedback-title">
+                    <div class="ps-head">
+                        <h2 id="feedback-title">{move || t(locale.get(), "feedback.title")}</h2>
+                        <button type="button" class="ps-close"
+                            title=move || t(locale.get(), "feedback.cancel")
+                            aria-label=move || t(locale.get(), "feedback.cancel")
+                            disabled=move || sending.get()
+                            on:click=move |_| close()>
+                            {compose_icon("close")}
+                        </button>
+                    </div>
+                    <p class="feedback-subtitle">{move || t(locale.get(), "feedback.subtitle")}</p>
+                    <div class="feedback-compose"
+                        class:dragover=move || drag_over.get()
+                        on:dragover=on_drag_over
+                        on:dragleave=move |_| drag_over.set(false)
+                        on:drop=on_drop>
+                        <input id="feedback-file-input" type="file" multiple=true class="feedback-file-input"
+                            on:change=on_files_selected />
+                        <div class="feedback-context-chip" data-testid="feedback-context">
+                            <strong>{move || t(locale.get(), "issue_report.context")}</strong>
+                            <span>{move || t(locale.get(), "issue_report.context_attached")}</span>
+                        </div>
+                        <textarea id="feedback-message" class="feedback-textarea"
+                            data-testid="feedback-message"
+                            prop:value=move || message.get()
+                            placeholder=move || t(locale.get(), "feedback.placeholder")
+                            disabled=move || sending.get()
+                            on:input=move |ev| message.set(event_target_value(&ev))
+                            on:paste=on_paste>
+                        </textarea>
+                        {move || {
+                            let files = attachments.get();
+                            (!files.is_empty()).then(|| view! {
+                                <div class="feedback-attachments" data-testid="feedback-attachments">
+                                    {files.into_iter().enumerate().map(|(idx, file)| {
+                                        let label = file.name.clone();
+                                        let preview = file.preview_url.clone();
+                                        view! {
+                                            <div class="feedback-file-chip">
+                                                {(!preview.is_empty()).then(|| view! {
+                                                    <img src=preview alt="" />
+                                                })}
+                                                <span title=label.clone()>{label}</span>
+                                                <button type="button"
+                                                    title=move || t(locale.get(), "composer.remove_attachment")
+                                                    aria-label=move || t(locale.get(), "composer.remove_attachment")
+                                                    disabled=move || sending.get()
+                                                    on:click=move |_| {
+                                                        attachments.update(|rows| { rows.remove(idx); });
+                                                    }>
+                                                    {compose_icon("close")}
+                                                </button>
+                                            </div>
+                                        }
+                                    }).collect_view()}
+                                </div>
+                            })
+                        }}
+                        <div class="feedback-attach-row">
+                            <button type="button" class="feedback-attach-btn"
+                                disabled=move || sending.get()
+                                on:click=move |_| {
+                                    if let Some(window) = web_sys::window() {
+                                        if let Some(doc) = window.document() {
+                                            if let Some(input) = doc.get_element_by_id("feedback-file-input") {
+                                                if let Ok(el) = input.dyn_into::<web_sys::HtmlElement>() {
+                                                    let _ = el.click();
+                                                }
+                                            }
+                                        }
+                                    }
+                                }>
+                                {compose_icon("attach")}
+                                {move || t(locale.get(), "feedback.attach")}
+                            </button>
+                            <span class="feedback-attach-hint">{move || t(locale.get(), "feedback.attach_hint")}</span>
+                        </div>
+                    </div>
+                    {move || status.get().map(|(ok, text)| view! {
+                        <p class="feedback-status" class:ok=ok class:fail=!ok data-testid="feedback-status">{text}</p>
+                    })}
+                    <div class="feedback-actions">
+                        <button type="button" disabled=move || sending.get()
+                            on:click=move |_| close()>
+                            {move || t(locale.get(), "feedback.cancel")}
+                        </button>
+                        <button type="button" class="primary" data-testid="feedback-send"
+                            disabled=move || sending.get() || message.get().trim().is_empty()
+                            on:click=send>
+                            {move || t(locale.get(), if sending.get() { "feedback.sending" } else { "feedback.send" })}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        })
+    }
+}
+
+fn pasted_image_count_safe(event: &JsValue) -> usize {
+    crate::bindings::pasted_image_count(event.clone())
 }
 
 #[cfg(test)]

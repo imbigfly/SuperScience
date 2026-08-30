@@ -28,7 +28,8 @@ fn latest_items() -> &'static Mutex<Vec<ProvisionItem>> {
 
 #[derive(Serialize, Clone)]
 pub struct RuntimeProvisionState {
-    pub show: bool,
+    /// Offered once after first-run welcome. Not an every-launch open flag.
+    pub first_run: bool,
     pub done: bool,
     pub running: bool,
     pub items: Vec<ProvisionItem>,
@@ -85,7 +86,7 @@ pub(super) async fn get_runtime_provision_state(
         }
     };
     Ok(RuntimeProvisionState {
-        show: !done,
+        first_run: !done,
         done,
         running: running_flag().load(Ordering::Relaxed),
         items,
@@ -258,5 +259,18 @@ mod tests {
     #[test]
     fn provision_done_setting_key_is_stable() {
         assert_eq!(SETTING_DONE, "runtime_provision_done");
+    }
+
+    #[test]
+    fn provision_state_uses_first_run_not_show() {
+        let json = serde_json::to_string(&super::RuntimeProvisionState {
+            first_run: true,
+            done: false,
+            running: false,
+            items: vec![],
+        })
+        .unwrap();
+        assert!(json.contains("\"first_run\":true"));
+        assert!(!json.contains("\"show\""));
     }
 }

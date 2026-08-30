@@ -8,7 +8,9 @@ use crate::app_support::{
     replace_visible_transcript, ComposerReferenceChip,
 };
 use crate::bindings::{force_chat_bottom, invoke, invoke_checked};
-use crate::capabilities_home::{CapabilityAction, CapabilityPanel};
+use crate::capabilities_home::{
+    capability_catalog, title_key_for_capability_action, CapabilityAction, CapabilityPanel,
+};
 use crate::demo_actions::refresh_demo_list;
 use crate::dto::*;
 use crate::i18n::{localize_backend, send_failed, t, tf, Locale};
@@ -21,6 +23,94 @@ use std::collections::{HashMap, HashSet};
 use wasm_bindgen::JsValue;
 
 const DIRECTOR_KICKOFF_PROMPT: &str = "caps.prompt.director_kickoff";
+const DIRECTOR_RULES_KEY: &str = "caps.prompt.director_rules";
+const HANDWRITING_EXTRACT_SKILL: &str = "handwriting-extract";
+const CAPABILITY_TITLE_SEP: &str = " · ";
+const CAPABILITY_TITLE_MAX_CHARS: usize = 80;
+
+/// Sidebar / recent-session label for a chat started from a capability card.
+pub(crate) fn capability_session_title(
+    locale: Locale,
+    prompt_key: &'static str,
+    skill: Option<&'static str>,
+    specialist: Option<&'static str>,
+) -> Option<String> {
+    let exact = CapabilityAction::GuidedChat {
+        prompt_key,
+        skill,
+        specialist,
+    };
+    let key = title_key_for_capability_action(&exact).or_else(|| {
+        capability_catalog()
+            .iter()
+            .find_map(|tile| match tile.action {
+                CapabilityAction::GuidedChat {
+                    prompt_key: tile_prompt,
+                    skill: tile_skill,
+                    specialist: tile_specialist,
+                } if tile_prompt == prompt_key
+                    && tile_skill == skill
+                    && (specialist.is_none() || tile_specialist == specialist) =>
+                {
+                    Some(tile.title_key)
+                }
+                CapabilityAction::InstallThenGuided {
+                    prompt_key: tile_prompt,
+                    skill: tile_skill,
+                } if tile_prompt == prompt_key
+                    && Some(tile_skill) == skill
+                    && specialist.is_none() =>
+                {
+                    Some(tile.title_key)
+                }
+                _ => None,
+            })
+    })?;
+    let name = t(locale, key);
+    let name = name.trim();
+    if name.is_empty() || name == key {
+        return None;
+    }
+    let raw_prompt = t(locale, prompt_key);
+    let summary = if raw_prompt.trim().is_empty() || raw_prompt == prompt_key {
+        String::new()
+    } else {
+        collapse_title_text(&raw_prompt)
+    };
+    Some(format_capability_session_title(name, &summary))
+}
+
+fn collapse_title_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn format_capability_session_title(name: &str, summary: &str) -> String {
+    let name = name.trim();
+    let summary = summary.trim();
+    if summary.is_empty() {
+        return name.to_string();
+    }
+    let summary = summary
+        .strip_prefix(name)
+        .unwrap_or(summary)
+        .trim_start_matches([' ', '·', '-', '—', ':'])
+        .trim();
+    if summary.is_empty() {
+        return name.to_string();
+    }
+    let prefix = format!("{name}{CAPABILITY_TITLE_SEP}");
+    let budget = CAPABILITY_TITLE_MAX_CHARS.saturating_sub(prefix.chars().count());
+    if budget == 0 {
+        return name.to_string();
+    }
+    if summary.chars().count() <= budget {
+        format!("{prefix}{summary}")
+    } else {
+        let take = budget.saturating_sub(1);
+        let cut: String = summary.chars().take(take).collect();
+        format!("{prefix}{cut}…")
+    }
+}
 
 /// Signals and callbacks needed to start a capability from the home tiles.
 #[derive(Clone, Copy)]
@@ -74,6 +164,51 @@ pub(crate) fn pick_default_project_id(list: &[ProjectSummary]) -> Option<String>
         .find(|project| project.id == "default")
         .or_else(|| list.first())
         .map(|project| project.id.clone())
+}
+
+pub(crate) fn spec_key_for_prompt(prompt_key: &str) -> Option<&'static str> {
+    match prompt_key {
+        "caps.prompt.python_r" => Some("caps.prompt.python_r.spec"),
+        "caps.prompt.bio_db" => Some("caps.prompt.bio_db.spec"),
+        "caps.prompt.r_bioinfo_figure" => Some("caps.prompt.r_bioinfo_figure.spec"),
+        "caps.prompt.knowledge" => Some("caps.prompt.knowledge.spec"),
+        _ => None,
+    }
+}
+
+/// Visible opener vs the message sent to the model (frame + optional spec + opener).
+pub(crate) fn capability_launch_texts(
+    locale: Locale,
+    prompt_key: &str,
+    skill: Option<&str>,
+) -> (String, String) {
+    let visible = t(locale, prompt_key);
+    let spec = spec_key_for_prompt(prompt_key).and_then(|key| {
+        let value = t(locale, key);
+        if value.is_empty() || value == key {
+            None
+        } else {
+            Some(value)
+        }
+    });
+    if prompt_key == DIRECTOR_KICKOFF_PROMPT {
+        let rules = t(locale, DIRECTOR_RULES_KEY);
+        let sent = if rules.is_empty() || rules == DIRECTOR_RULES_KEY {
+            visible.clone()
+        } else {
+            format!("{rules}\n\n{visible}")
+        };
+        return (visible, sent);
+    }
+    let skill_frame =
+        skill.map(|name| tf(locale, "caps.prompt.socratic_frame", &[("skill", name)]));
+    let guided_frame = t(locale, "caps.prompt.guided_frame");
+    let body = match spec {
+        Some(spec) => format!("{spec}\n\n{visible}"),
+        None => visible.clone(),
+    };
+    let sent = guided_capability_message(prompt_key, &body, skill_frame.as_deref(), &guided_frame);
+    (visible, sent)
 }
 
 pub(crate) fn guided_capability_message(
@@ -160,18 +295,14 @@ fn start_guided_capability_chat(
             ctx.sel_artifact.set(0);
             ctx.right_tab.set(RightTab::Artifacts);
             let loc = ctx.locale.get();
-            let body: String = t(loc, prompt_key).into();
-            let skill_frame =
-                skill.map(|name| tf(loc, "caps.prompt.socratic_frame", &[("skill", name)]));
-            let guided_frame: String = t(loc, "caps.prompt.guided_frame").into();
-            let text =
-                guided_capability_message(prompt_key, &body, skill_frame.as_deref(), &guided_frame);
+            let session_title = capability_session_title(loc, prompt_key, skill, specialist);
+            let (visible, sent) = capability_launch_texts(loc, prompt_key, skill);
             let references = skill
                 .map(|name| vec![ComposerReferenceArg::Skill { name: name.into() }])
                 .unwrap_or_default();
             let turn_model = active_model_label(&ctx.models.get());
             ctx.items.set(vec![
-                ChatItem::User(text.clone()),
+                ChatItem::User(visible),
                 ChatItem::Assistant {
                     text: String::new(),
                     model: turn_model,
@@ -180,6 +311,42 @@ fn start_guided_capability_chat(
             ]);
             force_chat_bottom();
             spawn_local(async move {
+                let handwriting_vision = if skill == Some(HANDWRITING_EXTRACT_SKILL) {
+                    let v =
+                        invoke("get_handwriting_extract_vision_model", JsValue::UNDEFINED).await;
+                    serde_wasm_bindgen::from_value::<Option<String>>(v)
+                        .ok()
+                        .flatten()
+                        .filter(|id| !id.trim().is_empty())
+                } else {
+                    None
+                };
+                let handwriting_calib = if skill == Some(HANDWRITING_EXTRACT_SKILL) {
+                    let v = invoke(
+                        "get_handwriting_extract_calibration_model",
+                        JsValue::UNDEFINED,
+                    )
+                    .await;
+                    serde_wasm_bindgen::from_value::<Option<String>>(v)
+                        .ok()
+                        .flatten()
+                        .filter(|id| !id.trim().is_empty())
+                } else {
+                    None
+                };
+                if skill == Some(HANDWRITING_EXTRACT_SKILL)
+                    && (handwriting_vision.is_none() || handwriting_calib.is_none())
+                {
+                    ctx.status.set(
+                        t(
+                            ctx.locale.get(),
+                            "caps.skill.handwriting_extract.settings.required",
+                        )
+                        .into(),
+                    );
+                    ctx.items.set(Vec::new());
+                    return;
+                }
                 let id = match invoke_new_session().await {
                     Ok(id) => id,
                     Err(error) => {
@@ -187,13 +354,31 @@ fn start_guided_capability_chat(
                         return;
                     }
                 };
+                if let Some(title) = session_title {
+                    let arg = to_value(&serde_json::json!({
+                        "id": id,
+                        "title": title,
+                    }))
+                    .unwrap();
+                    let _ = invoke_checked("rename_session", arg).await;
+                }
                 if let Some(specialist_id) = specialist {
                     let arg = to_value(&serde_json::json!({
                         "frameId": id,
                         "id": specialist_id,
                     }))
                     .unwrap();
-                    let _ = invoke_checked("set_session_specialist", arg).await;
+                    if let Err(err) = invoke_checked("set_session_specialist", arg).await {
+                        let loc = ctx.locale.get();
+                        let raw = js_error_text(err);
+                        ctx.status.set(tf(
+                            loc,
+                            "status.send_failed",
+                            &[("msg", &localize_backend(loc, &raw))],
+                        ));
+                        ctx.items.set(Vec::new());
+                        return;
+                    }
                 }
                 ctx.active_session.set(Some(id.clone()));
                 if specialist.is_some() {
@@ -207,13 +392,31 @@ fn start_guided_capability_chat(
                         );
                     }
                 }
+                if let Some(model_id) = handwriting_vision {
+                    let arg = to_value(&serde_json::json!({
+                        "frameId": id,
+                        "modelId": model_id,
+                    }))
+                    .unwrap();
+                    if let Err(err) = invoke_checked("set_frame_vision_model", arg).await {
+                        let loc = ctx.locale.get();
+                        let raw = js_error_text(err);
+                        ctx.status.set(tf(
+                            loc,
+                            "status.send_failed",
+                            &[("msg", &localize_backend(loc, &raw))],
+                        ));
+                        ctx.items.set(Vec::new());
+                        return;
+                    }
+                }
                 ctx.running.update(|running| {
                     running.insert(id.clone());
                 });
                 ctx.refresh_session_history.call(());
                 let arg = to_value(&SendMessageArgs {
                     session_id: Some(id.clone()),
-                    message: text,
+                    message: sent,
                     attachments: vec![],
                     references,
                     resume: false,
@@ -345,6 +548,7 @@ fn dispatch_capability_action(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::text::strip_capability_coach;
 
     fn project(id: &str) -> ProjectSummary {
         ProjectSummary {
@@ -363,10 +567,152 @@ mod tests {
     }
 
     #[test]
+    fn capability_card_session_title_prefixes_card_name_and_prompt_summary() {
+        let zh = capability_session_title(
+            Locale::Zh,
+            "caps.skill.handwriting_extract.prompt",
+            Some("handwriting-extract"),
+            Some("handwriting_extract"),
+        )
+        .expect("handwriting title");
+        assert!(zh.starts_with("手写数据提取 · "));
+        assert!(!zh.contains("handwriting-extract"));
+        assert!(zh.chars().count() <= CAPABILITY_TITLE_MAX_CHARS);
+
+        let en = capability_session_title(
+            Locale::En,
+            "caps.skill.handwriting_extract.prompt",
+            Some("handwriting-extract"),
+            None,
+        )
+        .expect("handwriting title");
+        assert!(en.starts_with("Handwritten data extract · "));
+        assert!(!en.contains("handwriting-extract"));
+
+        let director =
+            capability_session_title(Locale::Zh, DIRECTOR_KICKOFF_PROMPT, None, None).unwrap();
+        assert!(director.starts_with(&format!(
+            "{}{CAPABILITY_TITLE_SEP}",
+            t(Locale::Zh, "caps.tile.director.title")
+        )));
+        assert_eq!(
+            capability_session_title(Locale::Zh, "caps.prompt.missing", None, None),
+            None
+        );
+    }
+
+    #[test]
+    fn capability_session_title_format_truncates_and_skips_empty_summary() {
+        assert_eq!(format_capability_session_title("选题引导", ""), "选题引导");
+        assert_eq!(
+            format_capability_session_title("选题引导", "盘点已有数据和资料"),
+            "选题引导 · 盘点已有数据和资料"
+        );
+        let long = "字".repeat(120);
+        let titled = format_capability_session_title("选题引导", &long);
+        assert!(titled.starts_with("选题引导 · "));
+        assert!(titled.ends_with('…'));
+        assert_eq!(titled.chars().count(), CAPABILITY_TITLE_MAX_CHARS);
+    }
+
+    #[test]
     fn director_kickoff_skips_coaching_frame() {
         assert_eq!(
             guided_capability_message(DIRECTOR_KICKOFF_PROMPT, "intake", Some("frame"), "guided"),
             "intake"
+        );
+    }
+
+    #[test]
+    fn capability_launch_texts_hide_frame_from_visible() {
+        let (visible, sent) = capability_launch_texts(
+            Locale::Zh,
+            "caps.skill.topic_coach.prompt",
+            Some("topic-coach"),
+        );
+        assert!(!visible.contains("能力引导规则"));
+        assert!(sent.contains("能力引导规则"));
+        assert!(sent.contains(visible.trim()));
+        assert_eq!(strip_capability_coach(&sent), visible.trim());
+
+        let (visible, sent) = capability_launch_texts(
+            Locale::En,
+            "caps.skill.topic_coach.prompt",
+            Some("topic-coach"),
+        );
+        assert!(!visible.contains("Capability coaching"));
+        assert!(sent.contains("Capability coaching"));
+        assert_eq!(strip_capability_coach(&sent), visible.trim());
+    }
+
+    #[test]
+    fn director_launch_keeps_rules_off_the_opener() {
+        let (visible, sent) = capability_launch_texts(Locale::Zh, DIRECTOR_KICKOFF_PROMPT, None);
+        assert!(!visible.contains("硬性规则"));
+        assert!(sent.starts_with("硬性规则"));
+        assert!(sent.contains(&visible));
+        assert_eq!(strip_capability_coach(&sent), visible.trim());
+
+        let (visible, sent) = capability_launch_texts(Locale::En, DIRECTOR_KICKOFF_PROMPT, None);
+        assert!(!visible.contains("Hard rules"));
+        assert!(sent.starts_with("Hard rules"));
+        assert_eq!(strip_capability_coach(&sent), visible.trim());
+    }
+
+    #[test]
+    fn python_r_spec_is_sent_but_stripped_from_display() {
+        let (visible, sent) = capability_launch_texts(Locale::Zh, "caps.prompt.python_r", None);
+        assert!(!visible.contains("savefig"));
+        assert!(sent.contains("savefig"));
+        assert!(sent.contains("能力工具规格"));
+        assert_eq!(strip_capability_coach(&sent), visible.trim());
+
+        let (visible, sent) = capability_launch_texts(Locale::En, "caps.prompt.python_r", None);
+        assert!(!visible.contains("savefig"));
+        assert!(sent.contains("savefig"));
+        assert!(sent.contains("Capability tool spec"));
+        assert_eq!(strip_capability_coach(&sent), visible.trim());
+    }
+
+    #[test]
+    fn knowledge_spec_is_sent_but_stripped_from_display() {
+        let (visible, sent) = capability_launch_texts(Locale::Zh, "caps.prompt.knowledge", None);
+        assert!(!visible.contains("knowledge_search"));
+        assert!(sent.contains("knowledge_search"));
+        assert!(sent.contains("能力工具规格"));
+        assert!(sent.contains("能力引导规则") || sent.contains("Capability coaching"));
+        assert_eq!(strip_capability_coach(&sent), visible.trim());
+
+        let (visible, sent) = capability_launch_texts(Locale::En, "caps.prompt.knowledge", None);
+        assert!(!visible.contains("knowledge_search"));
+        assert!(sent.contains("knowledge_search"));
+        assert!(sent.contains("Capability tool spec"));
+        assert_eq!(strip_capability_coach(&sent), visible.trim());
+    }
+
+    #[test]
+    fn orphan_capability_prompt_keys_are_removed() {
+        for key in [
+            "caps.prompt.literature",
+            "caps.prompt.pdf_ppt",
+            "caps.prompt.academic_research",
+            "caps.prompt.nature_skills",
+            "caps.prompt.academic_paper",
+            "caps.prompt.scientific_figures",
+            "caps.env_setup_prompt",
+        ] {
+            for locale in [Locale::En, Locale::Zh] {
+                assert_eq!(
+                    t(locale, key),
+                    key,
+                    "orphan {key} should not resolve in {:?}",
+                    locale
+                );
+            }
+        }
+        assert_ne!(
+            t(Locale::Zh, "caps.skill.academic_paper.prompt"),
+            "caps.skill.academic_paper.prompt"
         );
     }
 

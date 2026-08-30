@@ -128,10 +128,11 @@ For a visual fallback, set `image_path` to the relative crop path and retain `la
 
 ## Compatibility fallback
 
-Markdown remains the primary artifact. If the user's target viewer does not support math or they report seeing raw LaTeX, generate `reader.html` as an additional artifact with KaTeX or MathJax and keep the same `E...` anchors. Do not silently replace `paper.md`.
+`reader.html` is the user-facing artifact. Keep the same `E...` anchors in `paper.md`, `source_map.json`, and the generated HTML. Do not hand-write the HTML page.
 
 Before delivery, run:
 
 ```bash
-python scripts/validate_reader_math.py paper.md --source-map source_map.json
+python <skill-dir>/scripts/validate_reader_math.py paper.md --source-map source_map.json
+python <skill-dir>/scripts/build_reader_html.py --source-map source_map.json --output reader.html
 ```

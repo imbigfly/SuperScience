@@ -37,7 +37,7 @@ references:
   on_demand:
     - condition: cropping figures/tables, placement near first mention, tight-crop rules
       path: references/figure-extraction.md
-    - condition: exact paper.md / source_map.json field schema and block shapes
+    - condition: exact paper.md / reader.html / source_map.json field schema and block shapes
       path: references/output-spec.md
     - condition: equations, mathematical expressions, chemical formulae, custom LaTeX macros, or image-only formulae
       path: references/equation-handling.md

@@ -689,7 +689,8 @@ async fn current_values(store: &Store) -> Result<Map<String, Value>, String> {
         .get_setting("auto_continue")
         .await
         .map_err(|error| error.to_string())?
-        .is_some_and(|value| value == "true");
+        .map(|value| value != "false")
+        .unwrap_or(true);
     let auto_continue_limit = store
         .get_setting("auto_continue_limit")
         .await
@@ -1243,6 +1244,35 @@ mod tests {
 
     fn tool(store: Store, app_data: PathBuf) -> ConfigureTool {
         ConfigureTool::new(store, app_data, "proj-a")
+    }
+
+    #[tokio::test]
+    async fn auto_continue_defaults_on_when_unset() {
+        let (store, root, db) = test_store().await;
+        let env = NoEnv(root.clone());
+        let unset = tool(store.clone(), root.clone())
+            .run(&json!({"action": "get", "keys": ["auto_continue"]}), &env)
+            .await;
+        assert!(unset.success, "{}", unset.content);
+        assert!(
+            unset.content.contains("`auto_continue` = true"),
+            "{}",
+            unset.content
+        );
+
+        store.set_setting("auto_continue", "false").await.unwrap();
+        let off = tool(store, root.clone())
+            .run(&json!({"action": "get", "keys": ["auto_continue"]}), &env)
+            .await;
+        assert!(off.success, "{}", off.content);
+        assert!(
+            off.content.contains("`auto_continue` = false"),
+            "{}",
+            off.content
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_file(db);
     }
 
     #[tokio::test]

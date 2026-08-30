@@ -1,12 +1,20 @@
 # Output contract
 
-Prefer these outputs:
+Required outputs:
 
-- `paper.md` for the full-paper Markdown artifact
+- `reader.html` — the user-facing bilingual report (always generate)
 - `source_map.json` for stable source anchors
+- `paper.md` for downstream skills and the math validator
 - `translation_notes.md` for terminology, uncertainty, and layout notes
 - `assets/` for extracted figures, tables, and equation crops when needed
-- `reader.html` only when the user explicitly wants a browser preview
+
+`reader.html` is the primary deliverable shown to the user. Do not hand-write the HTML page. After `source_map.json` and `assets/` exist, run the bundled builder:
+
+```bash
+python <skill-dir>/scripts/build_reader_html.py \
+  --source-map source_map.json \
+  --output reader.html
+```
 
 Do not hide missing information. If the source is incomplete, label the output as draft mode.
 
@@ -14,6 +22,7 @@ Do not hide missing information. If the source is incomplete, label the output a
 
 Before final response, verify:
 
+- `reader.html` exists next to `source_map.json` and was produced by `build_reader_html.py`
 - `paper.md` contains `**Original:**` and `**中文:**` block pairs
 - every image/table link used in `paper.md` exists under `assets/`
 - every figure/table in `assets/` has a corresponding Markdown block and source pointer
@@ -25,16 +34,18 @@ Before final response, verify:
 - `source_map.json` parses as JSON and includes source block IDs
 - `translation_notes.md` records skipped, uncertain, or draft-mode content
 
-Run the deterministic math check before delivery:
+Run these checks before delivery:
 
 ```bash
-python scripts/validate_reader_math.py paper.md --source-map source_map.json
+python <skill-dir>/scripts/validate_reader_math.py paper.md --source-map source_map.json
+python <skill-dir>/scripts/build_reader_html.py --source-map source_map.json --output reader.html
 ```
 
-Add `--strict` for a published or reusable artifact. The command checks delimiters, bare LaTeX, equation IDs, source-map linkage, and equation fallback paths.
+Add `--strict` on the math validator for a published or reusable artifact.
 
 ## Tooling guidance
 
 - If the input is a PDF, load the `pdf` skill first for extraction and OCR guidance.
-- If the user asks for a richer browser view, use `web-artifacts-builder` or `frontend-design` only as a preview layer on top of the Markdown workflow.
+- Do not call `web-artifacts-builder` or `frontend-design` for this skill. Layout is locked by `build_reader_html.py`.
+- In the chat reply, point the user at `reader.html` and any draft gaps. Do not paste the full bilingual text into the conversation.
 - If the user wants citation-level grounding to original text, keep the source map explicit and do not lose the page or block IDs.

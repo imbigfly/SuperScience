@@ -186,7 +186,7 @@ node scripts/batch_download.mjs \
 
 ## 相关技能
 
-- `nature-reader`：把已获取的 PDF/HTML 转成全文阅读材料。
+- `nature-reader`：把已获取的 PDF/HTML 转成全文中英对照 HTML 报告。
 - `nature-academic-search`：从题名、DOI 或主题查找目标文献。
 
 ## 验证

@@ -55,6 +55,42 @@
   color: var(--text-muted); font-size: 12px;
 }
 .feedback-context-chip strong { color: var(--text); font-weight: 600; }
+.feedback-compose.dragover {
+  border-color: var(--clay);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+.feedback-attachments {
+  display: flex; flex-wrap: wrap; gap: 8px;
+}
+.feedback-file-chip {
+  display: inline-flex; align-items: center; gap: 8px;
+  max-width: 100%; padding: 4px 6px 4px 4px;
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--bg-sunken); color: var(--text); font-size: 12px;
+}
+.feedback-file-chip img {
+  width: 40px; height: 40px; object-fit: cover; border-radius: 7px; display: block;
+}
+.feedback-file-chip span { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.feedback-file-chip button {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; padding: 0; border: 0; border-radius: 999px;
+  background: transparent; color: var(--text-faint); cursor: pointer;
+}
+.feedback-file-chip button:hover { color: var(--text); background: var(--surface-hover); }
+.feedback-file-chip button svg { width: 14px; height: 14px; }
+.feedback-attach-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+}
+.feedback-attach-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 10px; border: 1px solid var(--border); border-radius: 999px;
+  background: var(--bg-sunken); color: var(--text); font: inherit; font-size: 12.5px; cursor: pointer;
+}
+.feedback-attach-btn svg { width: 14px; height: 14px; }
+.feedback-attach-btn:hover { background: var(--surface-hover); }
+.feedback-attach-hint { color: var(--text-faint); font-size: 12px; }
+.feedback-file-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .feedback-textarea {
   width: 100%; min-height: 140px; resize: vertical; box-sizing: border-box;
   border: 1px solid var(--border-strong); border-radius: var(--radius-sm);

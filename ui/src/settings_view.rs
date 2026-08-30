@@ -5,17 +5,21 @@ use crate::app_support::{
     cred_group_configured, cred_group_mark, drag_session_id, endpoint_has_stored_key,
     focus_element_soon, format_relative_time, group_models_by_channel,
     import_custom_css_from_input, join_tags, js_error_text, mcp_tool_brief, model_form_entry,
-    new_acp_form, new_model_form, profiles_to_edit_form,
-    provider_entries_are_pristine, provider_mark_letter, quick_action_label, reviewer_backend_key,
-    reviewer_backend_label, reviewer_missing_acp_profile_id, select_form_row, set_reviewer_backend,
-    settings_nav_group, settings_section_label, settings_subpage_label, shorten_skill_pin,
-    show_toast, skill_matches_filter, skill_update_result_message, start_session_drag,
-    sync_form_from_selected, CRED_GROUPS,
+    new_acp_form, new_model_form, profiles_to_edit_form, provider_entries_are_pristine,
+    provider_mark_letter, quick_action_label, reviewer_backend_key, reviewer_backend_label,
+    reviewer_missing_acp_profile_id, select_form_row, set_reviewer_backend, settings_nav_group,
+    settings_section_label, settings_subpage_label, shorten_skill_pin, show_toast,
+    skill_matches_filter, skill_update_result_message, start_session_drag, sync_form_from_selected,
+    CRED_GROUPS,
 };
 use crate::bindings::{invoke, invoke_checked, is_mac, is_windows};
 use crate::dto::*;
 use crate::i18n::{
     brand_visible_copy, localize_backend, set_document_lang, t, tf, Locale, BRAND_GITHUB_REPO,
+};
+use crate::knowledge_settings::{
+    load_knowledge_settings, persist_knowledge_settings, test_knowledge_settings,
+    KnowledgeSettingsForm,
 };
 use crate::text::{
     dom_value, endpoint_host, event_target_checked, event_target_input, event_target_value,
@@ -1304,7 +1308,8 @@ fn provider_model_entries_editor(
         if model_form_msg.get().is_none() {
             return;
         }
-        if let Ok(Some(el)) = document().query_selector("[data-testid='provider-model-test-status']")
+        if let Ok(Some(el)) =
+            document().query_selector("[data-testid='provider-model-test-status']")
         {
             el.scroll_into_view();
         }
@@ -1369,10 +1374,6 @@ fn provider_model_entries_editor(
                                         .unwrap_or_default()}</span>
                                 </div>
                                 <div class="provider-model-summary-tags">
-                                    <span class="provider-model-badge muted">
-                                        {compose_icon("circle-alert")}
-                                        {move || t(locale.get(), "models.undetected")}
-                                    </span>
                                     <span class="provider-model-badge user">
                                         {compose_icon("user")}
                                         {move || t(locale.get(), "models.user_added")}
@@ -1845,6 +1846,11 @@ pub(super) fn SettingsView(
     let browser_block_reason = create_rw_signal(String::new());
     let browser_prefer_host = create_rw_signal(String::new());
     let browser_prefer_reason = create_rw_signal(String::new());
+    let knowledge_settings = create_rw_signal(KnowledgeSettings::default());
+    let knowledge_api_key = create_rw_signal(String::new());
+    let knowledge_msg = create_rw_signal(None::<(bool, String)>);
+    let knowledge_busy = create_rw_signal(false);
+    let knowledge_bases = create_rw_signal(Vec::<KnowledgeBaseSummary>::new());
     let skill_update_enabled = create_rw_signal(true);
     let skill_update_report = create_rw_signal(SkillUpdateReport::default());
     let skill_update_busy = create_rw_signal(false);
@@ -1911,7 +1917,11 @@ pub(super) fn SettingsView(
                             if let Some(error) = preview.errors.first() {
                                 skills_msg.set(Some((
                                     false,
-                                    tf(locale.get(), "skills.auto_update_failed", &[("error", error)]),
+                                    tf(
+                                        locale.get(),
+                                        "skills.auto_update_failed",
+                                        &[("error", error)],
+                                    ),
                                 )));
                             } else {
                                 skills_msg.set(Some((
@@ -2012,6 +2022,56 @@ pub(super) fn SettingsView(
                 Err(err) => browser_filters_msg.set(Some((false, js_error_text(err)))),
             }
             browser_filters_busy.set(false);
+        });
+    });
+    create_effect(move |_| {
+        if show_settings.get() && settings_section.get() == "knowledge" {
+            spawn_local(async move {
+                if let Ok(loaded) = load_knowledge_settings().await {
+                    knowledge_settings.set(loaded);
+                    knowledge_api_key.set(String::new());
+                }
+            });
+        }
+    });
+    let save_knowledge_settings = Callback::new(move |_: ()| {
+        knowledge_busy.set(true);
+        spawn_local(async move {
+            match persist_knowledge_settings(
+                knowledge_settings.get_untracked(),
+                knowledge_api_key.get_untracked(),
+            )
+            .await
+            {
+                Ok(saved) => {
+                    knowledge_settings.set(saved);
+                    knowledge_api_key.set(String::new());
+                    knowledge_msg.set(Some((
+                        true,
+                        t(locale.get_untracked(), "knowledge.saved").into(),
+                    )));
+                }
+                Err(err) => knowledge_msg.set(Some((false, err))),
+            }
+            knowledge_busy.set(false);
+        });
+    });
+    let test_knowledge_connection = Callback::new(move |_: ()| {
+        knowledge_busy.set(true);
+        spawn_local(async move {
+            match test_knowledge_settings(
+                knowledge_settings.get_untracked(),
+                knowledge_api_key.get_untracked(),
+            )
+            .await
+            {
+                Ok(result) => {
+                    knowledge_bases.set(result.knowledge_bases.clone());
+                    knowledge_msg.set(Some((result.ok, result.message)));
+                }
+                Err(err) => knowledge_msg.set(Some((false, err))),
+            }
+            knowledge_busy.set(false);
         });
     });
     create_effect(move |_| {
@@ -2438,6 +2498,10 @@ pub(super) fn SettingsView(
                     <button class:active=move || settings_section.get()=="channels"
                         on:click=move |_| go_settings_section.call("channels".into())>
                         {move || t(locale.get(), "settings.nav.channels")}</button>
+                    <button class:active=move || settings_section.get()=="knowledge"
+                        data-testid="settings-nav-knowledge"
+                        on:click=move |_| go_settings_section.call("knowledge".into())>
+                        {move || t(locale.get(), "settings.nav.knowledge")}</button>
                     </div>
                 </div>
             </div>
@@ -6288,6 +6352,21 @@ pub(super) fn SettingsView(
                                 });
                             }>{move || t(locale.get(), "settings.save")}</button>
                         </div>
+                    </div>
+                }.into_view())}
+                {move || (settings_section.get() == "knowledge").then(|| view! {
+                    <div class="settings-pane" data-testid="knowledge-settings">
+                        <p class="settings-note">{move || t(locale.get(), "knowledge.desc")}</p>
+                        <KnowledgeSettingsForm
+                            locale=locale
+                            settings=knowledge_settings
+                            api_key=knowledge_api_key
+                            msg=knowledge_msg
+                            busy=knowledge_busy
+                            bases=knowledge_bases
+                            on_save=save_knowledge_settings
+                            on_test=test_knowledge_connection
+                        />
                     </div>
                 }.into_view())}
                 {move || (settings_section.get() == "channels").then(|| view! {

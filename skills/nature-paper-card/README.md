@@ -69,7 +69,7 @@
 
 ## 相关技能
 
-- `nature-reader`：生成全文双语 Markdown、图文对应和稳定 source map。
+- `nature-reader`：生成全文双语 HTML 报告、图文对应和稳定 source map。
 - `nature-academic-search`：核验领域历史、外部知识连接或相关工作。
 - `nature-reviewer`：生成正式的审稿人式评审报告。
 - `nature-literature-pipeline`：批量发现、筛选和推送论文。

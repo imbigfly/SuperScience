@@ -1,7 +1,7 @@
 //! Windows integrated title bar: brand, File/Edit/View/Help menus, window controls.
 
-use crate::bindings::{arm_caption_drag, open_external_url, window_control};
-use crate::i18n::{t, Locale, BRAND_GITHUB_REPO};
+use crate::bindings::{arm_caption_drag, window_control};
+use crate::i18n::{t, Locale};
 use leptos::{ev, window_event_listener, *};
 use wasm_bindgen::JsCast;
 
@@ -103,7 +103,6 @@ pub(super) fn WindowTitlebar(
             open.set(None);
             match action {
                 "quit" => spawn_local(async { window_control("close").await }),
-                "issues" => open_external_url(format!("{BRAND_GITHUB_REPO}/issues")),
                 other => on_action.call(other),
             }
         })

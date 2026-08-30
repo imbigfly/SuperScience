@@ -171,7 +171,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     { id: "sci_key", status: "needs_user", detail: "" },
   ];
   const runtimeProvisionState = () => ({
-    show: !runtimeProvisionDone,
+    first_run: !runtimeProvisionDone,
     done: runtimeProvisionDone,
     running: runtimeProvisionRunning,
     items: runtimeProvisionItems(),
@@ -550,9 +550,21 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     { id: "reviewer", name: "Reviewer", icon: "review", color: "clay", description: "", instructions: "rubric", model_id: "", skills: [], connectors: [], builtin: true },
     { id: "reader", name: "Reader", icon: "search", color: "clay", description: "Searches project sessions", instructions: "reader rubric", model_id: "", skills: [], connectors: [], builtin: true },
     { id: "scientific_illustrator", name: "Scientific Illustrator", icon: "image", color: "clay", description: "Creates scientific figures", instructions: "illustrator rubric", model_id: "", skills: ["figure-composer", "figure-style"], connectors: [], builtin: true },
+    { id: "handwriting_extract", name: "Handwriting Extract", icon: "grid", color: "clay", description: "Reads handwritten tables", instructions: "handwriting rubric", model_id: query.get("mockHandwritingCalibrationUnset") === "1" ? "" : "default", skills: ["handwriting-extract"], connectors: [], builtin: true },
   ];
   let sessionSpecialists: Record<string, string> = {};
   let mockBrowserUrlFilters = { block: [] as { host: string; reason?: string }[], prefer: [] as { host: string; reason?: string }[] };
+  const knowledgeReady = query.get("mockKnowledgeReady") === "1";
+  let mockKnowledgeSettings = {
+    provider: "weknora",
+    weknora: {
+      base_url: "http://localhost:8080/api/v1",
+      has_api_key: knowledgeReady,
+      api_key: "",
+      knowledge_base_ids: knowledgeReady ? "kb-00000001" : "",
+      match_count: 8,
+    },
+  };
   let mockBrowserAutoLaunch = true;
   let mockBrowserAutoCloseTabs = false;
   let mockPendingBrowserTabCleanups: any[] = [];
@@ -786,6 +798,15 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     },
   ];
   const activeHttpModelId = () => mockModels.find((model) => model.active)?.id ?? mockModels[0]?.id ?? "";
+  const isVisionChatModel = (model: { supports_vision?: boolean; use_for_image_generation?: boolean; use_for_video_generation?: boolean }) =>
+    Boolean(model.supports_vision) && !model.use_for_image_generation && !model.use_for_video_generation;
+  let handwritingExtractVisionModelId = query.get("mockHandwritingVisionUnset") === "1"
+    ? ""
+    : (mockModels.find(isVisionChatModel)?.id ?? "");
+  let handwritingExtractCalibrationModelId = query.get("mockHandwritingCalibrationUnset") === "1"
+    ? ""
+    : (mockModels.find(isVisionChatModel)?.id ?? "");
+  const frameVisionModels: Record<string, string> = {};
   // Baked model catalog (mirrors src-tauri model_catalog): exact id match
   // within vendor namespaces, never prefix matching.
   type MockCatalogEntry = {
@@ -1695,6 +1716,11 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       Channel,
       invoke: async (cmd: string, args: any) => {
         ((window as any).__skillInvokeLog ??= []).push({ cmd, args });
+        if (cmd === "send_feedback_email" && (window as any).__failNextFeedback) {
+          const fail = String((window as any).__failNextFeedback);
+          (window as any).__failNextFeedback = null;
+          throw new Error(fail);
+        }
         const arg = (key: string) => args instanceof Map ? args.get(key) : args?.[key];
         const plain = (value: any): any => {
           if (value instanceof Map) return Object.fromEntries([...value].map(([k, v]) => [k, plain(v)]));
@@ -2587,7 +2613,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               locale: mockLocale,
               max_iter: 100,
               auto_compact: true,
-              auto_continue: false,
+              auto_continue: true,
               auto_continue_limit: 10,
               follow_up_questions: true,
               resume_last_session: true,
@@ -2625,6 +2651,55 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             const turnId = String(arg("turnId") ?? "");
             mockPendingBrowserTabCleanups = mockPendingBrowserTabCleanups.filter((row: any) => row.turn_id !== turnId);
             return null;
+          }
+          case "get_knowledge_settings":
+            return { ...mockKnowledgeSettings, weknora: { ...mockKnowledgeSettings.weknora, api_key: "" } };
+          case "set_knowledge_settings": {
+            const next = plain(arg("settings") ?? {});
+            const weknora = plain(next.weknora ?? {});
+            const submittedKey = String(weknora.api_key ?? "").trim();
+            mockKnowledgeSettings = {
+              provider: String(next.provider ?? "weknora"),
+              weknora: {
+                base_url: String(weknora.base_url ?? mockKnowledgeSettings.weknora.base_url),
+                has_api_key: submittedKey ? true : mockKnowledgeSettings.weknora.has_api_key,
+                api_key: "",
+                knowledge_base_ids: String(weknora.knowledge_base_ids ?? ""),
+                match_count: Number(weknora.match_count ?? 8) || 8,
+              },
+            };
+            return { ...mockKnowledgeSettings };
+          }
+          case "test_knowledge_connection": {
+            if (query.get("mockKnowledgeFail") === "1") {
+              return {
+                ok: false,
+                message: "Could not reach WeKnora.",
+                knowledge_bases: [],
+              };
+            }
+            const submitted = plain(arg("settings") ?? {});
+            const weknora = plain(submitted.weknora ?? mockKnowledgeSettings.weknora);
+            const provider = String(submitted.provider ?? mockKnowledgeSettings.provider ?? "");
+            const submittedKey = String(weknora.api_key ?? "").trim();
+            const hasKey = Boolean(submittedKey)
+              || Boolean(weknora.has_api_key)
+              || mockKnowledgeSettings.weknora.has_api_key;
+            const ids = String(
+              weknora.knowledge_base_ids ?? mockKnowledgeSettings.weknora.knowledge_base_ids ?? "",
+            ).trim();
+            if (!provider || !hasKey || !ids) {
+              return {
+                ok: false,
+                message: "WeKnora is not configured.",
+                knowledge_bases: [],
+              };
+            }
+            return {
+              ok: true,
+              message: "Connected. Found 1 knowledge base(s).",
+              knowledge_bases: [{ id: "kb-00000001", name: "Lab notes" }],
+            };
           }
           case "set_browser_url_filters": {
             const next = plain(arg("filters") ?? {});
@@ -2726,6 +2801,38 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           case "set_pii_custom_terms":
             piiCustomTerms = Array.isArray(arg("terms")) ? arg("terms") : [];
             return piiCustomTerms;
+          case "get_handwriting_extract_vision_model":
+            return handwritingExtractVisionModelId || null;
+          case "set_handwriting_extract_vision_model": {
+            const id = String(arg("modelId") ?? arg("model_id") ?? "");
+            const model = mockModels.find((entry) => entry.id === id && isVisionChatModel(entry));
+            if (!model) throw new Error("Select a chat model that supports image input.");
+            handwritingExtractVisionModelId = id;
+            return id;
+          }
+          case "get_handwriting_extract_calibration_model":
+            return handwritingExtractCalibrationModelId
+              || mockSpecialists.find((spec) => spec.id === "handwriting_extract")?.model_id
+              || null;
+          case "set_handwriting_extract_calibration_model": {
+            const id = String(arg("modelId") ?? arg("model_id") ?? "");
+            const model = mockModels.find((entry) => entry.id === id && isVisionChatModel(entry));
+            if (!model) throw new Error("Select a chat model that supports image input.");
+            handwritingExtractCalibrationModelId = id;
+            const extractor = mockSpecialists.find((spec) => spec.id === "handwriting_extract");
+            if (extractor) extractor.model_id = id;
+            return id;
+          }
+          case "set_frame_vision_model": {
+            const frameId = String(arg("frameId") ?? arg("frame_id") ?? "");
+            const id = String(arg("modelId") ?? arg("model_id") ?? "");
+            const model = mockModels.find((entry) => entry.id === id && isVisionChatModel(entry));
+            if (!frameId || !model) {
+              throw new Error("The handwriting-extract vision model is missing or invalid. Choose one in the capability card settings.");
+            }
+            frameVisionModels[frameId] = id;
+            return id;
+          }
           case "get_pet":
             return {
               enabled: mockPetEnabled,
@@ -4644,6 +4751,22 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             sessionModels[id] = activeHttpModelId();
             return id;
           }
+          case "rename_session": {
+            const session = mockSessions.find((entry) => entry.id === arg("id"));
+            if (session) {
+              session.title = String(arg("title") ?? session.title);
+            } else {
+              mockSessions.unshift({
+                id: String(arg("id")),
+                title: String(arg("title") ?? ""),
+                ts: Date.now(),
+                folder_id: null,
+                has_user_turn: false,
+                running: false,
+              });
+            }
+            return null;
+          }
           case "start_scratch_chat": {
             scratchOpen = true;
             scratchSessionId = `scratch-${Math.random().toString(36).slice(2)}`;
@@ -5870,6 +5993,36 @@ export function parallelMock(): void {
             };
           case "set_appearance_prefs":
             return arg("prefs") ?? null;
+          case "get_knowledge_settings":
+            return {
+              provider: "weknora",
+              weknora: {
+                base_url: "http://localhost:8080/api/v1",
+                has_api_key: new URLSearchParams(window.location.search).get("mockKnowledgeReady") === "1",
+                knowledge_base_ids: new URLSearchParams(window.location.search).get("mockKnowledgeReady") === "1"
+                  ? "kb-00000001"
+                  : "",
+                match_count: 8,
+              },
+            };
+          case "set_knowledge_settings":
+            return arg("settings") ?? null;
+          case "test_knowledge_connection": {
+            if (params.get("mockKnowledgeFail") === "1") {
+              return { ok: false, message: "Could not reach WeKnora.", knowledge_bases: [] };
+            }
+            const submitted = (arg("settings") ?? {}) as Record<string, any>;
+            const weknora = (submitted.weknora ?? {}) as Record<string, any>;
+            const hasKey = Boolean(String(weknora.api_key ?? "").trim())
+              || Boolean(weknora.has_api_key)
+              || params.get("mockKnowledgeReady") === "1";
+            const ids = String(weknora.knowledge_base_ids ?? "").trim()
+              || (params.get("mockKnowledgeReady") === "1" ? "kb-00000001" : "");
+            if (!hasKey || !ids) {
+              return { ok: false, message: "WeKnora is not configured.", knowledge_bases: [] };
+            }
+            return { ok: true, message: "Connected.", knowledge_bases: [] };
+          }
           case "get_settings": return {
             provider: "openai",
             api_url: "https://api.deepseek.com",
@@ -5894,12 +6047,12 @@ export function parallelMock(): void {
             "Generate a literature landscape visualization",
           ];
           case "get_onboarding_state": return { show: false, has_api_key: true };
-          case "get_runtime_provision_state": return { show: false, done: true, running: false, items: [] };
+          case "get_runtime_provision_state": return { first_run: false, done: true, running: false, items: [] };
           case "start_runtime_provision":
           case "cancel_runtime_provision":
           case "dismiss_runtime_provision":
           case "save_runtime_provision_sci_key":
-            return { show: false, done: true, running: false, items: [] };
+            return { first_run: false, done: true, running: false, items: [] };
           case "get_capabilities": return { skills: [], mcp_servers: [], memory_files: [], project };
           case "list_approval_grants": return [];
           case "list_dir": return [];

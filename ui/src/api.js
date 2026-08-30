@@ -1177,6 +1177,47 @@ export function pasted_file_count(event) {
   return clipboardFiles(event).length;
 }
 
+async function fileToFeedbackAttachment(file) {
+  const data_base64 = await fileToBase64(file);
+  const mime = file.type || "application/octet-stream";
+  const preview_url = mime.startsWith("image/") ? URL.createObjectURL(file) : "";
+  return {
+    name: file.name || "paste",
+    mime,
+    data_base64,
+    preview_url,
+    size: file.size || 0,
+  };
+}
+
+function filesFromDataTransfer(dt) {
+  if (!dt) return [];
+  if (dt.files?.length) return Array.from(dt.files);
+  return Array.from(dt.items || [])
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter(Boolean);
+}
+
+/** Read clipboard/drop/picker files in memory — do not upload to the workspace. */
+export async function read_feedback_clipboard_files(event) {
+  const files = filesFromDataTransfer(event?.clipboardData);
+  return Promise.all(files.map(fileToFeedbackAttachment));
+}
+
+export async function read_feedback_drop_files(event) {
+  const files = filesFromDataTransfer(event?.dataTransfer);
+  return Promise.all(files.map(fileToFeedbackAttachment));
+}
+
+export async function read_feedback_input_files(inputId) {
+  const input = document.getElementById(inputId);
+  const files = Array.from(input?.files || []);
+  const rows = await Promise.all(files.map(fileToFeedbackAttachment));
+  if (input) input.value = "";
+  return rows;
+}
+
 export function pasted_image_count(event) {
   return pasted_file_count(event);
 }

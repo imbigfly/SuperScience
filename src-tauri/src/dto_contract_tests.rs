@@ -403,6 +403,32 @@ fn mcp_connection_list_contract_redacts_secrets() {
 }
 
 #[test]
+fn knowledge_settings_contract_omits_empty_api_key() {
+    let backend = superscience_dto::KnowledgeSettings {
+        provider: "weknora".into(),
+        weknora: superscience_dto::WeKnoraSettings {
+            base_url: "http://localhost:8080/api/v1".into(),
+            has_api_key: true,
+            api_key: String::new(),
+            knowledge_base_ids: "kb-1".into(),
+            match_count: 8,
+        },
+    };
+    let json = serde_json::to_value(&backend).unwrap();
+    assert!(json
+        .get("weknora")
+        .and_then(|row| row.get("api_key"))
+        .is_none());
+    assert_eq!(json["provider"], "weknora");
+    assert_eq!(json["weknora"]["has_api_key"], true);
+    let dto: superscience_dto::KnowledgeSettings = serde_json::from_value(json).unwrap();
+    assert_eq!(dto.provider, "weknora");
+    assert!(dto.weknora.has_api_key);
+    assert!(dto.weknora.api_key.is_empty());
+    assert_eq!(dto.weknora.knowledge_base_ids, "kb-1");
+}
+
+#[test]
 fn channels_status_contract_includes_feishu_owner() {
     let backend = crate::channels::ChannelsStatus {
         feishu_enabled: true,
@@ -429,4 +455,18 @@ fn channels_status_contract_includes_feishu_owner() {
     assert_eq!(dto.feishu_owner_open_id, "ou_owner");
     assert_eq!(dto.feishu_pending_owner_open_id, "ou_pending");
     assert_eq!(dto.feishu_app_id, "cli_1");
+}
+
+#[test]
+fn feedback_attachment_contract() {
+    let payload = json!({
+        "name": "shot.png",
+        "mime": "image/png",
+        "dataBase64": "aGVsbG8=",
+    });
+    let dto: superscience_dto::FeedbackAttachment =
+        serde_json::from_value(payload).expect("UI attachment payload");
+    assert_eq!(dto.name, "shot.png");
+    assert_eq!(dto.mime, "image/png");
+    assert_eq!(dto.data_base64, "aGVsbG8=");
 }

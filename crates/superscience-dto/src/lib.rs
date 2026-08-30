@@ -1624,7 +1624,7 @@ pub struct Settings {
     pub max_iter: i64,
     #[serde(default = "default_auto_compact")]
     pub auto_compact: bool,
-    #[serde(default)]
+    #[serde(default = "default_auto_continue")]
     pub auto_continue: bool,
     #[serde(default = "default_auto_continue_limit")]
     pub auto_continue_limit: u64,
@@ -1656,6 +1656,61 @@ pub struct Settings {
     pub pet_directory: String,
     #[serde(default = "default_notifications_enabled")]
     pub notifications_enabled: bool,
+}
+
+fn default_knowledge_match_count() -> u32 {
+    8
+}
+
+/// Settings → Knowledge Base. Generic shell; first provider is WeKnora.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KnowledgeSettings {
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub weknora: WeKnoraSettings,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WeKnoraSettings {
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub has_api_key: bool,
+    /// Write-only. Empty on read; empty on write keeps the stored secret.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub api_key: String,
+    #[serde(default)]
+    pub knowledge_base_ids: String,
+    #[serde(default = "default_knowledge_match_count")]
+    pub match_count: u32,
+}
+
+impl Default for WeKnoraSettings {
+    fn default() -> Self {
+        Self {
+            base_url: "http://localhost:8080/api/v1".into(),
+            has_api_key: false,
+            api_key: String::new(),
+            knowledge_base_ids: String::new(),
+            match_count: default_knowledge_match_count(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KnowledgeBaseSummary {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct KnowledgeConnectionTest {
+    pub ok: bool,
+    pub message: String,
+    #[serde(default)]
+    pub knowledge_bases: Vec<KnowledgeBaseSummary>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -1717,6 +1772,10 @@ fn default_notifications_enabled() -> bool {
 }
 
 fn default_auto_compact() -> bool {
+    true
+}
+
+fn default_auto_continue() -> bool {
     true
 }
 
@@ -1848,7 +1907,7 @@ impl Default for Settings {
             workspace_dir: String::new(),
             max_iter: default_max_iter(),
             auto_compact: true,
-            auto_continue: false,
+            auto_continue: true,
             auto_continue_limit: default_auto_continue_limit(),
             follow_up_questions: true,
             resume_last_session: true,
@@ -1865,6 +1924,33 @@ impl Default for Settings {
             pet_directory: String::new(),
             notifications_enabled: true,
         }
+    }
+}
+
+#[cfg(test)]
+mod settings_auto_continue_default_tests {
+    use super::Settings;
+
+    #[test]
+    fn auto_continue_defaults_on_and_explicit_false_stays_off() {
+        assert!(Settings::default().auto_continue);
+        let missing: Settings = serde_json::from_value(serde_json::json!({
+            "provider": "openai",
+            "api_url": "https://example.com",
+            "model": "x",
+            "has_api_key": false
+        }))
+        .unwrap();
+        assert!(missing.auto_continue);
+        let off: Settings = serde_json::from_value(serde_json::json!({
+            "provider": "openai",
+            "api_url": "https://example.com",
+            "model": "x",
+            "has_api_key": false,
+            "auto_continue": false
+        }))
+        .unwrap();
+        assert!(!off.auto_continue);
     }
 }
 
@@ -3370,6 +3456,16 @@ pub struct BootstrapStatus {
     pub errors: Vec<String>,
 }
 
+/// In-memory file attached to a user-feedback email. The UI never writes these
+/// into the project workspace; the backend only uses them as MIME parts.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FeedbackAttachment {
+    pub name: String,
+    pub mime: String,
+    pub data_base64: String,
+}
+
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct ProvisionItem {
     pub id: String,
@@ -3380,7 +3476,8 @@ pub struct ProvisionItem {
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeProvisionState {
-    pub show: bool,
+    /// Offered once after first-run welcome. Not an every-launch open flag.
+    pub first_run: bool,
     pub done: bool,
     pub running: bool,
     pub items: Vec<ProvisionItem>,
@@ -3397,6 +3494,49 @@ pub struct RuntimeProvisionProgress {
     #[serde(default)]
     pub received: u64,
     pub total: Option<u64>,
+}
+
+#[cfg(test)]
+mod knowledge_settings_tests {
+    use super::{KnowledgeSettings, WeKnoraSettings};
+
+    #[test]
+    fn omits_empty_api_key_and_keeps_provider() {
+        let json = serde_json::to_value(KnowledgeSettings {
+            provider: "weknora".into(),
+            weknora: WeKnoraSettings {
+                has_api_key: true,
+                api_key: String::new(),
+                knowledge_base_ids: "kb-1".into(),
+                ..WeKnoraSettings::default()
+            },
+        })
+        .unwrap();
+        assert_eq!(json["provider"], "weknora");
+        assert!(json["weknora"].get("api_key").is_none());
+        assert_eq!(json["weknora"]["has_api_key"], true);
+    }
+}
+
+#[cfg(test)]
+mod runtime_provision_state_tests {
+    use super::RuntimeProvisionState;
+
+    #[test]
+    fn wire_field_is_first_run_not_show() {
+        let json = serde_json::to_string(&RuntimeProvisionState {
+            first_run: true,
+            done: false,
+            running: false,
+            items: vec![],
+        })
+        .unwrap();
+        assert!(json.contains("\"first_run\":true"));
+        assert!(!json.contains("\"show\""));
+        let back: RuntimeProvisionState = serde_json::from_str(&json).unwrap();
+        assert!(back.first_run);
+        assert!(!back.done);
+    }
 }
 
 #[derive(Deserialize, Clone)]

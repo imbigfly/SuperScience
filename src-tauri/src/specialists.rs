@@ -43,6 +43,36 @@ Keep text legible, use colour-blind-safe encodings, and distinguish observed \
 data from conceptual illustration. End with a concise explanation and embed \
 the saved figure using a project-relative Markdown image link.";
 
+pub const HANDWRITING_EXTRACT_ID: &str = "handwriting_extract";
+pub const HANDWRITING_EXTRACT_RUBRIC: &str = "\
+You are the Handwriting Extract specialist. Turn photos of handwritten lab \
+notes, CRF pages, or whiteboard tables into a flagged project CSV. Do not \
+invent numbers.\n\n\
+Workflow:\n\
+1. Ask for image attachments or a folder (at most five questions). Do not ask \
+row or column counts you can read from the images.\n\
+2. For each image, call view_image and extract structured JSON: page, image \
+path, headers, and cells with text, confidence, optional normalized bbox \
+[x,y,w,h] in 0-1, uncertain, and reason. Align pages to one schema and write \
+`data/extracted/<batch>.json`.\n\
+3. You MUST call `calibrate_handwriting` on that JSON before presenting \
+results. Do not apply your own confidence heuristics as a substitute. The \
+tool first applies table rules, then uses the bound calibration model for a \
+second look at flagged cells only.\n\
+4. Reply with the CSV path, the tool's reliability summary (ok_ratio, \
+mean_confidence, uncertain/conflict counts — call this reliability / 可信度 \
+评估, never medical accuracy), the QA list, annotated image paths, and \
+whether to recapture or hand-edit.\n\n\
+Hard rules:\n\
+- Do not send the user to data_cleaning until a flagged CSV exists.\n\
+- Do not use Tesseract book-OCR scripts from other skills.\n\
+- Do not claim medical or CRF gold-standard accuracy. Humans confirm \
+uncertain cells.\n\
+- view_image and calibrate_handwriting send pixels. Warn once that the \
+outbound text firewall does not cover handwriting in photos.\n\
+- If calibrate_handwriting is unavailable or the calibration model is unset, \
+stop and point to the capability card settings.";
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Specialist {
     pub id: String,
@@ -126,6 +156,30 @@ pub fn builtin_scientific_illustrator() -> Specialist {
     }
 }
 
+pub fn builtin_handwriting_extract() -> Specialist {
+    Specialist {
+        id: HANDWRITING_EXTRACT_ID.into(),
+        name: "Handwriting Extract".into(),
+        icon: "grid".into(),
+        color: "clay".into(),
+        description: "Reads handwritten lab or CRF photos into a flagged CSV, then calibrates uncertain cells.".into(),
+        instructions: HANDWRITING_EXTRACT_RUBRIC.into(),
+        model_id: String::new(),
+        review_backend: None,
+        skills: Some(vec!["handwriting-extract".into()]),
+        connectors: Some(vec![]),
+        builtin: true,
+    }
+}
+
+fn pin_handwriting_extract(spec: &mut Specialist) {
+    spec.builtin = true;
+    spec.instructions = HANDWRITING_EXTRACT_RUBRIC.into();
+    spec.review_backend = None;
+    spec.skills = Some(vec!["handwriting-extract".into()]);
+    spec.connectors = Some(vec![]);
+}
+
 async fn load_raw(store: &Store) -> Vec<Specialist> {
     store
         .get_setting(SPECIALISTS_KEY)
@@ -176,11 +230,25 @@ pub async fn ensure(store: &Store) -> Vec<Specialist> {
         }
         None => list.insert(2.min(list.len()), builtin_scientific_illustrator()),
     }
+    match list.iter_mut().find(|s| s.id == HANDWRITING_EXTRACT_ID) {
+        Some(extractor) => pin_handwriting_extract(extractor),
+        None => list.insert(3.min(list.len()), builtin_handwriting_extract()),
+    }
     list
 }
 
 pub async fn get(store: &Store, id: &str) -> Option<Specialist> {
     ensure(store).await.into_iter().find(|s| s.id == id)
+}
+
+/// Bound calibration model for handwriting-extract.
+/// Prefers the dedicated settings key; falls back to the specialist row.
+pub async fn handwriting_extract_calibration_id(store: &Store) -> Option<String> {
+    if let Some(id) = crate::models::handwriting_extract_calibration_id(store).await {
+        return Some(id);
+    }
+    let spec = get(store, HANDWRITING_EXTRACT_ID).await?;
+    crate::models::resolve_assigned_vision_id(store, spec.model_id.trim()).await
 }
 
 fn fresh_id(existing: &[Specialist]) -> String {
@@ -223,6 +291,10 @@ pub async fn upsert(store: &Store, mut spec: Specialist) -> Result<Vec<Specialis
         } else if spec.id == "scientific_illustrator" {
             spec.review_backend = None;
             spec.skills = Some(vec!["figure-composer".into(), "figure-style".into()]);
+            spec.connectors = Some(vec![]);
+        } else if spec.id == HANDWRITING_EXTRACT_ID {
+            spec.review_backend = None;
+            spec.skills = Some(vec!["handwriting-extract".into()]);
             spec.connectors = Some(vec![]);
         }
         *existing = spec;
@@ -360,6 +432,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn handwriting_rubric_requires_calibrate_tool() {
+        let rubric = HANDWRITING_EXTRACT_RUBRIC;
+        assert!(rubric.contains("calibrate_handwriting"));
+        assert!(rubric.contains("Do not invent numbers"));
+        assert!(rubric.contains("never medical"));
+        assert!(rubric.contains("outbound text firewall"));
+    }
+
+    #[test]
     fn illustrator_rubric_gives_explicit_svg_requests_priority() {
         let rubric = SCIENTIFIC_ILLUSTRATOR_RUBRIC;
         let svg_rule = rubric
@@ -389,7 +470,7 @@ mod tests {
     async fn ensure_materializes_builtin_specialists_once() {
         let (store, tmp) = test_store().await;
         let list = ensure(&store).await;
-        assert_eq!(list.len(), 3);
+        assert_eq!(list.len(), 4);
         let r = &list[0];
         assert_eq!(r.id, "reviewer");
         assert!(r.builtin);
@@ -406,8 +487,18 @@ mod tests {
             illustrator.skills.as_deref(),
             Some(&["figure-composer".to_string(), "figure-style".to_string()][..])
         );
+        let extractor = &list[3];
+        assert_eq!(extractor.id, HANDWRITING_EXTRACT_ID);
+        assert!(extractor.builtin);
+        assert_eq!(extractor.instructions, HANDWRITING_EXTRACT_RUBRIC);
+        assert_eq!(
+            extractor.skills.as_deref(),
+            Some(&["handwriting-extract".to_string()][..])
+        );
+        assert!(extractor.model_id.is_empty());
+        assert!(handwriting_extract_calibration_id(&store).await.is_none());
         // Second read does not duplicate the built-ins.
-        assert_eq!(ensure(&store).await.len(), 3);
+        assert_eq!(ensure(&store).await.len(), 4);
         let _ = std::fs::remove_file(&tmp);
     }
 
@@ -453,6 +544,7 @@ mod tests {
         assert!(remove(&store, "reviewer").await.is_err());
         assert!(remove(&store, "reader").await.is_err());
         assert!(remove(&store, "scientific_illustrator").await.is_err());
+        assert!(remove(&store, HANDWRITING_EXTRACT_ID).await.is_err());
         // Editing the builtin keeps instructions but accepts a model change.
         let mut r = get(&store, "reviewer").await.unwrap();
         r.instructions = "haha".into();
@@ -488,6 +580,19 @@ mod tests {
             illustrator.skills,
             Some(vec!["figure-composer".into(), "figure-style".into()])
         );
+
+        let mut extractor = get(&store, HANDWRITING_EXTRACT_ID).await.unwrap();
+        extractor.instructions = "replace rubric".into();
+        extractor.model_id = "vl".into();
+        extractor.skills = None;
+        let list = upsert(&store, extractor).await.unwrap();
+        let extractor = list
+            .iter()
+            .find(|specialist| specialist.id == HANDWRITING_EXTRACT_ID)
+            .unwrap();
+        assert_eq!(extractor.instructions, HANDWRITING_EXTRACT_RUBRIC);
+        assert_eq!(extractor.model_id, "vl");
+        assert_eq!(extractor.skills, Some(vec!["handwriting-extract".into()]));
         let _ = std::fs::remove_file(&tmp);
     }
 

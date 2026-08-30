@@ -111,6 +111,8 @@ const TCTOKEN_API_URL: &str = "https://www.tctoken.cn/v1";
 const PROFILES_KEY: &str = "model_profiles";
 const ACTIVE_KEY: &str = "active_model_id";
 const VISION_KEY: &str = "vision_model_id";
+const HANDWRITING_EXTRACT_VISION_KEY: &str = "handwriting_extract_vision_model_id";
+const HANDWRITING_EXTRACT_CALIBRATION_KEY: &str = "handwriting_extract_calibration_model_id";
 const IMAGE_GENERATION_KEY: &str = "image_generation_model_id";
 const VIDEO_GENERATION_KEY: &str = "video_generation_model_id";
 const LEGACY_KEY_SECRET: &str = "api_key";
@@ -1006,6 +1008,159 @@ async fn image_generation_id(
         .map(|p| p.id.clone())
 }
 
+fn frame_vision_setting_key(frame_id: &str) -> String {
+    format!("frame_vision_model:{frame_id}")
+}
+
+/// Session-scoped vision routing for a capability that bound a model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FrameVisionPolicy {
+    Unbound,
+    Bound {
+        id: String,
+        use_primary_native: bool,
+    },
+}
+
+pub(crate) fn frame_vision_policy(bound: Option<&str>, primary_id: &str) -> FrameVisionPolicy {
+    match bound.map(str::trim).filter(|id| !id.is_empty()) {
+        None => FrameVisionPolicy::Unbound,
+        Some(id) => FrameVisionPolicy::Bound {
+            use_primary_native: id == primary_id.trim(),
+            id: id.to_string(),
+        },
+    }
+}
+
+pub async fn resolve_assigned_vision_id(
+    store: &superscience_store::Store,
+    id: &str,
+) -> Option<String> {
+    let id = id.trim();
+    if id.is_empty() {
+        return None;
+    }
+    let profiles = ensure(store).await;
+    profiles
+        .iter()
+        .find(|profile| profile.id == id && can_describe_images(profile))
+        .map(|profile| profile.id.clone())
+}
+
+pub async fn handwriting_extract_vision_id(store: &superscience_store::Store) -> Option<String> {
+    let want = store
+        .get_setting(HANDWRITING_EXTRACT_VISION_KEY)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    resolve_assigned_vision_id(store, &want).await
+}
+
+pub async fn set_handwriting_extract_vision_id(
+    store: &superscience_store::Store,
+    id: &str,
+) -> Result<String, String> {
+    let resolved = resolve_assigned_vision_id(store, id)
+        .await
+        .ok_or_else(|| "Select a chat model that supports image input.".to_string())?;
+    store
+        .set_setting(HANDWRITING_EXTRACT_VISION_KEY, &resolved)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(resolved)
+}
+
+pub async fn handwriting_extract_calibration_id(
+    store: &superscience_store::Store,
+) -> Option<String> {
+    let want = store
+        .get_setting(HANDWRITING_EXTRACT_CALIBRATION_KEY)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    resolve_assigned_vision_id(store, &want).await
+}
+
+pub async fn set_handwriting_extract_calibration_id(
+    store: &superscience_store::Store,
+    id: &str,
+) -> Result<String, String> {
+    let resolved = resolve_assigned_vision_id(store, id)
+        .await
+        .ok_or_else(|| "Select a chat model that supports image input.".to_string())?;
+    store
+        .set_setting(HANDWRITING_EXTRACT_CALIBRATION_KEY, &resolved)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(resolved)
+}
+
+pub async fn frame_vision_binding(
+    store: &superscience_store::Store,
+    frame_id: &str,
+) -> Result<Option<String>, String> {
+    let want = store
+        .get_setting(&frame_vision_setting_key(frame_id))
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let want = want.trim();
+    if want.is_empty() {
+        return Ok(None);
+    }
+    resolve_assigned_vision_id(store, want)
+        .await
+        .map(Some)
+        .ok_or_else(|| {
+            "The handwriting-extract vision model is missing or invalid. Choose one in the capability card settings.".to_string()
+        })
+}
+
+pub async fn frame_vision_id(store: &superscience_store::Store, frame_id: &str) -> Option<String> {
+    frame_vision_binding(store, frame_id).await.ok().flatten()
+}
+
+pub async fn set_frame_vision_id(
+    store: &superscience_store::Store,
+    frame_id: &str,
+    id: &str,
+) -> Result<String, String> {
+    let resolved = resolve_assigned_vision_id(store, id)
+        .await
+        .ok_or_else(|| {
+            "The handwriting-extract vision model is missing or invalid. Choose one in the capability card settings.".to_string()
+        })?;
+    store
+        .set_setting(&frame_vision_setting_key(frame_id), &resolved)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(resolved)
+}
+
+/// Exact-id vision config. Does not fall back to the first vision-capable model.
+pub async fn assigned_vision_config(
+    store: &superscience_store::Store,
+    id: &str,
+) -> Option<(String, String, String, String, u64, String)> {
+    let profiles = ensure(store).await;
+    let profile = profiles
+        .iter()
+        .find(|profile| profile.id == id && can_describe_images(profile))?
+        .clone();
+    let api_url = effective_api_url(&profile);
+    Some((
+        profile.provider,
+        api_url,
+        profile.model,
+        key_for(&profile.id),
+        profile.max_tokens,
+        profile.reasoning_effort,
+    ))
+}
+
 /// The assigned vision profile's `(provider, api_url, model, api_key,
 /// max_tokens, reasoning_effort)`, if the user configured one.
 pub async fn vision_config(
@@ -1888,6 +2043,116 @@ mod tests {
         assert!(!supports_vision(&store, None).await);
         assert!(supports_vision(&store, Some("m1")).await);
         assert!(!supports_vision(&store, Some("missing")).await);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn frame_vision_policy_prefers_bound_model() {
+        assert_eq!(
+            frame_vision_policy(None, "chat"),
+            FrameVisionPolicy::Unbound
+        );
+        assert_eq!(
+            frame_vision_policy(Some("  "), "chat"),
+            FrameVisionPolicy::Unbound
+        );
+        assert_eq!(
+            frame_vision_policy(Some("vl"), "chat"),
+            FrameVisionPolicy::Bound {
+                id: "vl".into(),
+                use_primary_native: false,
+            }
+        );
+        assert_eq!(
+            frame_vision_policy(Some("vl"), "vl"),
+            FrameVisionPolicy::Bound {
+                id: "vl".into(),
+                use_primary_native: true,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn handwriting_extract_vision_rejects_non_vision_and_does_not_fallback() {
+        let tmp =
+            std::env::temp_dir().join(format!("wisp_hw_vision_{}.sqlite", uuid::Uuid::new_v4()));
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
+        let text = test_profile("chat", "chat", "text-model");
+        let mut vision = test_profile("vl", "vl", "vision-model");
+        vision.supports_vision = true;
+        save_raw(&store, &[text, vision]).await.unwrap();
+
+        assert!(handwriting_extract_vision_id(&store).await.is_none());
+        assert!(set_handwriting_extract_vision_id(&store, "chat")
+            .await
+            .is_err());
+        assert_eq!(
+            set_handwriting_extract_vision_id(&store, "vl")
+                .await
+                .unwrap(),
+            "vl"
+        );
+        assert_eq!(
+            handwriting_extract_vision_id(&store).await.as_deref(),
+            Some("vl")
+        );
+        assert!(handwriting_extract_calibration_id(&store).await.is_none());
+        assert!(set_handwriting_extract_calibration_id(&store, "chat")
+            .await
+            .is_err());
+        assert_eq!(
+            set_handwriting_extract_calibration_id(&store, "vl")
+                .await
+                .unwrap(),
+            "vl"
+        );
+        assert_eq!(
+            handwriting_extract_calibration_id(&store).await.as_deref(),
+            Some("vl")
+        );
+        store
+            .set_setting(HANDWRITING_EXTRACT_VISION_KEY, "missing")
+            .await
+            .unwrap();
+        assert!(handwriting_extract_vision_id(&store).await.is_none());
+        assert!(set_frame_vision_id(&store, "frame-1", "missing")
+            .await
+            .is_err());
+        store
+            .set_setting(&frame_vision_setting_key("frame-bad"), "missing")
+            .await
+            .unwrap();
+        assert!(frame_vision_binding(&store, "frame-bad").await.is_err());
+        assert_eq!(
+            set_frame_vision_id(&store, "frame-1", "vl").await.unwrap(),
+            "vl"
+        );
+        assert_eq!(
+            frame_vision_id(&store, "frame-1").await.as_deref(),
+            Some("vl")
+        );
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[tokio::test]
+    async fn global_vision_id_still_falls_back_when_handwriting_assignment_is_invalid() {
+        let tmp = std::env::temp_dir().join(format!(
+            "wisp_hw_vision_global_{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
+        let text = test_profile("chat", "chat", "text-model");
+        let mut vision = test_profile("vl", "vl", "vision-model");
+        vision.supports_vision = true;
+        save_raw(&store, &[text, vision]).await.unwrap();
+        store
+            .set_setting(HANDWRITING_EXTRACT_VISION_KEY, "missing")
+            .await
+            .unwrap();
+
+        let profiles = ensure(&store).await;
+        assert_eq!(vision_id(&store, &profiles).await.as_deref(), Some("vl"));
+        assert!(handwriting_extract_vision_id(&store).await.is_none());
         let _ = std::fs::remove_file(&tmp);
     }
 

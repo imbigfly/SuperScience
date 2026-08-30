@@ -50,8 +50,9 @@ const CATALOG: Cap[] = [
   { id: "data-cleaning", group: "数据清洗", title: "数据清洗与整形", kind: "guided", specialist: "data_cleaning", turns: ["清洗一份临床随访 CSV，路径 data/followup.csv。", "先说明你会检查哪些问题。", "给出清洗后的列清单。"] },
   { id: "pii-firewall", group: "效率工具", title: "出站隐私脱敏", kind: "toggle", turns: ["查看开关与说明", "切换一次开关", "再切回并确认卡片仍在"] },
   { id: "journal-prescreen", group: "效率工具", title: "论文预审", kind: "guided", skill: "journal-prescreen", turns: ["预审一篇临床论著，目标《中华内科杂志》。", "先列你会对照的须知条目。", "标出 2 个格式问题并给改法。"] },
-  { id: "handwriting-extract", group: "效率工具", title: "手写数据提取", kind: "guided", skill: "handwriting-extract", turns: ["识别两张手写 CRF 照片成 CSV。", "先说明如何标存疑格子。", "给出输出路径约定。"] },
+  { id: "handwriting-extract", group: "效率工具", title: "手写数据提取", kind: "guided", skill: "handwriting-extract", specialist: "handwriting_extract", turns: ["识别两张手写 CRF 照片成 CSV。", "先说明如何标存疑格子。", "给出输出路径约定。"] },
   { id: "topic-coach", group: "效率工具", title: "选题引导", kind: "guided", skill: "topic-coach", turns: ["我有一份回顾性队列，想投中华系列。", "先列资料盘点要问什么。", "给 3 个选题候选的评分维度。"] },
+  { id: "knowledge", group: "效率工具", title: "知识库", kind: "guided", turns: ["查本机知识库里关于 PD-1 耐药的笔记。", "先说明你会怎么检索。", "引用一条片段并标出来源。"] },
   { id: "env-setup", group: "数据清洗", title: "配置本机环境", kind: "runtime", turns: ["打开本机环境准备面板", "确认未新开聊天", "收起后面板芯片仍在"] },
   { id: "nature-statistics", group: "研究实施与数据分析", title: "统计报告审核", kind: "guided", skill: "nature-statistics", turns: ["两组小鼠体重做 t 检验，n=8。", "先判断前提假设。", "给出 R 代码提纲。"] },
   { id: "knowledge-graph", group: "选题与立项", title: "文本知识图谱", kind: "guided", skill: "knowledge-graph", turns: ["从这段抽图谱：ESR1 抑制后 TNF 通路上调。", "先列实体类型。", "给出 3 条三元组。"] },
@@ -61,8 +62,8 @@ const CATALOG: Cap[] = [
   { id: "remote-compute", group: "研究实施与数据分析", title: "远程算力与长任务", kind: "settings", turns: ["打开环境设置", "确认能看到环境分区", "关闭设置回到能力页"] },
   { id: "structure", group: "研究实施与数据分析", title: "结构预测与分子设计", kind: "guided", turns: ["预测一条 80aa 肽的结构。", "先说明工具边界。", "给出下一步输入要求。"] },
   { id: "single-cell", group: "研究实施与数据分析", title: "单细胞与分析流程", kind: "guided", turns: ["10x 单细胞注释，物种人。", "先给标准流程。", "说明如何交文件。"] },
-  { id: "academic-search-pro", group: "选题与立项", title: "跨库文献检索", kind: "guided", skill: "academic-search-pro", turns: ["检索 ferroptosis AND immunotherapy，2022 后。", "先说会查哪些库。", "说明去重和 BibTeX 交付。"] },
-  { id: "nature-academic-search", group: "选题与立项", title: "多源文献检索", kind: "guided", skill: "nature-academic-search", turns: ["PubMed 检索 NLRP3 与肝癌。", "先给 MeSH/关键词。", "说明是否做他引审计。"] },
+  { id: "academic-search-pro", group: "选题与立项", title: "文献矩阵检索", kind: "guided", skill: "academic-search-pro", turns: ["检索 ferroptosis AND immunotherapy，2022 后。", "先说会查哪些库。", "说明去重和 BibTeX 交付。"] },
+  { id: "nature-academic-search", group: "选题与立项", title: "引用审计检索", kind: "guided", skill: "nature-academic-search", turns: ["PubMed 检索 NLRP3 与肝癌。", "先给 MeSH/关键词。", "说明是否做他引审计。"] },
   { id: "nature-literature-pipeline", group: "选题与立项", title: "文献流水线", kind: "guided", skill: "nature-literature-pipeline", turns: ["做一套纳入/排除标准后的文献流水线。", "先问领域，我已给：免疫治疗耐药。", "列出 5 个阶段。"] },
   { id: "nature-downloader", group: "选题与立项", title: "合法全文获取", kind: "guided", skill: "nature-downloader", turns: ["用 DOI 10.1038/s41586-020-0001-0 走 OA 路径。", "先说明不会绕过付费墙。", "给出保存位置建议。"] },
   { id: "nature-paper-card", group: "选题与立项", title: "深读论文卡片", kind: "guided", skill: "nature-paper-card", turns: ["为一篇虚构 Nature 论文做 Paper Card。", "先列卡片栏目。", "写主张与局限各一条。"] },
@@ -178,7 +179,7 @@ function scoreResult(kind: ActionKind, rec: Record<string, unknown>): { interact
 
 test("full capability click-through with three dialogue rounds", async ({ page }) => {
   test.skip(!process.env.QA_FULL, "set QA_FULL=1 to run the full capability QA sweep");
-  await page.goto("/?mockLocale=zh");
+  await page.goto("/?mockLocale=zh&mockKnowledgeReady=1");
   await expect(page.getByTestId("capability-scene")).toBeVisible();
 
   const results: any[] = [];

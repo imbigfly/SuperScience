@@ -43,4 +43,4 @@
 ## Related Skills
 
 - `nature-academic-search`: one-off multi-source search, citation metrics, and strict external-citation audit.
-- `nature-reader`: turn candidate papers into full Chinese-English reading materials.
+- `nature-reader`: turn candidate papers into full Chinese-English HTML reports.

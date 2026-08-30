@@ -1476,10 +1476,40 @@ pub(crate) struct UserMessagePresentation {
     pub(crate) runtimes: Vec<String>,
 }
 
+const CAPABILITY_COACH_MARKERS: &[&str] = &[
+    "能力引导规则",
+    "Capability coaching",
+    "你是天成科研助手里的「主任」教练",
+    "You are my research director coach",
+    "硬性规则：",
+    "Hard rules:",
+];
+const CAPABILITY_SPEC_MARKERS: &[&str] = &["能力工具规格", "Capability tool spec"];
+
+/// Drop coaching frames and hidden tool specs so the user bubble shows only
+/// the short opener. The full text stays in history for the model.
+pub(crate) fn strip_capability_coach(text: &str) -> &str {
+    let mut rest = text.trim();
+    rest = strip_marked_prefix(rest, CAPABILITY_COACH_MARKERS);
+    rest = strip_marked_prefix(rest, CAPABILITY_SPEC_MARKERS);
+    rest
+}
+
+fn strip_marked_prefix<'a>(text: &'a str, markers: &[&str]) -> &'a str {
+    if !markers.iter().any(|marker| text.starts_with(marker)) {
+        return text;
+    }
+    match text.find("\n\n") {
+        Some(idx) => text[idx + 2..].trim_start(),
+        None => text,
+    }
+}
+
 /// Split the stable transcript suffixes from the text the user actually
 /// typed. Keeping this parser pure makes old sessions and optimistic messages
 /// render identically without changing the persisted chat schema.
 pub(crate) fn user_message_presentation(text: &str) -> UserMessagePresentation {
+    let text = strip_capability_coach(text);
     let mut presentation = UserMessagePresentation::default();
     let mut body = Vec::new();
     for block in text.split("\n\n") {
@@ -1965,6 +1995,41 @@ mod md_catalog_tests {
                 bytes: 2,
             }]
         );
+    }
+
+    #[test]
+    fn strip_capability_coach_leaves_plain_user_text() {
+        assert_eq!(
+            super::strip_capability_coach("帮我清洗这张表"),
+            "帮我清洗这张表"
+        );
+        assert_eq!(
+            super::strip_capability_coach(
+                "Capability coaching (applies to this whole chat):\n1. Ask five.\n\nHelp me plot."
+            ),
+            "Help me plot."
+        );
+        assert_eq!(
+            super::strip_capability_coach(
+                "Hard rules:\n1. Ask five.\n\nI have not pinned down the exact task yet."
+            ),
+            "I have not pinned down the exact task yet."
+        );
+        assert_eq!(
+            super::strip_capability_coach(
+                "Capability tool spec.\nUse python.\n\nAnalyze a table in one session."
+            ),
+            "Analyze a table in one session."
+        );
+    }
+
+    #[test]
+    fn presentation_strips_capability_coach_before_parsing() {
+        let parsed = user_message_presentation(
+            "Capability coaching (applies to this whole chat):\n1. Ask five.\n\nInspect this\n\nUploaded files: data.csv",
+        );
+        assert_eq!(parsed.body, "Inspect this");
+        assert_eq!(parsed.attachments, ["data.csv"]);
     }
 
     #[test]

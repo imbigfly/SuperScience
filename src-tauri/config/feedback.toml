@@ -8,7 +8,7 @@
 
 [feedback]
 # Support inbox that receives user feedback emails.
-to_email = "tcscience@chaoxiiot.com"
+to_email = "huangfei@chaoxiiot.com"
 # Authenticated Feishu mailbox used as the SMTP From address.
 from_email = "tcscience@chaoxiiot.com"
 from_name = "天成科研助手"

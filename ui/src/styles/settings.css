@@ -2244,10 +2244,6 @@ button.workflow-graph-port.output.active {
   white-space: nowrap;
 }
 .provider-model-badge svg { width: 13px; height: 13px; }
-.provider-model-badge.muted {
-  background: var(--bg-sunken);
-  color: var(--text-muted);
-}
 .provider-model-badge.user {
   background: #e8f1fe;
   color: #2563eb;
@@ -2399,6 +2395,14 @@ button.workflow-graph-port.output.active {
   gap: 12px 14px;
 }
 .settings-form-grid .span-2 { grid-column: 1 / -1; }
+.knowledge-base-list {
+  margin: 0;
+  padding-left: 1.1em;
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+}
+.knowledge-base-list code { font-size: 12px; }
 .settings-sync-block {
   display: grid;
   gap: 12px;

@@ -207,6 +207,14 @@ pub(crate) fn request_for_call(
     match tool {
         "read" | "view_image" => path_request(ResourceAccess::Read),
         "write" | "edit" | "generate_image" => path_request(ResourceAccess::Write),
+        "calibrate_handwriting" => args
+            .get("extract_path")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|path| normalized_project_path(root, path))
+            .map(|path| ResourceRequest {
+                access: ResourceAccess::Write,
+                scope: ResourceScope::Path(path),
+            }),
         _ => None,
     }
 }
@@ -214,6 +222,7 @@ pub(crate) fn request_for_call(
 pub(crate) fn preview_for_call(tool: &str, args: &serde_json::Value) -> String {
     let key = match tool {
         "read" | "view_image" | "write" | "edit" | "generate_image" => "path",
+        "calibrate_handwriting" => "extract_path",
         "python" | "r" => "code",
         _ => "cmd",
     };

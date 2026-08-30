@@ -98,6 +98,7 @@ pub const PLAN_MODE_READ_ONLY: &[&str] = &[
     "get_run",
     "monitor_run",
     "get_delegated_result",
+    "knowledge_search",
     // The plan proposal tool: plan mode is exactly when it has to run.
     plan::PROPOSE_PLAN,
     // Questions are read-only; planning is exactly when forks surface.

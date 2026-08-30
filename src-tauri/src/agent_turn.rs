@@ -407,6 +407,7 @@ pub(crate) async fn send_message_inner(
     // turn ended; reading its profile earlier would rebuild the invalidated
     // Agent with the model that was selected at enqueue time.
     let vision_cfg = build_vision_provider_config(&state.store).await;
+    let frame_vision_bound = models::frame_vision_binding(&state.store, &frame_id).await?;
     let fallback_max_context = state
         .store
         .get_setting("max_context")
@@ -451,15 +452,28 @@ pub(crate) async fn send_message_inner(
         max_tokens,
         &reasoning_effort,
     )?;
-    let primary_supports_vision = models::supports_vision(
-        &state.store,
-        specialist
-            .as_ref()
-            .map(|specialist| specialist.model_id.as_str())
-            .filter(|id| !id.trim().is_empty())
-            .or(Some(session_profile_id.as_str())),
-    )
-    .await;
+    let primary_profile_id = specialist
+        .as_ref()
+        .map(|specialist| specialist.model_id.as_str())
+        .filter(|id| !id.trim().is_empty())
+        .unwrap_or(session_profile_id.as_str());
+    let mut primary_supports_vision =
+        models::supports_vision(&state.store, Some(primary_profile_id)).await;
+    let vision_cfg =
+        match models::frame_vision_policy(frame_vision_bound.as_deref(), primary_profile_id) {
+            models::FrameVisionPolicy::Unbound => vision_cfg,
+            models::FrameVisionPolicy::Bound {
+                id,
+                use_primary_native,
+            } => {
+                let assigned =
+                    crate::build_assigned_vision_provider_config(&state.store, &id).await?;
+                if !use_primary_native {
+                    primary_supports_vision = false;
+                }
+                Some(assigned)
+            }
+        };
     let attached_images = if resume {
         Vec::new()
     } else {
@@ -537,6 +551,16 @@ pub(crate) async fn send_message_inner(
             &mut agent,
             models::image_generation_config(&state.store).await,
             llm_proxy(),
+        );
+        knowledge_search_tool::add_configured_knowledge_search_tool(
+            &mut agent,
+            knowledge::load_runtime(&state.store).await.ok().flatten(),
+            llm_proxy(),
+        );
+        crate::handwriting_calibrate::add_configured_handwriting_calibrate_tool(
+            &mut agent,
+            state.store.clone(),
+            specialist.as_ref().map(|spec| spec.id.as_str()),
         );
         add_configured_video_generation_tool(
             &mut agent,

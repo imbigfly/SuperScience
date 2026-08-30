@@ -39,6 +39,6 @@
 
 ## Related Skills
 
-- `nature-reader`: build full Chinese-English reading material and a figure source map first.
+- `nature-reader`: build a full Chinese-English HTML report and a figure source map first.
 - `nature-figure`: redraw mechanism or method diagrams for the deck.
 - `presentations`: further edit the generated PPTX layout.

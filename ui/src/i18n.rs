@@ -474,7 +474,6 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "models.card.settings") => Some("Settings"),
         (Locale::En, "models.card.delete") => Some("Delete"),
         (Locale::En, "models.search") => Some("Search models…"),
-        (Locale::En, "models.undetected") => Some("Not detected"),
         (Locale::En, "models.user_added") => Some("User added"),
         (Locale::En, "models.test_connection") => Some("Test whether this model is reachable"),
         (Locale::En, "models.masked_key") => Some("******"),
@@ -1419,6 +1418,23 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "browser.offline.dismiss") => Some("Dismiss"),
         (Locale::En, "settings.nav.connections") => Some("MCP Links"),
         (Locale::En, "settings.nav.channels") => Some("Remote Access"),
+        (Locale::En, "settings.nav.knowledge") => Some("Knowledge Base"),
+        (Locale::En, "knowledge.desc") => Some("Connect a local knowledge base so the agent can search excerpts and cite them. Documents are ingested in the provider's own web UI."),
+        (Locale::En, "knowledge.provider") => Some("Provider"),
+        (Locale::En, "knowledge.provider.weknora") => Some("WeKnora"),
+        (Locale::En, "knowledge.weknora.base_url") => Some("API URL"),
+        (Locale::En, "knowledge.weknora.base_url_hint") => Some("Default is http://localhost:8080/api/v1. A host-only URL such as http://localhost:8080 is completed automatically."),
+        (Locale::En, "knowledge.weknora.api_key") => Some("API key"),
+        (Locale::En, "knowledge.weknora.api_key_placeholder") => Some("X-API-Key"),
+        (Locale::En, "knowledge.weknora.api_key_hint") => Some("Leave blank to keep the stored key. The key is saved in the local secret store, not SQLite."),
+        (Locale::En, "knowledge.weknora.kb_ids") => Some("Default knowledge base ID"),
+        (Locale::En, "knowledge.weknora.kb_ids_hint") => Some("Required for search. Separate multiple IDs with commas. The agent can override this per call."),
+        (Locale::En, "knowledge.weknora.match_count") => Some("Max excerpts"),
+        (Locale::En, "knowledge.weknora.match_count_hint") => Some("How many excerpts to return to the agent (1–32)."),
+        (Locale::En, "knowledge.test") => Some("Test connection"),
+        (Locale::En, "knowledge.saved") => Some("Knowledge base settings saved."),
+        (Locale::En, "knowledge.save") => Some("Save"),
+        (Locale::En, "knowledge.secret_note") => Some("The API key is stored in the operating system secret store."),
         (Locale::En, "channels.desc") => Some("Connect Feishu, WeChat, or a StickS3 device to Wisp Science. Each access method stays opt-in and has its own security boundary."),
         (Locale::En, "channels.routing.desc") => Some("For IM bots, the first message creates a session in the desktop's active project. That chat then stays attached to the same project and session until you switch it with a slash command."),
         (Locale::En, "channels.secret_note") => Some("Secrets are stored in the operating system keyring."),
@@ -1872,6 +1888,25 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "issue_report.sidebar") => Some("Feedback"),
         (Locale::En, "issue_report.context") => Some("System information"),
         (Locale::En, "issue_report.context_attached") => Some("Attached automatically"),
+        (Locale::En, "issue_report.diagnostics") => Some(
+            "SuperScience version: {version}\n\
+             OS / architecture: {os} / {arch}\n\
+             Model profile: {model}\n\
+             Startup timings: {startup}",
+        ),
+        (Locale::En, "feedback.title") => Some("Send feedback"),
+        (Locale::En, "feedback.subtitle") => Some("Describe what happened. System information is attached automatically and sent by email."),
+        (Locale::En, "feedback.placeholder") => Some("What happened? Include steps to reproduce if you can."),
+        (Locale::En, "feedback.send") => Some("Send"),
+        (Locale::En, "feedback.sending") => Some("Sending…"),
+        (Locale::En, "feedback.cancel") => Some("Cancel"),
+        (Locale::En, "feedback.attach") => Some("Add attachment"),
+        (Locale::En, "feedback.attach_hint") => Some("Paste or drop images and files here"),
+        (Locale::En, "feedback.success") => Some("Feedback sent. Thank you."),
+        (Locale::En, "feedback.empty") => Some("Please enter feedback before sending."),
+        (Locale::En, "feedback.too_many") => Some("You can attach at most 8 files."),
+        (Locale::En, "feedback.too_large") => Some("Each file must be under 8 MB, 16 MB in total."),
+        (Locale::En, "feedback.blocked_type") => Some("This file type cannot be attached."),
         (Locale::En, "issue_report.chat_prompt") => Some(
             "Help me file a GitHub issue for {repo}.\n\n\
              [Collected automatically — do not ask me for API keys, transcripts, project files, env vars, usernames, or absolute paths]\n\
@@ -2504,17 +2539,29 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "caps.skill.journal_prescreen.title") => Some("Journal prescreen"),
         (Locale::En, "caps.skill.journal_prescreen.blurb") => Some("Check a manuscript against that journal's author guidelines and mark problems with fixes."),
         (Locale::En, "caps.skill.journal_prescreen.prompt") => Some(
-            "I want journal-prescreen to check author guidelines. First ask for the manuscript (attachment/path) and the target journal or pasted guidelines. At most five questions total; then mark location, severity, and a fix. Do not invent journal rules. This is not academic-paper-reviewer and not nature-reviewer.",
+            "Prescreen against the target journal's author guidelines. Mark location, severity, and a fix. Do not invent journal rules. First ask for the manuscript and the journal name or pasted guidelines. This is not a multi-role review and not a Nature-style referee report.",
         ),
         (Locale::En, "caps.skill.handwriting_extract.title") => Some("Handwritten data extract"),
-        (Locale::En, "caps.skill.handwriting_extract.blurb") => Some("Read handwritten lab or CRF photos into a CSV and flag uncertain cells."),
+        (Locale::En, "caps.skill.handwriting_extract.blurb") => Some("Read handwritten lab or CRF photos into a CSV, calibrate uncertain cells, and mark doubtful spots."),
         (Locale::En, "caps.skill.handwriting_extract.prompt") => Some(
-            "I want handwriting-extract. Ask me to upload handwritten table photos or give an image folder. At most five questions; do not ask for headers you can read from the images. Extract structured rows, write a CSV, calibrate, and flag uncertain cells. Remind me that image pixels do not go through the outbound text firewall.",
+            "Read handwritten lab or CRF photos into a CSV and flag uncertain cells. First ask me to upload photos or an image folder. Do not ask for headers you can read from the images.",
         ),
+        (Locale::En, "caps.skill.handwriting_extract.settings.aria") => Some("Handwritten extract settings"),
+        (Locale::En, "caps.skill.handwriting_extract.settings.title") => Some("Handwritten extract models"),
+        (Locale::En, "caps.skill.handwriting_extract.settings.lead") => Some("Choose an image-analysis model for every photo and a calibration model for a second look at flagged cells. The current chat model is not used to read images."),
+        (Locale::En, "caps.skill.handwriting_extract.settings.model") => Some("Image analysis model"),
+        (Locale::En, "caps.skill.handwriting_extract.settings.calibration") => Some("Calibration model"),
+        (Locale::En, "caps.skill.handwriting_extract.settings.placeholder") => Some("Select a model"),
+        (Locale::En, "caps.skill.handwriting_extract.settings.model_short") => Some("Analyze"),
+        (Locale::En, "caps.skill.handwriting_extract.settings.calibration_short") => Some("Calibrate"),
+        (Locale::En, "caps.skill.handwriting_extract.settings.empty") => Some("No vision-capable chat model is configured. Open Settings → Models, add a model, and enable Supports image input."),
+        (Locale::En, "caps.skill.handwriting_extract.settings.required") => Some("Select vision-capable chat models for image analysis and calibration."),
+        (Locale::En, "caps.skill.handwriting_extract.settings.save") => Some("Save"),
+        (Locale::En, "caps.skill.handwriting_extract.settings.close") => Some("Close"),
         (Locale::En, "caps.skill.topic_coach.title") => Some("Topic coach"),
         (Locale::En, "caps.skill.topic_coach.blurb") => Some("Inventory your data and materials, then score a few journal-fit topic candidates."),
         (Locale::En, "caps.skill.topic_coach.prompt") => Some(
-            "I want topic-coach. Help me inventory data and materials, tighten one research question, and score 3–5 journal-fit topic candidates on relevance, data, materials, and likelihood. Likelihood must be only Recommended / Possible but costly / Not advised — never a fake acceptance percentage. At most five questions; prefer attachments/paths; then write topic/inventory.md, question.md, and candidates.md.",
+            "Inventory the data and materials I already have, then score 3–5 journal-fit topic candidates. Likelihood must be only Recommended / Possible but costly / Not advised — never a fake acceptance percentage. First ask me to upload materials. Then write inventory, question, and candidates markdown files.",
         ),
         (Locale::En, "caps.tile.stats_analysis.title") => Some("Statistical modeling"),
         (Locale::En, "caps.tile.stats_analysis.blurb") => Some("Hypothesis tests, regression, power, and EDA with Python/R and stats skills."),
@@ -2524,7 +2571,10 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
             "Short coaching chat: at most five questions, then match skills and start delivering results.",
         ),
         (Locale::En, "caps.prompt.director_kickoff") => Some(
-            "You are my research director coach inside SuperScience / 天成科研助手. Help me turn a vague intention into ONE concrete goal this Agent can execute, then deliver the first useful result of that capability.\n\nHard rules:\n1. Intake: at most FIVE questions total. Prefer ONE short question per turn. Never a long questionnaire.\n2. Only ask what is still missing among: (a) concrete deliverable / done definition, (b) materials I should attach or a project path, (c) hard constraints (deadline, compute, privacy, venue, language).\n3. Never ask for metadata you can read from files (row/column counts, schema, file size, column names). Ask me to upload/attach the file or give a workspace path, then inspect it yourself.\n4. After answers—or as soon as five questions are used—map to bundled skills, call search_skills / use_skill, and immediately start the core work. Do not wait for a second “please confirm the long plan” round; a one-line “I'll do X next” is enough.\n5. Success = I receive a concrete artifact/progress for the matched capability (cleaned table, draft section, search hits, figure, etc.), not an endless interview.\n6. Reply in my language. Keep questions short.\n\nStart with question 1 only.",
+            "I have not pinned down the exact task yet. Start with one short question, help me turn this into one thing we can do now, and deliver the first useful result quickly.",
+        ),
+        (Locale::En, "caps.prompt.director_rules") => Some(
+            "Hard rules:\n1. Intake: at most FIVE questions total. Prefer ONE short question per turn. Never a long questionnaire.\n2. Only ask what is still missing among: (a) concrete deliverable / done definition, (b) materials I should attach or a project path, (c) hard constraints (deadline, compute, privacy, venue, language).\n3. Never ask for metadata you can read from files (row/column counts, schema, file size, column names). Ask me to upload/attach the file or give a workspace path, then inspect it yourself.\n4. After answers—or as soon as five questions are used—map to bundled skills, call search_skills / use_skill, and immediately start the core work. Do not wait for a second “please confirm the long plan” round; a one-line “I'll do X next” is enough.\n5. Success = I receive a concrete artifact/progress for the matched capability (cleaned table, draft section, search hits, figure, etc.), not an endless interview.\n6. Reply in my language. Keep questions short.\nStart with question 1 only.",
         ),
         (Locale::En, "caps.prompt.socratic_frame") => Some(
             "Capability coaching (applies to this whole chat).\nSkill `{skill}` is attached — call use_skill for `{skill}` first and follow it, but these rules override any habit of endless interviewing:\n1. At most FIVE clarifying questions total for intake. Prefer one short question per turn.\n2. Ask only for blockers: goal/done definition, materials to attach or a path, and hard constraints. Prefer “please upload/attach the file or paste the path” over asking row/column counts, schema, size, or other facts you can inspect yourself.\n3. As soon as you can start the skill's core job—or after five questions—STOP interviewing and DELIVER: run tools, produce a first concrete result or draft, then iterate from my feedback.\n4. Do not require a multi-step plan approval before acting. A one-line intent (“I'll clean the table next”) is enough.\n5. Keep replies concise; match my language.",
@@ -2535,89 +2585,89 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "caps.skill.academic_paper.title") => Some("Academic paper writing"),
         (Locale::En, "caps.skill.academic_paper.blurb") => Some("Plan, draft, revise, and format papers (full / plan / outline / revision modes)."),
         (Locale::En, "caps.skill.academic_paper.prompt") => Some(
-            "I want to write or revise an academic paper with academic-paper. Help me choose mode (full/plan/outline/revision/…), topic, paper type, and target venue through questions. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+            "Help me write or revise an academic paper. First ask whether this is from scratch, an outline only, or an existing draft to revise, and ask me to upload the topic or draft. Then deliver an outline or revision plan — do not write a full paper from nothing.",
         ),
         (Locale::En, "caps.skill.academic_pipeline.title") => Some("Research-to-paper pipeline"),
         (Locale::En, "caps.skill.academic_pipeline.blurb") => Some("Orchestrate research → write → review → revise end-to-end."),
         (Locale::En, "caps.skill.academic_pipeline.prompt") => Some(
-            "I want the full academic-pipeline (research to finalized paper). Clarify my starting point, deliverables, and how much review/revision I need. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+            "I want to go from research to a finished manuscript. First ask where I am stuck (no literature yet / have results to write / have a draft to review) and ask me to upload what I already have. Deliver this current step first; do not restart the whole pipeline.",
         ),
         (Locale::En, "caps.skill.academic_paper_reviewer.title") => Some("International journal review"),
         (Locale::En, "caps.skill.academic_paper_reviewer.blurb") => Some("Simulate journal-fit + peer + devil’s-advocate reviewers."),
         (Locale::En, "caps.skill.academic_paper_reviewer.prompt") => Some(
-            "I want a structured multi-perspective review with academic-paper-reviewer. Ask what manuscript I have, target venue, and which review depth I need. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+            "Please review as multiple roles (journal fit + peer + devil's advocate). First ask me to upload the manuscript and name the target journal. This is not an author-guideline prescreen and not a single Nature-style referee voice. Once materials are in, deliver a structured review.",
         ),
         (Locale::En, "caps.skill.deep_research.title") => Some("Deep academic research"),
         (Locale::En, "caps.skill.deep_research.blurb") => Some("Rigorous multi-agent lit research, briefs, and fact-checks."),
         (Locale::En, "caps.skill.deep_research.prompt") => Some(
-            "I want deep-research on a topic. Clarify my question, scope, mode (full/quick/lit-review/fact-check/…), and citation expectations. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+            "Help me write a cited research brief — not a dump of links. First ask the scientific question (I may attach notes). Then deliver a short cited brief. This is not a literature-matrix search and not a deep-read archive pipeline.",
         ),
         (Locale::En, "caps.skill.nature_writing.title") => Some("Nature-style drafting"),
         (Locale::En, "caps.skill.nature_writing.blurb") => Some("Draft or restructure Nature-leaning manuscript sections."),
         (Locale::En, "caps.skill.nature_writing.prompt") => Some(
-            "I want Nature-style manuscript drafting with nature-writing. Ask which section, what claims/results I already have, and language preference. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+            "Draft or rewrite one section in a tight, top-journal structure. First ask which section, and ask me to upload results or an outline. Deliver that section draft, not a full paper.",
         ),
         (Locale::En, "caps.skill.nature_polishing.title") => Some("Nature-style polishing"),
         (Locale::En, "caps.skill.nature_polishing.blurb") => Some("Polish or translate prose toward Nature/CNS tone."),
         (Locale::En, "caps.skill.nature_polishing.prompt") => Some(
-            "I want nature-polishing. Ask for the text to polish, target journal tone, and whether to restructure or only polish wording. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+            "Polish or translate so the tone reads like a high-level journal, without changing scientific claims. First ask me to paste the passage or give a path. Default to wording only; say so if structure should change. This is not AI-trace removal.",
         ),
         (Locale::En, "caps.skill.humanizer_zh.title") => Some("Remove AI traces"),
         (Locale::En, "caps.skill.humanizer_zh.blurb") => Some("Rewrite prose against 24 AI-writing patterns so it reads human."),
         (Locale::En, "caps.skill.humanizer_zh.prompt") => Some(
-            "I want humanizer-zh to remove AI writing traces. Ask for the text or file path to rewrite. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+            "Remove obvious AI boilerplate and mechanical sentences so the prose reads human. First ask me to paste the text or give a path. Change only the writing, not the conclusions.",
         ),
         (Locale::En, "caps.skill.nature_proposal_writer.title") => Some("Proposal / research plan"),
         (Locale::En, "caps.skill.nature_proposal_writer.blurb") => Some("Compose or audit research proposals and opening reports."),
         (Locale::En, "caps.skill.nature_proposal_writer.prompt") => Some(
-            "I want a research proposal with nature-proposal-writer. Clarify proposal type, funder/venue, and what evidence I already have. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+            "Help me write or audit a grant / opening report. First ask the type (grant, opening report, or existing draft to audit) and ask me to upload materials. Deliver a section outline and a gap list — do not invent a full proposal.",
         ),
         (Locale::En, "caps.skill.nature_citation.title") => Some("Nature citation insertion"),
         (Locale::En, "caps.skill.nature_citation.blurb") => Some("Add strict Nature/CNS citations to manuscript passages."),
         (Locale::En, "caps.skill.nature_citation.prompt") => Some(
-            "I want nature-citation to add citations. Ask for the manuscript text, field, and any citation constraints. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+            "Add solid citations to passages that lack them. First ask me to paste the paragraph or upload the manuscript. Do not re-ask the field if the text already shows it.",
         ),
         (Locale::En, "caps.skill.nature_response.title") => Some("Revision response letters"),
         (Locale::En, "caps.skill.nature_response.blurb") => Some("Point-by-point reviewer response / rebuttal packages."),
         (Locale::En, "caps.skill.nature_response.prompt") => Some(
-            "I want nature-response for revision correspondence. Ask for reviewer comments, manuscript version, and letter style. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+            "Write a point-by-point revision letter. First ask me to upload the reviewer comments and the current manuscript. Default to a restrained, journal-ready tone.",
         ),
         (Locale::En, "caps.skill.nature_reviewer.title") => Some("Nature review"),
         (Locale::En, "caps.skill.nature_reviewer.blurb") => Some("Simulate a Nature-style referee report before submission."),
         (Locale::En, "caps.skill.nature_reviewer.prompt") => Some(
-            "I want a pre-submission review with nature-reviewer. Ask for the manuscript, target journal, and review focus. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+            "Write a pre-submission report in a single referee's voice. First ask me to upload the manuscript. This is not a multi-role review and not an author-guideline prescreen.",
         ),
         (Locale::En, "caps.skill.nature_data.title") => Some("Data Availability / FAIR"),
         (Locale::En, "caps.skill.nature_data.blurb") => Some("Draft or audit Data Availability and repository plans."),
         (Locale::En, "caps.skill.nature_data.prompt") => Some(
-            "I want nature-data help for Data Availability / FAIR metadata. Ask what datasets I have and the target journal policy. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+            "Help me draft or audit a Data Availability statement and sharing plan. First ask what data I have, where it will live, and the target journal. Deliver a draft statement and gaps.",
         ),
         (Locale::En, "caps.skill.nature_ref_verifier.title") => Some("Reference verification"),
         (Locale::En, "caps.skill.nature_ref_verifier.blurb") => Some("Cross-check bibliography fields and flag conflicts."),
         (Locale::En, "caps.skill.nature_ref_verifier.prompt") => Some(
-            "I want nature-ref-verifier on my references. Ask whether I have a full list or single items, and the preferred output format. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+            "Check titles, years, authors, and DOIs; flag mismatches. First ask me to upload the reference list. Deliver a conflict table. Do not invent matches.",
         ),
         (Locale::En, "caps.skill.nature_paper_to_patent.title") => Some("Paper → patent draft"),
         (Locale::En, "caps.skill.nature_paper_to_patent.blurb") => Some("Turn papers/notes into Chinese invention patent drafts."),
         (Locale::En, "caps.skill.nature_paper_to_patent.prompt") => Some(
-            "I want nature-paper-to-patent. Ask what source materials I have, inventive focus, and attorney-ready deliverables needed. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+            "Pull inventive points from a paper or lab notes into a Chinese invention-patent draft for an attorney. First ask me to upload the paper or notes. Deliver a claims outline and a specification outline.",
         ),
         (Locale::En, "caps.skill.nature_figure.title") => Some("Nature-grade figures"),
         (Locale::En, "caps.skill.nature_figure.blurb") => Some("Create/audit submission-grade figures in Python or R."),
         (Locale::En, "caps.skill.nature_figure.prompt") => Some(
-            "I want nature-figure for publication figures. Ask for data/panels, journal style, Python vs R, and export needs. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+            "Draw or audit a submission-grade data figure in Python or R. First ask for the table or panel idea. Infer the language from the files when you can. This is not an AI concept illustration and not a fixed bioinformatics plot set.",
         ),
         (Locale::En, "caps.skill.nature_paper2ppt.title") => Some("Paper → journal-club PPT"),
         (Locale::En, "caps.skill.nature_paper2ppt.blurb") => Some("Build a Nature-style Chinese PPTX from a paper."),
         (Locale::En, "caps.skill.nature_paper2ppt.prompt") => Some(
-            "I want nature-paper2ppt. Ask for the paper source, audience (journal club/group meeting), slide length, and language needs. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+            "Turn a paper into a Chinese journal-club deck that follows the argument — not a wall of page screenshots. First ask for the paper. Default to a Chinese group-meeting length. This is not PPT Master's generic native deck.",
         ),
         (Locale::En, "caps.skill.ppt_master.title") => Some("PPT Master"),
         (Locale::En, "caps.skill.ppt_master.blurb") => Some(
             "Turn a topic or document into a native editable .pptx (shapes, masters, charts, animation).",
         ),
         (Locale::En, "caps.skill.ppt_master.prompt") => Some(
-            "I want ppt-master to build a native editable PowerPoint. Ask for the topic or source files/path, slide count, template/style, and whether I need charts or animation. At most five questions total; prefer asking for attachments/paths; then deliver a .pptx—do not interview endlessly.",
+            "Build a native editable PowerPoint (shapes, masters, charts), not a flattened picture deck. First ask for the topic or materials. Ask slide count or template on the next turn. This is not Paper → journal-club PPT.",
         ),
         (Locale::En, "caps.install.ppt_master.title") => Some("Install PPT Master?"),
         (Locale::En, "caps.install.ppt_master.body") => Some(
@@ -2637,49 +2687,49 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "caps.skill.nature_statistics.title") => Some("Stats reporting audit"),
         (Locale::En, "caps.skill.nature_statistics.blurb") => Some("Audit p-values, CIs, and statistical reporting for journals."),
         (Locale::En, "caps.skill.nature_statistics.prompt") => Some(
-            "I want nature-statistics to audit or draft stats reporting. Ask for the methods/results text or analysis outputs and target journal. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+            "Audit p-values, CIs, and journal statistical wording — do not rerun the analysis. First ask me to paste methods/results or upload outputs, and name the target journal. This is not hypothesis testing and not a live Python/R session.",
         ),
         (Locale::En, "caps.skill.knowledge_graph.title") => Some("Text knowledge graph"),
         (Locale::En, "caps.skill.knowledge_graph.blurb") => Some(
             "Extract entity relations from a paper or notes; search, highlight neighbors, zoom, and drag nodes.",
         ),
         (Locale::En, "caps.skill.knowledge_graph.prompt") => Some(
-            "I want knowledge-graph. Ask for the source text or file to turn into a knowledge graph. At most five questions total; prefer asking for attachments/paths; then chunk, extract triples, and deliver the HTML graph—do not interview endlessly.",
+            "Turn a paper or notes into a searchable, draggable relation graph. First ask me to upload the source or give a path. Then extract triples and deliver an HTML graph.",
         ),
-        (Locale::En, "caps.skill.academic_search_pro.title") => Some("Cross-library lit search"),
+        (Locale::En, "caps.skill.academic_search_pro.title") => Some("Literature matrix search"),
         (Locale::En, "caps.skill.academic_search_pro.blurb") => Some("7 free APIs + lawful web search → dedupe → literature matrix / BibTeX."),
         (Locale::En, "caps.skill.academic_search_pro.prompt") => Some(
-            "I want academic-search-pro. Ask for my topic/keywords and any year or source constraints. At most five questions total; prefer asking for attachments/paths; then run cross-library search, dedupe, and deliver a literature matrix / BibTeX—do not interview endlessly.",
+            "Build a cross-library, deduped literature table or BibTeX — metadata only, no full-text reading. First ask for the topic/keywords (year optional). This is not a citation audit and not a deep-research brief.",
         ),
-        (Locale::En, "caps.skill.nature_academic_search.title") => Some("Multi-source lit search"),
+        (Locale::En, "caps.skill.nature_academic_search.title") => Some("Citation audit search"),
         (Locale::En, "caps.skill.nature_academic_search.blurb") => Some("Search, citation audits, and influential-citer profiling."),
         (Locale::En, "caps.skill.nature_academic_search.prompt") => Some(
-            "I want nature-academic-search. Clarify my topic/keywords, sources to prioritize, and whether I need citation audits or tables. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+            "Check citation relationships: whether references hold, other-citations, and who cited the paper. First ask for a DOI/title or the paper to audit. Do not build a deduped literature table.",
         ),
         (Locale::En, "caps.skill.nature_literature_pipeline.title") => Some("Literature pipeline"),
         (Locale::En, "caps.skill.nature_literature_pipeline.blurb") => Some("Search → score → deep-read → deliver → archive."),
         (Locale::En, "caps.skill.nature_literature_pipeline.prompt") => Some(
-            "I want nature-literature-pipeline. Ask for research field, inclusion criteria, and delivery format. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+            "Take literature from search through scored deep-reads and filing. First ask the field and what “good enough” means. Deliver an inclusion list and scores first, then deep-read — do not stop at a link dump.",
         ),
         (Locale::En, "caps.skill.nature_downloader.title") => Some("Lawful full-text fetch"),
         (Locale::En, "caps.skill.nature_downloader.blurb") => Some("OA / institutional / publisher API full-text retrieval."),
         (Locale::En, "caps.skill.nature_downloader.prompt") => Some(
-            "I want nature-downloader for full text. Ask for DOI/title list, access path (OA/CNKI/institutional), and where to save files. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+            "Fetch PDFs through lawful routes (OA / institutional / publisher APIs). First ask for DOIs or titles. Save to the project literature folder by default. Do not suggest circumvention.",
         ),
         (Locale::En, "caps.skill.nature_paper_card.title") => Some("Deep-reading paper card"),
         (Locale::En, "caps.skill.nature_paper_card.blurb") => Some("Source-grounded Paper Card for one paper/PDF/DOI."),
         (Locale::En, "caps.skill.nature_paper_card.prompt") => Some(
-            "I want a nature-paper-card. Ask for the paper source and which sections (claims, methods, figures, limitations) to emphasize. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+            "Make a source-grounded deep-reading card (claims, methods, figures, limits). First ask for the PDF or DOI. Cover all four blocks by default.",
         ),
         (Locale::En, "caps.skill.nature_reader.title") => Some("Bilingual paper reader"),
-        (Locale::En, "caps.skill.nature_reader.blurb") => Some("Chinese–English side-by-side reader with figure awareness."),
+        (Locale::En, "caps.skill.nature_reader.blurb") => Some("One Chinese–English HTML report: side-by-side text, figures, and source anchors."),
         (Locale::En, "caps.skill.nature_reader.prompt") => Some(
-            "I want nature-reader. Ask for the PDF/DOI and reading goals (full paper vs selected sections). At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+            "Make a Chinese–English side-by-side reading draft, including figures. First ask for the PDF. Default to the full paper. Deliver an openable bilingual HTML report (reader.html). This is not a deep-reading card.",
         ),
         (Locale::En, "caps.skill.nature_experiment_log.title") => Some("Experiment log"),
         (Locale::En, "caps.skill.nature_experiment_log.blurb") => Some("Turn photos/voice/notes into structured Markdown logs."),
         (Locale::En, "caps.skill.nature_experiment_log.prompt") => Some(
-            "I want nature-experiment-log. Ask what materials I have (images/voice/text) and the lab/notebook conventions to follow. At most five questions total; prefer asking for attachments/paths; then deliver the skill's core result—do not interview endlessly.",
+            "Turn bench photos, voice, or scribbles into a Markdown experiment log. First ask me to upload the materials. Follow lab conventions if given; otherwise use a generic structure.",
         ),
         (Locale::En, "caps.tile.bio_db.title") => Some("Biology databases"),
         (Locale::En, "caps.tile.bio_db.blurb") => Some(
@@ -2713,60 +2763,63 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "caps.tile.playwright.blurb") => Some("Script Chromium/Firefox/WebKit for e2e tests, screenshots, and scrapers."),
         (Locale::En, "caps.tile.plugins.title") => Some("Plugins"),
         (Locale::En, "caps.tile.plugins.blurb") => Some("Install packaged Skill + MCP extensions into the workbench."),
+        (Locale::En, "caps.tile.knowledge.title") => Some("Knowledge base"),
+        (Locale::En, "caps.tile.knowledge.blurb") => Some("Search your local WeKnora knowledge base and cite excerpts."),
+        (Locale::En, "caps.tile.knowledge.settings.aria") => Some("Knowledge base settings"),
+        (Locale::En, "caps.tile.knowledge.settings.title") => Some("Knowledge base settings"),
+        (Locale::En, "caps.tile.knowledge.settings.close") => Some("Close"),
+        (Locale::En, "caps.tile.knowledge.settings.required") => Some("Connect WeKnora first: API URL, API key, and a default knowledge base ID are required."),
+        (Locale::En, "caps.prompt.knowledge") => Some(
+            "Search my local knowledge base and cite excerpts. First ask what I want to find — do not lecture about setup.",
+        ),
+        (Locale::En, "caps.prompt.knowledge.spec") => Some(
+            "Capability tool spec.\nUse the `knowledge_search` tool to retrieve excerpts from the configured WeKnora knowledge base. Quote or cite titles/filenames. Do not treat this as a chat/answer API — write the reply yourself. If the tool is missing, say the knowledge base is not connected. Default IDs come from settings; pass knowledge_base_id only when the user names a specific base. If nothing matches, say so — do not invent excerpts.",
+        ),
         (Locale::En, "caps.help.aria") => Some("What this can do"),
         (Locale::En, "caps.help.close") => Some("Got it"),
         (Locale::En, "caps.coming_soon.body") => Some("Coming soon"),
         (Locale::En, "caps.coming_soon.close") => Some("Got it"),
-        (Locale::En, "caps.prompt.literature") => Some(
-            "Help me with literature and evidence. Prefer loading literature-review or bear-* skills as needed. Ask what claim, paper, or idea I want to investigate, then search real sources and summarize with citations.",
-        ),
-        (Locale::En, "caps.prompt.pdf_ppt") => Some(
-            "I want to deeply read a PDF and/or build a journal-club style presentation. Guide me to attach the PDF, load pdf-explore or journal-club-ppt, and walk through the argument structure.",
-        ),
-        (Locale::En, "caps.prompt.academic_research") => Some(
-            "Help me run rigorous academic research. Load deep-research or academic-pipeline as needed, clarify my question and scope, then produce a cited synthesis (and note when a systematic review / meta-analysis mode fits).",
-        ),
-        (Locale::En, "caps.prompt.nature_skills") => Some(
-            "I want Nature-style manuscript help (polishing, drafting, reviewer simulation, statistics, or publication figures). Search and load the matching nature-* skill, then ask what section or figure I am working on.",
-        ),
         (Locale::En, "caps.prompt.officecli") => Some(
-            "Help me create or edit Word/Excel/PowerPoint with OfficeCLI. First check whether `officecli` is installed; if missing, follow the officecli skill install steps. Then ask what document I need and which officecli-* skill fits.",
-        ),
-        (Locale::En, "caps.prompt.academic_paper") => Some(
-            "Help me write or revise an academic paper with the academic-paper skill. Ask for topic, paper type, target venue, and whether I want full/plan/outline/revision mode, then load academic-paper and start.",
+            "Create or edit a real Word, Excel, or PowerPoint file — not a screenshot. First ask which kind, and whether this is from scratch or an existing file, and ask me to upload or give a path. Install officecli only if it is missing. This is not a journal-club PPT and not PPT Master.",
         ),
         (Locale::En, "caps.prompt.ai_drawing") => Some(
-            "Help me create an AI research illustration or concept figure. Confirm the image-generation model is configured, ask what to draw (subject, style, labels, size), then generate and iterate from my feedback.",
+            "Draw a research illustration or concept figure with the configured image model — not a data plot. First ask what to draw (subject, style, labels). Generate a first version, then iterate.",
         ),
         (Locale::En, "caps.prompt.r_bioinfo_figure") => Some(
-            "I need R bioinformatics figures (volcano, heatmap, PCA/UMAP, box/violin, survival, enrichment, etc.). Prefer the persistent `r` tool with ggplot2/Bioconductor. Within five questions, ask me to upload data or give a project path—do not fish for schema metadata you can read from the file. Then plot, QC with view_image, and deliver project-relative paths under figures/.",
+            "Draw common R bioinformatics plots (volcano, heatmap, PCA, survival, and similar). First ask me to upload data or give a path. Then plot and save under figures/.",
         ),
-        (Locale::En, "caps.prompt.scientific_figures") => Some(
-            "Help me build publication-ready scientific figures. Prefer figure-composer, nature-figure, or figure-style skills as needed. Ask for data/panels, target journal style, and output format, then start composing.",
+        (Locale::En, "caps.prompt.r_bioinfo_figure.spec") => Some(
+            "Capability tool spec.\nPrefer the persistent `r` tool with ggplot2/Bioconductor. Do not fish for schema metadata you can read from the file. Plot, QC with view_image, and deliver project-relative paths under figures/.",
         ),
         (Locale::En, "caps.prompt.data_cleaning") => Some(
-            "Follow the data-cleaning specialist: ask me for a data file or project path first, then inspect the table and deliver the first cleaned, analysis-ready dataset.",
+            "Clean messy columns and deliver an analysis-ready table. First ask for the file or path. Inspect the table and do the first cleaning pass — do not start with a questionnaire.",
         ),
         (Locale::En, "caps.prompt.stats_analysis") => Some(
-            "Help me run statistical analysis. Get my research question/hypothesis and ask me to attach the dataset or give a path—do not fish for schema metadata. Then run EDA/tests in Python/R and deliver concrete results (tables, plots, interpretation).",
+            "Run tests, regression, or exploratory analysis for a hypothesis and explain what the result means. First ask the question and where the data is. This is not a journal stats-wording audit, and the goal is not a long-lived kernel session.",
         ),
         (Locale::En, "caps.prompt.python_r") => Some(
-            "I want the persistent `python` / `r` tools for data analysis (not a journal stats-reporting audit, and not a one-shot hypothesis test). Keep the same kernel: load, clean, summarize, model, and plot without restarting; leave data frames in session. Default Python: pandas / numpy / scipy / statsmodels / matplotlib / seaborn. Default R: tidyverse / data.table. Plots must be editable SVG: Python savefig(..., format=\"svg\") or a .svg path; R ggsave(..., device=\"svg\") or svg(). Put the main figure under figures/ as .svg—do not deliver only PNG/JPG. A PNG may be used only for view_image QC; the reply must include the project-relative SVG path. At most five questions: analysis goal and data file/path (prefer attachments), then once whether I prefer Python or R (or infer from the file/ecosystem). Do not fish for schema you can read from the file. Then code, run, interpret, and deliver a reproducible script, tables, SVG figures, and a short conclusion.",
+            "Analyze a table in one persistent Python or R session. Keep variables loaded and deliver editable SVG figures. First ask the analysis goal and the data file.",
+        ),
+        (Locale::En, "caps.prompt.python_r.spec") => Some(
+            "Capability tool spec.\nUse the persistent `python` / `r` tools (not a journal stats-reporting audit, and not a one-shot hypothesis test). Keep the same kernel: load, clean, summarize, model, and plot without restarting; leave data frames in session. Default Python: pandas / numpy / scipy / statsmodels / matplotlib / seaborn. Default R: tidyverse / data.table. Plots must be editable SVG: Python savefig(..., format=\"svg\") or a .svg path; R ggsave(..., device=\"svg\") or svg(). Put the main figure under figures/ as .svg—do not deliver only PNG/JPG. A PNG may be used only for view_image QC; the reply must include the project-relative SVG path. Infer Python vs R from the file/ecosystem when you can. Do not fish for schema you can read from the file. Then code, run, interpret, and deliver a reproducible script, tables, SVG figures, and a short conclusion.",
         ),
         (Locale::En, "caps.prompt.bio_db") => Some(
-            "Help me query bundled biology-database MCP tools (PubMed, GEO, UniProt, PDB, and other domains under Settings → Connections → Featured — bundled bio-tools). First ask only what to look up (gene, protein, GSE/PMID/accession, or a research question). Do not ask language preference. Then discover tools with search_mcp_tools and call them via use_mcp_tool — never invent tool names. Settings row titles (there is no connection named bio-tools or academic-search): PubMed → search_articles / get_article_metadata; GEO (Omics Archives) → geo_search_series / geo_get_series; UniProt (Genes Ontologies) → get_uniprot_entries; PDB (Structures Interactions) → pdb_search_structures / pdb_get_structures. Do not tell me to enable bio-tools or academic-search. Do not call search_papers or pubmed_fetch_articles (those belong to the academic-search skill, not this capability). If a needed row is off, name that exact Settings title. If search_mcp_tools finds nothing, say so briefly and use NCBI E-utilities REST without claiming those two MCPs must be mounted. Deliver entries, accessions, abstracts, or download paths. At most five questions.",
+            "Look up a gene, dataset, or paper in PubMed / GEO / UniProt / PDB. First ask what to look up — do not ask language preference. Deliver entries, accessions, or abstracts.",
+        ),
+        (Locale::En, "caps.prompt.bio_db.spec") => Some(
+            "Capability tool spec.\nQuery bundled biology-database MCP tools (PubMed, GEO, UniProt, PDB, and other domains under Settings → Connections → Featured — bundled bio-tools). Discover tools with search_mcp_tools and call them via use_mcp_tool — never invent tool names. Settings row titles (there is no connection named bio-tools or academic-search): PubMed → search_articles / get_article_metadata; GEO (Omics Archives) → geo_search_series / geo_get_series; UniProt (Genes Ontologies) → get_uniprot_entries; PDB (Structures Interactions) → pdb_search_structures / pdb_get_structures. Do not tell me to enable bio-tools or academic-search. Do not call search_papers or pubmed_fetch_articles (those belong to the academic-search skill, not this capability). If a needed row is off, name that exact Settings title. If search_mcp_tools finds nothing, say so briefly and use NCBI E-utilities REST without claiming those two MCPs must be mounted. Deliver entries, accessions, abstracts, or download paths.",
         ),
         (Locale::En, "caps.prompt.structure") => Some(
-            "I need structure prediction or molecular design (folding, docking, or sequence design). Explain which bundled skills fit, what compute I need, and start by clarifying my target molecule.",
+            "Fold, dock, or design a sequence. First ask the target molecule/sequence and which of those three I need. Start the matching skill and say what compute is required; deliver a task setup or first result — do not lecture first.",
         ),
         (Locale::En, "caps.prompt.single_cell") => Some(
-            "Help me with single-cell or multi-step omics analysis. Prefer scvi-tools, scgpt, or analysis-workflow skills when relevant, and start by asking for my data layout and goal.",
+            "Run single-cell or stepwise omics analysis and keep the steps reproducible. First ask where the data is and what question to answer. Deliver QC / object overview first, then continue.",
         ),
         (Locale::En, "caps.prompt.browser") => Some(
-            "Help me automate my real Chrome browser with the browser-use skill. Confirm the extension is ready, then ask which site and task I want.",
+            "Drive my real logged-in local Chrome (companion extension required). First ask the site and the task. Mention the extension only if it is not ready. This is not headless Playwright.",
         ),
         (Locale::En, "caps.prompt.playwright") => Some(
-            "Help me automate a headless browser with the playwright skill (not my logged-in Chrome). Confirm Node + Playwright are installed or install them, then ask what page/action I need (screenshot, scrape, e2e, PDF).",
+            "Automate a headless browser for tests, screenshots, or scraping — not my logged-in Chrome. First ask the page and action. Install Node/Playwright only if missing.",
         ),
         (Locale::En, "caps.runtime") => Some("Runtime v{version}"),
         (Locale::En, "caps.workspace") => Some("Workspace: {path}"),
@@ -2778,9 +2831,6 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "caps.memory_files") => Some("Memory files"),
         (Locale::En, "caps.close") => Some("Close"),
         (Locale::En, "caps.setup_env") => Some("Set up environment"),
-        (Locale::En, "caps.env_setup_prompt") => Some(
-            "Capabilities shows missing runtime tools. Call use_skill for local-env-setup first, then follow it for my OS: (1) uv + Python for superscience bootstrap, (2) Node >= 20 + `npm install -g scimaster-cli` + `sci init` for bear-* literature skills, (3) pixi for local bioinformatics multi-env analysis. Verify Capabilities and tell me when to restart 天成科研助手.",
-        ),
         (Locale::En, "caps.ready") => Some("ready"),
         (Locale::En, "caps.missing") => Some("missing"),
         (Locale::En, "onboard.title") => Some("Welcome to 天成科研助手"),
@@ -3447,7 +3497,6 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "models.card.settings") => Some("设置"),
         (Locale::Zh, "models.card.delete") => Some("删除"),
         (Locale::Zh, "models.search") => Some("搜索模型..."),
-        (Locale::Zh, "models.undetected") => Some("未检测"),
         (Locale::Zh, "models.user_added") => Some("用户添加"),
         (Locale::Zh, "models.test_connection") => Some("点击测试当前模型是否正常连通"),
         (Locale::Zh, "models.masked_key") => Some("******"),
@@ -4392,6 +4441,23 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "browser.offline.dismiss") => Some("关闭"),
         (Locale::Zh, "settings.nav.connections") => Some("MCP链接"),
         (Locale::Zh, "settings.nav.channels") => Some("远程接入"),
+        (Locale::Zh, "settings.nav.knowledge") => Some("知识库"),
+        (Locale::Zh, "knowledge.desc") => Some("接入本机知识库后，对话里的助手可以检索片段并引用出处。文档仍在各知识库自己的网页里入库。"),
+        (Locale::Zh, "knowledge.provider") => Some("提供方"),
+        (Locale::Zh, "knowledge.provider.weknora") => Some("WeKnora"),
+        (Locale::Zh, "knowledge.weknora.base_url") => Some("API 地址"),
+        (Locale::Zh, "knowledge.weknora.base_url_hint") => Some("默认 http://localhost:8080/api/v1。只填到 http://localhost:8080 时会自动补上 /api/v1。"),
+        (Locale::Zh, "knowledge.weknora.api_key") => Some("API 密钥"),
+        (Locale::Zh, "knowledge.weknora.api_key_placeholder") => Some("X-API-Key"),
+        (Locale::Zh, "knowledge.weknora.api_key_hint") => Some("留空则保留已保存的密钥。密钥只进本机凭据库，不会写入 SQLite。"),
+        (Locale::Zh, "knowledge.weknora.kb_ids") => Some("默认知识库 ID"),
+        (Locale::Zh, "knowledge.weknora.kb_ids_hint") => Some("检索必填。多个 ID 用逗号分隔。对话里可以按次覆盖。"),
+        (Locale::Zh, "knowledge.weknora.match_count") => Some("返回条数"),
+        (Locale::Zh, "knowledge.weknora.match_count_hint") => Some("返回给助手的片段数量（1–32）。"),
+        (Locale::Zh, "knowledge.test") => Some("测试连接"),
+        (Locale::Zh, "knowledge.saved") => Some("知识库设置已保存。"),
+        (Locale::Zh, "knowledge.save") => Some("保存"),
+        (Locale::Zh, "knowledge.secret_note") => Some("密钥只保存在操作系统凭据库中。"),
         (Locale::Zh, "channels.desc") => Some("将飞书、微信或 StickS3 设备接入 Wisp Science。每种远程接入都默认关闭，并具有独立的安全边界。"),
         (Locale::Zh, "channels.routing.desc") => Some("对于 IM 机器人，首条消息会在桌面端当前项目创建会话。之后该 IM 对话会固定连接到同一个项目和会话，直到使用 slash command 主动切换。"),
         (Locale::Zh, "channels.secret_note") => Some("密钥只保存在操作系统凭据库中。"),
@@ -4843,6 +4909,25 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "issue_report.sidebar") => Some("反馈"),
         (Locale::Zh, "issue_report.context") => Some("系统信息"),
         (Locale::Zh, "issue_report.context_attached") => Some("已自动附加"),
+        (Locale::Zh, "issue_report.diagnostics") => Some(
+            "SuperScience 版本：{version}\n\
+             OS / 架构：{os} / {arch}\n\
+             模型配置：{model}\n\
+             启动耗时：{startup}",
+        ),
+        (Locale::Zh, "feedback.title") => Some("反馈问题"),
+        (Locale::Zh, "feedback.subtitle") => Some("请描述遇到的问题或建议。系统信息会自动附加，并通过邮件发给管理员。"),
+        (Locale::Zh, "feedback.placeholder") => Some("发生了什么？如能复现，请写上步骤。"),
+        (Locale::Zh, "feedback.send") => Some("发送"),
+        (Locale::Zh, "feedback.sending") => Some("发送中…"),
+        (Locale::Zh, "feedback.cancel") => Some("取消"),
+        (Locale::Zh, "feedback.attach") => Some("添加附件"),
+        (Locale::Zh, "feedback.attach_hint") => Some("可在此粘贴或拖入图片、文件"),
+        (Locale::Zh, "feedback.success") => Some("反馈已发送，感谢你的意见。"),
+        (Locale::Zh, "feedback.empty") => Some("请先填写反馈内容再发送。"),
+        (Locale::Zh, "feedback.too_many") => Some("最多附加 8 个文件。"),
+        (Locale::Zh, "feedback.too_large") => Some("单个文件不超过 8 MB，合计不超过 16 MB。"),
+        (Locale::Zh, "feedback.blocked_type") => Some("不支持附加此类文件。"),
         (Locale::Zh, "issue_report.chat_prompt") => Some(
             "请帮我向 {repo} 提交一个 GitHub issue。\n\n\
              【已自动采集，请勿向我索要 API key、transcript、项目文件、环境变量、用户名或绝对路径】\n\
@@ -5473,17 +5558,29 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "caps.skill.journal_prescreen.title") => Some("论文预审"),
         (Locale::Zh, "caps.skill.journal_prescreen.blurb") => Some("对照目标杂志投稿须知检查稿件，标出问题并给出改法。"),
         (Locale::Zh, "caps.skill.journal_prescreen.prompt") => Some(
-            "我要用 journal-prescreen 做投稿须知预审。请先要稿件（附件/路径）和目标杂志或粘贴的投稿须知。总共最多五个问题；然后对照须知标出位置、严重度和改法，禁止编造期刊规则。这不是 academic-paper-reviewer，也不是 nature-reviewer。",
+            "对照目标杂志投稿须知预审，标位置、严重度和改法，禁止编造规则。请先给稿件，以及杂志名或粘贴的须知。这不是多角色审稿，也不是 Nature 审稿口吻。",
         ),
         (Locale::Zh, "caps.skill.handwriting_extract.title") => Some("手写数据提取"),
-        (Locale::Zh, "caps.skill.handwriting_extract.blurb") => Some("识别手写实验本或 CRF 照片，汇总成 CSV 并标出存疑格子。"),
+        (Locale::Zh, "caps.skill.handwriting_extract.blurb") => Some("识别手写实验本或 CRF 照片，校准存疑格子，汇总成 CSV 并标出位置。"),
         (Locale::Zh, "caps.skill.handwriting_extract.prompt") => Some(
-            "我要用 handwriting-extract。请我上传手写表照片或给出图片目录。总共最多五个问题；不要追问你能从图片读出的表头。识别成结构化行，写出 CSV，做校准，并标记存疑格子。提醒我：图片像素不会走出站文本防火墙。",
+            "把手写实验本或 CRF 照片抽成 CSV，并标出存疑格子。请先上传照片或图片目录。表头能从图片读就不要问。",
         ),
+        (Locale::Zh, "caps.skill.handwriting_extract.settings.aria") => Some("手写数据提取设置"),
+        (Locale::Zh, "caps.skill.handwriting_extract.settings.title") => Some("手写提取模型"),
+        (Locale::Zh, "caps.skill.handwriting_extract.settings.lead") => Some("必须指定图片分析模型和校准模型。分析模型负责识图；校准模型只对存疑格子二次看图。不会改用当前对话主模型去读图。"),
+        (Locale::Zh, "caps.skill.handwriting_extract.settings.model") => Some("图片分析模型"),
+        (Locale::Zh, "caps.skill.handwriting_extract.settings.calibration") => Some("校准模型"),
+        (Locale::Zh, "caps.skill.handwriting_extract.settings.placeholder") => Some("请选择模型"),
+        (Locale::Zh, "caps.skill.handwriting_extract.settings.model_short") => Some("分析"),
+        (Locale::Zh, "caps.skill.handwriting_extract.settings.calibration_short") => Some("校准"),
+        (Locale::Zh, "caps.skill.handwriting_extract.settings.empty") => Some("还没有可看图的聊天模型。请先到 设置 → 模型 添加模型，并勾选「支持图片输入」。"),
+        (Locale::Zh, "caps.skill.handwriting_extract.settings.required") => Some("请为图片分析和校准各选一条支持图片输入的聊天模型。"),
+        (Locale::Zh, "caps.skill.handwriting_extract.settings.save") => Some("保存"),
+        (Locale::Zh, "caps.skill.handwriting_extract.settings.close") => Some("关闭"),
         (Locale::Zh, "caps.skill.topic_coach.title") => Some("选题引导"),
         (Locale::Zh, "caps.skill.topic_coach.blurb") => Some("盘点已有数据和资料，对准目标期刊给出选题候选并评分。"),
         (Locale::Zh, "caps.skill.topic_coach.prompt") => Some(
-            "我要用 topic-coach。请帮我盘点数据和资料、收束一个科学问题、针对目标期刊给出 3–5 个选题候选，并从相关性、数据、资料、通过率打分。通过率只用「推荐 / 可做但费力 / 不建议」，不要编造录用百分比。总共最多五个问题；优先要附件/路径；然后写出 topic/inventory.md、question.md、candidates.md。",
+            "先盘点已有材料和数据，再给 3–5 个对准目标期刊的选题。通过率只用「推荐 / 可做但费力 / 不建议」，不要编造录用百分比。请先上传材料。然后写出 inventory / question / candidates 三份 md。",
         ),
         (Locale::Zh, "caps.tile.stats_analysis.title") => Some("统计建模与检验"),
         (Locale::Zh, "caps.tile.stats_analysis.blurb") => Some("假设检验、回归、功效与 EDA（Python/R 与统计技能）。"),
@@ -5493,7 +5590,10 @@ Do not leave generated files in the project root.",
             "简短引导：最多五个问题，然后匹配能力并开始给出结果。",
         ),
         (Locale::Zh, "caps.prompt.director_kickoff") => Some(
-            "你是天成科研助手里的「主任」教练。请帮我把模糊意图收敛成这个 Agent 可以执行的一个具体目标，并尽快交付该能力的第一份有用结果。\n\n硬性规则：\n1. 开场 intake 总共最多五个问题；每次优先只问一个短问题；禁止长问卷。\n2. 只问仍缺失的阻塞项：（a）具体交付物/怎样算完成，（b）请我上传附件或给出项目内路径，（c）硬约束（截止时间、算力、隐私、期刊、语言）。\n3. 禁止追问可从文件直接读出的元数据（行列数、字段、体积、列名等）。应要求上传/附路径，然后你自己检查。\n4. 答完或五个问题用尽后，立刻映射技能、search_skills / use_skill，并开始核心工作。不要再等一轮「请确认长计划」；一句「接下来我做 X」即可。\n5. 成功标准是给出该能力的具体产物/进展（清洗表、草稿、检索结果、图等），而不是无休止访谈。\n6. 用我的语言；问题要短。\n\n现在只问第 1 个问题。",
+            "我还没想清楚具体要做什么。请用一个短问题开始，帮我收成一件现在就能做的事，并尽快交出第一份结果。",
+        ),
+        (Locale::Zh, "caps.prompt.director_rules") => Some(
+            "硬性规则：\n1. 开场 intake 总共最多五个问题；每次优先只问一个短问题；禁止长问卷。\n2. 只问仍缺失的阻塞项：（a）具体交付物/怎样算完成，（b）请我上传附件或给出项目内路径，（c）硬约束（截止时间、算力、隐私、期刊、语言）。\n3. 禁止追问可从文件直接读出的元数据（行列数、字段、体积、列名等）。应要求上传/附路径，然后你自己检查。\n4. 答完或五个问题用尽后，立刻映射技能、search_skills / use_skill，并开始核心工作。不要再等一轮「请确认长计划」；一句「接下来我做 X」即可。\n5. 成功标准是给出该能力的具体产物/进展（清洗表、草稿、检索结果、图等），而不是无休止访谈。\n6. 用我的语言；问题要短。\n现在只问第 1 个问题。",
         ),
         (Locale::Zh, "caps.prompt.socratic_frame") => Some(
             "能力引导规则（本对话全程有效）。\n本轮已附加技能 `{skill}`——请先 use_skill 加载 `{skill}` 并遵循其指引，但以下规则优先于任何「一直问下去」的习惯：\n1. 整段 intake 最多五个澄清问题；每次优先只问一个短问题。\n2. 只问阻塞项：目标/完成标准、请上传附件或给出路径、硬约束。优先「请上传/附路径」，不要问行列数、schema、体积等你自己能读出的信息。\n3. 一旦能开始该技能的核心工作，或五个问题已用尽：停止访谈，立即交付——调用工具，产出第一份具体结果/草稿，再根据我的反馈迭代。\n4. 不要用「请先确认多步计划」拖延。一句意图说明即可动手。\n5. 回复简洁；跟随我的语言。",
@@ -5504,89 +5604,89 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "caps.skill.academic_paper.title") => Some("学术论文写作"),
         (Locale::Zh, "caps.skill.academic_paper.blurb") => Some("规划、起草、修订与排版（full/plan/outline/revision 等模式）。"),
         (Locale::Zh, "caps.skill.academic_paper.prompt") => Some(
-            "我想用 academic-paper 写或改论文。请通过提问帮我选定模式、题目、论文类型与目标期刊。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+            "帮我写或改学术论文。先问是从零写、只要提纲，还是已有稿要改，并请我上传题目或草稿。先交提纲或修订计划，不要空写全文。",
         ),
         (Locale::Zh, "caps.skill.academic_pipeline.title") => Some("研究到成稿流水线"),
         (Locale::Zh, "caps.skill.academic_pipeline.blurb") => Some("编排调研→写作→审阅→修改的端到端流程。"),
         (Locale::Zh, "caps.skill.academic_pipeline.prompt") => Some(
-            "我想跑完整 academic-pipeline。请先问清起点材料、交付物，以及需要几轮审阅/修订。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+            "我想从调研做到成稿。先问现在卡在哪一步（还没查文献 / 有结果要写 / 有稿要审），并请上传现有材料。先交付当前这一步，不要一上来重做整条线。",
         ),
         (Locale::Zh, "caps.skill.academic_paper_reviewer.title") => Some("国际期刊审稿"),
         (Locale::Zh, "caps.skill.academic_paper_reviewer.blurb") => Some("模拟期刊适配 + 同行 + 魔鬼代言人审稿。"),
         (Locale::Zh, "caps.skill.academic_paper_reviewer.prompt") => Some(
-            "我想用 academic-paper-reviewer 做结构化多视角审稿。请问清手稿、目标期刊与审稿深度。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+            "请按多角色审稿（期刊适配 + 同行 + 挑刺）。请先上传稿件并告诉目标期刊。这不是投稿须知预审，也不是单审稿人口吻。材料齐后直接出结构化意见。",
         ),
         (Locale::Zh, "caps.skill.deep_research.title") => Some("深度学术调研"),
         (Locale::Zh, "caps.skill.deep_research.blurb") => Some("多 Agent 严谨文献调研、简报与事实核查。"),
         (Locale::Zh, "caps.skill.deep_research.prompt") => Some(
-            "我想用 deep-research。请问清研究问题、范围、模式（full/quick/lit-review/fact-check…）与引用要求。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+            "帮我做有引用的深度调研简报，不要只丢链接。先问我要查的科学问题（可附已有笔记）。材料够就开工：先交一份带出处的短简报。这不是文献矩阵检索，也不走精读归档流水线。",
         ),
         (Locale::Zh, "caps.skill.nature_writing.title") => Some("Nature 风格起草"),
         (Locale::Zh, "caps.skill.nature_writing.blurb") => Some("按 Nature 风格起草或重组手稿章节。"),
         (Locale::Zh, "caps.skill.nature_writing.prompt") => Some(
-            "我想用 nature-writing。请问清要写哪一节、已有主张/结果，以及中英偏好。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+            "按顶刊那种紧的结构起草或重写某一节。先问写哪一节，并请上传结果或提纲。先交这一节草稿，不是整篇论文。",
         ),
         (Locale::Zh, "caps.skill.nature_polishing.title") => Some("Nature 风格润色"),
         (Locale::Zh, "caps.skill.nature_polishing.blurb") => Some("润色或翻译，贴近 Nature/CNS 文风。"),
         (Locale::Zh, "caps.skill.nature_polishing.prompt") => Some(
-            "我想用 nature-polishing。请问清待润色文本、目标期刊语气，以及要重组结构还是只改措辞。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+            "润色或翻译，让语气更像高水平期刊，不改科学主张。请先贴段落或给路径。默认只改措辞；要动结构请明说。这不是去 AI 套话。",
         ),
         (Locale::Zh, "caps.skill.humanizer_zh.title") => Some("去除AI痕迹"),
         (Locale::Zh, "caps.skill.humanizer_zh.blurb") => Some("按 24 类 AI 写作模式改写，让论文段落更像人写的。"),
         (Locale::Zh, "caps.skill.humanizer_zh.prompt") => Some(
-            "我想用 humanizer-zh 去除 AI 痕迹。请问清待改写文本或文件路径。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+            "去掉明显的 AI 套话和机械句式，让读起来像人写的。请先贴文本或给路径。只改写法，不改结论。",
         ),
         (Locale::Zh, "caps.skill.nature_proposal_writer.title") => Some("基金/开题写作"),
         (Locale::Zh, "caps.skill.nature_proposal_writer.blurb") => Some("撰写或审核研究计划与开题报告。"),
         (Locale::Zh, "caps.skill.nature_proposal_writer.prompt") => Some(
-            "我想用 nature-proposal-writer。请问清文稿类型、资助方/场合，以及已有证据材料。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+            "帮我写或审一份基金本 / 开题报告。先问类型（基金、开题、还是已有稿要审）并请我上传现有材料。先交章节框架和缺口清单，不要空写全文。",
         ),
         (Locale::Zh, "caps.skill.nature_citation.title") => Some("Nature 引用补全"),
         (Locale::Zh, "caps.skill.nature_citation.blurb") => Some("为段落补充严格的 Nature/CNS 引用。"),
         (Locale::Zh, "caps.skill.nature_citation.prompt") => Some(
-            "我想用 nature-citation 补引用。请问清手稿文本、学科领域与引用约束。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+            "给缺参考文献的段落补上能站得住的引用，不要空口下结论。请先贴段落或上传手稿。能从文本看的学科不要再问。",
         ),
         (Locale::Zh, "caps.skill.nature_response.title") => Some("修回信/答复信"),
         (Locale::Zh, "caps.skill.nature_response.blurb") => Some("逐条审稿意见答复与 rebuttal 材料包。"),
         (Locale::Zh, "caps.skill.nature_response.prompt") => Some(
-            "我想用 nature-response 写修回材料。请问清审稿意见、手稿版本与信件风格。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+            "按条写修回信。请先上传审稿意见和当前稿。默认逐条、可直接回杂志的口吻。",
         ),
         (Locale::Zh, "caps.skill.nature_reviewer.title") => Some("Nature审稿"),
         (Locale::Zh, "caps.skill.nature_reviewer.blurb") => Some("以审稿人视角生成 Nature 风格评议。"),
         (Locale::Zh, "caps.skill.nature_reviewer.prompt") => Some(
-            "我想用 nature-reviewer 做投稿前审稿。请问清手稿、目标期刊与关注重点。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+            "用单个审稿人口吻写一份投稿前意见。请先上传稿件。这不是多角色审稿，也不是对照投稿须知的预审。",
         ),
         (Locale::Zh, "caps.skill.nature_data.title") => Some("数据可用性 / FAIR"),
         (Locale::Zh, "caps.skill.nature_data.blurb") => Some("起草或审核 Data Availability 与仓储方案。"),
         (Locale::Zh, "caps.skill.nature_data.prompt") => Some(
-            "我想用 nature-data。请问清有哪些数据集，以及目标期刊的数据政策。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+            "帮我写或审 Data Availability 和共享方案。先问有哪些数据、打算放哪，以及目标期刊。先交声明草稿和缺口。",
         ),
         (Locale::Zh, "caps.skill.nature_ref_verifier.title") => Some("参考文献核验"),
         (Locale::Zh, "caps.skill.nature_ref_verifier.blurb") => Some("交叉核验文献字段并标记冲突。"),
         (Locale::Zh, "caps.skill.nature_ref_verifier.prompt") => Some(
-            "我想用 nature-ref-verifier。请问清是整份文献列表还是单条，以及期望的报告格式。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+            "核对题名、年份、作者和 DOI，对不上的标出来。请先上传文献列表。默认交冲突表，不要编造匹配。",
         ),
         (Locale::Zh, "caps.skill.nature_paper_to_patent.title") => Some("论文转专利初稿"),
         (Locale::Zh, "caps.skill.nature_paper_to_patent.blurb") => Some("把论文/笔记转为中国发明专利草案。"),
         (Locale::Zh, "caps.skill.nature_paper_to_patent.prompt") => Some(
-            "我想用 nature-paper-to-patent。请问清源材料、发明点，以及需要哪些代理就绪交付物。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+            "从论文或实验笔记抽出发明点，写成中国发明专利初稿，方便再交给代理。请先上传论文或笔记。先交权利要求框架和说明书提纲。",
         ),
         (Locale::Zh, "caps.skill.nature_figure.title") => Some("投稿级科研作图"),
         (Locale::Zh, "caps.skill.nature_figure.blurb") => Some("用 Python/R 创建或审核高影响因子图。"),
         (Locale::Zh, "caps.skill.nature_figure.prompt") => Some(
-            "我想用 nature-figure 做投稿图。请问清数据/图板、期刊风格、Python 还是 R，以及导出要求。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+            "用 Python 或 R 画或检查一张能投稿的数据图。请先给表或图板想法。语言能从文件判断就不要问。这不是 AI 概念图，也不是固定的生信套图。",
         ),
         (Locale::Zh, "caps.skill.nature_paper2ppt.title") => Some("论文转组会 PPT"),
         (Locale::Zh, "caps.skill.nature_paper2ppt.blurb") => Some("从论文生成 Nature 风格中文 PPTX。"),
         (Locale::Zh, "caps.skill.nature_paper2ppt.prompt") => Some(
-            "我想用 nature-paper2ppt。请问清论文来源、受众（组会/journal club）、页数与语言需求。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+            "把论文做成顺着论点讲的中文组会 PPT，不要页面截图墙。请先给论文。默认中文组会篇幅。这不是 PPT Master 那种通用原生 deck。",
         ),
         (Locale::Zh, "caps.skill.ppt_master.title") => Some("PPT Master"),
         (Locale::Zh, "caps.skill.ppt_master.blurb") => Some(
             "把选题或文档做成可编辑的原生 .pptx（形状、母版、图表、动画）。",
         ),
         (Locale::Zh, "caps.skill.ppt_master.prompt") => Some(
-            "我想用 ppt-master 做一份可编辑的原生 PowerPoint。请问清主题或材料路径、页数、模板/风格，以及是否需要图表或动画。 总共最多五个问题；优先要附件/路径；然后交付 .pptx——禁止无休止追问。",
+            "做一份能改的原生 PPT（形状、母版、图表），不是压扁成图片。请先给题目或材料。页数/模板下一轮再问。这不是论文转组会 PPT。",
         ),
         (Locale::Zh, "caps.install.ppt_master.title") => Some("安装 PPT Master？"),
         (Locale::Zh, "caps.install.ppt_master.body") => Some(
@@ -5606,49 +5706,49 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "caps.skill.nature_statistics.title") => Some("统计报告审核"),
         (Locale::Zh, "caps.skill.nature_statistics.blurb") => Some("审核 p 值、置信区间与期刊统计表述。"),
         (Locale::Zh, "caps.skill.nature_statistics.prompt") => Some(
-            "我想用 nature-statistics 审核或起草统计表述。请问清方法/结果文本或分析输出，以及目标期刊。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+            "帮我审 p 值、置信区间和期刊统计写法，不重跑分析。请先贴方法/结果或上传输出，并告诉目标期刊。这不是假设检验，也不是 Python/R 连续分析。",
         ),
         (Locale::Zh, "caps.skill.knowledge_graph.title") => Some("文本知识图谱"),
         (Locale::Zh, "caps.skill.knowledge_graph.blurb") => Some(
             "从论文或笔记抽出实体关系；图谱可搜索、高亮邻域、缩放并拖动节点。",
         ),
         (Locale::Zh, "caps.skill.knowledge_graph.prompt") => Some(
-            "我想用 knowledge-graph。请问清要做成知识图谱的原文或文件。 总共最多五个问题；优先要附件/路径；然后分块抽取三元组并交付 HTML 图谱——禁止无休止追问。",
+            "帮我把论文或笔记抽成能搜索、能拖节点的关系图。请先上传原文或给出路径。材料齐后分块抽三元组，直接交 HTML 图谱。",
         ),
-        (Locale::Zh, "caps.skill.academic_search_pro.title") => Some("跨库文献检索"),
+        (Locale::Zh, "caps.skill.academic_search_pro.title") => Some("文献矩阵检索"),
         (Locale::Zh, "caps.skill.academic_search_pro.blurb") => Some("7 大免费库 + 合规网页检索 → 去重 → 文献矩阵 / BibTeX。"),
         (Locale::Zh, "caps.skill.academic_search_pro.prompt") => Some(
-            "我想用 academic-search-pro。请问清主题/关键词，以及年份或来源限制。 总共最多五个问题；优先要附件/路径；然后跨库检索、去重，并交付文献矩阵 / BibTeX——禁止无休止追问。",
+            "帮我做跨库去重后的文献表或 BibTeX，只给题录、不读全文。先问主题/关键词（可加年份）。这不是引用审计，也不是深度调研简报。",
         ),
-        (Locale::Zh, "caps.skill.nature_academic_search.title") => Some("多源文献检索"),
+        (Locale::Zh, "caps.skill.nature_academic_search.title") => Some("引用审计检索"),
         (Locale::Zh, "caps.skill.nature_academic_search.blurb") => Some("检索、引用审计与高影响引用者画像。"),
         (Locale::Zh, "caps.skill.nature_academic_search.prompt") => Some(
-            "我想用 nature-academic-search。请问清主题/关键词、优先来源，以及是否需要引用审计或表格。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+            "帮我核引用关系：参考文献是否站得住、有没有他引、谁在引这篇。先问 DOI/题名或要审的文献。不要做成去重文献表。",
         ),
         (Locale::Zh, "caps.skill.nature_literature_pipeline.title") => Some("文献流水线"),
         (Locale::Zh, "caps.skill.nature_literature_pipeline.blurb") => Some("检索→评分→精读→交付→归档。"),
         (Locale::Zh, "caps.skill.nature_literature_pipeline.prompt") => Some(
-            "我想用 nature-literature-pipeline。请问清研究领域、纳入标准与交付格式。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+            "帮我把文献从检索做到精读归档。先问领域和怎样算够用。先交纳入清单和评分，再精读，不要停在链接列表。",
         ),
         (Locale::Zh, "caps.skill.nature_downloader.title") => Some("合法全文获取"),
         (Locale::Zh, "caps.skill.nature_downloader.blurb") => Some("OA / 机构权限 / 出版商 API 全文检索。"),
         (Locale::Zh, "caps.skill.nature_downloader.prompt") => Some(
-            "我想用 nature-downloader 取全文。请问清 DOI/题名列表、访问路径（OA/知网/机构）与保存位置。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+            "帮我走合法途径取 PDF（OA / 机构 / 出版商接口）。先要 DOI 或题名列表。默认存到项目文献目录，不要提示去破解。",
         ),
         (Locale::Zh, "caps.skill.nature_paper_card.title") => Some("深读论文卡片"),
         (Locale::Zh, "caps.skill.nature_paper_card.blurb") => Some("单篇论文/PDF/DOI 的溯源式 Paper Card。"),
         (Locale::Zh, "caps.skill.nature_paper_card.prompt") => Some(
-            "我想做 nature-paper-card。请问清论文来源，以及要强调主张/方法/图表/局限中的哪些部分。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+            "帮我做一张能对回原文的深读卡片（主张、方法、图、局限）。请先给 PDF 或 DOI。默认四块都写。",
         ),
         (Locale::Zh, "caps.skill.nature_reader.title") => Some("中英对照阅读器"),
-        (Locale::Zh, "caps.skill.nature_reader.blurb") => Some("图表感知的中英对照全文阅读稿。"),
+        (Locale::Zh, "caps.skill.nature_reader.blurb") => Some("一份可打开的中英对照 HTML 报告：左右对照、图和来源锚点。"),
         (Locale::Zh, "caps.skill.nature_reader.prompt") => Some(
-            "我想用 nature-reader。请问清 PDF/DOI，以及要全文还是选定章节。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+            "帮我做中英对照阅读稿，图也对着看。请先给 PDF。默认全文；只要某几节再说。交付一份可打开的对照 HTML（reader.html）。这不是深读卡片。",
         ),
         (Locale::Zh, "caps.skill.nature_experiment_log.title") => Some("实验日志"),
         (Locale::Zh, "caps.skill.nature_experiment_log.blurb") => Some("把图片/语音/文字整理为结构化 Markdown 日志。"),
         (Locale::Zh, "caps.skill.nature_experiment_log.prompt") => Some(
-            "我想用 nature-experiment-log。请问清材料类型（图/语音/文字）与实验室记录规范。 总共最多五个问题；优先要附件/路径；然后交付该技能的核心结果——禁止无休止追问。",
+            "帮我把实验台上的照片、语音或随手记录整理成 Markdown 日志。请先上传材料。有实验室格式就按它，没有就用通用结构。",
         ),
         (Locale::Zh, "caps.tile.bio_db.title") => Some("生物数据库"),
         (Locale::Zh, "caps.tile.bio_db.blurb") => Some(
@@ -5682,60 +5782,63 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "caps.tile.playwright.blurb") => Some("用脚本驱动 Chromium/Firefox/WebKit，适合 e2e、截图与抓取。"),
         (Locale::Zh, "caps.tile.plugins.title") => Some("插件扩展"),
         (Locale::Zh, "caps.tile.plugins.blurb") => Some("安装打包的 Skill + MCP 功能插件。"),
+        (Locale::Zh, "caps.tile.knowledge.title") => Some("知识库"),
+        (Locale::Zh, "caps.tile.knowledge.blurb") => Some("检索本机 WeKnora 知识库并引用片段。"),
+        (Locale::Zh, "caps.tile.knowledge.settings.aria") => Some("知识库设置"),
+        (Locale::Zh, "caps.tile.knowledge.settings.title") => Some("知识库设置"),
+        (Locale::Zh, "caps.tile.knowledge.settings.close") => Some("关闭"),
+        (Locale::Zh, "caps.tile.knowledge.settings.required") => Some("请先接好 WeKnora：需要 API 地址、密钥和默认知识库 ID。"),
+        (Locale::Zh, "caps.prompt.knowledge") => Some(
+            "帮我检索本机知识库并引用出处。先问我想查什么，不要空讲功能。",
+        ),
+        (Locale::Zh, "caps.prompt.knowledge.spec") => Some(
+            "能力工具规格。\n用 `knowledge_search` 检索已接入的 WeKnora 知识库，返回片段后由你写回答并引用标题/文件名。不要把它当成聊天 API。若工具不存在，说明知识库未接通。默认用设置里的知识库 ID；用户点名某个库时再传 knowledge_base_id。查不到就直说，不要编造片段。",
+        ),
         (Locale::Zh, "caps.help.aria") => Some("这个能力能做什么"),
         (Locale::Zh, "caps.help.close") => Some("知道了"),
         (Locale::Zh, "caps.coming_soon.body") => Some("正在开发中"),
         (Locale::Zh, "caps.coming_soon.close") => Some("知道了"),
-        (Locale::Zh, "caps.prompt.literature") => Some(
-            "请帮我做文献与证据相关工作。按需加载 literature-review 或 bear-* 技能。先问清我要查的观点、论文或选题，再检索真实来源并带引用总结。",
-        ),
-        (Locale::Zh, "caps.prompt.pdf_ppt") => Some(
-            "我想深读 PDF，和/或做组会风格演示。请引导我附加 PDF，按需加载 pdf-explore 或 journal-club-ppt，并梳理论证结构。",
-        ),
-        (Locale::Zh, "caps.prompt.academic_research") => Some(
-            "请帮我做严谨学术调研。按需加载 deep-research 或 academic-pipeline，先澄清问题与范围，再产出带引用的综述（必要时说明是否适合系统综述/荟萃分析）。",
-        ),
-        (Locale::Zh, "caps.prompt.nature_skills") => Some(
-            "我想要 Nature 风格的手稿帮助（润色、起草、模拟审稿、统计或投稿级作图）。请搜索并加载对应的 nature-* 技能，然后问我在做哪一节或哪张图。",
-        ),
         (Locale::Zh, "caps.prompt.officecli") => Some(
-            "请用 OfficeCLI 帮我创建或编辑 Word/Excel/PowerPoint。先检查 `officecli` 是否已安装；若没有，按 officecli 技能的安装步骤处理。然后问我需要什么文档、该用哪个 officecli-* 技能。",
-        ),
-        (Locale::Zh, "caps.prompt.academic_paper") => Some(
-            "请用 academic-paper 技能帮我写或改学术论文。先问清题目、论文类型、目标期刊，以及 full/plan/outline/revision 等模式，再加载 academic-paper 开始。",
+            "帮我生成或修改真正的 Word / Excel / PPT 文件，不是截图。先问要哪种、从零做还是改已有文件，并请上传或给路径。缺 officecli 再按技能安装，不要先讲一圈子技能名。这不是组会 PPT，也不是 PPT Master。",
         ),
         (Locale::Zh, "caps.prompt.ai_drawing") => Some(
-            "请帮我用 AI 生成科研插图或概念图。先确认生图模型已配置，再问清要画的内容（主题、风格、标注、尺寸），然后生成并根据我的反馈迭代。",
+            "用已配置的生图模型画科研示意或概念图，不是数据统计图。先问要画什么（对象、风格、要不要标注）。能画就先出一版再改。",
         ),
         (Locale::Zh, "caps.prompt.r_bioinfo_figure") => Some(
-            "我需要用 R 画常见生信图（火山图、热图、PCA/UMAP、箱线/小提琴、生存曲线、富集条形/气泡图等）。默认且优先用持久 `r` tool + ggplot2/相关 Bioconductor 包。请在最多五个问题内请我上传数据或给出项目路径——不要追问可从文件读出的行列/schema。材料齐后立刻读数、出图，用 view_image 质检，并交付 figures/ 下的项目相对路径。",
+            "用 R 画常见生信图（火山、热图、PCA、生存等）。请先上传数据或给路径。齐了就出图并放到 figures/。",
         ),
-        (Locale::Zh, "caps.prompt.scientific_figures") => Some(
-            "请帮我做投稿级科研作图。按需加载 figure-composer、nature-figure 或 figure-style。先问清数据/图板、目标期刊风格与输出格式，再开始组合。",
+        (Locale::Zh, "caps.prompt.r_bioinfo_figure.spec") => Some(
+            "能力工具规格。\n默认且优先用持久 `r` tool + ggplot2/相关 Bioconductor 包。不要追问可从文件读出的行列/schema。材料齐后立刻读数、出图，用 view_image 质检，并交付 figures/ 下的项目相对路径。",
         ),
         (Locale::Zh, "caps.prompt.data_cleaning") => Some(
-            "请按数据清洗专家的规则，帮我清洗并整形研究数据。先向我要文件或项目内路径，读表后直接做第一轮清洗。",
+            "清洗乱列，交出一份能直接分析的表。请先给表格或路径。读表后立刻做第一轮，不要先做问卷。",
         ),
         (Locale::Zh, "caps.prompt.stats_analysis") => Some(
-            "请帮我做统计分析。先问清研究问题/假设，并请我附加数据集或给出路径——不要追问 schema 元数据。然后在 Python/R 中跑 EDA/检验，交付具体结果（表格、图、解读）。",
+            "帮我按假设做检验、回归或探索分析，并解释结果含义。请先说问题和数据路径。这不是期刊统计措辞审核，也不按「同一内核一直做下去」当主目标。",
         ),
         (Locale::Zh, "caps.prompt.python_r") => Some(
-            "我要用本应用的持久 `python` / `r` 工具做数据分析（不是期刊统计写法审核，也不是只跑一次检验）。能力重点：在同一内核里连续读表、清洗、汇总、建模、出图；数据框和变量要留在会话中，不要每问都重开进程。Python 默认 pandas / numpy / scipy / statsmodels / matplotlib / seaborn；R 默认 tidyverse / data.table。作图必须交付可编辑矢量图：Python 用 savefig(..., format=\"svg\") 或 .svg 路径；R 用 ggsave(..., device=\"svg\") 或 svg()。主文件放在 figures/ 下的 .svg，禁止只交 PNG/JPG。可用一张 PNG 仅供 view_image 质检，但结论里要给出 SVG 的项目相对路径。最多五个问题：先问分析目标和数据文件/路径（优先附件），再问一次更熟 Python 还是 R（或从文件/包生态判断）。不要追问能从文件读出的行列。然后立刻写代码、跑通、解读，交付：可复现脚本、表格、SVG 图和简短结论。",
+            "在同一个 Python 或 R 会话里分析表格，变量留着，图交可编辑 SVG。先问分析目标和数据文件。",
+        ),
+        (Locale::Zh, "caps.prompt.python_r.spec") => Some(
+            "能力工具规格。\n用本应用的持久 `python` / `r` 工具做数据分析（不是期刊统计写法审核，也不是只跑一次检验）。在同一内核里连续读表、清洗、汇总、建模、出图；数据框和变量要留在会话中，不要每问都重开进程。Python 默认 pandas / numpy / scipy / statsmodels / matplotlib / seaborn；R 默认 tidyverse / data.table。作图必须交付可编辑矢量图：Python 用 savefig(..., format=\"svg\") 或 .svg 路径；R 用 ggsave(..., device=\"svg\") 或 svg()。主文件放在 figures/ 下的 .svg，禁止只交 PNG/JPG。可用一张 PNG 仅供 view_image 质检，但结论里要给出 SVG 的项目相对路径。能从文件/包生态判断语言就不要再问。不要追问能从文件读出的行列。然后立刻写代码、跑通、解读，交付：可复现脚本、表格、SVG 图和简短结论。",
         ),
         (Locale::Zh, "caps.prompt.bio_db") => Some(
-            "请帮我查内置生物数据库 MCP（PubMed、GEO、UniProt、PDB 等，开关在 设置 → 连接 →「精选 —— 内置 bio-tools」）。现在只问一件事：要查什么（基因/蛋白/GSE/PMID/accession，或研究问题）。不要问语言偏好。然后用 search_mcp_tools 发现工具、再用 use_mcp_tool 调用——禁止编造工具名。设置里的行名（没有叫 bio-tools 或 academic-search 的连接）：PubMed → search_articles / get_article_metadata；GEO (Omics Archives) → geo_search_series / geo_get_series；UniProt (Genes Ontologies) → get_uniprot_entries；PDB (Structures Interactions) → pdb_search_structures / pdb_get_structures。不要让我去开启名为 bio-tools 或 academic-search 的连接。不要调用 search_papers、pubmed_fetch_articles（那是文献检索技能的工具，不是本能力）。某个行没开时，点名设置里的准确标题。若 search_mcp_tools 找不到工具，简短说明后可用 NCBI E-utilities REST，不要宣称那两个 MCP 必须挂载。交付条目、accession、摘要或下载路径。最多五个问题。",
+            "帮我查基因、数据集或文献（PubMed / GEO / UniProt / PDB）。先问要查什么，不要问语言。查到就交条目、accession 或摘要。",
+        ),
+        (Locale::Zh, "caps.prompt.bio_db.spec") => Some(
+            "能力工具规格。\n查内置生物数据库 MCP（PubMed、GEO、UniProt、PDB 等，开关在 设置 → 连接 →「精选 —— 内置 bio-tools」）。用 search_mcp_tools 发现工具、再用 use_mcp_tool 调用——禁止编造工具名。设置里的行名（没有叫 bio-tools 或 academic-search 的连接）：PubMed → search_articles / get_article_metadata；GEO (Omics Archives) → geo_search_series / geo_get_series；UniProt (Genes Ontologies) → get_uniprot_entries；PDB (Structures Interactions) → pdb_search_structures / pdb_get_structures。不要让我去开启名为 bio-tools 或 academic-search 的连接。不要调用 search_papers、pubmed_fetch_articles（那是文献检索技能的工具，不是本能力）。某个行没开时，点名设置里的准确标题。若 search_mcp_tools 找不到工具，简短说明后可用 NCBI E-utilities REST，不要宣称那两个 MCP 必须挂载。交付条目、accession、摘要或下载路径。",
         ),
         (Locale::Zh, "caps.prompt.structure") => Some(
-            "我需要结构预测或分子设计（折叠、对接或序列设计）。请说明适用的内置技能与算力要求，并先澄清目标分子。",
+            "帮我做折叠、对接或序列设计。先问目标分子/序列，以及要折叠、对接还是设计。能开工就调用对应技能并说明算力；先交任务配置或第一轮结果，不要先讲课。",
         ),
         (Locale::Zh, "caps.prompt.single_cell") => Some(
-            "请帮我做单细胞或多阶段组学分析。相关时优先 scvi-tools、scgpt 或 analysis-workflow，并先问清数据布局与目标。",
+            "帮我跑单细胞或分步组学分析，并把步骤留下方便复现。先问数据在哪、要回答什么问题。先交质控/对象概览，再往下走。",
         ),
         (Locale::Zh, "caps.prompt.browser") => Some(
-            "请用 browser-use 技能帮我自动化本机 Chrome。先确认扩展就绪，再问我想操作的网站与任务。",
+            "操作我本机已登录的 Chrome（需要配套扩展）。先问网站和要做的事。扩展没好再提示。这不是无头 Playwright。",
         ),
         (Locale::Zh, "caps.prompt.playwright") => Some(
-            "请用 playwright 技能做无头浏览器自动化（不是我已登录的 Chrome）。先确认 Node + Playwright 已安装或协助安装，再问我需要截图、抓取、e2e 还是导出 PDF。",
+            "用无头浏览器做测试、截图或抓取，不是我已登录的 Chrome。先问页面和动作。缺 Node/Playwright 再装。",
         ),
         (Locale::Zh, "caps.runtime") => Some("运行时 v{version}"),
         (Locale::Zh, "caps.workspace") => Some("工作区：{path}"),
@@ -5747,9 +5850,6 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "caps.memory_files") => Some("记忆文件"),
         (Locale::Zh, "caps.close") => Some("关闭"),
         (Locale::Zh, "caps.setup_env") => Some("配置环境"),
-        (Locale::Zh, "caps.env_setup_prompt") => Some(
-            "能力面板显示缺少运行时工具。请先 use_skill 加载 local-env-setup，按该 skill 为我的系统配置：(1) uv + Python（superscience 引导），(2) Node >= 20 + `npm install -g scimaster-cli` + `sci init`（bear-* 文献技能），(3) pixi（本地生信多环境分析）。验证能力面板并告知何时重启天成科研助手。",
-        ),
         (Locale::Zh, "caps.ready") => Some("就绪"),
         (Locale::Zh, "caps.missing") => Some("缺失"),
         (Locale::Zh, "onboard.title") => Some("欢迎使用天成科研助手"),
@@ -6743,7 +6843,10 @@ mod queue_label_tests {
             t(Locale::Zh, "onboard.card3.body"),
             "您说“我要看生存曲线”，我立马出图。您说“改个颜色”，我立马重画。不犟嘴，不罢工。"
         );
-        assert_eq!(t(Locale::En, "onboard.card1.title"), "I never touch your data.");
+        assert_eq!(
+            t(Locale::En, "onboard.card1.title"),
+            "I never touch your data."
+        );
         assert_eq!(t(Locale::Zh, "onboard.start"), "开始使用");
         assert_eq!(t(Locale::En, "onboard.start"), "Get started");
     }
@@ -6779,6 +6882,8 @@ mod queue_label_tests {
         assert!(!en.contains("GitHub"), "{en}");
         assert!(zh.contains("TCTOKEN"), "{zh}");
         assert_eq!(t(Locale::Zh, "settings.nav.connections"), "MCP链接");
+        assert_eq!(t(Locale::Zh, "settings.nav.knowledge"), "知识库");
+        assert_eq!(t(Locale::En, "settings.nav.knowledge"), "Knowledge Base");
         assert_eq!(Locale::default(), Locale::Zh);
     }
 
