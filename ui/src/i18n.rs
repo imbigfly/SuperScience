@@ -45,7 +45,27 @@ pub const EMPTY_TITLE_COUNT: usize = 7;
 pub const EMPTY_SUBTITLE_COUNT: usize = 7;
 
 pub fn t(locale: Locale, key: &str) -> String {
-    brand_visible_copy(locale, lookup(locale, key).unwrap_or(key))
+    brand_visible_copy(
+        locale,
+        fork_lookup(locale, key)
+            .or_else(|| lookup(locale, key))
+            .unwrap_or(key),
+    )
+}
+
+/// Fork-only display strings. Keep `lookup` mergeable with upstream.
+fn fork_lookup(locale: Locale, key: &str) -> Option<&'static str> {
+    match (locale, key) {
+        (Locale::Zh, "scratch.open") => Some("开始对话"),
+        (Locale::En, "scratch.open") => Some("Start conversation"),
+        (Locale::Zh, "caps.skill.handwriting_extract.tip") => {
+            Some("发送图片同时对每列数据进行格式说明，识别率会显著提高。")
+        }
+        (Locale::En, "caps.skill.handwriting_extract.tip") => Some(
+            "When you send photos, also describe the format of each column — recognition accuracy improves a lot.",
+        ),
+        _ => None,
+    }
 }
 
 /// User-facing GitHub repo. Menu / docs / issue links should use this, not upstream.
@@ -2126,10 +2146,10 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "chat.steps_1") => Some("Ran 1 step"),
         (Locale::En, "chat.steps_1_time") => Some("Ran 1 step · {t}"),
         (Locale::En, "chat.steps_running") => Some("Working…"),
-        (Locale::En, "chat.model_wait_1") => Some("The model is consulting its neurons…"),
-        (Locale::En, "chat.model_wait_2") => Some("The model may be overthinking the easy part…"),
-        (Locale::En, "chat.model_wait_3") => Some("Waiting for the model to return from deep thought…"),
-        (Locale::En, "chat.model_wait_4") => Some("The model is carefully selecting its next token…"),
+        (Locale::En, "chat.model_wait_1") => Some("AI is hard at work…"),
+        (Locale::En, "chat.model_wait_2") => Some("AI is thinking about your question…"),
+        (Locale::En, "chat.model_wait_3") => Some("The answer is about to surface…"),
+        (Locale::En, "chat.model_wait_4") => Some("AI is analyzing the problem…"),
         (Locale::En, "chat.step_lines") => Some("{n} lines"),
         (Locale::En, "chat.error") => Some("Error"),
         (Locale::En, "chat.jump_bottom") => Some("Back to latest"),
@@ -2544,7 +2564,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "caps.skill.handwriting_extract.title") => Some("Handwritten data extract"),
         (Locale::En, "caps.skill.handwriting_extract.blurb") => Some("Read handwritten lab or CRF photos into a CSV, calibrate uncertain cells, and mark doubtful spots."),
         (Locale::En, "caps.skill.handwriting_extract.prompt") => Some(
-            "Read handwritten lab or CRF photos into a CSV and flag uncertain cells. First ask me to upload photos or an image folder. Do not ask for headers you can read from the images.",
+            "Read handwritten lab or CRF photos into a CSV and flag uncertain cells. First reply: ask me to upload or paste the photos in this chat. Do not scan the project for images. Only after I attach photos or name a folder path, start recognition. Do not ask for headers you can read from the images.",
         ),
         (Locale::En, "caps.skill.handwriting_extract.settings.aria") => Some("Handwritten extract settings"),
         (Locale::En, "caps.skill.handwriting_extract.settings.title") => Some("Handwritten extract models"),
@@ -2561,7 +2581,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "caps.skill.topic_coach.title") => Some("Topic coach"),
         (Locale::En, "caps.skill.topic_coach.blurb") => Some("Inventory your data and materials, then score a few journal-fit topic candidates."),
         (Locale::En, "caps.skill.topic_coach.prompt") => Some(
-            "Inventory the data and materials I already have, then score 3–5 journal-fit topic candidates. Likelihood must be only Recommended / Possible but costly / Not advised — never a fake acceptance percentage. First ask me to upload materials. Then write inventory, question, and candidates markdown files.",
+            "Inventory the data and materials I already have, then score 3–5 journal-fit topic candidates. Likelihood must be only Recommended / Possible but costly / Not advised — never a fake acceptance percentage. First ask me to upload materials or name a path — do not scan the project to invent an inventory. Once materials are in, write inventory, question, and candidates markdown files.",
         ),
         (Locale::En, "caps.tile.stats_analysis.title") => Some("Statistical modeling"),
         (Locale::En, "caps.tile.stats_analysis.blurb") => Some("Hypothesis tests, regression, power, and EDA with Python/R and stats skills."),
@@ -2574,13 +2594,13 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
             "I have not pinned down the exact task yet. Start with one short question, help me turn this into one thing we can do now, and deliver the first useful result quickly.",
         ),
         (Locale::En, "caps.prompt.director_rules") => Some(
-            "Hard rules:\n1. Intake: at most FIVE questions total. Prefer ONE short question per turn. Never a long questionnaire.\n2. Only ask what is still missing among: (a) concrete deliverable / done definition, (b) materials I should attach or a project path, (c) hard constraints (deadline, compute, privacy, venue, language).\n3. Never ask for metadata you can read from files (row/column counts, schema, file size, column names). Ask me to upload/attach the file or give a workspace path, then inspect it yourself.\n4. After answers—or as soon as five questions are used—map to bundled skills, call search_skills / use_skill, and immediately start the core work. Do not wait for a second “please confirm the long plan” round; a one-line “I'll do X next” is enough.\n5. Success = I receive a concrete artifact/progress for the matched capability (cleaned table, draft section, search hits, figure, etc.), not an endless interview.\n6. Reply in my language. Keep questions short.\nStart with question 1 only.",
+            "Hard rules:\n1. Intake: at most FIVE questions total. Prefer ONE short question per turn. Never a long questionnaire.\n2. Only ask what is still missing among: (a) concrete deliverable / done definition, (b) materials I should attach or an explicit project path, (c) hard constraints (deadline, compute, privacy, venue, language).\n3. Materials gate: if files/photos/data are needed and this chat has no user attachment and I have not named an explicit path, reply ONLY by asking me to upload/attach or paste a path. Do NOT list, glob, find, or browse the project for candidate images/PDFs/CSVs. Pre-existing workspace files are off-limits until I point at them.\n4. Never ask for metadata you can read from files (row/column counts, schema, file size, column names). After I attach a file or name a path, inspect it yourself.\n5. After materials are in (or answers when materials are not needed)—or as soon as five questions are used—map to bundled skills, call search_skills / use_skill, and immediately start the core work. Do not wait for a second “please confirm the long plan” round; a one-line “I'll do X next” is enough.\n6. Success = I receive a concrete artifact/progress for the matched capability (cleaned table, draft section, search hits, figure, etc.), not an endless interview.\n7. Reply in my language. Keep questions short.\nStart with question 1 only.",
         ),
         (Locale::En, "caps.prompt.socratic_frame") => Some(
-            "Capability coaching (applies to this whole chat).\nSkill `{skill}` is attached — call use_skill for `{skill}` first and follow it, but these rules override any habit of endless interviewing:\n1. At most FIVE clarifying questions total for intake. Prefer one short question per turn.\n2. Ask only for blockers: goal/done definition, materials to attach or a path, and hard constraints. Prefer “please upload/attach the file or paste the path” over asking row/column counts, schema, size, or other facts you can inspect yourself.\n3. As soon as you can start the skill's core job—or after five questions—STOP interviewing and DELIVER: run tools, produce a first concrete result or draft, then iterate from my feedback.\n4. Do not require a multi-step plan approval before acting. A one-line intent (“I'll clean the table next”) is enough.\n5. Keep replies concise; match my language.",
+            "Capability coaching (applies to this whole chat).\nSkill `{skill}` is attached — call use_skill for `{skill}` first and follow it, but these rules override any habit of endless interviewing:\n1. At most FIVE clarifying questions total for intake. Prefer one short question per turn.\n2. Ask only for blockers: goal/done definition, materials to attach or an explicit path, and hard constraints. Prefer “please upload/attach the file or paste the path” over asking row/column counts, schema, size, or other facts you can inspect yourself.\n3. Materials gate: if this skill needs files/photos/data and this chat has no user attachment and I have not named an explicit path, your reply must ONLY ask me to upload/attach or paste a path. Do NOT list, glob, find, or browse the project looking for candidate images/PDFs/CSVs. Pre-existing workspace files are off-limits until I point at them.\n4. As soon as materials are in (attachment or explicit path)—or after five questions when materials are not needed—STOP interviewing and DELIVER: run tools, produce a first concrete result or draft, then iterate from my feedback.\n5. Do not require a multi-step plan approval before acting. A one-line intent (“I'll clean the table next”) is enough.\n6. Keep replies concise; match my language.",
         ),
         (Locale::En, "caps.prompt.guided_frame") => Some(
-            "Capability coaching (applies to this whole chat):\n1. At most FIVE clarifying questions total. Prefer one short question per turn. Never a long questionnaire.\n2. Ask only for blockers: goal/done definition, materials to attach or a path, and hard constraints. Prefer upload/path over metadata you can read from the file yourself (rows, columns, size, schema).\n3. As soon as you can do the capability's core job—or after five questions—STOP interviewing and DELIVER a first concrete result with tools (REPL, skills, search, etc.), then iterate from my feedback.\n4. Do not stall on plan-approval theater. A one-line intent is enough before acting.\n5. Keep replies concise; match my language.",
+            "Capability coaching (applies to this whole chat):\n1. At most FIVE clarifying questions total. Prefer one short question per turn. Never a long questionnaire.\n2. Ask only for blockers: goal/done definition, materials to attach or an explicit path, and hard constraints. Prefer upload/path over metadata you can read from the file yourself (rows, columns, size, schema).\n3. Materials gate: if this capability needs files/photos/data and this chat has no user attachment and I have not named an explicit path, your reply must ONLY ask me to upload/attach or paste a path. Do NOT list, glob, find, or browse the project looking for candidate images/PDFs/CSVs. Pre-existing workspace files are off-limits until I point at them.\n4. As soon as materials are in (attachment or explicit path)—or after five questions when materials are not needed—STOP interviewing and DELIVER a first concrete result with tools (REPL, skills, search, etc.), then iterate from my feedback.\n5. Do not stall on plan-approval theater. A one-line intent is enough before acting.\n6. Keep replies concise; match my language.",
         ),
         (Locale::En, "caps.skill.academic_paper.title") => Some("Academic paper writing"),
         (Locale::En, "caps.skill.academic_paper.blurb") => Some("Plan, draft, revise, and format papers (full / plan / outline / revision modes)."),
@@ -2694,7 +2714,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
             "Extract entity relations from a paper or notes; search, highlight neighbors, zoom, and drag nodes.",
         ),
         (Locale::En, "caps.skill.knowledge_graph.prompt") => Some(
-            "Turn a paper or notes into a searchable, draggable relation graph. First ask me to upload the source or give a path. Then extract triples and deliver an HTML graph.",
+            "Turn a paper or notes into a searchable, draggable relation graph. First ask me to upload the source or name a path — do not scan the project for documents. Once the source is in, extract triples and deliver an HTML graph.",
         ),
         (Locale::En, "caps.skill.academic_search_pro.title") => Some("Literature matrix search"),
         (Locale::En, "caps.skill.academic_search_pro.blurb") => Some("7 free APIs + lawful web search → dedupe → literature matrix / BibTeX."),
@@ -2729,7 +2749,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "caps.skill.nature_experiment_log.title") => Some("Experiment log"),
         (Locale::En, "caps.skill.nature_experiment_log.blurb") => Some("Turn photos/voice/notes into structured Markdown logs."),
         (Locale::En, "caps.skill.nature_experiment_log.prompt") => Some(
-            "Turn bench photos, voice, or scribbles into a Markdown experiment log. First ask me to upload the materials. Follow lab conventions if given; otherwise use a generic structure.",
+            "Turn bench photos, voice, or scribbles into a Markdown experiment log. First ask me to upload the materials in this chat — do not scan the project for photos. Follow lab conventions if given; otherwise use a generic structure.",
         ),
         (Locale::En, "caps.tile.bio_db.title") => Some("Biology databases"),
         (Locale::En, "caps.tile.bio_db.blurb") => Some(
@@ -2786,19 +2806,19 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
             "Draw a research illustration or concept figure with the configured image model — not a data plot. First ask what to draw (subject, style, labels). Generate a first version, then iterate.",
         ),
         (Locale::En, "caps.prompt.r_bioinfo_figure") => Some(
-            "Draw common R bioinformatics plots (volcano, heatmap, PCA, survival, and similar). First ask me to upload data or give a path. Then plot and save under figures/.",
+            "Draw common R bioinformatics plots (volcano, heatmap, PCA, survival, and similar). First ask me to upload data or name a path — do not scan the project for tables. Once the data is in, plot and save under figures/.",
         ),
         (Locale::En, "caps.prompt.r_bioinfo_figure.spec") => Some(
             "Capability tool spec.\nPrefer the persistent `r` tool with ggplot2/Bioconductor. Do not fish for schema metadata you can read from the file. Plot, QC with view_image, and deliver project-relative paths under figures/.",
         ),
         (Locale::En, "caps.prompt.data_cleaning") => Some(
-            "Clean messy columns and deliver an analysis-ready table. First ask for the file or path. Inspect the table and do the first cleaning pass — do not start with a questionnaire.",
+            "Clean messy columns and deliver an analysis-ready table. First ask for the file or path and wait until I attach it or name it — do not scan the project for CSVs. Once the table is in, inspect it and do the first cleaning pass — do not start with a questionnaire.",
         ),
         (Locale::En, "caps.prompt.stats_analysis") => Some(
-            "Run tests, regression, or exploratory analysis for a hypothesis and explain what the result means. First ask the question and where the data is. This is not a journal stats-wording audit, and the goal is not a long-lived kernel session.",
+            "Run tests, regression, or exploratory analysis for a hypothesis and explain what the result means. First ask the question and where the data is — wait for an attachment or an explicit path; do not scan the project for tables. This is not a journal stats-wording audit, and the goal is not a long-lived kernel session.",
         ),
         (Locale::En, "caps.prompt.python_r") => Some(
-            "Analyze a table in one persistent Python or R session. Keep variables loaded and deliver editable SVG figures. First ask the analysis goal and the data file.",
+            "Analyze a table in one persistent Python or R session. Keep variables loaded and deliver editable SVG figures. First ask the analysis goal and the data file — wait until I attach it or name the path; do not scan the project for CSVs.",
         ),
         (Locale::En, "caps.prompt.python_r.spec") => Some(
             "Capability tool spec.\nUse the persistent `python` / `r` tools (not a journal stats-reporting audit, and not a one-shot hypothesis test). Keep the same kernel: load, clean, summarize, model, and plot without restarting; leave data frames in session. Default Python: pandas / numpy / scipy / statsmodels / matplotlib / seaborn. Default R: tidyverse / data.table. Plots must be editable SVG: Python savefig(..., format=\"svg\") or a .svg path; R ggsave(..., device=\"svg\") or svg(). Put the main figure under figures/ as .svg—do not deliver only PNG/JPG. A PNG may be used only for view_image QC; the reply must include the project-relative SVG path. Infer Python vs R from the file/ecosystem when you can. Do not fish for schema you can read from the file. Then code, run, interpret, and deliver a reproducible script, tables, SVG figures, and a short conclusion.",
@@ -5144,10 +5164,10 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "chat.steps_1") => Some("已执行 1 步"),
         (Locale::Zh, "chat.steps_1_time") => Some("已执行 1 步 · {t}"),
         (Locale::Zh, "chat.steps_running") => Some("执行中…"),
-        (Locale::Zh, "chat.model_wait_1") => Some("模型正在和神经元商量…"),
-        (Locale::Zh, "chat.model_wait_2") => Some("模型可能把简单问题想复杂了…"),
-        (Locale::Zh, "chat.model_wait_3") => Some("等待模型结束深度思考并浮出水面…"),
-        (Locale::Zh, "chat.model_wait_4") => Some("模型正在谨慎挑选下一个 token…"),
+        (Locale::Zh, "chat.model_wait_1") => Some("AI正在努力工作…"),
+        (Locale::Zh, "chat.model_wait_2") => Some("AI正在思考你的问题…"),
+        (Locale::Zh, "chat.model_wait_3") => Some("结果即将浮出水面…"),
+        (Locale::Zh, "chat.model_wait_4") => Some("AI正在分析问题…"),
         (Locale::Zh, "chat.step_lines") => Some("{n} 行"),
         (Locale::Zh, "chat.error") => Some("错误"),
         (Locale::Zh, "chat.jump_bottom") => Some("回到底部"),
@@ -5563,7 +5583,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "caps.skill.handwriting_extract.title") => Some("手写数据提取"),
         (Locale::Zh, "caps.skill.handwriting_extract.blurb") => Some("识别手写实验本或 CRF 照片，校准存疑格子，汇总成 CSV 并标出位置。"),
         (Locale::Zh, "caps.skill.handwriting_extract.prompt") => Some(
-            "把手写实验本或 CRF 照片抽成 CSV，并标出存疑格子。请先上传照片或图片目录。表头能从图片读就不要问。",
+            "把手写实验本或 CRF 照片抽成 CSV，并标出存疑格子。第一句请只请我在本对话上传或粘贴手写照片；不要自行扫描项目目录找图。等我附上图片或明确给出文件夹路径后再识别。表头能从图片读就不要问。",
         ),
         (Locale::Zh, "caps.skill.handwriting_extract.settings.aria") => Some("手写数据提取设置"),
         (Locale::Zh, "caps.skill.handwriting_extract.settings.title") => Some("手写提取模型"),
@@ -5580,7 +5600,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "caps.skill.topic_coach.title") => Some("选题引导"),
         (Locale::Zh, "caps.skill.topic_coach.blurb") => Some("盘点已有数据和资料，对准目标期刊给出选题候选并评分。"),
         (Locale::Zh, "caps.skill.topic_coach.prompt") => Some(
-            "先盘点已有材料和数据，再给 3–5 个对准目标期刊的选题。通过率只用「推荐 / 可做但费力 / 不建议」，不要编造录用百分比。请先上传材料。然后写出 inventory / question / candidates 三份 md。",
+            "先盘点已有材料和数据，再给 3–5 个对准目标期刊的选题。通过率只用「推荐 / 可做但费力 / 不建议」，不要编造录用百分比。请先让我上传材料或明确给出路径——不要自行扫描项目来拼盘点。材料齐后再写 inventory / question / candidates 三份 md。",
         ),
         (Locale::Zh, "caps.tile.stats_analysis.title") => Some("统计建模与检验"),
         (Locale::Zh, "caps.tile.stats_analysis.blurb") => Some("假设检验、回归、功效与 EDA（Python/R 与统计技能）。"),
@@ -5593,13 +5613,13 @@ Do not leave generated files in the project root.",
             "我还没想清楚具体要做什么。请用一个短问题开始，帮我收成一件现在就能做的事，并尽快交出第一份结果。",
         ),
         (Locale::Zh, "caps.prompt.director_rules") => Some(
-            "硬性规则：\n1. 开场 intake 总共最多五个问题；每次优先只问一个短问题；禁止长问卷。\n2. 只问仍缺失的阻塞项：（a）具体交付物/怎样算完成，（b）请我上传附件或给出项目内路径，（c）硬约束（截止时间、算力、隐私、期刊、语言）。\n3. 禁止追问可从文件直接读出的元数据（行列数、字段、体积、列名等）。应要求上传/附路径，然后你自己检查。\n4. 答完或五个问题用尽后，立刻映射技能、search_skills / use_skill，并开始核心工作。不要再等一轮「请确认长计划」；一句「接下来我做 X」即可。\n5. 成功标准是给出该能力的具体产物/进展（清洗表、草稿、检索结果、图等），而不是无休止访谈。\n6. 用我的语言；问题要短。\n现在只问第 1 个问题。",
+            "硬性规则：\n1. 开场 intake 总共最多五个问题；每次优先只问一个短问题；禁止长问卷。\n2. 只问仍缺失的阻塞项：（a）具体交付物/怎样算完成，（b）请我上传附件或给出明确的项目内路径，（c）硬约束（截止时间、算力、隐私、期刊、语言）。\n3. 材料门槛：若需要文件/照片/数据，且本对话尚无用户附件、我也未给出明确路径，则回复只能请我上传/粘贴或给出路径。禁止 list/glob/find/浏览项目去猜候选图片/PDF/CSV。工作区里已有的文件，在我点名之前一律勿用。\n4. 禁止追问可从文件直接读出的元数据（行列数、字段、体积、列名等）。等我附上文件或点名路径后，你自己检查。\n5. 材料齐了（或不需要材料时答完问题）——或五个问题用尽后，立刻映射技能、search_skills / use_skill，并开始核心工作。不要再等一轮「请确认长计划」；一句「接下来我做 X」即可。\n6. 成功标准是给出该能力的具体产物/进展（清洗表、草稿、检索结果、图等），而不是无休止访谈。\n7. 用我的语言；问题要短。\n现在只问第 1 个问题。",
         ),
         (Locale::Zh, "caps.prompt.socratic_frame") => Some(
-            "能力引导规则（本对话全程有效）。\n本轮已附加技能 `{skill}`——请先 use_skill 加载 `{skill}` 并遵循其指引，但以下规则优先于任何「一直问下去」的习惯：\n1. 整段 intake 最多五个澄清问题；每次优先只问一个短问题。\n2. 只问阻塞项：目标/完成标准、请上传附件或给出路径、硬约束。优先「请上传/附路径」，不要问行列数、schema、体积等你自己能读出的信息。\n3. 一旦能开始该技能的核心工作，或五个问题已用尽：停止访谈，立即交付——调用工具，产出第一份具体结果/草稿，再根据我的反馈迭代。\n4. 不要用「请先确认多步计划」拖延。一句意图说明即可动手。\n5. 回复简洁；跟随我的语言。",
+            "能力引导规则（本对话全程有效）。\n本轮已附加技能 `{skill}`——请先 use_skill 加载 `{skill}` 并遵循其指引，但以下规则优先于任何「一直问下去」的习惯：\n1. 整段 intake 最多五个澄清问题；每次优先只问一个短问题。\n2. 只问阻塞项：目标/完成标准、请上传附件或给出明确路径、硬约束。优先「请上传/附路径」，不要问行列数、schema、体积等你自己能读出的信息。\n3. 材料门槛：若本技能需要文件/照片/数据，且本对话尚无用户附件、我也未给出明确路径，则回复只能请我上传/粘贴或给出路径。禁止 list/glob/find/浏览项目去找候选图片/PDF/CSV。工作区里已有的文件，在我点名之前一律勿用。\n4. 材料齐了（附件或明确路径）——或不需要材料且五个问题已用尽：停止访谈，立即交付——调用工具，产出第一份具体结果/草稿，再根据我的反馈迭代。\n5. 不要用「请先确认多步计划」拖延。一句意图说明即可动手。\n6. 回复简洁；跟随我的语言。",
         ),
         (Locale::Zh, "caps.prompt.guided_frame") => Some(
-            "能力引导规则（本对话全程有效）：\n1. 整段 intake 最多五个澄清问题；每次优先只问一个短问题；禁止长问卷。\n2. 只问阻塞项：目标/完成标准、请上传附件或给出路径、硬约束。优先上传/路径，不要追问你能从文件读出的元数据（行列、体积、schema）。\n3. 一旦能开始该能力的核心工作，或五个问题已用尽：停止访谈，立即用工具交付第一份具体结果，再根据反馈迭代。\n4. 不要用计划确认仪式拖延；一句意图说明即可动手。\n5. 回复简洁；跟随我的语言。",
+            "能力引导规则（本对话全程有效）：\n1. 整段 intake 最多五个澄清问题；每次优先只问一个短问题；禁止长问卷。\n2. 只问阻塞项：目标/完成标准、请上传附件或给出明确路径、硬约束。优先上传/路径，不要追问你能从文件读出的元数据（行列、体积、schema）。\n3. 材料门槛：若本能力需要文件/照片/数据，且本对话尚无用户附件、我也未给出明确路径，则回复只能请我上传/粘贴或给出路径。禁止 list/glob/find/浏览项目去找候选图片/PDF/CSV。工作区里已有的文件，在我点名之前一律勿用。\n4. 材料齐了（附件或明确路径）——或不需要材料且五个问题已用尽：停止访谈，立即用工具交付第一份具体结果，再根据反馈迭代。\n5. 不要用计划确认仪式拖延；一句意图说明即可动手。\n6. 回复简洁；跟随我的语言。",
         ),
         (Locale::Zh, "caps.skill.academic_paper.title") => Some("学术论文写作"),
         (Locale::Zh, "caps.skill.academic_paper.blurb") => Some("规划、起草、修订与排版（full/plan/outline/revision 等模式）。"),
@@ -5713,7 +5733,7 @@ Do not leave generated files in the project root.",
             "从论文或笔记抽出实体关系；图谱可搜索、高亮邻域、缩放并拖动节点。",
         ),
         (Locale::Zh, "caps.skill.knowledge_graph.prompt") => Some(
-            "帮我把论文或笔记抽成能搜索、能拖节点的关系图。请先上传原文或给出路径。材料齐后分块抽三元组，直接交 HTML 图谱。",
+            "帮我把论文或笔记抽成能搜索、能拖节点的关系图。请先让我上传原文或明确给出路径——不要自行扫描项目找文档。材料齐后再分块抽三元组，直接交 HTML 图谱。",
         ),
         (Locale::Zh, "caps.skill.academic_search_pro.title") => Some("文献矩阵检索"),
         (Locale::Zh, "caps.skill.academic_search_pro.blurb") => Some("7 大免费库 + 合规网页检索 → 去重 → 文献矩阵 / BibTeX。"),
@@ -5748,7 +5768,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "caps.skill.nature_experiment_log.title") => Some("实验日志"),
         (Locale::Zh, "caps.skill.nature_experiment_log.blurb") => Some("把图片/语音/文字整理为结构化 Markdown 日志。"),
         (Locale::Zh, "caps.skill.nature_experiment_log.prompt") => Some(
-            "帮我把实验台上的照片、语音或随手记录整理成 Markdown 日志。请先上传材料。有实验室格式就按它，没有就用通用结构。",
+            "帮我把实验台上的照片、语音或随手记录整理成 Markdown 日志。请先在本对话上传材料——不要自行扫描项目找照片。有实验室格式就按它，没有就用通用结构。",
         ),
         (Locale::Zh, "caps.tile.bio_db.title") => Some("生物数据库"),
         (Locale::Zh, "caps.tile.bio_db.blurb") => Some(
@@ -5805,19 +5825,19 @@ Do not leave generated files in the project root.",
             "用已配置的生图模型画科研示意或概念图，不是数据统计图。先问要画什么（对象、风格、要不要标注）。能画就先出一版再改。",
         ),
         (Locale::Zh, "caps.prompt.r_bioinfo_figure") => Some(
-            "用 R 画常见生信图（火山、热图、PCA、生存等）。请先上传数据或给路径。齐了就出图并放到 figures/。",
+            "用 R 画常见生信图（火山、热图、PCA、生存等）。请先让我上传数据或明确给出路径——不要自行扫描项目找表。材料齐后再出图并放到 figures/。",
         ),
         (Locale::Zh, "caps.prompt.r_bioinfo_figure.spec") => Some(
             "能力工具规格。\n默认且优先用持久 `r` tool + ggplot2/相关 Bioconductor 包。不要追问可从文件读出的行列/schema。材料齐后立刻读数、出图，用 view_image 质检，并交付 figures/ 下的项目相对路径。",
         ),
         (Locale::Zh, "caps.prompt.data_cleaning") => Some(
-            "清洗乱列，交出一份能直接分析的表。请先给表格或路径。读表后立刻做第一轮，不要先做问卷。",
+            "清洗乱列，交出一份能直接分析的表。请先让我上传表格或明确给出路径——不要自行扫描项目找 CSV。材料齐后再读表并做第一轮，不要先做问卷。",
         ),
         (Locale::Zh, "caps.prompt.stats_analysis") => Some(
-            "帮我按假设做检验、回归或探索分析，并解释结果含义。请先说问题和数据路径。这不是期刊统计措辞审核，也不按「同一内核一直做下去」当主目标。",
+            "帮我按假设做检验、回归或探索分析，并解释结果含义。请先说问题和数据在哪——等我上传附件或明确给出路径，不要自行扫描项目找表。这不是期刊统计措辞审核，也不按「同一内核一直做下去」当主目标。",
         ),
         (Locale::Zh, "caps.prompt.python_r") => Some(
-            "在同一个 Python 或 R 会话里分析表格，变量留着，图交可编辑 SVG。先问分析目标和数据文件。",
+            "在同一个 Python 或 R 会话里分析表格，变量留着，图交可编辑 SVG。先问分析目标和数据文件——等我附上或明确给出路径，不要自行扫描项目找 CSV。",
         ),
         (Locale::Zh, "caps.prompt.python_r.spec") => Some(
             "能力工具规格。\n用本应用的持久 `python` / `r` 工具做数据分析（不是期刊统计写法审核，也不是只跑一次检验）。在同一内核里连续读表、清洗、汇总、建模、出图；数据框和变量要留在会话中，不要每问都重开进程。Python 默认 pandas / numpy / scipy / statsmodels / matplotlib / seaborn；R 默认 tidyverse / data.table。作图必须交付可编辑矢量图：Python 用 savefig(..., format=\"svg\") 或 .svg 路径；R 用 ggsave(..., device=\"svg\") 或 svg()。主文件放在 figures/ 下的 .svg，禁止只交 PNG/JPG。可用一张 PNG 仅供 view_image 质检，但结论里要给出 SVG 的项目相对路径。能从文件/包生态判断语言就不要再问。不要追问能从文件读出的行列。然后立刻写代码、跑通、解读，交付：可复现脚本、表格、SVG 图和简短结论。",
@@ -6762,6 +6782,20 @@ mod queue_label_tests {
         assert_eq!(t(Locale::Zh, "context_usage.dock"), "停靠面板");
         assert_eq!(t(Locale::En, "context_usage.resize"), "Resize panel");
         assert_eq!(t(Locale::Zh, "context_usage.resize"), "调整面板大小");
+    }
+
+    #[test]
+    fn landing_scratch_button_reads_start_conversation() {
+        assert_eq!(t(Locale::Zh, "scratch.open"), "开始对话");
+        assert_eq!(t(Locale::En, "scratch.open"), "Start conversation");
+        assert_eq!(
+            t(Locale::Zh, "caps.skill.handwriting_extract.tip"),
+            "发送图片同时对每列数据进行格式说明，识别率会显著提高。"
+        );
+        assert!(t(Locale::En, "caps.skill.handwriting_extract.tip").contains("format of each column"));
+        assert_eq!(lookup(Locale::Zh, "scratch.open"), Some("随手一聊"));
+        assert_eq!(t(Locale::Zh, "scratch.title"), "随手一聊");
+        assert_eq!(t(Locale::En, "command.scratch"), "Scratch chat");
     }
 
     #[test]

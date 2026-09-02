@@ -713,6 +713,50 @@ const MODEL_PRESETS: [(&str, &str, &str); 5] = [
     ),
 ];
 
+/// Consecutive Space keydowns in the model-proxy field unlock hidden add/preset rows.
+const HIDDEN_MODEL_ENTRY_UNLOCK_SPACES: u8 = 8;
+
+fn hidden_model_entry_space_streak(current: u8, key: &str) -> u8 {
+    if key == " " || key.eq_ignore_ascii_case("space") {
+        current.saturating_add(1)
+    } else {
+        0
+    }
+}
+
+fn hidden_model_entries_unlocked(streak: u8) -> bool {
+    streak >= HIDDEN_MODEL_ENTRY_UNLOCK_SPACES
+}
+
+#[cfg(test)]
+mod hidden_model_entry_tests {
+    use super::*;
+
+    #[test]
+    fn eight_spaces_unlock_hidden_entries() {
+        let mut streak = 0u8;
+        for _ in 0..7 {
+            streak = hidden_model_entry_space_streak(streak, " ");
+            assert!(!hidden_model_entries_unlocked(streak));
+        }
+        streak = hidden_model_entry_space_streak(streak, " ");
+        assert!(hidden_model_entries_unlocked(streak));
+    }
+
+    #[test]
+    fn other_keys_reset_the_space_streak() {
+        let streak = hidden_model_entry_space_streak(3, "n");
+        assert_eq!(streak, 0);
+        assert!(!hidden_model_entries_unlocked(streak));
+    }
+
+    #[test]
+    fn space_key_name_counts_as_space() {
+        let streak = hidden_model_entry_space_streak(7, "Space");
+        assert!(hidden_model_entries_unlocked(streak));
+    }
+}
+
 fn appearance_palette_options(dark: bool) -> [(&'static str, &'static str); 5] {
     if dark {
         [
@@ -2140,6 +2184,17 @@ pub(super) fn SettingsView(
     // Model-list drag-reorder state (local — no need to hoist to the app shell).
     let drag_model = create_rw_signal(None::<String>);
     let drop_model = create_rw_signal(None::<String>);
+    // Quick-setup presets and "Add API access" stay hidden until eight
+    // consecutive spaces in the model-proxy field. Session-only: leaving
+    // Models or closing Settings hides them again.
+    let show_hidden_model_entries = create_rw_signal(false);
+    let proxy_space_streak = create_rw_signal(0u8);
+    create_effect(move |_| {
+        if !show_settings.get() || settings_section.get() != "models" {
+            show_hidden_model_entries.set(false);
+            proxy_space_streak.set(0);
+        }
+    });
     // Agent-created SSH trust edges (`configure_ssh_trust`), shown under the
     // hosts they involve so the user can see and revoke them. Reloaded each
     // time the Environments section opens.
@@ -3788,6 +3843,21 @@ pub(super) fn SettingsView(
                             <div class="settings-form-grid">
                                 <label class="span-2">{move || t(locale.get(), "settings.proxy_url")}
                                     <input data-testid="proxy-url" placeholder="http://127.0.0.1:7890"
+                                        on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                            let key = ev.key();
+                                            let next = hidden_model_entry_space_streak(
+                                                proxy_space_streak.get_untracked(),
+                                                &key,
+                                            );
+                                            proxy_space_streak.set(next);
+                                            if key == " " {
+                                                ev.prevent_default();
+                                            }
+                                            if hidden_model_entries_unlocked(next) {
+                                                show_hidden_model_entries.set(true);
+                                                proxy_space_streak.set(0);
+                                            }
+                                        }
                                         on:input=move |ev| settings.update(|s| {
                                             s.proxy_url = event_target_input(&ev).value();
                                         })
@@ -3827,7 +3897,7 @@ pub(super) fn SettingsView(
                                                 acp_form_msg.set(None);
                                             }>{move || t(locale.get(), "models.add_acp")}</button>
                                         }.into_view()
-                                    } else {
+                                    } else if show_hidden_model_entries.get() {
                                         view! {
                                             <button type="button" class="settings-add-btn" data-testid="add-provider" on:click=move |_| {
                                                 show_acp_agents.set(false);
@@ -3841,6 +3911,8 @@ pub(super) fn SettingsView(
                                                 }
                                             }>{move || t(locale.get(), "models.add")}</button>
                                         }.into_view()
+                                    } else {
+                                        view! {}.into_view()
                                     }}
                                 </div>
                             </div>
@@ -3979,6 +4051,7 @@ pub(super) fn SettingsView(
                             } else {
                                 view! {
                                     <p class="hint" data-testid="acp-models-list-hint">{move || t(locale.get(), "models.acp_hint")}</p>
+                                    {move || show_hidden_model_entries.get().then(|| view! {
                                     <div class="model-preset-row" data-testid="model-presets">
                                         <span class="model-preset-label">{move || t(locale.get(), "models.quick_add")}</span>
                                         {MODEL_PRESETS.iter().map(|&(label, api_url, _model)| view! {
@@ -4002,6 +4075,7 @@ pub(super) fn SettingsView(
                                                 }>{label}</button>
                                         }).collect_view()}
                                     </div>
+                                    })}
                                     <div class="model-card-grid">
                                         <For each=move || group_models_by_channel(&models.get()) key=|ch| (ch.key.clone(), ch.is_active()) let:channel>
                                             {

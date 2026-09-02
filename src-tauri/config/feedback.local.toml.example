@@ -1,5 +1,11 @@
 # Local secrets for feedback email. Copy to feedback.local.toml and fill in.
 # feedback.local.toml is gitignored and must never be committed.
+#
+# Day-to-day `cargo tauri dev` reads this file at runtime.
+# Release / local packaging bake the same password into the binary via
+# SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD (scripts/package-macos-local.sh exports
+# it from this file automatically). CI uses the GitHub Actions secret of the
+# same name — set it in the repo Settings → Secrets and variables → Actions.
 
 [smtp]
 password = "XXXXXX"

@@ -13,8 +13,10 @@ on their own.
 ## Inputs and workspace
 
 Accept either one PDF or one directory of manuscript images. Resolve tagged or
-attached paths before running anything. Ask for a page range only when the user
-did not specify one and scanning the whole PDF would materially change scope.
+attached paths before running anything. If this chat has no attachment and the
+user has not named a PDF or directory path, ask once — do not invent inputs by
+scanning the project. Ask for a page range only when the user did not specify
+one and scanning the whole PDF would materially change scope.
 
 Create a new analysis directory such as `analysis/figure-audit-YYYYMMDD-HHMM`.
 Never modify source images, overwrite a prior audit, or silently omit an

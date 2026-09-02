@@ -34,6 +34,31 @@ fi
 
 unset NO_COLOR FORCE_COLOR || true
 
+# Bake the Feishu SMTP client password into the binary so local DMGs can send
+# feedback without shipping feedback.local.toml. Prefer an explicit env; else
+# read the gitignored local override used for day-to-day development.
+if [ -z "${SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD:-}" ] && [ -z "${WISP_FEEDBACK_SMTP_PASSWORD:-}" ]; then
+  LOCAL_FEEDBACK="$ROOT/src-tauri/config/feedback.local.toml"
+  if [ -f "$LOCAL_FEEDBACK" ]; then
+    SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD="$(
+      python3 - "$LOCAL_FEEDBACK" <<'PY'
+import re, sys
+raw = open(sys.argv[1], encoding="utf-8").read()
+match = re.search(r'(?m)^\s*password\s*=\s*"([^"]*)"\s*$', raw)
+if not match or not match.group(1).strip():
+    raise SystemExit(f"error: no smtp.password in {sys.argv[1]}")
+print(match.group(1))
+PY
+    )"
+    export SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD
+    echo "Using SMTP password from src-tauri/config/feedback.local.toml"
+  else
+    echo "error: set SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD, or create $LOCAL_FEEDBACK" >&2
+    echo "  (copy from feedback.local.toml.example and set smtp.password)" >&2
+    exit 1
+  fi
+fi
+
 # Build unsigned (or adhoc) first; we re-sign without hardened runtime so a
 # self-signed local build can still launch without notarization.
 cargo tauri build \

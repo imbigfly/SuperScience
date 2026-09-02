@@ -25,7 +25,8 @@ key. SuperScience does not expose keyring secrets to shell or Python.
 
 Accept pasted text, or an attached `.txt` / `.md` / paper excerpt. If the user
 has not provided source text, ask once for the file or paste. Do not invent a
-corpus.
+corpus. Do not list/glob/browse the project looking for candidate papers or
+notes until the user attaches a file or names an explicit path.
 
 ## Workflow
 

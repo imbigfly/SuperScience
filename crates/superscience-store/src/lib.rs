@@ -3,6 +3,7 @@
 //! Replaces the mangopi JSON session file with a structured store. API keys
 //! live in a local secrets file (see [`secrets`]); everything else lives here.
 
+mod ability_card_usage;
 mod acp_sessions;
 mod agent_workflow_attempts;
 mod agent_workflow_deliveries;
@@ -170,6 +171,9 @@ const ARTIFACT_SOURCE_DISCARDED_MIGRATION: &str = "0049_artifact_source_discarde
 const RUN_LOG_PULL_MIGRATION: &str = "0050_run_log_pull";
 const ORPHAN_FILE_RETENTION_MIGRATION: &str = "0051_orphan_file_retention";
 const RUN_REVIEW_DISMISSED_MIGRATION: &str = "0052_run_review_dismissed";
+const ABILITY_CARD_USAGE_MIGRATION: &str = "0053_ability_card_usage";
+const ABILITY_CARD_USAGE_MIGRATION_SQL: &str =
+    include_str!("../migrations/0053_ability_card_usage.sql");
 
 #[derive(Clone)]
 pub struct Store {
@@ -703,6 +707,10 @@ impl Store {
             Self::add_columns_if_missing(pool, "runs", &[("review_dismissed_at", "INTEGER")])
                 .await?;
             Self::record_migration(pool, RUN_REVIEW_DISMISSED_MIGRATION).await?;
+        }
+        if !Self::migration_applied(pool, ABILITY_CARD_USAGE_MIGRATION).await? {
+            Self::execute_sql_script(pool, ABILITY_CARD_USAGE_MIGRATION_SQL).await?;
+            Self::record_migration(pool, ABILITY_CARD_USAGE_MIGRATION).await?;
         }
         // Re-apply additive DDL even when a migration marker is already
         // recorded. Jumping many releases can leave a table/column that was

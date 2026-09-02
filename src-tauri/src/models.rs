@@ -818,6 +818,14 @@ fn key_for(id: &str) -> String {
     }
 }
 
+fn key_for_profile(profiles: &[ModelProfile], profile: &ModelProfile) -> String {
+    let own = key_for(&profile.id);
+    if !own.is_empty() {
+        return own;
+    }
+    sibling_key(profiles, &profile.api_url, &profile.id)
+}
+
 /// The active profile's `(provider, api_url, model, api_key)` for a turn.
 pub async fn active_config(store: &superscience_store::Store) -> (String, String, String, String) {
     let profiles = ensure(store).await;
@@ -828,7 +836,8 @@ pub async fn active_config(store: &superscience_store::Store) -> (String, String
         .cloned()
         .unwrap_or_else(|| profiles[0].clone());
     let api_url = effective_api_url(&p);
-    (p.provider, api_url, p.model, key_for(&p.id))
+    let api_key = key_for_profile(&profiles, &p);
+    (p.provider, api_url, p.model, api_key)
 }
 
 pub(crate) const IMAGE_GENERATION_UNSUPPORTED: &str =
@@ -1151,11 +1160,12 @@ pub async fn assigned_vision_config(
         .find(|profile| profile.id == id && can_describe_images(profile))?
         .clone();
     let api_url = effective_api_url(&profile);
+    let api_key = key_for_profile(&profiles, &profile);
     Some((
         profile.provider,
         api_url,
         profile.model,
-        key_for(&profile.id),
+        api_key,
         profile.max_tokens,
         profile.reasoning_effort,
     ))
@@ -1170,11 +1180,12 @@ pub async fn vision_config(
     let id = vision_id(store, &profiles).await?;
     let p = profiles.iter().find(|p| p.id == id)?.clone();
     let api_url = effective_api_url(&p);
+    let api_key = key_for_profile(&profiles, &p);
     Some((
         p.provider,
         api_url,
         p.model,
-        key_for(&p.id),
+        api_key,
         p.max_tokens,
         p.reasoning_effort,
     ))
@@ -1403,7 +1414,7 @@ pub async fn profile_llm(
         p.provider.clone(),
         effective_api_url(p),
         p.model.clone(),
-        key_for(&p.id),
+        key_for_profile(&profiles, p),
         p.max_tokens,
         p.reasoning_effort.clone(),
     ))
@@ -1413,7 +1424,7 @@ pub async fn profile_llm(
 /// exist. The returned string may still be empty when the profile has no key.
 pub async fn profile_key(store: &superscience_store::Store, id: &str) -> Option<String> {
     let profiles = ensure(store).await;
-    profiles.iter().any(|p| p.id == id).then(|| key_for(id))
+    profiles.iter().find(|p| p.id == id).map(|p| key_for_profile(&profiles, p))
 }
 
 /// Whether the active profile has a key stored (for `get_settings`).
@@ -1447,9 +1458,10 @@ async fn decorated(store: &superscience_store::Store) -> Vec<ModelProfile> {
     let image_generation = image_generation_id(store, &profiles).await;
     let video_generation = video_generation_id(store, &profiles).await;
     profiles
-        .into_iter()
+        .iter()
+        .cloned()
         .map(|mut p| {
-            p.has_api_key = !key_for(&p.id).is_empty();
+            p.has_api_key = !key_for_profile(&profiles, &p).is_empty();
             p.active = p.id == id;
             p.use_for_vision = vision.as_deref() == Some(p.id.as_str());
             p.use_for_image_generation = image_generation.as_deref() == Some(p.id.as_str());

@@ -19,6 +19,7 @@ use tauri::menu::{
 use tauri::{ipc::Response, AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
+mod ability_card_usage;
 mod acp;
 mod agent_turn;
 mod app_commands;
@@ -4193,16 +4194,7 @@ async fn set_handwriting_extract_calibration_model(
     state: State<'_, AppState>,
     model_id: String,
 ) -> Result<String, String> {
-    let saved = models::set_handwriting_extract_calibration_id(&state.store, &model_id).await?;
-    if let Some(mut spec) =
-        specialists::get(&state.store, specialists::HANDWRITING_EXTRACT_ID).await
-    {
-        if spec.model_id != saved {
-            spec.model_id = saved.clone();
-            specialists::upsert(&state.store, spec).await?;
-        }
-    }
-    Ok(saved)
+    models::set_handwriting_extract_calibration_id(&state.store, &model_id).await
 }
 
 #[tauri::command]
@@ -4567,8 +4559,8 @@ pub(crate) async fn build_assigned_vision_provider_config(
     build_provider_config(
         &provider,
         &api_url,
-        &model,
         &api_key,
+        &model,
         max_tokens,
         &reasoning_effort,
     )
@@ -4585,8 +4577,8 @@ fn vision_provider_config_from_parts(
     match build_provider_config(
         provider,
         api_url,
-        model,
         api_key,
+        model,
         max_tokens,
         reasoning_effort,
     ) {
@@ -6775,6 +6767,10 @@ pub fn run() {
             .title(superscience_paths::PRODUCT_NAME)
             .inner_size(1100.0, 760.0)
             .resizable(true)
+            // Only set maximized here. On macOS `maximize()` is NSWindow.zoom
+            // (a toggle). Calling it again after create or on page-load flips
+            // the window back to 1100×760, then a later call zooms it again.
+            .maximized(true)
             .disable_drag_drop_handler()
             .on_navigation(guard_webview_navigation);
             #[cfg(target_os = "windows")]
@@ -7391,6 +7387,9 @@ pub fn run() {
             tctoken::tctoken_set_default_token_cmd,
             tctoken::tctoken_set_drawing_key_cmd,
             tctoken::tctoken_provider_url_cmd,
+            ability_card_usage::report_ability_card_usage_cmd,
+            ability_card_usage::set_frame_ability_card_cmd,
+            ability_card_usage::maybe_report_ability_card_resume_cmd,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Wisp")

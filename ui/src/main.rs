@@ -1,3 +1,4 @@
+mod ability_cards;
 mod acp;
 mod agent_workflows;
 mod app_overlays;
@@ -5289,6 +5290,7 @@ fn App() -> impl IntoView {
         );
         let is_running = running.get().contains(&id);
         active_session.set(Some(id.clone()));
+        crate::ability_cards::spawn_maybe_report_ability_card_resume(&id);
         active_branch_state.set(sessions.with_untracked(|rows| {
             rows.iter()
                 .find(|session| session.id == id)
@@ -8615,7 +8617,6 @@ fn App() -> impl IntoView {
 
     let on_capability_action = capability_launch::install(capability_launch::CapabilityLaunchCtx {
         locale,
-        busy,
         show_projects,
         show_capabilities,
         demo_mode,

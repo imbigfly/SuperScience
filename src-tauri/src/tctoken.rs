@@ -60,8 +60,8 @@ pub struct TctokenSession {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct StoredProfile {
-    user_id: i64,
+pub(crate) struct StoredProfile {
+    pub(crate) user_id: i64,
     username: String,
     display_name: String,
     group: String,
@@ -154,7 +154,7 @@ fn secret_del(name: &str) -> Result<(), String> {
     Secret::delete(name).map_err(|e| e.to_string())
 }
 
-async fn load_profile(store: &superscience_store::Store) -> Option<StoredProfile> {
+pub(crate) async fn load_profile(store: &superscience_store::Store) -> Option<StoredProfile> {
     let raw = store.get_setting(PROFILE_SETTING).await.ok().flatten()?;
     serde_json::from_str(&raw).ok()
 }
@@ -814,6 +814,35 @@ pub(super) fn tctoken_provider_url_cmd() -> String {
     tctoken_api_base()
 }
 
+pub(crate) fn ability_card_usage_request_body(
+    user_id: i64,
+    card_id: &str,
+    card_name: &str,
+    date: Option<&str>,
+) -> Value {
+    let mut body = serde_json::json!({
+        "user_id": user_id,
+        "card_id": card_id,
+        "card_name": card_name,
+    });
+    if let Some(date) = date.map(str::trim).filter(|s| !s.is_empty()) {
+        body["date"] = Value::String(date.to_string());
+    }
+    body
+}
+
+pub(crate) async fn report_ability_card_usage(
+    user_id: i64,
+    card_id: &str,
+    card_name: &str,
+    date: Option<&str>,
+) -> Result<(), String> {
+    let body = ability_card_usage_request_body(user_id, card_id, card_name, date);
+    let response = authed_post_json("/api/open/v1/ability-cards/usage", &body).await?;
+    let _ = parse_authed_envelope_value(None, response).await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -868,6 +897,18 @@ mod tests {
             return;
         }
         assert_eq!(tctoken_api_base(), DEFAULT_BASE_URL);
+    }
+
+    #[test]
+    fn ability_card_usage_request_body_includes_optional_date() {
+        let body = ability_card_usage_request_body(42, "topic-coach", "选题引导", None);
+        assert_eq!(body["user_id"], 42);
+        assert_eq!(body["card_id"], "topic-coach");
+        assert_eq!(body["card_name"], "选题引导");
+        assert!(body.get("date").is_none());
+
+        let dated = ability_card_usage_request_body(1, "handwriting-extract", "手写数据提取", Some("2026-09-02"));
+        assert_eq!(dated["date"], "2026-09-02");
     }
 
     #[test]

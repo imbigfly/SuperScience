@@ -39,6 +39,8 @@ jobs:
           }
 
       - uses: tauri-apps/tauri-action@v1
+        env:
+          SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD: ${{ secrets.SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD }}
         with:
           projectPath: src-tauri
           tauriScript: cargo tauri

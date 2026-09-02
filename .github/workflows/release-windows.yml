@@ -81,9 +81,22 @@ jobs:
         shell: pwsh
         run: Write-Error "publish=true requires signing_policy=release-signing"
 
+      # Baked into the binary via option_env! so installed apps can send feedback
+      # without a sidecar feedback.local.toml. Never commit the password.
+      - name: Require feedback SMTP password secret
+        shell: pwsh
+        env:
+          SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD: ${{ secrets.SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD)) {
+            Write-Error "Set repository secret SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD (Feishu mailbox client password) so release builds can send feedback email."
+          }
+
       # Build only; signing (SignPath) must happen before the release is published.
       - name: Build Tauri bundles
         shell: pwsh
+        env:
+          SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD: ${{ secrets.SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD }}
         run: cargo tauri build --bundles msi,nsis
 
       # SignPath: the API token belongs to a CI user that is a submitter for the

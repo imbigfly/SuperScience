@@ -181,12 +181,12 @@ pub(crate) fn trailing_queue_start(items: &[ChatItem]) -> usize {
 }
 
 pub(crate) fn start_user_turn(items: &mut Vec<ChatItem>, text: String, model: Option<String>) {
-    let incoming_body = composer_text_from_user_message(&text);
+    let incoming_body = user_turn_match_body(&text);
     // ponytail: text-keyed promotion; upgrade to a backend intent_id if
     // display/echo texts ever diverge beyond the attachment suffix.
     if let Some((idx, queued)) = items.iter().enumerate().find_map(|(i, item)| match item {
         ChatItem::QueuedUser { text: queued, .. }
-            if queued == &text || composer_text_from_user_message(queued) == incoming_body =>
+            if queued == &text || user_turn_match_body(queued) == incoming_body =>
         {
             Some((i, queued.clone()))
         }
@@ -213,15 +213,21 @@ pub(crate) fn start_user_turn(items: &mut Vec<ChatItem>, text: String, model: Op
         matches!(
             &pair[0],
             ChatItem::User(s)
-                if s == &text || composer_text_from_user_message(s) == incoming_body
+                if s == &text || user_turn_match_body(s) == incoming_body
         ) && matches!(&pair[1], ChatItem::Assistant { text: assistant, .. } if assistant.is_empty())
     }) {
         // Normal sends are rendered optimistically. The backend User event is
         // only an acknowledgement in that case, so do not append a duplicate.
         // Prefer the longer display form when one side still lacks the
-        // "Uploaded files:" (or reference) suffix.
+        // "Uploaded files:" (or reference) suffix, but keep the short opener
+        // when the ack only adds hidden capability coaching frames.
         if let ChatItem::User(existing) = &mut items[idx] {
-            if text.len() > existing.len() {
+            let existing_body = user_turn_match_body(existing);
+            if existing_body == incoming_body {
+                if user_message_has_transcript_suffix(&text) && text.len() > existing.len() {
+                    *existing = text;
+                }
+            } else if text.len() > existing.len() {
                 *existing = text;
             }
         }
@@ -243,8 +249,8 @@ mod start_user_turn_tests {
         is_image_generation_tool, is_tool_activity, is_video_generation_tool,
         message_with_attachments, message_with_composer_context, message_with_quotes,
         message_with_read_only_quotes, process_item_insert_index, runtime_object_quote,
-        selection_targets_center_file, start_user_turn, trailing_queue_start, ComposerQuote,
-        ComposerReferenceChip,
+        selection_targets_center_file, start_user_turn, trailing_queue_start, user_turn_match_body,
+        user_message_has_transcript_suffix, ComposerQuote, ComposerReferenceChip,
     };
     use crate::dto::{ChatItem, ContextUsage};
     use leptos::*;
@@ -445,6 +451,32 @@ mod start_user_turn_tests {
         assert_eq!(items.len(), 2);
         assert!(matches!(&items[0], ChatItem::User(s) if s == &display));
         assert_eq!(composer_text_from_user_message(&display), "描述下图片");
+    }
+
+    #[test]
+    fn does_not_duplicate_capability_launch_ack() {
+        let visible = "把手写实验本或 CRF 照片抽成 CSV，并标出存疑格子。".to_string();
+        let sent = format!(
+            "能力引导规则（本对话全程有效）。\n1. 最多五个问题。\n\n{visible}"
+        );
+        let mut items = vec![
+            ChatItem::User(visible.clone()),
+            ChatItem::Assistant {
+                text: String::new(),
+                model: Some("model".into()),
+                resources: Vec::new(),
+            },
+        ];
+        start_user_turn(&mut items, sent, Some("model".into()));
+        assert_eq!(items.len(), 2);
+        assert!(matches!(&items[0], ChatItem::User(s) if s == &visible));
+    }
+
+    #[test]
+    fn user_turn_match_body_strips_capability_coach() {
+        let visible = "Analyze a table in one session.";
+        let sent = "Capability coaching (applies to this whole chat):\n1. Ask five.\n\nAnalyze a table in one session.";
+        assert_eq!(user_turn_match_body(visible), user_turn_match_body(sent));
     }
 
     #[test]

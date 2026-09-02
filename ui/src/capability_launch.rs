@@ -3,6 +3,9 @@
 //! Upstream `wisp-science` does not have this module. Keep launch policy here so
 //! a future merge that rewrites `main.rs` cannot drop the handler body.
 
+use crate::ability_cards::{
+    ability_card_api_name, ability_card_for_action, ability_card_for_guided, spawn_report_ability_card_usage,
+};
 use crate::app_support::{
     ensure_right_tab, focus_composer, invoke_new_session, js_error_text,
     replace_visible_transcript, ComposerReferenceChip,
@@ -25,8 +28,38 @@ use wasm_bindgen::JsValue;
 const DIRECTOR_KICKOFF_PROMPT: &str = "caps.prompt.director_kickoff";
 const DIRECTOR_RULES_KEY: &str = "caps.prompt.director_rules";
 const HANDWRITING_EXTRACT_SKILL: &str = "handwriting-extract";
+const HANDWRITING_EXTRACT_TIP: &str = "caps.skill.handwriting_extract.tip";
 const CAPABILITY_TITLE_SEP: &str = " · ";
 const CAPABILITY_TITLE_MAX_CHARS: usize = 80;
+
+fn dispatch_report_usage(action: &CapabilityAction) {
+    if let Some(meta) = ability_card_for_action(action) {
+        spawn_report_ability_card_usage(&meta);
+    }
+}
+
+async fn bind_and_report_guided_capability_session(
+    frame_id: &str,
+    prompt_key: &'static str,
+    skill: Option<&'static str>,
+    specialist: Option<&'static str>,
+) {
+    let Some(meta) = ability_card_for_guided(prompt_key, skill, specialist) else {
+        return;
+    };
+    let card_id = meta.id.to_string();
+    let card_name = ability_card_api_name(&meta);
+    let bind_arg = to_value(&serde_json::json!({
+        "frameId": frame_id,
+        "cardId": card_id,
+        "cardName": card_name,
+    }))
+    .unwrap();
+    let _ = invoke_checked("set_frame_ability_card", bind_arg).await;
+    if prompt_key != DIRECTOR_KICKOFF_PROMPT {
+        spawn_report_ability_card_usage(&meta);
+    }
+}
 
 /// Sidebar / recent-session label for a chat started from a capability card.
 pub(crate) fn capability_session_title(
@@ -116,7 +149,6 @@ fn format_capability_session_title(name: &str, summary: &str) -> String {
 #[derive(Clone, Copy)]
 pub(crate) struct CapabilityLaunchCtx {
     pub locale: RwSignal<Locale>,
-    pub busy: RwSignal<bool>,
     pub show_projects: RwSignal<bool>,
     pub show_capabilities: RwSignal<bool>,
     pub demo_mode: RwSignal<bool>,
@@ -182,7 +214,7 @@ pub(crate) fn capability_launch_texts(
     prompt_key: &str,
     skill: Option<&str>,
 ) -> (String, String) {
-    let visible = t(locale, prompt_key);
+    let visible = append_handwriting_column_tip(locale, skill, t(locale, prompt_key));
     let spec = spec_key_for_prompt(prompt_key).and_then(|key| {
         let value = t(locale, key);
         if value.is_empty() || value == key {
@@ -209,6 +241,17 @@ pub(crate) fn capability_launch_texts(
     };
     let sent = guided_capability_message(prompt_key, &body, skill_frame.as_deref(), &guided_frame);
     (visible, sent)
+}
+
+fn append_handwriting_column_tip(locale: Locale, skill: Option<&str>, visible: String) -> String {
+    if skill != Some(HANDWRITING_EXTRACT_SKILL) {
+        return visible;
+    }
+    let tip = t(locale, HANDWRITING_EXTRACT_TIP);
+    if tip.is_empty() || tip == HANDWRITING_EXTRACT_TIP || visible.contains(tip.as_str()) {
+        return visible;
+    }
+    format!("{visible}\n\n{tip}")
 }
 
 pub(crate) fn guided_capability_message(
@@ -285,9 +328,10 @@ fn start_guided_capability_chat(
             Option<&'static str>,
             Option<&'static str>,
         )| {
-            if ctx.busy.get_untracked() {
-                return;
-            }
+            // Do not gate on `busy`: that flag means "the active session is
+            // streaming", not "a capability launch is in flight". Backend
+            // `new_session` allows parallel turns; blocking here just dumps
+            // the user back into the running chat without opening a new one.
             ctx.show_capabilities.set(false);
             ctx.show_projects.set(false);
             ctx.attachments.set(vec![]);
@@ -301,15 +345,6 @@ fn start_guided_capability_chat(
                 .map(|name| vec![ComposerReferenceArg::Skill { name: name.into() }])
                 .unwrap_or_default();
             let turn_model = active_model_label(&ctx.models.get());
-            ctx.items.set(vec![
-                ChatItem::User(visible),
-                ChatItem::Assistant {
-                    text: String::new(),
-                    model: turn_model,
-                    resources: Vec::new(),
-                },
-            ]);
-            force_chat_bottom();
             spawn_local(async move {
                 let handwriting_vision = if skill == Some(HANDWRITING_EXTRACT_SKILL) {
                     let v =
@@ -344,7 +379,6 @@ fn start_guided_capability_chat(
                         )
                         .into(),
                     );
-                    ctx.items.set(Vec::new());
                     return;
                 }
                 let id = match invoke_new_session().await {
@@ -354,6 +388,30 @@ fn start_guided_capability_chat(
                         return;
                     }
                 };
+                replace_visible_transcript(
+                    ctx.active_session.get_untracked(),
+                    Some(&id),
+                    vec![
+                        ChatItem::User(visible),
+                        ChatItem::Assistant {
+                            text: String::new(),
+                            model: turn_model,
+                            resources: Vec::new(),
+                        },
+                    ],
+                    ctx.items,
+                    ctx.transcripts,
+                    ctx.running,
+                );
+                ctx.active_session.set(Some(id.clone()));
+                force_chat_bottom();
+                bind_and_report_guided_capability_session(
+                    &id,
+                    prompt_key,
+                    skill,
+                    specialist,
+                )
+                .await;
                 if let Some(title) = session_title {
                     let arg = to_value(&serde_json::json!({
                         "id": id,
@@ -380,7 +438,6 @@ fn start_guided_capability_chat(
                         return;
                     }
                 }
-                ctx.active_session.set(Some(id.clone()));
                 if specialist.is_some() {
                     let arg = to_value(&serde_json::json!({ "frameId": id })).unwrap();
                     let v = invoke("get_session_specialist", arg).await;
@@ -486,6 +543,7 @@ fn dispatch_capability_action(
                     ctx.active_session.set(Some(id));
                     ctx.refresh_session_history.call(());
                     focus_composer();
+                    dispatch_report_usage(&action);
                 });
             }
             CapabilityAction::GuidedChat {
@@ -500,6 +558,7 @@ fn dispatch_capability_action(
             }
             CapabilityAction::OpenSettings { section } => {
                 ctx.open_settings.call(Some(section.to_string()));
+                dispatch_report_usage(&action);
             }
             CapabilityAction::OpenPanel(CapabilityPanel::Files) => {
                 ctx.show_projects.set(false);
@@ -509,16 +568,19 @@ fn dispatch_capability_action(
                     ctx.open_right_tabs,
                     ctx.right_tab,
                 );
+                dispatch_report_usage(&action);
             }
             CapabilityAction::OpenPanel(CapabilityPanel::Graph) => {
                 ctx.show_projects.set(false);
                 ctx.show_research_graph.set(true);
                 refresh_research_graph(ctx.research_graph);
+                dispatch_report_usage(&action);
             }
             CapabilityAction::OpenPanel(CapabilityPanel::Publication) => {
                 ctx.show_projects.set(false);
                 ctx.publication_binding_source.set(None);
                 ctx.show_publication_workspace.set(true);
+                dispatch_report_usage(&action);
             }
             CapabilityAction::OpenPanel(CapabilityPanel::Agents) => {
                 ctx.show_projects.set(false);
@@ -528,6 +590,7 @@ fn dispatch_capability_action(
                     ctx.open_right_tabs,
                     ctx.right_tab,
                 );
+                dispatch_report_usage(&action);
             }
             CapabilityAction::OpenDemo => {
                 ctx.project_open_error.set(None);
@@ -536,10 +599,12 @@ fn dispatch_capability_action(
                 ctx.items.set(vec![]);
                 ctx.active_session.set(None);
                 refresh_demo_list(ctx.demos);
+                dispatch_report_usage(&action);
             }
             CapabilityAction::ComingSoon | CapabilityAction::None => {}
             CapabilityAction::OpenRuntimeSetup => {
                 ctx.open_runtime_setup.call(());
+                dispatch_report_usage(&action);
             }
         }
     })
@@ -727,6 +792,53 @@ mod tests {
             ),
             "Ask 5 questions\n\nbody"
         );
+    }
+
+    #[test]
+    fn coaching_frames_block_proactive_workspace_scan() {
+        for locale in [Locale::En, Locale::Zh] {
+            let socratic = tf(locale, "caps.prompt.socratic_frame", &[("skill", "demo")]);
+            let guided = t(locale, "caps.prompt.guided_frame");
+            let director = t(locale, "caps.prompt.director_rules");
+            for frame in [&socratic, &guided, &director] {
+                assert!(
+                    frame.contains("Materials gate") || frame.contains("材料门槛"),
+                    "locale {:?} frame missing materials gate",
+                    locale
+                );
+                assert!(
+                    frame.contains("Do NOT list, glob, find")
+                        || frame.contains("禁止 list/glob/find"),
+                    "locale {:?} frame missing no-scan rule",
+                    locale
+                );
+            }
+        }
+        let handwriting = t(Locale::Zh, "caps.skill.handwriting_extract.prompt");
+        assert!(handwriting.contains("不要自行扫描项目目录找图"));
+        assert!(handwriting.contains("上传或粘贴手写照片"));
+    }
+
+    #[test]
+    fn handwriting_launch_shows_column_format_tip() {
+        let tip_zh = t(Locale::Zh, HANDWRITING_EXTRACT_TIP);
+        let (visible, sent) = capability_launch_texts(
+            Locale::Zh,
+            "caps.skill.handwriting_extract.prompt",
+            Some(HANDWRITING_EXTRACT_SKILL),
+        );
+        assert!(visible.contains(&tip_zh), "{visible}");
+        assert!(sent.contains(&tip_zh), "{sent}");
+        assert_eq!(strip_capability_coach(&sent), visible.trim());
+
+        let tip_en = t(Locale::En, HANDWRITING_EXTRACT_TIP);
+        let (visible, sent) = capability_launch_texts(
+            Locale::En,
+            "caps.skill.handwriting_extract.prompt",
+            Some(HANDWRITING_EXTRACT_SKILL),
+        );
+        assert!(visible.contains(&tip_en), "{visible}");
+        assert!(sent.contains(&tip_en), "{sent}");
     }
 
     #[test]

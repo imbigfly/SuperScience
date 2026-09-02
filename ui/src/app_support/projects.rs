@@ -1,4 +1,5 @@
 use super::*;
+use crate::ability_cards::{ability_card_by_id, spawn_report_ability_card_usage, RESEARCH_DIRECTOR_ID};
 
 #[component]
 pub(crate) fn ProjectsScreen(
@@ -992,6 +993,9 @@ pub(crate) fn ProjectsScreen(
                     class="director-cta-btn"
                     data-testid="director-kickoff"
                     on:click=move |_| {
+                        if let Some(meta) = ability_card_by_id(RESEARCH_DIRECTOR_ID) {
+                            spawn_report_ability_card_usage(&meta);
+                        }
                         on_capability_action.call(
                             crate::capabilities_home::CapabilityAction::GuidedChat {
                                 prompt_key: "caps.prompt.director_kickoff",

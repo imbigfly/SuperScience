@@ -14,14 +14,19 @@ Help the user go from "I have some data" to a scored topic shortlist.
 
 ## Intake (at most five questions)
 
-Prefer attachments or paths (data dictionary, table header, ethics letter)
-over questionnaires. Then ask only for remaining blockers among:
+First ask the user to upload materials (data dictionary, table header, ethics
+letter) or to paste an explicit path. Do not list/glob/browse the project to
+invent an inventory before they point at files.
+
+Prefer attachments or paths they name over questionnaires. Then ask only for
+remaining blockers among:
 
 1. Target journal or article type
 2. Time / language constraints
 3. Whether they can still collect data
 
-Inspect files yourself. Do not ask for n or column names you can read.
+Once materials are in, inspect files yourself. Do not ask for n or column
+names you can read.
 
 ## Deliverables (write all three)
 

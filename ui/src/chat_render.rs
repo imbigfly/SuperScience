@@ -511,22 +511,22 @@ mod steps_title_tests {
                 Locale::En,
                 false,
                 true,
-                Some("The model is consulting its neurons…"),
+                Some("AI is hard at work…"),
                 1,
                 None
             ),
-            "The model is consulting its neurons…"
+            "AI is hard at work…"
         );
         assert_eq!(
             steps_title(
                 Locale::Zh,
                 false,
                 true,
-                Some("模型正在和神经元商量…"),
+                Some("AI正在努力工作…"),
                 1,
                 None
             ),
-            "模型正在和神经元商量…"
+            "AI正在努力工作…"
         );
     }
 }

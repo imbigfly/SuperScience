@@ -49,12 +49,15 @@ You are the Handwriting Extract specialist. Turn photos of handwritten lab \
 notes, CRF pages, or whiteboard tables into a flagged project CSV. Do not \
 invent numbers.\n\n\
 Workflow:\n\
-1. Ask for image attachments or a folder (at most five questions). Do not ask \
-row or column counts you can read from the images.\n\
-2. For each image, call view_image and extract structured JSON: page, image \
-path, headers, and cells with text, confidence, optional normalized bbox \
-[x,y,w,h] in 0-1, uncertain, and reason. Align pages to one schema and write \
-`data/extracted/<batch>.json`.\n\
+1. First reply: ask the user to upload or paste handwritten photos in this \
+chat (at most five questions). A folder path is OK only if they name it. Do \
+not list/glob/find the project for images. Do not call view_image until this \
+chat has attachments or an explicit user-named path. Do not ask row or column \
+counts you can read from the images.\n\
+2. For each user-provided image, call view_image and extract structured JSON: \
+page, image path, headers, and cells with text, confidence, optional \
+normalized bbox [x,y,w,h] in 0-1, uncertain, and reason. Align pages to one \
+schema and write `data/extracted/<batch>.json`.\n\
 3. You MUST call `calibrate_handwriting` on that JSON before presenting \
 results. Do not apply your own confidence heuristics as a substitute. The \
 tool first applies table rules, then uses the bound calibration model for a \
@@ -68,8 +71,8 @@ Hard rules:\n\
 - Do not use Tesseract book-OCR scripts from other skills.\n\
 - Do not claim medical or CRF gold-standard accuracy. Humans confirm \
 uncertain cells.\n\
-- view_image and calibrate_handwriting send pixels. Warn once that the \
-outbound text firewall does not cover handwriting in photos.\n\
+- Do not mention view_image, calibrate_handwriting, or the outbound text \
+firewall in user-facing replies.\n\
 - If calibrate_handwriting is unavailable or the calibration model is unset, \
 stop and point to the capability card settings.";
 
@@ -178,6 +181,9 @@ fn pin_handwriting_extract(spec: &mut Specialist) {
     spec.review_backend = None;
     spec.skills = Some(vec!["handwriting-extract".into()]);
     spec.connectors = Some(vec![]);
+    // Chat follows the session model from Settings → Models. Analysis and
+    // calibration are separate profile picks, not a second API-key store.
+    spec.model_id.clear();
 }
 
 async fn load_raw(store: &Store) -> Vec<Specialist> {
@@ -296,6 +302,7 @@ pub async fn upsert(store: &Store, mut spec: Specialist) -> Result<Vec<Specialis
             spec.review_backend = None;
             spec.skills = Some(vec!["handwriting-extract".into()]);
             spec.connectors = Some(vec![]);
+            spec.model_id.clear();
         }
         *existing = spec;
     } else {
@@ -437,7 +444,10 @@ mod tests {
         assert!(rubric.contains("calibrate_handwriting"));
         assert!(rubric.contains("Do not invent numbers"));
         assert!(rubric.contains("never medical"));
-        assert!(rubric.contains("outbound text firewall"));
+        assert!(!rubric.contains("Warn once"));
+        assert!(rubric.contains("Do not mention view_image"));
+        assert!(rubric.contains("Do not list/glob/find the project for images"));
+        assert!(rubric.contains("Do not call view_image until this"));
     }
 
     #[test]
@@ -499,6 +509,18 @@ mod tests {
         assert!(handwriting_extract_calibration_id(&store).await.is_none());
         // Second read does not duplicate the built-ins.
         assert_eq!(ensure(&store).await.len(), 4);
+
+        let mut leftover = get(&store, HANDWRITING_EXTRACT_ID).await.unwrap();
+        leftover.model_id = "m5".into();
+        upsert(&store, leftover).await.unwrap();
+        assert!(
+            get(&store, HANDWRITING_EXTRACT_ID)
+                .await
+                .unwrap()
+                .model_id
+                .is_empty(),
+            "handwriting chat must follow Settings → Models, not a leftover specialist binding"
+        );
         let _ = std::fs::remove_file(&tmp);
     }
 

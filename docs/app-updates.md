@@ -102,6 +102,13 @@ already exist.
 CI may still upload `latest.json` as a release artifact. The client no longer
 reads it. `src-tauri/tauri.conf.json` does not configure `plugins.updater`.
 
+Feedback email in shipped installers is baked at compile time. Set the
+repository Actions secret `SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD` to the Feishu
+mailbox client password before cutting a release; macOS / Windows / Linux
+release jobs fail if it is empty. Local packaging
+(`scripts/package-macos-local.sh`) exports the same variable from
+`src-tauri/config/feedback.local.toml` when it is not already set.
+
 ## Manual smoke test
 
 1. Point `TCTOKEN_API_BASE` at an environment that already serves

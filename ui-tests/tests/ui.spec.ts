@@ -28,6 +28,23 @@ async function expectInsideViewport(locator: Locator, width: number, height: num
   expect(box!.y + box!.height).toBeLessThanOrEqual(height);
 }
 
+async function revealHiddenModelEntries(page: Page) {
+  const proxy = page.getByTestId("proxy-url");
+  await expect(proxy).toBeVisible();
+  await proxy.click();
+  for (let i = 0; i < 8; i++) {
+    await page.keyboard.press(" ");
+  }
+}
+
+async function clickAddApiAccess(page: Page) {
+  const add = page.getByRole("button", { name: /Add API access/i });
+  if (!(await add.isVisible().catch(() => false))) {
+    await revealHiddenModelEntries(page);
+  }
+  await add.click();
+}
+
 async function openModelsSettings(page: Page) {
   await globalSettingsButton(page).click();
   await page.getByRole("button", { name: "Models" }).click();
@@ -35,7 +52,7 @@ async function openModelsSettings(page: Page) {
   if (await row.count()) {
     await row.click();
   } else {
-    await page.getByRole("button", { name: /Add API access/i }).click();
+    await clickAddApiAccess(page);
   }
   await expect(providerSelect(page)).toBeVisible();
 }
@@ -1352,6 +1369,32 @@ test("effort flyout closes on Escape before the model menu", async ({ page }) =>
 
   await page.keyboard.press("Escape");
   await expect(page.locator(".model-menu")).toHaveCount(0);
+});
+
+test("model add and presets stay hidden until eight spaces in the proxy field", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Models");
+  await expect(page.getByTestId("add-provider")).toHaveCount(0);
+  await expect(page.getByTestId("model-presets")).toHaveCount(0);
+
+  const proxy = page.getByTestId("proxy-url");
+  const before = await proxy.inputValue();
+  await proxy.click();
+  for (let i = 0; i < 7; i++) {
+    await page.keyboard.press(" ");
+  }
+  await expect(page.getByTestId("add-provider")).toHaveCount(0);
+  await expect(proxy).toHaveValue(before);
+
+  await page.keyboard.press(" ");
+  await expect(page.getByTestId("add-provider")).toBeVisible();
+  await expect(page.getByTestId("model-presets")).toBeVisible();
+  await expect(proxy).toHaveValue(before);
+
+  await page.getByRole("button", { name: "Appearance", exact: true }).click();
+  await page.getByRole("button", { name: "Models", exact: true }).click();
+  await expect(page.getByTestId("add-provider")).toHaveCount(0);
+  await expect(page.getByTestId("model-presets")).toHaveCount(0);
 });
 
 test("Settings Models page can open ACP Agents dialog", async ({ page }) => {
@@ -8330,7 +8373,7 @@ test("model settings rejects max output tokens above the known ceiling", async (
 test("model settings auto-fills catalog limits and save clamps to them", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Models");
-  await page.getByRole("button", { name: /Add API access/i }).click();
+  await clickAddApiAccess(page);
 
   // Changing the URL refreshes suggested model ids; type the catalog id after.
   await page.getByLabel("Base URL").fill("https://api.kimi.com/coding/v1");
@@ -8353,7 +8396,7 @@ test("model settings auto-fills catalog limits and save clamps to them", async (
 test("API access creates several models with one key, including an explicit image endpoint", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Models");
-  await page.getByRole("button", { name: /Add API access/i }).click();
+  await clickAddApiAccess(page);
 
   await expect(page.getByTestId("provider-byok-hint")).toContainText("shared Base URL and key once");
   await page.getByLabel("Base URL").fill("https://api.openai.com");
@@ -8398,7 +8441,7 @@ test("API access creates several models with one key, including an explicit imag
 test("API access reuses a stored key for the same Base URL", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Models");
-  await page.getByRole("button", { name: /Add API access/i }).click();
+  await clickAddApiAccess(page);
 
   // Default DeepSeek URL already has a saved key in the mock list.
   await expect(page.getByTestId("provider-api-key")).toHaveAttribute(
@@ -8418,7 +8461,7 @@ test("API access reuses a stored key for the same Base URL", async ({ page }) =>
 test("one DeepSeek Base URL can save Responses and Anthropic protocol models", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Models");
-  await page.getByRole("button", { name: /Add API access/i }).click();
+  await clickAddApiAccess(page);
 
   await page.getByLabel("Base URL").fill("https://api.deepseek.com");
   const rows = page.getByTestId("provider-model-row");
@@ -8563,7 +8606,7 @@ test("runtime setup stays open while using other capabilities", async ({ page })
 test("API access on xAI suggests grok chat and imagine image", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Models");
-  await page.getByRole("button", { name: /Add API access/i }).click();
+  await clickAddApiAccess(page);
   await page.getByLabel("Base URL").fill("https://api.x.ai");
   await expect(page.getByTestId("provider-model-row")).toHaveCount(2);
   await expect(page.getByTestId("provider-model-row").nth(0).getByLabel("Model ID")).toHaveValue("grok-4.6");
@@ -9281,6 +9324,10 @@ test("handwriting extract opens settings instead of chat when no vision model is
   });
   const sent = await lastInvokeArgs(page, "send_message");
   expect(JSON.stringify(sent?.references ?? [])).toContain("handwriting-extract");
+  expect(String(sent?.message ?? "")).toContain("describe the format of each column");
+  const bubble = page.locator(".msg.user").first();
+  await expect(bubble).toBeVisible();
+  await expect(bubble).toContainText("describe the format of each column");
   await expect.poll(() => lastInvokeArgs(page, "rename_session")).toMatchObject({
     title: expect.stringMatching(/^Handwritten data extract · /),
   });
@@ -9310,6 +9357,36 @@ test("capability card hides coaching frame from the user bubble", async ({ page 
   await expect(bubble).toBeVisible();
   await expect(bubble).not.toContainText("Capability coaching");
   await expect(bubble).toContainText("Inventory the data and materials");
+});
+
+test("capability card opens a new chat while another session is still streaming", async ({ page }) => {
+  await enterApp(page);
+  await newSessionButton(page).click();
+  await page.locator(".model-picker-btn").click();
+  await page.getByRole("button", { name: /Test ACP Agent/ }).click();
+  await composer(page).fill("ACP LONG");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByRole("button", { name: "Stop" })).toBeVisible();
+  const runningId = await page.locator(".side-item.ses.active").getAttribute("data-session-id");
+  expect(runningId).toBeTruthy();
+
+  await page.getByRole("button", { name: "Back to projects" }).click();
+  await expect(page.locator(".projects-screen")).toBeVisible();
+  await expect(page.getByTestId("capability-scene")).toBeVisible();
+  await page.getByRole("tab", { name: "Efficiency tools" }).click();
+
+  const sessionsBefore = (await invokeArgsList(page, "new_session")).length;
+  const sendsBefore = await invokeCount(page, "send_message");
+  await page.getByTestId("cap-tile-topic-coach").click();
+
+  await expect.poll(async () => (await invokeArgsList(page, "new_session")).length, { timeout: 15_000 })
+    .toBe(sessionsBefore + 1);
+  await expect.poll(() => invokeCount(page, "send_message"), { timeout: 15_000 }).toBeGreaterThan(sendsBefore);
+  const sent = await lastInvokeArgs(page, "send_message");
+  expect(String(sent?.message ?? "")).toContain("Capability coaching");
+  expect(String(sent?.sessionId ?? "")).not.toBe(runningId);
+  await expect(page.locator(".side-item.ses.active")).not.toHaveAttribute("data-session-id", runningId!);
+  await expect(page.locator(".msg.user").first()).toContainText("Inventory the data and materials");
 });
 
 test("handwriting extract opens settings instead of chat when no calibration model is saved", async ({ page }) => {
@@ -9739,7 +9816,7 @@ test("model form inputs keep focus while typing (#62)", async ({ page }) => {
   // The provider-level add form has a separate multi-model editor. Its
   // edit/add view gate must also remain stable as a model row changes.
   await page.getByRole("button", { name: "Cancel" }).click();
-  await page.getByRole("button", { name: /Add API access/i }).click();
+  await clickAddApiAccess(page);
   const providerModel = page.getByTestId("provider-model-id").first();
   await providerModel.fill("");
   await providerModel.pressSequentially("deepseek-v4-flash-x");
@@ -11443,7 +11520,7 @@ test("selecting preview text quotes it into chat and saves a review annotation",
 test("scratch chat opens from landing and closes on Escape", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator(".projects-screen")).toBeVisible();
-  await page.getByRole("button", { name: "Scratch chat" }).click();
+  await page.getByRole("button", { name: "Start conversation" }).click();
   await expect.poll(async () => (await invokeArgsList(page, "new_session")).length).toBeGreaterThan(0);
   await expect(page.locator(".app.scratch-mode")).toBeVisible();
   await expect(page.locator(".scratch-title")).toHaveText("Scratch chat");

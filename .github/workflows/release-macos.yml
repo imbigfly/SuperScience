@@ -64,6 +64,17 @@ jobs:
           command -v trunk >/dev/null 2>&1 || cargo install trunk --locked
           command -v cargo-tauri >/dev/null 2>&1 || cargo install tauri-cli --version "^2" --locked
 
+      # Baked into the binary via option_env! so installed apps can send feedback
+      # without a sidecar feedback.local.toml. Never commit the password.
+      - name: Require feedback SMTP password secret
+        env:
+          SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD: ${{ secrets.SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD }}
+        run: |
+          if [ -z "${SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD:-}" ]; then
+            echo "::error::Set repository secret SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD (Feishu mailbox client password) so release builds can send feedback email." >&2
+            exit 1
+          fi
+
       # Import the Developer ID cert into a temp keychain and extract the signing
       # identity at runtime, so no hardcoded APPLE_SIGNING_IDENTITY secret is needed.
       - name: Import Developer ID certificate
@@ -107,6 +118,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD: ${{ secrets.SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD }}
         with:
           projectPath: src-tauri
           tauriScript: cargo tauri

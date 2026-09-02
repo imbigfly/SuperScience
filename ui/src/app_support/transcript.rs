@@ -468,6 +468,12 @@ pub(crate) fn browser_offline_notice_from_items(
 }
 
 pub(crate) fn composer_text_from_user_message(text: &str) -> String {
+    transcript_suffix_index(text)
+        .map(|idx| text[..idx].trim().to_string())
+        .unwrap_or_else(|| text.to_string())
+}
+
+fn transcript_suffix_index(text: &str) -> Option<usize> {
     [
         "\n\nUploaded files: ",
         "\n\nAttached artifacts: ",
@@ -483,8 +489,19 @@ pub(crate) fn composer_text_from_user_message(text: &str) -> String {
     .iter()
     .filter_map(|marker| text.find(marker))
     .min()
-    .map(|idx| text[..idx].trim().to_string())
-    .unwrap_or_else(|| text.to_string())
+}
+
+pub(crate) fn user_message_has_transcript_suffix(text: &str) -> bool {
+    transcript_suffix_index(text).is_some()
+}
+
+/// Stable user-typed body for matching optimistic sends to backend User acks.
+/// Capability launches show a short visible bubble but send coaching frames;
+/// strip those before comparing so we do not append a duplicate row.
+pub(crate) fn user_turn_match_body(text: &str) -> String {
+    composer_text_from_user_message(crate::text::strip_capability_coach(text))
+        .trim()
+        .to_string()
 }
 
 pub(crate) fn user_message_index(items: &[ChatItem], ui_index: usize) -> Option<usize> {

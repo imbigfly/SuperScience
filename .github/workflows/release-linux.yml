@@ -89,11 +89,23 @@ jobs:
           ln -sf "$GITHUB_WORKSPACE/scripts/wasm-bindgen-wrapper.sh" "$HOME/.cargo/bin/wasm-bindgen"
           wasm-bindgen.real --version
 
+      # Baked into the binary via option_env! so installed apps can send feedback
+      # without a sidecar feedback.local.toml. Never commit the password.
+      - name: Require feedback SMTP password secret
+        env:
+          SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD: ${{ secrets.SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD }}
+        run: |
+          if [ -z "${SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD:-}" ]; then
+            echo "::error::Set repository secret SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD (Feishu mailbox client password) so release builds can send feedback email." >&2
+            exit 1
+          fi
+
       # No updater artifacts on Linux: the macOS workflow owns latest.json.
       # Pass releaseId so tauri-action uploads assets without rewriting notes.
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD: ${{ secrets.SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD }}
         with:
           projectPath: src-tauri
           tauriScript: cargo tauri

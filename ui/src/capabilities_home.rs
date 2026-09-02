@@ -1,6 +1,7 @@
 //! Curated capability discovery tiles shared by the projects home and the
 //! fullscreen Capabilities overlay.
 
+use crate::ability_cards::{ability_card_by_id, spawn_report_ability_card_usage};
 use crate::app_support::{compose_icon, save_view_pref};
 use crate::bindings::{invoke, invoke_checked};
 use crate::dto::ModelProfile;
@@ -825,8 +826,8 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
             "handwriting_extract",
             "grid",
             help(
-                "Upload photos of handwritten lab notes or CRF pages. The handwriting expert reads them with the analysis model, calibrates flagged cells with the calibration model, and marks uncertain spots.",
-                "上传手写实验本或 CRF 照片。手写提取专家用图片分析模型识图，再用校准模型核对存疑格子，并标出位置。",
+                "Upload photos of handwritten lab notes or CRF pages. The handwriting expert reads them with the analysis model, calibrates flagged cells with the calibration model, and marks uncertain spots. When you send photos, also describe the format of each column — recognition accuracy improves a lot.",
+                "上传手写实验本或 CRF 照片。手写提取专家用图片分析模型识图，再用校准模型核对存疑格子，并标出位置。发送图片同时对每列数据进行格式说明，识别率会显著提高。",
             ),
         )
         .with_settings(CapabilityCardSettings::HandwritingModels),
@@ -1691,6 +1692,20 @@ mod tests {
             } => {}
             other => panic!("expected handwriting specialist+skill tile, got {other:?}"),
         }
+        assert!(
+            handwriting
+                .help
+                .get(Locale::Zh)
+                .contains("发送图片同时对每列数据进行格式说明，识别率会显著提高。"),
+            "handwriting help should mention column-format tips"
+        );
+        assert!(
+            handwriting
+                .help
+                .get(Locale::En)
+                .contains("describe the format of each column"),
+            "English handwriting help should mention column-format tips"
+        );
         let knowledge = capability_catalog()
             .iter()
             .find(|t| t.id == "knowledge")
@@ -2482,11 +2497,17 @@ pub(crate) fn CapabilityTileGrid(
     let set_pii_enabled = move |on: bool| {
         pii_firewall_enabled.set(on);
         spawn_local(async move {
-            let _ = invoke_checked(
+            if invoke_checked(
                 "set_pii_firewall_enabled",
                 to_value(&serde_json::json!({ "enabled": on })).unwrap(),
             )
-            .await;
+            .await
+            .is_ok()
+            {
+                if let Some(meta) = ability_card_by_id("pii-firewall") {
+                    spawn_report_ability_card_usage(&meta);
+                }
+            }
         });
     };
     let save_pii_terms = move |_| persist_pii_terms();
@@ -2540,8 +2561,12 @@ pub(crate) fn CapabilityTileGrid(
                             </div>
                         }.into_view()
                     } else if matches!(tile.action, CapabilityAction::ComingSoon) {
+                        let tile_id = tile.id;
                         let open_soon = Callback::new(move |_| {
                             coming_soon_tile.set(Some(tile));
+                            if let Some(meta) = ability_card_by_id(tile_id) {
+                                spawn_report_ability_card_usage(&meta);
+                            }
                         });
                         capability_action_tile(tile, locale, open_soon, on_help, None)
                             .into_view()
