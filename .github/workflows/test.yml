@@ -156,14 +156,10 @@ jobs:
           workspaces: ui -> target
           cache-on-failure: true
 
-      - name: Cache Trunk
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin
-          key: trunk-${{ runner.os }}-v1
-
       - name: Install Trunk
-        run: command -v trunk >/dev/null 2>&1 || cargo install trunk --locked
+        uses: ./.github/actions/install-tauri-tools
+        with:
+          install-tauri-cli: false
 
       - uses: actions/setup-node@v4
         with:

@@ -1,0 +1,99 @@
+name: Install Trunk and Tauri CLI
+description: >-
+  Download prebuilt trunk and cargo-tauri binaries instead of `cargo install`,
+  which compiles both from source for 10-20+ minutes whenever the binary cache
+  misses (GitHub evicts caches untouched for 7 days). Skips a tool already on
+  PATH, so it composes with any binary cache a workflow still keeps.
+
+inputs:
+  trunk-version:
+    description: trunk release tag in trunk-rs/trunk
+    required: false
+    default: v0.21.14
+  tauri-cli-version:
+    description: cargo-tauri release tag in tauri-apps/tauri (tauri-cli-v prefix)
+    required: false
+    default: tauri-cli-v2.11.4
+  install-tauri-cli:
+    description: also install cargo-tauri (set false for jobs that only need trunk)
+    required: false
+    default: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        RUNNER_OS: ${{ runner.os }}
+        RUNNER_ARCH: ${{ runner.arch }}
+        TRUNK_TAG: ${{ inputs.trunk-version }}
+        TAURI_TAG: ${{ inputs.tauri-cli-version }}
+        INSTALL_TAURI: ${{ inputs.install-tauri-cli }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$HOME/.cargo/bin"
+        TMP="$(mktemp -d)"
+        trap 'rm -rf "$TMP"' EXIT
+
+        case "$RUNNER_OS/$RUNNER_ARCH" in
+          macOS/ARM64)  TARGET=aarch64-apple-darwin ;;
+          macOS/X64)    TARGET=x86_64-apple-darwin ;;
+          Linux/X64)    TARGET=x86_64-unknown-linux-musl ;;
+          Linux/ARM64)  TARGET=aarch64-unknown-linux-gnu ;;
+          Windows/X64)  TARGET=x86_64-pc-windows-msvc ;;
+          *) echo "::error::Unsupported runner $RUNNER_OS/$RUNNER_ARCH" >&2; exit 1 ;;
+        esac
+
+        unpack() {
+          case "$1" in
+            *.zip)
+              if command -v unzip >/dev/null 2>&1; then
+                unzip -q -o "$1" -d "$2"
+              else
+                PY="$(command -v python3 || command -v python)"
+                "$PY" -c 'import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' "$1" "$2"
+              fi
+              ;;
+            *) tar -xzf "$1" -C "$2" ;;
+          esac
+        }
+
+        # trunk-rs/trunk publishes a prebuilt binary for every runner above.
+        if ! command -v trunk >/dev/null 2>&1; then
+          curl -fsSL --retry 3 -o "$TMP/trunk.asset" \
+            "https://github.com/trunk-rs/trunk/releases/download/${TRUNK_TAG}/trunk-${TARGET}.tar.gz"
+          mkdir "$TMP/trunk" && unpack "$TMP/trunk.asset" "$TMP/trunk"
+          install -m 0755 "$(find "$TMP/trunk" -type f \( -name trunk -o -name trunk.exe \) | head -1)" \
+            "$HOME/.cargo/bin/trunk"
+        fi
+        trunk --version
+
+        if [ "$INSTALL_TAURI" != "true" ]; then
+          echo "skipping cargo-tauri (install-tauri-cli=false)"
+          exit 0
+        fi
+        if ! command -v cargo-tauri >/dev/null 2>&1; then
+          if [ "$RUNNER_OS/$RUNNER_ARCH" = "Linux/ARM64" ]; then
+            # No cargo-tauri prebuilt for linux-arm64, but the npm package
+            # ships the same CLI as a native arm64 binary. Fall back to a
+            # source build if npm fails.
+            NPM_VER="${TAURI_TAG#tauri-cli-v}"
+            if npm install -g "@tauri-apps/cli@${NPM_VER}"; then
+              ln -sf "$(command -v tauri)" "$HOME/.cargo/bin/cargo-tauri"
+            else
+              echo "npm fallback failed; compiling tauri-cli from source" >&2
+              cargo install tauri-cli --version "^2" --locked
+            fi
+          else
+            case "$TARGET" in
+              *-unknown-linux-*) EXT=tgz ;;
+              *)                 EXT=zip ;;
+            esac
+            curl -fsSL --retry 3 -o "$TMP/tauri-cli.asset" \
+              "https://github.com/tauri-apps/tauri/releases/download/${TAURI_TAG}/cargo-tauri-${TARGET}.${EXT}"
+            mkdir "$TMP/tauri-cli" && unpack "$TMP/tauri-cli.asset" "$TMP/tauri-cli"
+            install -m 0755 "$(find "$TMP/tauri-cli" -type f \( -name cargo-tauri -o -name cargo-tauri.exe \) | head -1)" \
+              "$HOME/.cargo/bin/cargo-tauri"
+          fi
+        fi
+        cargo-tauri --version

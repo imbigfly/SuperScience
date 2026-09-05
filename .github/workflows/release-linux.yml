@@ -67,24 +67,30 @@ jobs:
             ui -> target
           cache-on-failure: true
 
-      - name: Cache Trunk and Tauri CLI
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin
-          key: tauri-tools-${{ runner.os }}-${{ runner.arch }}-v1
+      - name: Install Trunk and Tauri CLI
+        uses: ./.github/actions/install-tauri-tools
 
       # wasm-bindgen-cli must stay pinned at 0.2.96 with the repo's wrapper
       # installed over it: webkit2gtk 2.52.3 on aarch64 cannot expose externref
       # tables, so the wasm must be built without reference-types. See
-      # scripts/wasm-bindgen-wrapper.sh for the full explanation.
-      - name: Install Trunk, Tauri CLI and pinned wasm-bindgen
+      # scripts/wasm-bindgen-wrapper.sh for the full explanation. Pulled from
+      # the release assets instead of cargo install (10+ min compile).
+      - name: Install pinned wasm-bindgen
         run: |
           set -euo pipefail
-          command -v trunk >/dev/null 2>&1 || cargo install trunk --locked
-          command -v cargo-tauri >/dev/null 2>&1 || cargo install tauri-cli --version "^2" --locked
+          case "${{ runner.arch }}" in
+            ARM64) WBG_TARGET=aarch64-unknown-linux-gnu ;;
+            X64)   WBG_TARGET=x86_64-unknown-linux-gnu ;;
+            *) echo "::error::Unsupported arch ${{ runner.arch }}" >&2; exit 1 ;;
+          esac
           if ! command -v wasm-bindgen.real >/dev/null 2>&1 || ! wasm-bindgen.real --version | grep -q '0\.2\.96'; then
-            cargo install wasm-bindgen-cli --version 0.2.96 --locked
-            mv "$HOME/.cargo/bin/wasm-bindgen" "$HOME/.cargo/bin/wasm-bindgen.real"
+            TMP="$(mktemp -d)"
+            trap 'rm -rf "$TMP"' EXIT
+            curl -fsSL --retry 3 -o "$TMP/wbg.tar.gz" \
+              "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.96/wasm-bindgen-0.2.96-${WBG_TARGET}.tar.gz"
+            tar -xzf "$TMP/wbg.tar.gz" -C "$TMP"
+            install -m 0755 "$(find "$TMP" -type f -name wasm-bindgen | head -1)" \
+              "$HOME/.cargo/bin/wasm-bindgen.real"
           fi
           ln -sf "$GITHUB_WORKSPACE/scripts/wasm-bindgen-wrapper.sh" "$HOME/.cargo/bin/wasm-bindgen"
           wasm-bindgen.real --version

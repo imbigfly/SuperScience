@@ -72,8 +72,13 @@ superscience-sync = { path = "crates/superscience-sync" }
 superscience-dto = { path = "crates/superscience-dto" }
 
 [profile.release]
-codegen-units = 1
-lto = true
+# thin LTO over fat LTO + parallel codegen: fat LTO/1 put the whole
+# optimization pass on the serial link step, so every release rebuild paid the
+# full link cost even for one-line changes. opt-level "s" + strip still carry
+# the size budget; the size/runtime delta of thin LTO is within noise for this
+# IO-bound app.
+codegen-units = 16
+lto = "thin"
 opt-level = "s"
 panic = "abort"
 strip = true

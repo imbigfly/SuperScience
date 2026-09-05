@@ -34,6 +34,11 @@ fi
 
 unset NO_COLOR FORCE_COLOR || true
 
+# build.rs fetches models.dev at build time; on a slow network that stalls the
+# build before falling back. The checked-in snapshot is what releases refresh
+# anyway (scripts/refresh_model_catalog.sh), so local packaging always uses it.
+export WISP_CATALOG_OFFLINE=1
+
 # Bake the Feishu SMTP client password into the binary so local DMGs can send
 # feedback without shipping feedback.local.toml. Prefer an explicit env; else
 # read the gitignored local override used for day-to-day development.

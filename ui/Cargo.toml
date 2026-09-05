@@ -29,7 +29,10 @@ futures-channel = "0.3"
 [workspace]
 
 # wasm32 defaults to abort; unwind lets install_panic_hook keep the renderer
-# alive after an OwnerDisposed race in a keyed row.
+# alive after an OwnerDisposed race in a keyed row. "s" matches the desktop
+# size budget; the built-in release default (opt-level 3) bloated the bundle
+# shipped inside the app. No LTO: wasm-ld link time dominates trunk builds.
 [profile.release-wasm]
 inherits = "release"
+opt-level = "s"
 panic = "unwind"
