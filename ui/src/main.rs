@@ -33,7 +33,8 @@ use agent_workflows::{
     agent_workflows_panel, refresh_agent_resources, refresh_agent_workflows, AgentPanelState,
 };
 use app_overlays::{
-    advance_browser_tab_cleanup, present_browser_tab_cleanup, BrowserTabCleanupOverlay,
+    advance_browser_tab_cleanup, present_browser_needs_human, present_browser_tab_cleanup,
+    BrowserNeedsHumanOverlay, BrowserNeedsHumanOverlayState, BrowserTabCleanupOverlay,
     BrowserTabCleanupOverlayState, ContextRecoveryOverlay, ContextRecoveryOverlayState,
     ExternalLinkConfirm, ProjectExportPrompt, ProjectExportPromptState, ProjectTransferOverlay,
     ProjectTransferOverlayState, SshConnectivityOverlay, SshConnectivityOverlayState,
@@ -82,9 +83,10 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use text::{
     dom_value, event_target_checked, event_target_value, file_kind, format_bytes,
-    group_artifact_indices, ime_composing, join_path, md_to_html, note_composition_end,
-    opens_in_system_browser, parent_path, runtime_language, strip_capability_coach,
-    user_message_presentation,
+    group_artifact_indices, ime_composing, is_runtime_code_selection, join_path, md_to_html,
+    note_composition_end, opens_in_system_browser, parent_path, provider_defaults,
+    runtime_language, strip_capability_coach, user_message_presentation, DEEPSEEK_FLASH_MODEL,
+    DEEPSEEK_PRO_MODEL,
 };
 use trajectory::TrajectoryOverlay;
 use user_center::{refresh_tctoken_session, TctokenSession, UserCenterOverlay};
@@ -111,6 +113,36 @@ const SIDEBAR_RESIZER_WIDTH: f64 = 10.0;
 const THEME_STORAGE_KEY: &str = "wisp-theme";
 const SIDE_CHAT_SCROLLER_ID: &str = "side-chat-scroller";
 const SIDE_CHAT_INPUT_ID: &str = "side-chat-input";
+
+fn service_tier_enabled(value: &str) -> bool {
+    matches!(value.trim(), "priority" | "fast")
+}
+
+fn supports_fast_service_tier(profile: &ModelProfile) -> bool {
+    profile.is_chat_model()
+        && matches!(
+            profile.provider.trim(),
+            "openai" | "openai_responses" | "openai-responses" | "responses"
+        )
+}
+
+fn selected_fast_profile(
+    models: &[ModelProfile],
+    session_models: &HashMap<String, String>,
+    session_id: Option<&str>,
+    acp_selected: bool,
+) -> Option<ModelProfile> {
+    if acp_selected
+        || session_id
+            .and_then(|id| session_models.get(id))
+            .is_some_and(|id| id.starts_with("acp:"))
+    {
+        return None;
+    }
+    session_profile(models, session_models, session_id)
+        .filter(|profile| supports_fast_service_tier(profile))
+        .cloned()
+}
 
 /// Let component-owned inner surfaces consume Escape before the app-level
 /// stack sees it. The listener is capture-phase and owner-scoped, so it does
@@ -643,8 +675,65 @@ fn App() -> impl IntoView {
         conversation_outline_selected.set(None);
     });
     let session_model_ids = create_rw_signal::<HashMap<String, String>>(HashMap::new());
+    // Map presence means the backend value has loaded; its nested None means
+    // this conversation inherits the selected model profile's Fast default.
+    let session_service_tiers = create_rw_signal::<HashMap<String, Option<String>>>(HashMap::new());
+    // A pre-send Fast override is held in memory until the first frame exists.
+    // None means the selected profile default needs no override.
+    let pending_service_tier = create_rw_signal::<Option<String>>(None);
+    let service_tier_busy = create_rw_signal(false);
     let acp_agents = create_rw_signal::<Vec<AcpAgentProfile>>(vec![]);
     let active_acp_agent_id = create_rw_signal::<Option<String>>(None);
+    let fast_profile = Signal::derive(move || {
+        selected_fast_profile(
+            &models.get(),
+            &session_model_ids.get(),
+            active_session.get().as_deref(),
+            active_acp_agent_id.get().is_some(),
+        )
+    });
+    let fast_enabled = create_memo(move |_| {
+        let profile_default = fast_profile
+            .get()
+            .as_ref()
+            .is_some_and(|profile| service_tier_enabled(&profile.service_tier));
+        match active_session.get() {
+            Some(session_id) => session_service_tiers
+                .with(|values| values.get(&session_id).cloned())
+                .flatten()
+                .map_or(profile_default, |value| service_tier_enabled(&value)),
+            None => pending_service_tier
+                .get()
+                .map_or(profile_default, |value| service_tier_enabled(&value)),
+        }
+    });
+    // A staged pre-send override belongs to the selected HTTP profile. If the
+    // user switches profile and the staged target now equals that profile's
+    // default (or selects ACP/unsupported), there is nothing to persist.
+    create_effect(move |_| {
+        if active_session.get().is_some() {
+            return;
+        }
+        match (fast_profile.get(), pending_service_tier.get()) {
+            (None, Some(_)) => pending_service_tier.set(None),
+            (Some(profile), Some(value))
+                if service_tier_enabled(&profile.service_tier) == service_tier_enabled(&value) =>
+            {
+                pending_service_tier.set(None)
+            }
+            _ => {}
+        }
+    });
+    let fast_is_session_override = create_memo(move |_| match active_session.get() {
+        Some(session_id) => session_service_tiers
+            .with(|values| values.get(&session_id).is_some_and(Option::is_some)),
+        None => pending_service_tier.get().is_some(),
+    });
+    let fast_loaded = create_memo(move |_| {
+        active_session.get().is_none_or(|session_id| {
+            session_service_tiers.with(|values| values.contains_key(&session_id))
+        })
+    });
     let settings_busy = create_rw_signal(false);
     let settings_message = create_rw_signal::<Option<(bool, String)>>(None);
     // Model & specialist settings domain: form signals + save/validate/test
@@ -811,6 +900,47 @@ fn App() -> impl IntoView {
     });
     let model_switch_confirm = create_rw_signal::<Option<(String, String, bool)>>(None);
     let status = create_rw_signal(String::new());
+    let toggle_fast = Callback::new(move |_: ()| {
+        if service_tier_busy.get_untracked() || busy.get_untracked() {
+            return;
+        }
+        let Some(profile) = fast_profile.get_untracked() else {
+            return;
+        };
+        let target_enabled = !fast_enabled.get_untracked();
+        let profile_default = service_tier_enabled(&profile.service_tier);
+        let override_value = if target_enabled == profile_default {
+            None
+        } else if target_enabled {
+            Some("priority".to_string())
+        } else {
+            Some(String::new())
+        };
+        let Some(session_id) = active_session.get_untracked() else {
+            pending_service_tier.set(override_value);
+            return;
+        };
+        service_tier_busy.set(true);
+        spawn_local(async move {
+            let args = to_value(&serde_json::json!({
+                "sessionId": session_id.clone(),
+                "serviceTier": override_value.clone(),
+            }))
+            .unwrap();
+            match invoke_checked("set_session_service_tier", args).await {
+                Ok(_) => {
+                    session_service_tiers.update(|values| {
+                        values.insert(session_id, override_value);
+                    });
+                }
+                Err(error) => show_warning_toast(&localize_backend(
+                    locale.get_untracked(),
+                    &js_error_text(error),
+                )),
+            }
+            service_tier_busy.set(false);
+        });
+    });
     let compaction_active = create_rw_signal(false);
     let switch_http_model = Callback::new(move |(id, dont_ask_again): (String, bool)| {
         provisional_acp_selection.set(None);
@@ -873,6 +1003,70 @@ fn App() -> impl IntoView {
     // Live web retrieval failed because the Chrome extension is disconnected.
     // Root-owned so Escape can dismiss it without first focusing the banner.
     let browser_offline_notice = create_rw_signal::<Option<BrowserOfflineNotice>>(None);
+    // A connected extension can still be too old for this build. Keep this
+    // separate from the offline verdict: live retrieval may work while newer
+    // capabilities fail, and the remediation is an extension update.
+    let browser_extension_status = create_rw_signal::<Option<BrowserExtensionStatus>>(None);
+    let browser_extension_update_busy = create_rw_signal(false);
+    let browser_extension_update_outcome = create_rw_signal::<Option<String>>(None);
+    let browser_extension_update_error = create_rw_signal::<Option<String>>(None);
+    let browser_extension_dismissed_version = create_rw_signal::<Option<String>>(None);
+    let refresh_browser_extension_status = Callback::new(move |()| {
+        spawn_local(async move {
+            let value = invoke("browser_extension_status", JsValue::UNDEFINED).await;
+            let Ok(status) = from_value::<BrowserExtensionStatus>(value) else {
+                return;
+            };
+            if status.update_required {
+                let target = status.bundled_version.clone().unwrap_or_default();
+                if browser_extension_dismissed_version
+                    .get_untracked()
+                    .as_deref()
+                    != Some(target.as_str())
+                {
+                    browser_extension_status.set(Some(status));
+                }
+            } else {
+                browser_extension_status.set(None);
+                browser_extension_update_outcome.set(None);
+                browser_extension_update_error.set(None);
+            }
+        });
+    });
+    refresh_browser_extension_status.call(());
+    {
+        // A manual Reload tears down and recreates the service worker without a
+        // Tauri event. Poll while the app is alive so successful reloads are
+        // detected and the compatibility banner clears automatically.
+        let ticks = Cell::new(0_u8);
+        let startup_ticks = Cell::new(0_u8);
+        let refresh = Closure::wrap(Box::new(move || {
+            let tick = (ticks.get() + 1) % 5;
+            ticks.set(tick);
+            let startup_tick = startup_ticks.get();
+            if startup_tick < 5 {
+                startup_ticks.set(startup_tick + 1);
+            }
+            if startup_tick < 5 || browser_extension_status.get_untracked().is_some() || tick == 0 {
+                refresh_browser_extension_status.call(());
+            }
+        }) as Box<dyn FnMut()>);
+        let poll_window = web_sys::window();
+        let interval = poll_window.as_ref().and_then(|window| {
+            window
+                .set_interval_with_callback_and_timeout_and_arguments_0(
+                    refresh.as_ref().unchecked_ref(),
+                    2_000,
+                )
+                .ok()
+        });
+        on_cleanup(move || {
+            if let (Some(window), Some(interval)) = (poll_window, interval) {
+                window.clear_interval_with_handle(interval);
+            }
+            drop(refresh);
+        });
+    }
     // A transcript records the connection state at tool-call time. Recheck the
     // live bridge once whenever a notice appears so a reconnect does not leave
     // a stale banner on screen or revive one after a session reload.
@@ -892,6 +1086,9 @@ fn App() -> impl IntoView {
     let browser_tab_cleanup_selected = create_rw_signal(HashSet::<(String, i64)>::new());
     let browser_tab_cleanup_busy = create_rw_signal(false);
     let browser_tab_cleanup_error = create_rw_signal(None::<String>);
+    let browser_needs_human = create_rw_signal(None::<BrowserNeedsHumanPrompt>);
+    let browser_needs_human_busy = create_rw_signal(false);
+    let browser_needs_human_error = create_rw_signal(None::<String>);
     // "不再提醒更新" opt-out; loaded on startup, mirrored by the settings toggle.
     let update_check_enabled = create_rw_signal(true);
     // Set when a send fails because no API key is configured, so the status bar
@@ -1007,6 +1204,7 @@ fn App() -> impl IntoView {
     let drop_target = create_rw_signal::<Option<String>>(None);
     let session_execution_contexts = create_rw_signal::<HashSet<String>>(HashSet::new());
     let default_execution_context = create_rw_signal::<Option<String>>(None);
+    let session_default_execution_context = create_rw_signal::<Option<String>>(None);
     create_effect(move |_| {
         let Some(session_id) = active_session.get() else {
             return;
@@ -1026,11 +1224,51 @@ fn App() -> impl IntoView {
     });
     create_effect(move |_| {
         let Some(session_id) = active_session.get() else {
-            session_execution_contexts.set(HashSet::new());
             return;
         };
-        session_execution_contexts.set(HashSet::new());
-        refresh_session_execution_contexts(session_execution_contexts, active_session, session_id);
+        spawn_local(async move {
+            let args = to_value(&serde_json::json!({ "sessionId": session_id.clone() })).unwrap();
+            match invoke_checked("get_session_service_tier", args).await {
+                Ok(value) => {
+                    let tier = value.as_string();
+                    session_service_tiers.update(|values| {
+                        values.insert(session_id, tier);
+                    });
+                }
+                Err(error) => {
+                    session_service_tiers.update(|values| {
+                        values.insert(session_id, None);
+                    });
+                    web_sys::console::warn_1(
+                        &format!("get_session_service_tier failed: {:?}", error).into(),
+                    );
+                }
+            }
+        });
+    });
+    create_effect(move |_| {
+        let Some(session_id) = active_session.get() else {
+            if !session_execution_contexts.get_untracked().is_empty() {
+                session_execution_contexts.set(HashSet::new());
+            }
+            if session_default_execution_context.get_untracked().is_some() {
+                session_default_execution_context.set(None);
+            }
+            return;
+        };
+        if !session_execution_contexts.get_untracked().is_empty() {
+            session_execution_contexts.set(HashSet::new());
+        }
+        refresh_session_execution_contexts(
+            session_execution_contexts,
+            active_session,
+            session_id.clone(),
+        );
+        refresh_session_default_execution_context(
+            session_default_execution_context,
+            active_session,
+            session_id,
+        );
     });
     create_effect(move |_| {
         let Some(session_id) = active_session.get() else {
@@ -1085,7 +1323,8 @@ fn App() -> impl IntoView {
         let Some(session_id) = active_session.get() else {
             return;
         };
-        if acp_session_modes.with_untracked(|all| all.contains_key(&session_id)) {
+        if acp_session_modes.with_untracked(|all| all.contains_key(&session_id))
+            && acp_session_configs.with_untracked(|all| all.contains_key(&session_id)) {
             return;
         }
         spawn_local(async move {
@@ -1093,14 +1332,17 @@ fn App() -> impl IntoView {
             let Ok(value) = invoke_checked("get_acp_session_state", args).await else {
                 return;
             };
-            let Ok(Some(modes)) =
-                serde_wasm_bindgen::from_value::<Option<serde_json::Value>>(value)
+            let Ok(Some(state)) =
+                serde_wasm_bindgen::from_value::<Option<AcpSessionState>>(value)
             else {
                 return;
             };
-            acp_session_modes.update(|all| {
-                all.entry(session_id).or_insert(modes);
-            });
+            if let Some(modes) = state.modes {
+                acp_session_modes.update(|all| { all.entry(session_id.clone()).or_insert(modes); });
+            }
+            if let Some(options) = state.config_options {
+                acp_session_configs.update(|all| { all.entry(session_id).or_insert(options); });
+            }
         });
     });
 
@@ -1367,10 +1609,21 @@ fn App() -> impl IntoView {
     });
     let agent_panel = AgentPanelState::new(active_session);
     let workflow_studio_state = AgentPanelState::new(active_session);
-    refresh_agent_resources(workflow_studio_state, specialists);
+    create_effect(move |_| {
+        if project_info.get().is_none() {
+            return;
+        }
+        refresh_agent_resources(workflow_studio_state, specialists);
+    });
     let file_source = create_rw_signal("local".to_string());
     let file_query = create_rw_signal(String::new());
     let file_cwd = create_rw_signal(".".to_string());
+    let file_sort = create_rw_signal(load_view_pref(
+        FILE_SORT_PREF,
+        FILE_SORT_NAME,
+        &[FILE_SORT_NAME, FILE_SORT_SIZE, FILE_SORT_MODIFIED],
+    ));
+    let file_sort_menu_open = create_rw_signal(false);
     let file_entries = create_rw_signal::<Vec<DirEntry>>(vec![]);
     let file_search_hits = create_rw_signal::<Vec<FileSearchHit>>(vec![]);
     let selecting_workspace_entries = create_rw_signal(false);
@@ -1395,6 +1648,17 @@ fn App() -> impl IntoView {
     });
     let center_files = create_rw_signal::<Vec<CenterFileTab>>(vec![]);
     let center_file = create_rw_signal::<Option<String>>(None);
+    let snapshot_workspace_path = create_memo(move |_| {
+        let path = center_file.get()?;
+        snapshot_workspace_source(
+            &path,
+            &items.get(),
+            project_info
+                .get()
+                .as_ref()
+                .map(|project| project.root.as_str()),
+        )
+    });
     // Live MCP Apps use the same center-tab surface as files, but their HTML,
     // tool input, and result stay in a separate instance map so in-memory tab
     // snapshots do not repeatedly clone multi-megabyte payloads. The backend
@@ -1416,8 +1680,19 @@ fn App() -> impl IntoView {
     // outlived one would point at a process that no longer exists.
     let center_runtime_binding = create_rw_signal::<HashMap<String, String>>(HashMap::new());
     let center_console = create_rw_signal::<RuntimeConsoles>(RuntimeConsoles::new());
+    let center_plots = create_rw_signal::<RuntimePlots>(RuntimePlots::new());
     let center_run_busy = create_rw_signal::<Option<String>>(None);
     let center_runtime_panel = create_rw_signal(false);
+    // Unsaved editor drafts per file path. Kept outside the editor component so
+    // a preview remount (agent FileChanged bumps the revision) cannot drop what
+    // the user typed.
+    let center_editor_drafts = create_rw_signal::<HashMap<String, String>>(HashMap::new());
+    // RStudio-quadrant geometry: right column width and bottom row height as
+    // percentages of the workbench, adjusted by dragging the pane dividers.
+    let center_runtime_right_w = create_rw_signal(34.0_f64);
+    let center_runtime_bottom_h = create_rw_signal(32.0_f64);
+    let center_runtime_col_dragging = create_rw_signal(false);
+    let center_runtime_row_dragging = create_rw_signal(false);
     // Runtime inspection belongs to the active source tab, so a newly selected
     // file starts with its full preview until the user asks for the panel.
     create_effect(move |_| {
@@ -1767,6 +2042,12 @@ fn App() -> impl IntoView {
     // Declared up here (not with the other context-view signals) so the
     // composer @ menu can offer servers and runtimes alongside artifacts.
     let execution_contexts = create_rw_signal::<Vec<ExecutionContext>>(vec![]);
+    // Also up here: the agent event handler below refreshes runtime status and
+    // the open memory environment after each finished python/r tool call.
+    let runtime_infos = create_rw_signal::<Vec<RuntimeInfo>>(vec![]);
+    let runtime_environment = create_rw_signal(None::<RuntimeSlot>);
+    let runtime_object_states =
+        create_rw_signal::<HashMap<String, RuntimeObjectState>>(HashMap::new());
     create_effect(move |_| {
         let Some(mode) = picker_mode.get() else {
             return;
@@ -2204,8 +2485,10 @@ fn App() -> impl IntoView {
         attach_chat_autoscroll();
     });
 
-    // Wire the agent event stream once. Every event carries the session frame
-    // id; route transcript mutations to `items` (active session) or the
+    // Wire the agent event stream once, on this native window only. Process-level
+    // listen() still receives emit_to aimed at another project window, so two
+    // workspaces would share one live stream. Every event carries the session
+    // frame id; route transcript mutations to `items` (active session) or the
     // `transcripts` cache (background session) so parallel conversations don't
     // interleave in the view.
     let items_cb = items;
@@ -2699,6 +2982,21 @@ fn App() -> impl IntoView {
                 if active_cb.get_untracked().as_deref() == Some(frame_id.as_str()) {
                     schedule_chat_follow();
                 }
+                // A finished python/r cell changed interpreter state. Refresh
+                // the runtime status chips and, when the memory environment
+                // for that language is open, re-inspect it so the variable
+                // table follows the agent without a manual sync click.
+                if matches!(name.as_str(), "python" | "r")
+                    && active_cb.get_untracked().as_deref() == Some(frame_id.as_str())
+                {
+                    refresh_runtime_environment_after_tool(
+                        name.clone(),
+                        runtime_environment,
+                        runtime_object_states,
+                        runtime_infos,
+                        locale,
+                    );
+                }
             }
             AgentEvent::ToolPresentation {
                 frame_id,
@@ -3157,9 +3455,9 @@ fn App() -> impl IntoView {
     let agent_js = cb.as_ref().unchecked_ref::<js_sys::Function>().clone();
     std::mem::forget(cb);
     // wasm-bindgen only runs an async extern's JS body when the returned
-    // future is polled, so we must await `listen` (not fire-and-forget it).
+    // future is polled, so we must await `listen_current_window`.
     spawn_local(async move {
-        let _ = listen("agent", &agent_js).await;
+        let _ = listen_current_window("agent", &agent_js).await;
     });
 
     // Confirm handler: render an inline approval card in the session thread
@@ -3232,7 +3530,7 @@ fn App() -> impl IntoView {
         .clone();
     std::mem::forget(confirm_cb);
     spawn_local(async move {
-        let _ = listen("confirm-request", &confirm_js).await;
+        let _ = listen_current_window("confirm-request", &confirm_js).await;
     });
 
     let browser_cleanup_pending = browser_tab_cleanup;
@@ -3256,24 +3554,68 @@ fn App() -> impl IntoView {
         .clone();
     std::mem::forget(browser_cleanup_cb);
     spawn_local(async move {
-        let _ = listen("browser-tab-cleanup", &browser_cleanup_js).await;
-        if let Ok(value) =
-            invoke_checked("list_pending_browser_tab_cleanups", JsValue::UNDEFINED).await
-        {
-            if let Ok(prompts) =
-                serde_wasm_bindgen::from_value::<Vec<BrowserTabCleanupPrompt>>(value)
+        let _ = listen_current_window("browser-tab-cleanup", &browser_cleanup_js).await;
+    });
+    let browser_human_pending = browser_needs_human;
+    let browser_human_error = browser_needs_human_error;
+    let browser_human_cb = Closure::wrap(Box::new(move |payload: JsValue| {
+        if let Ok(prompt) = serde_wasm_bindgen::from_value::<BrowserNeedsHumanPrompt>(payload) {
+            present_browser_needs_human(browser_human_pending, browser_human_error, prompt);
+        }
+    }) as Box<dyn FnMut(JsValue)>);
+    let browser_human_js = browser_human_cb
+        .as_ref()
+        .unchecked_ref::<js_sys::Function>()
+        .clone();
+    std::mem::forget(browser_human_cb);
+    spawn_local(async move {
+        let _ = listen_current_window("browser-needs-human", &browser_human_js).await;
+    });
+    let browser_project = create_memo(move |_| project_info.get().map(|project| project.id));
+    create_effect(move |_| {
+        let project_id = browser_project.get();
+        browser_tab_cleanup.set(None);
+        browser_tab_cleanup_queue.set(Vec::new());
+        browser_tab_cleanup_selected.set(HashSet::new());
+        browser_tab_cleanup_error.set(None);
+        browser_tab_cleanup_busy.set(false);
+        browser_needs_human.set(None);
+        browser_needs_human_error.set(None);
+        browser_needs_human_busy.set(false);
+        let Some(project_id) = project_id else { return };
+        spawn_local(async move {
+            if let Ok(value) =
+                invoke_checked("list_pending_browser_tab_cleanups", JsValue::UNDEFINED).await
             {
-                for prompt in prompts {
-                    present_browser_tab_cleanup(
-                        browser_cleanup_pending,
-                        browser_cleanup_queue,
-                        browser_cleanup_selected,
-                        browser_cleanup_error,
-                        prompt,
-                    );
+                if browser_project.get_untracked().as_ref() != Some(&project_id) {
+                    return;
+                }
+                if let Ok(prompts) =
+                    serde_wasm_bindgen::from_value::<Vec<BrowserTabCleanupPrompt>>(value)
+                {
+                    for prompt in prompts {
+                        present_browser_tab_cleanup(
+                            browser_cleanup_pending,
+                            browser_cleanup_queue,
+                            browser_cleanup_selected,
+                            browser_cleanup_error,
+                            prompt,
+                        );
+                    }
                 }
             }
-        }
+            if let Ok(value) =
+                invoke_checked("list_pending_browser_needs_human", JsValue::UNDEFINED).await
+            {
+                if browser_project.get_untracked().as_ref() != Some(&project_id) {
+                    return;
+                }
+                if let Ok(prompt) = serde_wasm_bindgen::from_value::<BrowserNeedsHumanPrompt>(value)
+                {
+                    present_browser_needs_human(browser_human_pending, browser_human_error, prompt);
+                }
+            }
+        });
     });
     let acp_permission_items = items;
     let acp_permission_active = active_session;
@@ -3318,7 +3660,7 @@ fn App() -> impl IntoView {
         .clone();
     acp_permission_cb.forget();
     spawn_local(async move {
-        let _ = listen("permission-request", &acp_permission_js).await;
+        let _ = listen_current_window("permission-request", &acp_permission_js).await;
     });
 
     let acp_update_buf = delta_buf.clone();
@@ -3425,7 +3767,7 @@ fn App() -> impl IntoView {
         .clone();
     acp_update_cb.forget();
     spawn_local(async move {
-        let _ = listen("acp-session-update", &acp_update_js).await;
+        let _ = listen_current_window("acp-session-update", &acp_update_js).await;
     });
 
     let project_transfer_cb = Closure::wrap(Box::new(move |payload: JsValue| {
@@ -3465,7 +3807,7 @@ fn App() -> impl IntoView {
         .clone();
     acp_state_cb.forget();
     spawn_local(async move {
-        let _ = listen("acp-session-state", &acp_state_js).await;
+        let _ = listen_current_window("acp-session-state", &acp_state_js).await;
     });
 
     let acp_resolved_cb = Closure::wrap(Box::new(move |payload: JsValue| {
@@ -3491,7 +3833,7 @@ fn App() -> impl IntoView {
         .clone();
     acp_resolved_cb.forget();
     spawn_local(async move {
-        let _ = listen("permission-resolved", &acp_resolved_js).await;
+        let _ = listen_current_window("permission-resolved", &acp_resolved_js).await;
     });
 
     // ACP `ask_user`: the bridge parks the agent's question until the user
@@ -3523,7 +3865,7 @@ fn App() -> impl IntoView {
         .clone();
     ask_user_cb.forget();
     spawn_local(async move {
-        let _ = listen("ask-user-request", &ask_user_js).await;
+        let _ = listen_current_window("ask-user-request", &ask_user_js).await;
     });
 
     let ask_resolved_cb = Closure::wrap(Box::new(move |payload: JsValue| {
@@ -3556,7 +3898,7 @@ fn App() -> impl IntoView {
         .clone();
     ask_resolved_cb.forget();
     spawn_local(async move {
-        let _ = listen("ask-user-resolved", &ask_resolved_js).await;
+        let _ = listen_current_window("ask-user-resolved", &ask_resolved_js).await;
     });
 
     let stop = move |_| {
@@ -3625,6 +3967,8 @@ fn App() -> impl IntoView {
             return;
         }
         let active = active_session.get();
+        let creates_session = active.is_none();
+        let pending_fast = pending_service_tier.get();
         // Any prior send-failed hint (e.g. the max_tokens truncation notice) is
         // stale once a new turn is committed; the Ok path never cleared it, so it
         // lingered forever. Clear it here so continuing the conversation dismisses it.
@@ -3755,6 +4099,34 @@ fn App() -> impl IntoView {
                     }
                 }
             };
+            if creates_session && agent_id.is_none() {
+                if let Some(service_tier) = pending_fast.clone() {
+                    let args = to_value(&serde_json::json!({
+                        "sessionId": id.clone(),
+                        "serviceTier": service_tier.clone(),
+                    }))
+                    .unwrap();
+                    if let Err(error) = invoke_checked("set_session_service_tier", args).await {
+                        active_session.set(Some(id.clone()));
+                        input.set(message);
+                        attachments.set(saved_attachments);
+                        composer_references.set(refs);
+                        composer_quotes.set(quotes);
+                        status.set(send_failed(locale.get(), &js_error_text(error)));
+                        refresh_session_history();
+                        return;
+                    }
+                    session_service_tiers.update(|values| {
+                        values.insert(id.clone(), Some(service_tier));
+                    });
+                }
+                pending_service_tier.set(None);
+            }
+            // Keep the selection even if ACP startup fails before its binding
+            // exists. The new frame id was not available in the model picker.
+            if let Some(agent_id) = &agent_id {
+                provisional_acp_selection.set(Some((id.clone(), agent_id.clone())));
+            }
             // Mark the turn pending before touching active_session so the
             // session→ACP lookup effect does not clear a just-selected agent
             // while send_message is still binding a newly activated session.
@@ -6737,12 +7109,8 @@ fn App() -> impl IntoView {
         }
         current
     });
-    let runtime_environment = create_rw_signal(None::<RuntimeSlot>);
     let runtime_environment_pinned = create_rw_signal(false);
     let runtime_environment_position = create_rw_signal((16, 16));
-    let runtime_infos = create_rw_signal::<Vec<RuntimeInfo>>(vec![]);
-    let runtime_object_states =
-        create_rw_signal::<HashMap<String, RuntimeObjectState>>(HashMap::new());
     let run_clock = create_rw_signal(now_secs());
     // The transfer tray needs the shared clock only while the active session
     // has an active or briefly lingering transfer. Once the last card expires,
@@ -6895,6 +7263,11 @@ fn App() -> impl IntoView {
                         }
                         if active_session.get_untracked().as_deref() == Some(session_id.as_str()) {
                             session_execution_contexts.set(ids.into_iter().collect());
+                            refresh_session_default_execution_context(
+                                session_default_execution_context,
+                                active_session,
+                                session_id.clone(),
+                            );
                         }
                         // First enable of a server in this project: ask where
                         // uploads, run workdirs, and retrieved results go.
@@ -6978,9 +7351,55 @@ fn App() -> impl IntoView {
                     let Ok(saved) = serde_wasm_bindgen::from_value::<Option<String>>(value) else {
                         return;
                     };
-                    default_execution_context.set(saved.clone());
-                    // Make the new default usable in the current session right away.
-                    if let Some(id) = saved {
+                    default_execution_context.set(saved);
+                }
+                Err(error) => {
+                    let message = localize_backend(locale.get_untracked(), &js_error_text(error));
+                    show_toast(&message);
+                }
+            }
+        });
+    });
+
+    let set_session_default_compute_resource = Callback::new(move |context_id: Option<String>| {
+        if demo_mode.get_untracked() {
+            return;
+        }
+        spawn_local(async move {
+            let (session_id, created) = match active_session.get_untracked() {
+                Some(session_id) => (session_id, false),
+                None => match invoke_new_session().await {
+                    Ok(session_id) => (session_id, true),
+                    Err(error) => {
+                        show_toast(&send_failed(locale.get_untracked(), &error));
+                        return;
+                    }
+                },
+            };
+            let args = to_value(&serde_json::json!({
+                "sessionId": session_id.clone(),
+                "contextId": context_id,
+            }))
+            .unwrap();
+            match invoke_checked("set_session_default_execution_context", args).await {
+                Ok(value) => {
+                    let Ok(saved) = serde_wasm_bindgen::from_value::<Option<String>>(value) else {
+                        return;
+                    };
+                    if created && active_session.get_untracked().is_none() {
+                        active_session.set(Some(session_id.clone()));
+                        items.set(vec![]);
+                        refresh_session_history();
+                    }
+                    if active_session.get_untracked().as_deref() == Some(session_id.as_str()) {
+                        session_default_execution_context.set(saved.clone());
+                        refresh_session_execution_contexts(
+                            session_execution_contexts,
+                            active_session,
+                            session_id,
+                        );
+                    }
+                    if let Some(id) = saved.filter(|id| id != "local") {
                         apply_session_compute_resource.call((id, true));
                     }
                 }
@@ -7139,7 +7558,14 @@ fn App() -> impl IntoView {
     }
     {
         let refresh = Closure::wrap(Box::new(move || {
-            if show_right.get_untracked() && right_tab.get_untracked() == RightTab::Hosts {
+            // While a turn runs, agent python/r cells move runtimes between
+            // starting/busy/ready outside any UI action; poll so the composer
+            // strip and memory environment status stay current. The equality
+            // guard in refresh_runtimes keeps unchanged polls from
+            // republishing (and re-rendering) anything.
+            if busy.get_untracked()
+                || (show_right.get_untracked() && right_tab.get_untracked() == RightTab::Hosts)
+            {
                 refresh_runtimes(runtime_infos);
             }
         }) as Box<dyn FnMut()>);
@@ -7333,6 +7759,10 @@ fn App() -> impl IntoView {
             }
             if action == "revealInFileManager" {
                 reveal_in_file_manager(payload);
+                return;
+            }
+            if action == "openWorkspacePathInSystem" {
+                open_workspace_path_in_system(payload);
                 return;
             }
             if action == "copyImage" {
@@ -7827,6 +8257,14 @@ fn App() -> impl IntoView {
             external_link_confirm.set(None);
             return;
         }
+        if browser_needs_human.get().is_some() {
+            ev.prevent_default();
+            if !browser_needs_human_busy.get() {
+                browser_needs_human.set(None);
+                browser_needs_human_error.set(None);
+            }
+            return;
+        }
         if browser_tab_cleanup.get().is_some() {
             ev.prevent_default();
             if !browser_tab_cleanup_busy.get() {
@@ -8195,6 +8633,12 @@ fn App() -> impl IntoView {
             center_split_dragging.set(false);
             return;
         }
+        if center_runtime_col_dragging.get() || center_runtime_row_dragging.get() {
+            ev.prevent_default();
+            center_runtime_col_dragging.set(false);
+            center_runtime_row_dragging.set(false);
+            return;
+        }
         if composer_dragging.get() {
             ev.prevent_default();
             composer_dragging.set(false);
@@ -8224,6 +8668,15 @@ fn App() -> impl IntoView {
         if browser_offline_notice.get().is_some() {
             ev.prevent_default();
             browser_offline_notice.set(None);
+            return;
+        }
+        if let Some(status) = browser_extension_status.get() {
+            ev.prevent_default();
+            browser_extension_dismissed_version
+                .set(Some(status.bundled_version.unwrap_or_default()));
+            browser_extension_status.set(None);
+            browser_extension_update_outcome.set(None);
+            browser_extension_update_error.set(None);
             return;
         }
 
@@ -8305,19 +8758,31 @@ fn App() -> impl IntoView {
     });
 
     window_event_listener(ev::resize, move |_| {
-        let Some(geom) = context_usage_geom.get_untracked() else {
-            return;
-        };
         let (viewport_w, viewport_h) = viewport_size();
-        let clamped =
-            clamp_context_usage_geom(geom.x, geom.y, geom.w, geom.h, viewport_w, viewport_h);
-        if clamped != geom {
-            context_usage_geom.set(Some(clamped));
+        if let Some(geom) = context_usage_geom.get_untracked() {
+            let clamped =
+                clamp_context_usage_geom(geom.x, geom.y, geom.w, geom.h, viewport_w, viewport_h);
+            if clamped != geom {
+                context_usage_geom.set(Some(clamped));
+            }
+        }
+        // The pinned R/Python inspector stores pixel coordinates from the
+        // current window. Restoring from maximize leaves those coordinates
+        // past the new right/bottom edge, so the panel vanishes until the
+        // window is maximized again.
+        if runtime_environment_pinned.get_untracked() {
+            let (x, y) = runtime_environment_position.get_untracked();
+            let next =
+                clamp_runtime_environment_position_in(x, y, viewport_w as i32, viewport_h as i32);
+            if next != (x, y) {
+                runtime_environment_position.set(next);
+            }
         }
     });
 
     // Selecting text inside any file preview (tagged `data-file-path`) raises the
-    // same quote popup the chat uses, plus an "annotate" action. Runs on window
+    // same quote popup the chat uses. Papers also get annotate / literature;
+    // R/Python source gets Run instead. Runs on window
     // so it covers the center preview, the artifact modal, and the right pane
     // uniformly. Fires after the chat's own element handler during bubbling, so
     // it only clears/replaces a *preview* popup (source == Some) and never stomps
@@ -8339,7 +8804,16 @@ fn App() -> impl IntoView {
         if in_popup {
             return;
         }
-        let json = preview_selection();
+        // File links and buttons own the click (image preview, artifact chip).
+        // Do not also raise the quote bar from a leftover selection of the
+        // control's label — that stacks on top of the preview.
+        if context_menu::selection_popup_blocked(&ev) {
+            if matches!(selection_popup.get_untracked(), Some((_, Some(_), _, _))) {
+                selection_popup.set(None);
+            }
+            return;
+        }
+        let json = preview_selection(ev.client_x(), ev.client_y());
         if json.is_empty() {
             if matches!(selection_popup.get_untracked(), Some((_, Some(_), _, _))) {
                 selection_popup.set(None);
@@ -8389,6 +8863,14 @@ fn App() -> impl IntoView {
             show_right.set(false);
         }
         focus_composer();
+    });
+
+    // User-initiated scroll (wheel/trackpad) — not follow-scroll — should
+    // hide the fixed quote popup, whose client coordinates are now stale.
+    window_event_listener(ev::wheel, move |_| {
+        if selection_popup.get_untracked().is_some() {
+            selection_popup.set(None);
+        }
     });
 
     // Dismiss the selection popup on any press outside it: starting a new
@@ -9179,6 +9661,11 @@ fn App() -> impl IntoView {
                 }
             }
             "scratch" => open_scratch.call(()),
+            "new-window" => {
+                spawn_local(async move {
+                    let _ = invoke("open_new_window", JsValue::UNDEFINED).await;
+                });
+            }
             "search" => command_palette_open.set(true),
             "commands" => action_palette_open.set(true),
             "projects" => show_projects.set(true),
@@ -9303,6 +9790,7 @@ fn App() -> impl IntoView {
                 other => {
                     if let Some(action) = match other {
                         "new" => Some("new"),
+                        "new-window" => Some("new-window"),
                         "search" => Some("search"),
                         "commands" => Some("commands"),
                         "projects" => Some("projects"),
@@ -9337,7 +9825,7 @@ fn App() -> impl IntoView {
             .clone();
         native_menu_cb.forget();
         spawn_local(async move {
-            let _ = listen("native-menu-action", &native_menu_js).await;
+            let _ = listen_current_window("native-menu-action", &native_menu_js).await;
         });
     }
     let palette_project_id = Signal::derive(move || project_info.get().map(|p| p.id));
@@ -9575,9 +10063,13 @@ fn App() -> impl IntoView {
                     return;
                 };
                 browser_tab_cleanup_busy.set(true);
+                let project_id = browser_project.get_untracked();
                 spawn_local(async move {
                     let arg = to_value(&serde_json::json!({ "turnId": prompt.turn_id })).unwrap();
                     let _ = invoke_checked("dismiss_browser_tab_cleanup", arg).await;
+                    if browser_project.get_untracked() != project_id {
+                        return;
+                    }
                     advance_browser_tab_cleanup(
                         browser_tab_cleanup,
                         browser_tab_cleanup_queue,
@@ -9595,12 +10087,17 @@ fn App() -> impl IntoView {
                     return;
                 };
                 browser_tab_cleanup_busy.set(true);
+                let project_id = browser_project.get_untracked();
                 spawn_local(async move {
                     let arg = to_value(&serde_json::json!({
                         "turnId": prompt.turn_id,
                         "tabs": tabs,
                     })).unwrap();
-                    match invoke_checked("confirm_browser_tab_cleanup", arg).await {
+                    let result = invoke_checked("confirm_browser_tab_cleanup", arg).await;
+                    if browser_project.get_untracked() != project_id {
+                        return;
+                    }
+                    match result {
                         Ok(_) => advance_browser_tab_cleanup(
                             browser_tab_cleanup,
                             browser_tab_cleanup_queue,
@@ -9611,6 +10108,96 @@ fn App() -> impl IntoView {
                         Err(err) => {
                             browser_tab_cleanup_busy.set(false);
                             browser_tab_cleanup_error.set(Some(js_error_text(err)));
+                        }
+                    }
+                });
+            })
+        />
+        <BrowserNeedsHumanOverlay
+            state=BrowserNeedsHumanOverlayState {
+                locale,
+                pending: browser_needs_human,
+                busy: browser_needs_human_busy,
+                error: browser_needs_human_error,
+            }
+            on_later=Callback::new(move |_| {
+                if browser_needs_human_busy.get_untracked() {
+                    return;
+                }
+                browser_needs_human.set(None);
+                browser_needs_human_error.set(None);
+            })
+            on_show=Callback::new(move |tab: BrowserNeedsHumanTab| {
+                if browser_needs_human_busy.get_untracked() {
+                    return;
+                }
+                spawn_local(async move {
+                    let arg = to_value(&serde_json::json!({
+                        "session": tab.session,
+                        "tabId": tab.tab_id,
+                    })).unwrap();
+                    let _ = invoke_checked("focus_browser_needs_human", arg).await;
+                });
+            })
+            on_done=Callback::new(move |tabs: Vec<BrowserNeedsHumanTab>| {
+                if browser_needs_human_busy.get_untracked() {
+                    return;
+                }
+                browser_needs_human_busy.set(true);
+                browser_needs_human_error.set(None);
+                let continue_message = t(locale.get_untracked(), "browser.needs_human.continue");
+                let still_message = t(locale.get_untracked(), "browser.needs_human.still");
+                let fail_message = t(locale.get_untracked(), "browser.needs_human.error");
+                let fallback_session = active_session.get_untracked();
+                let project_id = browser_project.get_untracked();
+                spawn_local(async move {
+                    let arg = to_value(&serde_json::json!({ "tabs": tabs })).unwrap();
+                    match invoke_checked("confirm_browser_needs_human", arg).await {
+                        Ok(value) => {
+                            let result = serde_wasm_bindgen::from_value::<BrowserNeedsHumanConfirmResult>(value)
+                                .unwrap_or_default();
+                            let current_project = browser_project.get_untracked() == project_id;
+                            if current_project {
+                                browser_needs_human_busy.set(false);
+                            }
+                            if result.still_required.is_empty() {
+                                let frame_id = result
+                                    .cleared
+                                    .first()
+                                    .map(|tab| tab.frame_id.clone())
+                                    .filter(|id| !id.is_empty())
+                                    .or(fallback_session);
+                                if current_project {
+                                    browser_needs_human.set(None);
+                                    browser_needs_human_error.set(None);
+                                }
+                                if let Some(session_id) = frame_id {
+                                    let args = to_value(&SendMessageArgs {
+                                        session_id: Some(session_id),
+                                        message: continue_message,
+                                        attachments: vec![],
+                                        references: vec![],
+                                        resume: false,
+                                        acp_agent_id: None,
+                                        guide: None,
+                                        replace: None,
+                                    }).unwrap();
+                                    let _ = invoke_checked("send_message", args).await;
+                                }
+                            } else if current_project {
+                                present_browser_needs_human(
+                                    browser_needs_human,
+                                    browser_needs_human_error,
+                                    BrowserNeedsHumanPrompt { tabs: result.still_required },
+                                );
+                                browser_needs_human_error.set(Some(still_message));
+                            }
+                        }
+                        Err(_) => {
+                            if browser_project.get_untracked() == project_id {
+                                browser_needs_human_busy.set(false);
+                                browser_needs_human_error.set(Some(fail_message));
+                            }
                         }
                     }
                 });
@@ -10037,6 +10624,9 @@ fn App() -> impl IntoView {
                     .get()
                     .and_then(|project| workspace_relative_path(&project.root, &path))
                     .unwrap_or_else(|| path.replace('\\', "/"));
+                let heading_path = path.clone();
+                let heading_name = file.name.clone();
+                let heading_display = display_path.clone();
                 let revision = center_file_revisions.with(|revisions| {
                     revisions.get(&path).copied().unwrap_or_default()
                 });
@@ -10066,13 +10656,59 @@ fn App() -> impl IntoView {
                         class:center-mcp-app-preview=is_mcp_app
                         data-file-revision=revision
                         data-preview-kind=kind.clone()
-                        data-file-path=path.clone()>
+                        data-file-path=path.clone()
+                        style=move || (run_language.is_some() && center_runtime_panel.get()).then(|| format!(
+                            "--runtime-right-w:{:.2}%;--runtime-bottom-h:{:.2}%",
+                            center_runtime_right_w.get(),
+                            center_runtime_bottom_h.get(),
+                        ))>
                         <div class="center-file-head">
-                            <span>{if is_mcp_app { label } else { display_path }}</span>
+                            <span>{
+                                let mcp_label = is_mcp_app.then_some(label);
+                                move || {
+                                    if let Some(label) = mcp_label.clone() {
+                                        label
+                                    } else {
+                                        center_preview_heading(
+                                            &heading_path,
+                                            &heading_name,
+                                            &heading_display,
+                                            snapshot_workspace_path.get().as_deref(),
+                                        )
+                                    }
+                                }
+                            }</span>
+                            {(artifact_version_id_path(&path).is_some()
+                                || artifact_id_path(&path).is_some())
+                                .then(|| view! {
+                                    <span class="center-file-snapshot-badge">
+                                        {move || t(locale.get(), "center.snapshot")}
+                                    </span>
+                                })}
                             <div class="spacer"></div>
-                            // Bind this script to a runtime. Whole-file execution
-                            // and direct editing deliberately stay out of this
-                            // AI-first preview; selected code can still be run.
+                            {move || snapshot_workspace_path.get().map(|workspace_path| {
+                                let open_path = workspace_path.clone();
+                                view! {
+                                    <button type="button" class="center-file-btn" data-open-editor=""
+                                        title=move || t(locale.get(), "center.open_editor")
+                                        aria-label=move || t(locale.get(), "center.open_editor")
+                                        on:click=move |_| {
+                                            let tab = CenterFileTab::from_path(open_path.clone());
+                                            center_files.update(|files| {
+                                                if !files.iter().any(|file| file.path == open_path) {
+                                                    files.push(tab.clone());
+                                                }
+                                            });
+                                            center_file.set(Some(open_path.clone()));
+                                        }>
+                                        {compose_icon("code")}
+                                        <span>{move || t(locale.get(), "center.open_editor")}</span>
+                                    </button>
+                                }
+                            })}
+                            // Bind this script to a runtime. The editor can run a
+                            // selection or the whole saved file; this control only
+                            // chooses which process those actions talk to.
                             {run_language.map(|language| {
                                 let bind_path = path.clone();
                                 let options = create_memo(move |_| {
@@ -10179,7 +10815,81 @@ fn App() -> impl IntoView {
                                     if center_split.get_untracked() { show_right.set(false); }
                                 }>{compose_icon("split")}</button>
                         </div>
-                        {if is_mcp_app {
+                        {if let Some(language) = run_language.filter(|_| !is_mcp_app) {
+                            // R/Python sources are directly editable; everything
+                            // else keeps the read-only preview.
+                            let editor_path = path.clone();
+                            let editor_options = create_memo(move |_| {
+                                runtime_binding_options(&execution_contexts.get(), language)
+                            });
+                            let editor_bound = {
+                                let path = editor_path.clone();
+                                create_memo(move |_| {
+                                    let stored = center_runtime_binding.get().get(&path).cloned();
+                                    resolve_runtime_binding(&editor_options.get(), stored.as_deref())
+                                })
+                            };
+                            let editor_run = Callback::new({
+                                let path = editor_path.clone();
+                                move |code: String| {
+                                    let Some(context_id) = editor_bound.get_untracked() else {
+                                        return;
+                                    };
+                                    run_in_runtime(
+                                        path.clone(),
+                                        context_id,
+                                        language.to_string(),
+                                        code,
+                                        locale.get_untracked(),
+                                        RuntimeRunCtx {
+                                            consoles: center_console,
+                                            plots: center_plots,
+                                            busy: center_run_busy,
+                                            runtimes: runtime_infos,
+                                            project: project_info,
+                                            object_states: runtime_object_states,
+                                            inspector_open: center_runtime_panel,
+                                            locale,
+                                        },
+                                    );
+                                }
+                            });
+                            let editor_run_script = Callback::new({
+                                let path = editor_path.clone();
+                                move |_: ()| {
+                                    let Some(context_id) = editor_bound.get_untracked() else {
+                                        return;
+                                    };
+                                    run_script_in_runtime(
+                                        path.clone(),
+                                        context_id,
+                                        language.to_string(),
+                                        locale.get_untracked(),
+                                        RuntimeRunCtx {
+                                            consoles: center_console,
+                                            plots: center_plots,
+                                            busy: center_run_busy,
+                                            runtimes: runtime_infos,
+                                            project: project_info,
+                                            object_states: runtime_object_states,
+                                            inspector_open: center_runtime_panel,
+                                            locale,
+                                        },
+                                    );
+                                }
+                            });
+                            view! {
+                                <RpCodeEditor
+                                    dom_id=dom_id.clone()
+                                    path=path.clone()
+                                    lang=language.to_string()
+                                    drafts=center_editor_drafts
+                                    busy=center_run_busy
+                                    on_run=editor_run
+                                    on_run_script=editor_run_script
+                                />
+                            }.into_view()
+                        } else if is_mcp_app {
                             mcp_apps.get().get(&path).cloned().map(|payload_json| view! {
                                 <McpAppPreview
                                     instance_id=path.clone()
@@ -10199,7 +10909,12 @@ fn App() -> impl IntoView {
                             }).into_view()
                         } else {
                             view! {
-                                <WorkspaceFilePreview dom_id=dom_id.clone() path=path.clone() kind=kind.clone() />
+                                <WorkspaceFilePreview
+                                    dom_id=dom_id.clone()
+                                    path=path.clone()
+                                    kind=kind.clone()
+                                    filename=file.name.clone()
+                                />
                             }.into_view()
                         }}
                         {run_language.map(|language| {
@@ -10233,18 +10948,83 @@ fn App() -> impl IntoView {
                                 })
                             })
                         })}
-                        {run_language.map(|_| {
+                        {run_language.map(|language| {
                             let console_file = console_file.clone();
+                            let console_options = create_memo(move |_| {
+                                runtime_binding_options(&execution_contexts.get(), language)
+                            });
+                            let console_bound = {
+                                let path = console_file.clone();
+                                create_memo(move |_| {
+                                    let stored = center_runtime_binding.get().get(&path).cloned();
+                                    resolve_runtime_binding(&console_options.get(), stored.as_deref())
+                                })
+                            };
+                            // Typing in the console prompt runs against the same
+                            // bound runtime as a selection run would.
+                            let on_run = Callback::new({
+                                let path = console_file.clone();
+                                move |code: String| {
+                                    let Some(context_id) = console_bound.get_untracked() else {
+                                        return;
+                                    };
+                                    run_in_runtime(
+                                        path.clone(),
+                                        context_id,
+                                        language.to_string(),
+                                        code,
+                                        locale.get_untracked(),
+                                        RuntimeRunCtx {
+                                            consoles: center_console,
+                                            plots: center_plots,
+                                            busy: center_run_busy,
+                                            runtimes: runtime_infos,
+                                            project: project_info,
+                                            object_states: runtime_object_states,
+                                            inspector_open: center_runtime_panel,
+                                            locale,
+                                        },
+                                    );
+                                }
+                            });
+                            let plots_file = console_file.clone();
                             move || center_runtime_panel.get().then(|| view! {
-                                <CenterRuntimeConsole path=console_file.clone() consoles=center_console />
+                                <CenterRuntimeConsole path=console_file.clone() consoles=center_console
+                                    language_label=language_display(language).to_string()
+                                    busy=center_run_busy on_run=on_run />
+                                <CenterRuntimePlots path=plots_file.clone() plots=center_plots />
+                                // Pane dividers: drag to resize the quadrants.
+                                <div class="center-runtime-col-resizer" role="separator"
+                                    aria-orientation="vertical"
+                                    on:mousedown=move |ev: web_sys::MouseEvent| {
+                                        ev.prevent_default();
+                                        center_runtime_col_dragging.set(true);
+                                    }></div>
+                                <div class="center-runtime-row-resizer" role="separator"
+                                    aria-orientation="horizontal"
+                                    on:mousedown=move |ev: web_sys::MouseEvent| {
+                                        ev.prevent_default();
+                                        center_runtime_row_dragging.set(true);
+                                    }></div>
                             })
                         })}
                     </div>
                 }
             })}
             {move || selection_popup.get().filter(|_| !demo_mode.get()).map(|(text, source, x, y)| {
-                let x = selection_popup_x(x);
-                let y = selection_popup_y(y);
+                // Run the selection in the file's bound runtime — the RStudio
+                // reflex. Only for R/Python sources, where a runtime exists.
+                let runtime_source = is_runtime_code_selection(source.as_deref());
+                let x = if runtime_source {
+                    selection_popup_x_with_max_width(x, 320)
+                } else {
+                    selection_popup_x(x)
+                };
+                let y = if runtime_source {
+                    selection_popup_y_with_clearance(y, 200)
+                } else {
+                    selection_popup_y(y)
+                };
                 let quote = text.clone();
                 let quote_source = source.clone();
                 let quote_source_for_click = quote_source.clone();
@@ -10258,13 +11038,16 @@ fn App() -> impl IntoView {
                 // Only chat-transcript selections (no source path) can be saved
                 // as a highlight; file-preview selections have their own actions.
                 let star_text = source.is_none().then(|| text.clone());
-                // Run the selection in the file's bound runtime — the RStudio
-                // reflex. Only for R/Python sources, where a runtime exists.
                 let run_selection = source.as_deref()
                     .and_then(runtime_language)
                     .map(|language| (source.clone().unwrap_or_default(), language, text));
+                let popup_class = if runtime_source {
+                    "selection-popup selection-popup-code"
+                } else {
+                    "selection-popup"
+                };
                 view! {
-                    <div class="selection-popup" style=format!("left:{x}px;top:{y}px")>
+                    <div class=popup_class style=format!("left:{x}px;top:{y}px")>
                         {star_text.map(|text| view! {
                             <button type="button" class="selection-popup-btn"
                                 on:click=move |_| {
@@ -10289,6 +11072,7 @@ fn App() -> impl IntoView {
                         {run_selection.map(|(path, language, code)| {
                             let run_ctx = RuntimeRunCtx {
                                 consoles: center_console,
+                                plots: center_plots,
                                 busy: center_run_busy,
                                 runtimes: runtime_infos,
                                 project: project_info,
@@ -10323,7 +11107,10 @@ fn App() -> impl IntoView {
                                 </button>
                             }
                         })}
-                        {quick_actions.get().into_iter()
+                        {runtime_source.then(|| view! {
+                            <span class="selection-popup-sep" aria-hidden="true"></span>
+                        })}
+                        {(!runtime_source).then(|| quick_actions.get().into_iter()
                             .filter(|action| action.enabled && action.context == "selection")
                             .map(|action| {
                             let action_id = action.id.clone();
@@ -10345,7 +11132,7 @@ fn App() -> impl IntoView {
                                     <span>{label}</span>
                                 </button>
                             }
-                            }).collect_view()}
+                            }).collect_view())}
                         <button type="button" class="selection-popup-btn"
                             on:click=move |_| {
                                 composer_quotes.update(|items| items.push(
@@ -10406,13 +11193,13 @@ fn App() -> impl IntoView {
                                     false,
                                 ));
                             }>
-                            {compose_icon("chat")}
+                            {compose_icon("sparkles")}
                             <span>{t(locale.get(), "selection.explain")}</span>
                         </button>
                         // Annotate → append the passage to reviews/<file>.md, which the
-                        // agent reads back with its ordinary tools. Only offered when the
-                        // selection came from a file preview (source path known).
-                        {annotate_source.map(|src| {
+                        // agent reads back with its ordinary tools. Offered on papers
+                        // and other previews, not on R/Python source (run/ask/quote).
+                        {annotate_source.filter(|_| !runtime_source).map(|src| {
                             let quote = annotate_text.clone();
                             view! {
                                 <button type="button" class="selection-popup-btn"
@@ -10455,6 +11242,13 @@ fn App() -> impl IntoView {
                     if ev.button() != 0 {
                         return;
                     }
+                    // Clicking a path/file link opens the preview on `click`.
+                    // mouseup runs first and must not treat the link text as a
+                    // quote selection, or both overlays appear together.
+                    if context_menu::selection_popup_blocked(&ev) {
+                        selection_popup.set(None);
+                        return;
+                    }
                     let popup = selection_popup_enabled
                         .get_untracked()
                         .then(context_menu::selection_text)
@@ -10463,7 +11257,12 @@ fn App() -> impl IntoView {
                     selection_popup.set(popup);
                 }
                 on:scroll=move |_| {
-                    if selection_popup.get_untracked().is_some() {
+                    // Follow-scroll (follow-ups, the runtime strip remounting)
+                    // used to dismiss the quote popup while the selection was
+                    // still live. Only clear it when the selection is gone.
+                    if selection_popup.get_untracked().is_some()
+                        && context_menu::selection_text().is_none()
+                    {
                         selection_popup.set(None);
                     }
                 }>
@@ -11387,6 +12186,169 @@ fn App() -> impl IntoView {
             <div class="composer"
                 class:center-hidden=move || center_file_open.get() && !center_split.get()
                 class:demo-read-only=move || demo_mode.get()>
+                {move || browser_extension_status.get().map(|status| {
+                    let loc = locale.get();
+                    let current = status
+                        .current_version
+                        .clone()
+                        .unwrap_or_else(|| t(loc, "browser.extension.unknown"));
+                    let bundled = status
+                        .bundled_version
+                        .clone()
+                        .unwrap_or_else(|| t(loc, "browser.extension.unknown"));
+                    let path = status.extension_path.clone().unwrap_or_default();
+                    let manual = browser_extension_update_outcome
+                        .get()
+                        .as_deref()
+                        == Some("manual_reload_required");
+                    let title_key = if manual {
+                        "browser.extension.manual_title"
+                    } else if !status.connected {
+                        "browser.extension.waiting_title"
+                    } else {
+                        "browser.extension.title"
+                    };
+                    let body_key = if manual {
+                        "browser.extension.manual_body"
+                    } else if !status.connected {
+                        "browser.extension.waiting_body"
+                    } else {
+                        "browser.extension.body"
+                    };
+                    let body = tf(
+                        loc,
+                        body_key,
+                        &[("current", current.as_str()), ("required", bundled.as_str())],
+                    );
+                    let backend_error = browser_extension_update_error
+                        .get()
+                        .or_else(|| status.error.clone());
+                    let target_version = bundled.clone();
+                    let update_path = path.clone();
+                    let copy_path = path.clone();
+                    view! {
+                        <section class="exploration-banner browser-extension-update"
+                            data-testid="browser-extension-update-banner" role="status">
+                            <div class="exploration-banner-copy">
+                                <span class="exploration-banner-eyebrow">{t(loc, "browser.extension.eyebrow")}</span>
+                                <strong>{t(loc, title_key)}</strong>
+                                <span>{body}</span>
+                                {(!path.is_empty()).then(|| view! {
+                                    <code class="browser-extension-path" data-testid="browser-extension-path">{path}</code>
+                                })}
+                                {backend_error.map(|error| view! {
+                                    <span class="browser-extension-error" role="alert">{error}</span>
+                                })}
+                            </div>
+                            <div class="exploration-banner-actions">
+                                {(!manual).then(|| view! {
+                                    <button type="button" class="primary"
+                                        disabled=move || browser_extension_update_busy.get()
+                                        on:click=move |_| {
+                                            if browser_extension_update_busy.get_untracked() {
+                                                return;
+                                            }
+                                            browser_extension_update_busy.set(true);
+                                            browser_extension_update_error.set(None);
+                                            let update_path = update_path.clone();
+                                            spawn_local(async move {
+                                                let value = invoke("update_browser_extension", JsValue::UNDEFINED).await;
+                                                match from_value::<BrowserExtensionUpdateResult>(value) {
+                                                    Ok(result) => {
+                                                        let outcome = result.outcome.clone();
+                                                        browser_extension_update_outcome.set(Some(outcome.clone()));
+                                                        browser_extension_update_error
+                                                            .set(result.error.clone().or_else(|| result.status.error.clone()));
+                                                        if outcome == "updated" {
+                                                            browser_extension_status.set(None);
+                                                            show_actionable_toast(&t(
+                                                                locale.get_untracked(),
+                                                                "browser.extension.updated",
+                                                            ));
+                                                        } else {
+                                                            browser_extension_status.set(Some(result.status));
+                                                            if outcome == "manual_reload_required" {
+                                                                if !update_path.is_empty() {
+                                                                    if let Some(window) = web_sys::window() {
+                                                                        let _ = wasm_bindgen_futures::JsFuture::from(
+                                                                            window.navigator().clipboard().write_text(&update_path),
+                                                                        )
+                                                                        .await;
+                                                                    }
+                                                                }
+                                                                show_actionable_warning_toast(&t(
+                                                                    locale.get_untracked(),
+                                                                    "browser.extension.manual_ready",
+                                                                ));
+                                                            }
+                                                        }
+                                                    }
+                                                    Err(error) => {
+                                                        browser_extension_update_error.set(Some(error.to_string()));
+                                                        show_actionable_warning_toast(&t(
+                                                            locale.get_untracked(),
+                                                            "browser.extension.failed",
+                                                        ));
+                                                    }
+                                                }
+                                                browser_extension_update_busy.set(false);
+                                            });
+                                        }>
+                                        {move || if browser_extension_update_busy.get() {
+                                            t(locale.get(), "browser.extension.updating")
+                                        } else {
+                                            t(locale.get(), "browser.extension.update")
+                                        }}
+                                    </button>
+                                })}
+                                {(!copy_path.is_empty()).then(|| view! {
+                                    <button type="button"
+                                        on:click=move |_| {
+                                            let path = copy_path.clone();
+                                            spawn_local(async move {
+                                                if let Some(window) = web_sys::window() {
+                                                    let _ = wasm_bindgen_futures::JsFuture::from(
+                                                        window.navigator().clipboard().write_text(&path),
+                                                    )
+                                                    .await;
+                                                    show_actionable_toast(&t(
+                                                        locale.get_untracked(),
+                                                        "browser.extension.path_copied",
+                                                    ));
+                                                }
+                                            });
+                                        }>{t(loc, "browser.extension.copy_path")}</button>
+                                })}
+                                <button type="button"
+                                    on:click=move |_| {
+                                        spawn_local(async move {
+                                            let setup = from_value::<BrowserExtensionSetup>(
+                                                open_browser_extension_page().await,
+                                            )
+                                            .unwrap_or_default();
+                                            if !setup.opened {
+                                                show_actionable_warning_toast(&t(
+                                                    locale.get_untracked(),
+                                                    "browser.extension.open_failed",
+                                                ));
+                                            }
+                                        });
+                                    }>{t(loc, "browser.extension.open_page")}</button>
+                                <button type="button"
+                                    on:click=move |_| refresh_browser_extension_status.call(())>
+                                    {t(loc, "browser.extension.recheck")}
+                                </button>
+                                <button type="button"
+                                    on:click=move |_| {
+                                        browser_extension_dismissed_version.set(Some(target_version.clone()));
+                                        browser_extension_status.set(None);
+                                        browser_extension_update_outcome.set(None);
+                                        browser_extension_update_error.set(None);
+                                    }>{t(loc, "browser.extension.dismiss")}</button>
+                            </div>
+                        </section>
+                    }
+                })}
                 {move || {
                     let Some(notice) = browser_offline_notice.get() else {
                         return None;
@@ -11499,6 +12461,23 @@ fn App() -> impl IntoView {
                         user_offset=composer_queue_offset
                         can_cut_in=composer_queue_can_cut_in
                         on_queue=on_queue
+                    />
+                })}
+                {move || (!demo_mode.get()).then(|| view! {
+                    <SessionRuntimeStrip
+                        locale=locale
+                        execution_contexts=execution_contexts
+                        session_execution_contexts=session_execution_contexts
+                        default_execution_context=default_execution_context
+                        session_default_execution_context=session_default_execution_context
+                        runtimes=runtime_infos
+                        active_project=project_info
+                        projects=proj_list
+                        runtime_environment=runtime_environment
+                        runtime_environment_pinned=runtime_environment_pinned
+                        object_states=runtime_object_states
+                        context_details_modal=context_details_modal
+                        selected_context_id=selected_context_id
                     />
                 })}
                 <div class="composer-inner"
@@ -11904,7 +12883,14 @@ fn App() -> impl IntoView {
                             })}
                             <button type="button" class="composer-compute"
                                 class:active=move || agent_menu_open.get()
-                                class:has-resource=move || !session_execution_contexts.get().is_empty()
+                                class:has-resource=move || {
+                                    !session_execution_contexts.get().is_empty()
+                                        || resolved_session_default_id(
+                                            session_default_execution_context.get().as_deref(),
+                                            default_execution_context.get().as_deref(),
+                                        )
+                                        .is_some()
+                                }
                                 title=move || t(locale.get(), "composer.agent_options")
                                 aria-label=move || t(locale.get(), "composer.agent_options")
                                 on:click=move |_| {
@@ -12202,9 +13188,19 @@ fn App() -> impl IntoView {
                                         }>
                                         <span>{move || t(locale.get(), "composer.compute")}</span>
                                         <span class="agent-menu-value">{move || {
-                                            let count = session_execution_contexts.get().len();
-                                            if count == 0 { t(locale.get(), "compute.default_local") }
-                                            else { tf(locale.get(), "composer.compute_count", &[("n", &count.to_string())]) }
+                                            let default_id = resolved_session_default_id(
+                                                session_default_execution_context.get().as_deref(),
+                                                default_execution_context.get().as_deref(),
+                                            );
+                                            let label = default_id.as_ref().map(|id| {
+                                                compute_default_label(id, &execution_contexts.get())
+                                            });
+                                            compute_menu_summary(
+                                                locale.get(),
+                                                default_id.as_deref(),
+                                                label.as_deref(),
+                                                session_execution_contexts.get().len(),
+                                            )
                                         }}</span>
                                         <span class="agent-menu-chevron">{compose_icon("chevron-right")}</span>
                                     </button>
@@ -12294,13 +13290,25 @@ fn App() -> impl IntoView {
                                     {move || compute_menu_open.get().then(|| view! {
                                         <div class="compose-menu agent-submenu compute-menu" role="menu"
                                             aria-label=move || t(locale.get(), "composer.compute")>
-                                            <button type="button" class="agent-submenu-row" on:click=move |_| {
-                                                agent_menu_open.set(false);
-                                                compute_menu_open.set(false);
-                                                open_add_host_form.call(());
-                                            }>
-                                                <span>{move || t(locale.get(), "compute.add_host")}</span>
-                                            </button>
+                                            <p class="compute-menu-hint">{move || t(locale.get(), "compute.menu_hint")}</p>
+                                            <div class="compute-default-field">
+                                                <label>
+                                                    <span>{move || t(locale.get(), "compute.session_default")}</span>
+                                                    <DefaultAnalysisSelect
+                                                        locale=locale
+                                                        execution_contexts=execution_contexts
+                                                        default_execution_context=Signal::derive(move || {
+                                                            resolved_session_default_id(
+                                                                session_default_execution_context.get().as_deref(),
+                                                                default_execution_context.get().as_deref(),
+                                                            )
+                                                        })
+                                                        on_change=set_session_default_compute_resource
+                                                        test_id="compute-default-analysis".to_string()
+                                                        label_key="compute.session_default"
+                                                    />
+                                                </label>
+                                            </div>
                                             <div class="compute-menu-search">
                                                 {compose_icon("search")}
                                                 <input type="search" inputmode="search" autocomplete="off"
@@ -12319,7 +13327,12 @@ fn App() -> impl IntoView {
                                                     let context_id = format!("ssh:{}", host.alias);
                                                     let enabled = session_execution_contexts.get().contains(&context_id);
                                                     let is_analysis_default =
-                                                        default_execution_context.get().as_deref() == Some(context_id.as_str());
+                                                        resolved_session_default_id(
+                                                            session_default_execution_context.get().as_deref(),
+                                                            default_execution_context.get().as_deref(),
+                                                        )
+                                                        .as_deref()
+                                                            == Some(context_id.as_str());
                                                     let toggle_id = context_id.clone();
                                                     let default_id = context_id.clone();
                                                     view! {
@@ -12338,7 +13351,7 @@ fn App() -> impl IntoView {
                                                                     })}
                                                                 </span>
                                                                 <span class="compute-resource-state">
-                                                                    {if enabled { t(locale.get(), "compute.enabled") } else { t(locale.get(), "compute.disabled") }}
+                                                                    {t(locale.get(), compute_resource_state_key(enabled, is_analysis_default))}
                                                                 </span>
                                                             </button>
                                                             <button type="button" class="compute-resource-default-toggle"
@@ -12346,7 +13359,7 @@ fn App() -> impl IntoView {
                                                                 title=move || t(locale.get(), if is_analysis_default { "compute.clear_default" } else { "compute.set_default" })
                                                                 aria-label=move || t(locale.get(), if is_analysis_default { "compute.clear_default" } else { "compute.set_default" })
                                                                 on:click=move |_| {
-                                                                    set_default_compute_resource.call(if is_analysis_default { None } else { Some(default_id.clone()) });
+                                                                    set_session_default_compute_resource.call(if is_analysis_default { None } else { Some(default_id.clone()) });
                                                                 }>
                                                                 {compose_icon("star")}
                                                             </button>
@@ -12362,7 +13375,12 @@ fn App() -> impl IntoView {
                                                     let context_id = ctx.id.clone();
                                                     let enabled = session_execution_contexts.get().contains(&context_id);
                                                     let is_analysis_default =
-                                                        default_execution_context.get().as_deref() == Some(context_id.as_str());
+                                                        resolved_session_default_id(
+                                                            session_default_execution_context.get().as_deref(),
+                                                            default_execution_context.get().as_deref(),
+                                                        )
+                                                        .as_deref()
+                                                            == Some(context_id.as_str());
                                                     let toggle_id = context_id.clone();
                                                     let default_id = context_id.clone();
                                                     let name = if ctx.label.trim().is_empty() { ctx.id.clone() } else { ctx.label.clone() };
@@ -12389,7 +13407,7 @@ fn App() -> impl IntoView {
                                                                     })}
                                                                 </span>
                                                                 <span class="compute-resource-state">
-                                                                    {if enabled { t(locale.get(), "compute.enabled") } else { t(locale.get(), "compute.disabled") }}
+                                                                    {t(locale.get(), compute_resource_state_key(enabled, is_analysis_default))}
                                                                 </span>
                                                             </button>
                                                             <button type="button" class="compute-resource-default-toggle"
@@ -12397,7 +13415,7 @@ fn App() -> impl IntoView {
                                                                 title=move || t(locale.get(), if is_analysis_default { "compute.clear_default" } else { "compute.set_default" })
                                                                 aria-label=move || t(locale.get(), if is_analysis_default { "compute.clear_default" } else { "compute.set_default" })
                                                                 on:click=move |_| {
-                                                                    set_default_compute_resource.call(if is_analysis_default { None } else { Some(default_id.clone()) });
+                                                                    set_session_default_compute_resource.call(if is_analysis_default { None } else { Some(default_id.clone()) });
                                                                 }>
                                                                 {compose_icon("star")}
                                                             </button>
@@ -12405,6 +13423,13 @@ fn App() -> impl IntoView {
                                                     }
                                                 }).collect_view()}}
                                             </div>
+                                            <button type="button" class="agent-submenu-row compute-add-host-row" on:click=move |_| {
+                                                agent_menu_open.set(false);
+                                                compute_menu_open.set(false);
+                                                open_add_host_form.call(());
+                                            }>
+                                                <span>{move || t(locale.get(), "compute.add_host")}</span>
+                                            </button>
                                             <button type="button" class="agent-submenu-row compute-manage-row"
                                                 on:click=move |_| {
                                                     agent_menu_open.set(false);
@@ -12475,6 +13500,39 @@ fn App() -> impl IntoView {
                                         }>
                                         {compose_icon("gauge")}
                                         <span class="context-usage-pct" data-testid="context-usage-percent">{percent_label}</span>
+                                    </button>
+                                }
+                            })}
+                            {move || fast_profile.get().map(|_| {
+                                let enabled = fast_enabled.get();
+                                let session_override = fast_is_session_override.get();
+                                let saving = service_tier_busy.get();
+                                let running_now = busy.get();
+                                let loaded = fast_loaded.get();
+                                let key = if running_now {
+                                    "composer.fast.running"
+                                } else if saving || !loaded {
+                                    "composer.fast.saving"
+                                } else {
+                                    match (enabled, session_override) {
+                                        (true, true) => "composer.fast.on_session",
+                                        (true, false) => "composer.fast.on_profile",
+                                        (false, true) => "composer.fast.off_session",
+                                        (false, false) => "composer.fast.off_profile",
+                                    }
+                                };
+                                let title = t(locale.get(), key).to_string();
+                                view! {
+                                    <button type="button" class="composer-fast"
+                                        class:enabled=enabled
+                                        class:pending=saving || !loaded
+                                        data-testid="composer-fast-toggle"
+                                        aria-pressed=enabled.to_string()
+                                        aria-label=title.clone()
+                                        title=title
+                                        disabled=running_now || saving || !loaded
+                                        on:click=move |_| toggle_fast.call(())>
+                                        {compose_icon("bolt")}
                                     </button>
                                 }
                             })}
@@ -13499,6 +14557,7 @@ fn App() -> impl IntoView {
                                                 let next = dom_value(&event);
                                                 selecting_workspace_entries.set(false);
                                                 selected_workspace_paths.set(HashSet::new());
+                                                file_sort_menu_open.set(false);
                                                 file_source.set(next.clone());
                                                 file_query.set(String::new());
                                                 if next == "local" {
@@ -13585,6 +14644,7 @@ fn App() -> impl IntoView {
                                                         "files.select_entries"
                                                     })}</span>
                                                 </button>
+                                                <FileSortControl sort_by=file_sort menu_open=file_sort_menu_open />
                                             </div>
                                             <input class="fb-search" type="text"
                                                 placeholder=move || t(locale.get(), "files.search")
@@ -13659,7 +14719,9 @@ fn App() -> impl IntoView {
                                                             }
                                                         }).collect_view()
                                                     } else {
-                                                        let entries = file_entries.get();
+                                                        let sort = file_sort.get();
+                                                        let mut entries = file_entries.get();
+                                                        sort_dir_entries(&mut entries, &sort);
                                                         if entries.is_empty() {
                                                             // Nothing listed also covers "the tab
                                                             // was opened before a project was", so
@@ -13701,6 +14763,7 @@ fn App() -> impl IntoView {
                                                                     }>
                                                                         <span class="fb-icon">{compose_icon("folder")}</span>
                                                                         <span class="fb-name">{name}</span>
+                                                                        {file_row_meta_view(&e, &sort)}
                                                                     </button>
                                                                 }.into_view()
                                                             } else {
@@ -13722,7 +14785,7 @@ fn App() -> impl IntoView {
                                                                     }>
                                                                         <span class="fb-icon">{compose_icon("doc")}</span>
                                                                         <span class="fb-name">{name}</span>
-                                                                        <span class="fb-size">{format_bytes(e.size)}</span>
+                                                                        {file_row_meta_view(&e, &sort)}
                                                                     </button>
                                                                 }.into_view()
                                                             }
@@ -13815,6 +14878,7 @@ fn App() -> impl IntoView {
                                                     {compose_icon("sync")}
                                                     <span>{t(loc, "files.refresh")}</span>
                                                 </button>
+                                                <FileSortControl sort_by=file_sort menu_open=file_sort_menu_open />
                                             </div>
                                             <div class="fb-list" class:grid=move || rp_grid.get()>
                                                 {if remote_file_loading.get() {
@@ -13877,7 +14941,10 @@ fn App() -> impl IntoView {
                                                 } else if remote_file_entries.get().is_empty() {
                                                     view! { <div class="rp-empty rp-files-empty"><p>{t(loc, "files.empty_remote")}</p></div> }.into_view()
                                                 } else {
-                                                    remote_file_entries.get().into_iter().map(|entry| {
+                                                    let sort = file_sort.get();
+                                                    let mut entries = remote_file_entries.get();
+                                                    sort_dir_entries(&mut entries, &sort);
+                                                    entries.into_iter().map(|entry| {
                                                         let name = entry.name.clone();
                                                         let full = join_path(&remote_file_cwd.get(), &name);
                                                         if entry.is_dir {
@@ -13897,6 +14964,7 @@ fn App() -> impl IntoView {
                                                                 }>
                                                                     <span class="fb-icon">{compose_icon("folder")}</span>
                                                                     <span class="fb-name">{name}</span>
+                                                                    {file_row_meta_view(&entry, &sort)}
                                                                 </button>
                                                             }.into_view()
                                                         } else {
@@ -13921,7 +14989,7 @@ fn App() -> impl IntoView {
                                                                     }>
                                                                     <span class="fb-icon">{compose_icon("doc")}</span>
                                                                     <span class="fb-name">{name}</span>
-                                                                    <span class="fb-size">{format_bytes(entry.size)}</span>
+                                                                    {file_row_meta_view(&entry, &sort)}
                                                                     {download_uri.map(|uri| {
                                                                         let download = uri.clone();
                                                                         view! {
@@ -14588,6 +15656,34 @@ fn App() -> impl IntoView {
                 on:mouseup=move |_| center_split_dragging.set(false)></div>
         })}
 
+        {move || center_runtime_col_dragging.get().then(|| view! {
+            <div class="drag-overlay"
+                on:mousemove=move |ev: web_sys::MouseEvent| {
+                    let Some(rect) = runtime_workbench_rect() else { return; };
+                    if rect.width() > 0.0 {
+                        center_runtime_right_w.set(
+                            ((rect.right() - ev.client_x() as f64) / rect.width() * 100.0)
+                                .clamp(16.0, 70.0),
+                        );
+                    }
+                }
+                on:mouseup=move |_| center_runtime_col_dragging.set(false)></div>
+        })}
+
+        {move || center_runtime_row_dragging.get().then(|| view! {
+            <div class="drag-overlay drag-overlay-row"
+                on:mousemove=move |ev: web_sys::MouseEvent| {
+                    let Some(rect) = runtime_workbench_rect() else { return; };
+                    if rect.height() > 0.0 {
+                        center_runtime_bottom_h.set(
+                            ((rect.bottom() - ev.client_y() as f64) / rect.height() * 100.0)
+                                .clamp(12.0, 70.0),
+                        );
+                    }
+                }
+                on:mouseup=move |_| center_runtime_row_dragging.set(false)></div>
+        })}
+
         {move || sidebar_dragging.get().then(|| view! {
             <div class="drag-overlay"
                 on:mousemove=on_sidebar_resize_move
@@ -14979,7 +16075,8 @@ fn App() -> impl IntoView {
                 custom_credentials, cred_msg, approval_grants, conns_view, conn_form_open,
                 conn_form_kind, conn_test_msg, custom_conn_tools, custom_conn_tools_loading,
                 custom_conn_tool_errors, pet_status, ssh_hosts, execution_contexts,
-                runtime_interpreter_form, probing_context_id, delete_confirm,
+                default_execution_context, runtime_interpreter_form, probing_context_id,
+                delete_confirm,
             }
             open_project=switch_project
             go_settings_section=Callback::new(move |section: String| go_settings_section(&section))
@@ -15041,6 +16138,7 @@ fn App() -> impl IntoView {
                     }
                 });
             })
+            set_default_compute_resource=set_default_compute_resource
             probe_compute_resource=Callback::new(move |context_id: String| {
                 if probing_context_id.get_untracked().is_some() {
                     return;
@@ -15150,6 +16248,7 @@ fn App() -> impl IntoView {
             <RuntimeEnvironmentPanel selected=runtime_environment pinned=runtime_environment_pinned
                 position=runtime_environment_position context_modal=context_details_modal
                 locale=locale states=runtime_object_states runtimes=runtime_infos
+                contexts=execution_contexts active_project=project_info projects=proj_list
                 selection_popup=selection_popup />
         })}
         </div>

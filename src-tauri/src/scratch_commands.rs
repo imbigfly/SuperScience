@@ -1,8 +1,35 @@
-//! Startup cleanup of leftover scratch-chat sandboxes from older builds.
-//! New conversations now open a normal project session.
+//! Ephemeral scratch chat: temp sandbox workspace, no project binding, destroyed on close.
 
 use super::*;
+use crate::project_commands::{cancel_project_sessions, load_active_project, set_active_project};
 use std::path::{Path, PathBuf};
+use superscience_store::SCRATCH_PROJECT_PREFIX;
+
+pub(super) fn is_scratch_project_id(id: &str) -> bool {
+    superscience_store::is_scratch_project_id(id)
+}
+
+#[derive(Clone)]
+pub(crate) struct ScratchWindow {
+    prev_project_id: Option<String>,
+    scratch_project_id: String,
+    session_id: String,
+    sandbox_path: PathBuf,
+}
+
+/// Previous workspace to restore when scratch chat closes. File → New Window
+/// (`home-*`) has no binding, so scratch can start there and return to home.
+fn scratch_restore_project_id(
+    label: &str,
+    bound_project_id: Result<String, String>,
+) -> Result<Option<String>, String> {
+    match bound_project_id {
+        Ok(id) if is_scratch_project_id(&id) => Err("Scratch chat is already active.".into()),
+        Ok(id) => Ok(Some(id)),
+        Err(_) if is_blank_window_label(label) => Ok(None),
+        Err(err) => Err(err),
+    }
+}
 
 fn scratch_sandbox_root(app_data: &Path) -> PathBuf {
     app_data.join("scratch")
@@ -49,6 +76,98 @@ pub(super) async fn purge_orphan_scratch_projects(store: &Store, orphans: Orphan
     for sandbox in orphans.sandboxes {
         let _ = std::fs::remove_dir_all(sandbox);
     }
+}
+
+async fn destroy_scratch_window(state: &AppState, label: &str, scratch: ScratchWindow) {
+    cancel_project_sessions(state, &scratch.scratch_project_id).await;
+    state
+        .runtime_manager
+        .stop_project(&scratch.scratch_project_id)
+        .await;
+    let _ = state
+        .store
+        .delete_project(&scratch.scratch_project_id)
+        .await;
+    let _ = std::fs::remove_dir_all(&scratch.sandbox_path);
+    if state.active_frame(label).as_deref() == Some(scratch.session_id.as_str()) {
+        state.set_active_frame(label, None);
+    }
+    if let Some(prev_project_id) = scratch.prev_project_id.as_deref() {
+        let _ = set_active_project(state, label, prev_project_id).await;
+    } else {
+        state.active.write().unwrap().remove(label);
+        state.set_active_frame(label, None);
+    }
+}
+
+async fn close_scratch_for_window(state: &AppState, label: &str) {
+    let scratch = state.scratch.lock().unwrap().remove(label);
+    if let Some(scratch) = scratch {
+        destroy_scratch_window(state, label, scratch).await;
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ScratchChatInfo {
+    session_id: String,
+    project_id: String,
+}
+
+#[tauri::command]
+pub(super) async fn start_scratch_chat(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+) -> Result<ScratchChatInfo, String> {
+    let label = window.label().to_string();
+    close_scratch_for_window(state.inner(), &label).await;
+
+    let prev_project_id =
+        scratch_restore_project_id(&label, state.require_active(&label).map(|ap| ap.id))?;
+
+    let uuid = Uuid::new_v4().to_string();
+    let sandbox_path = scratch_sandbox_root(&state.app_data).join(&uuid);
+    std::fs::create_dir_all(&sandbox_path)
+        .map_err(|e| format!("Failed to create scratch sandbox: {e}"))?;
+    let marker = sandbox_path.join(".wisp-write-test");
+    std::fs::write(&marker, b"").map_err(|e| format!("Scratch sandbox is not writable: {e}"))?;
+    let _ = std::fs::remove_file(&marker);
+
+    let project_id = format!("{SCRATCH_PROJECT_PREFIX}{uuid}");
+    let ws = sandbox_path.to_string_lossy().into_owned();
+    state
+        .store
+        .create_project(&project_id, "Scratch", &ws)
+        .await
+        .map_err(|e| format!("{e}"))?;
+
+    let session_id = create_session_frame(&state.store, &project_id).await?;
+    let (ap, _, _) = load_active_project(state.inner(), &project_id).await?;
+    state.set_active(&label, ap);
+    state.set_active_frame(&label, Some(session_id.clone()));
+    state.scratch.lock().unwrap().insert(
+        label,
+        ScratchWindow {
+            prev_project_id,
+            scratch_project_id: project_id.clone(),
+            session_id: session_id.clone(),
+            sandbox_path,
+        },
+    );
+
+    Ok(ScratchChatInfo {
+        session_id,
+        project_id,
+    })
+}
+
+#[tauri::command]
+pub(super) async fn close_scratch_chat(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
+    close_scratch_for_window(state.inner(), window.label()).await;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -112,5 +231,26 @@ mod tests {
         assert!(store.get_project(&fresh_id).await.unwrap().is_some());
         assert!(fresh_dir.exists());
         let _ = std::fs::remove_dir_all(&app_data);
+    }
+
+    #[test]
+    fn scratch_from_a_blank_window_has_no_project_to_restore() {
+        assert_eq!(
+            scratch_restore_project_id("home-1", Err(BLANK_WINDOW_NO_PROJECT.into())).unwrap(),
+            None
+        );
+        assert_eq!(
+            scratch_restore_project_id("main", Err(BLANK_WINDOW_NO_PROJECT.into())).unwrap_err(),
+            BLANK_WINDOW_NO_PROJECT
+        );
+        assert_eq!(
+            scratch_restore_project_id("proj-abc", Ok("workspace-1".into())).unwrap(),
+            Some("workspace-1".into())
+        );
+        assert_eq!(
+            scratch_restore_project_id("main", Ok(format!("{SCRATCH_PROJECT_PREFIX}open")))
+                .unwrap_err(),
+            "Scratch chat is already active."
+        );
     }
 }

@@ -190,9 +190,19 @@ pub(crate) fn art_label(a: &Artifact) -> String {
 pub(crate) fn art_chip(idx: usize, a: &Artifact) -> String {
     let label = html_escape(&art_label(a));
     let title = html_escape(&a.name);
+    let path_attr = artifact_workspace_reference(a)
+        .map(|path| format!(r#" data-workspace-path="{}""#, html_escape(path)))
+        .unwrap_or_default();
     format!(
-        r#"<button type="button" class="art-ref" data-art-idx="{idx}" title="{title}">{label}</button>"#
+        r#"<button type="button" class="art-ref" data-art-idx="{idx}"{path_attr} title="{title}">{label}</button>"#
     )
+}
+
+fn artifact_workspace_reference(a: &Artifact) -> Option<&str> {
+    a.location.as_deref().or_else(|| match &a.data {
+        PreviewData::File { path, .. } => Some(path.as_str()),
+        _ => None,
+    })
 }
 
 pub(crate) fn artifact_file_paths(a: &Artifact) -> Vec<String> {
@@ -210,6 +220,10 @@ pub(crate) fn artifact_file_paths(a: &Artifact) -> Vec<String> {
                 if !out.contains(&name) {
                     out.push(name);
                 }
+            }
+            let name = normalize_path(&a.name);
+            if !out.contains(&name) {
+                out.push(name);
             }
             out
         }
@@ -323,6 +337,21 @@ pub(crate) fn wrap_code_filenames_as_art_refs(html: String, arts: &[Artifact]) -
     if arts.is_empty() {
         return html;
     }
+    let mut html = html;
+    for (i, a) in arts.iter().enumerate() {
+        let fname = html_escape(&a.name);
+        if fname.is_empty() {
+            continue;
+        }
+        let needle = format!("<code>{fname}</code>");
+        let path_attr = artifact_workspace_reference(a)
+            .map(|path| format!(r#" data-workspace-path="{}""#, html_escape(path)))
+            .unwrap_or_default();
+        let replacement = format!(
+            r#"<button type="button" class="art-ref" data-art-idx="{i}"{path_attr} title="{fname}"><code>{fname}</code></button>"#
+        );
+        html = replace_code_outside_art_refs(&html, &needle, &replacement);
+    }
     let mut out = String::with_capacity(html.len());
     let mut rest = html.as_str();
     while let Some(start) = rest.find("<code") {
@@ -374,7 +403,6 @@ fn code_is_inside_pre(before: &str) -> bool {
     }
 }
 
-#[cfg(test)]
 fn replace_code_outside_art_refs(html: &str, needle: &str, replacement: &str) -> String {
     let mut out = String::with_capacity(html.len());
     let mut rest = html;
@@ -614,7 +642,7 @@ fn wrap_inline_workspace_paths(html: String, project_root: Option<&str>) -> Stri
         if let Some(path) = linked {
             let escaped = html_escape(&path);
             out.push_str(&format!(
-                r#"<a class="workspace-path-link" href="{escaped}"><code>{escaped}</code></a>"#
+                r#"<a class="workspace-path-link" href="{escaped}" data-workspace-path="{escaped}"><code>{escaped}</code></a>"#
             ));
         } else {
             out.push_str("<code>");
@@ -871,6 +899,30 @@ mod art_ref_marker_tests {
     }
 
     #[test]
+    fn filename_link_matches_registered_artifact_location() {
+        let artifact = Artifact {
+            id: "artifact-patho-double".into(),
+            name: "patho_double.png".into(),
+            kind: "image",
+            data: PreviewData::File {
+                path: "artifact:artifact-patho-double".into(),
+                kind: "image".into(),
+            },
+            location: Some("figures/patho_double.png".into()),
+            source_item: usize::MAX,
+            superseded: false,
+            source_discarded: false,
+        };
+
+        let html = replace_file_links(
+            r#"<p><a href="patho_double.png">patho_double.png</a></p>"#.into(),
+            &[artifact],
+        );
+        assert!(html.contains(r#"class="art-ref" data-art-idx="0""#));
+        assert!(!html.contains(r#"href="patho_double.png""#));
+    }
+
+    #[test]
     fn skips_code_already_inside_art_ref_chip() {
         let html = r#"<button type="button" class="art-ref" data-art-idx="0" title="x.csv"><code>x.csv</code></button>"#;
         let out = replace_code_outside_art_refs(
@@ -964,9 +1016,11 @@ mod art_ref_marker_tests {
         let html = r#"<p>Saved <code>D:\Wisp-Science\合作项目\analysis\figures\FIGURE_LEGEND.md</code> and <code>figures/plot.png</code>.</p>"#;
         let out = wrap_inline_workspace_paths(html.into(), Some(r"D:\Wisp-Science\合作项目"));
         assert!(out.contains(
-            r#"href="analysis/figures/FIGURE_LEGEND.md"><code>analysis/figures/FIGURE_LEGEND.md</code>"#
+            r#"href="analysis/figures/FIGURE_LEGEND.md" data-workspace-path="analysis/figures/FIGURE_LEGEND.md"><code>analysis/figures/FIGURE_LEGEND.md</code>"#
         ));
-        assert!(out.contains(r#"href="figures/plot.png"><code>figures/plot.png</code>"#));
+        assert!(out.contains(
+            r#"href="figures/plot.png" data-workspace-path="figures/plot.png"><code>figures/plot.png</code>"#
+        ));
         assert!(!out.contains(r"D:\Wisp-Science"));
     }
 

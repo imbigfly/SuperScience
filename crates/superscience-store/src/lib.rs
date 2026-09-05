@@ -52,6 +52,7 @@ pub use agent_workflows::{
 };
 pub use artifacts::{logical_artifact_id, scoped_logical_artifact_id};
 pub use ask_user_requests::AskUserPoll;
+pub use execution_contexts::FRAME_DEFAULT_EXECUTION_CONTEXT_PREFIX;
 pub use explorations::{
     ArtifactHead, ContextArchiveRecord, Exploration, ExplorationBaselineArtifactHead,
     ExplorationBaselineEntity, ExplorationCheckpoint, ExplorationEffect, ExplorationFamily,
@@ -77,6 +78,7 @@ pub use projects::{is_scratch_project_id, SCRATCH_PROJECT_PREFIX};
 pub use provenance::{canonical_json, canonical_json_sha256};
 pub use remote_staging::RemoteStagingEntry;
 pub use schedules::{next_slot_after, ScheduleRecord, ScheduleRunRecord};
+pub use session_imports::RecoveredWorkspaceSession;
 pub use sessions::{
     ModelTokenUsage, ProjectTokenUsage, SessionBranchDeltaMessage, SessionBranchLink,
     SessionBranchMerge, SessionBranchMergeCard, SessionBranchMergePreview, SessionTokenUsage,
@@ -174,6 +176,7 @@ const RUN_REVIEW_DISMISSED_MIGRATION: &str = "0052_run_review_dismissed";
 const ABILITY_CARD_USAGE_MIGRATION: &str = "0053_ability_card_usage";
 const ABILITY_CARD_USAGE_MIGRATION_SQL: &str =
     include_str!("../migrations/0053_ability_card_usage.sql");
+const SESSION_SERVICE_TIER_MIGRATION: &str = "0054_session_service_tier";
 
 #[derive(Clone)]
 pub struct Store {
@@ -712,6 +715,10 @@ impl Store {
             Self::execute_sql_script(pool, ABILITY_CARD_USAGE_MIGRATION_SQL).await?;
             Self::record_migration(pool, ABILITY_CARD_USAGE_MIGRATION).await?;
         }
+        if !Self::migration_applied(pool, SESSION_SERVICE_TIER_MIGRATION).await? {
+            Self::add_columns_if_missing(pool, "frames", &[("service_tier", "TEXT")]).await?;
+            Self::record_migration(pool, SESSION_SERVICE_TIER_MIGRATION).await?;
+        }
         // Re-apply additive DDL even when a migration marker is already
         // recorded. Jumping many releases can leave a table/column that was
         // later folded into 0000_init.sql (or into an already-shipped apply_*
@@ -759,6 +766,7 @@ impl Store {
                 ("pinned", "INTEGER NOT NULL DEFAULT 0"),
                 ("branched_from", "TEXT"),
                 ("reasoning_effort", "TEXT"),
+                ("service_tier", "TEXT"),
                 ("branch_point_user_index", "INTEGER"),
                 ("branch_point_kind", "TEXT"),
                 ("exploration_id", "TEXT"),
@@ -2031,6 +2039,14 @@ impl Store {
             .fetch_optional(&self.pool)
             .await?;
         Ok(row.map(|(v,)| v))
+    }
+
+    pub async fn delete_setting(&self, key: &str) -> Result<()> {
+        sqlx::query("DELETE FROM settings WHERE key=?")
+            .bind(key)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 }
 

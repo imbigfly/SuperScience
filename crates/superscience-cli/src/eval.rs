@@ -13,7 +13,9 @@ use superscience_llm::{
     Message, Provider, ProviderConfig, Role, ScriptedCompletion, ScriptedProvider,
     ScriptedProviderSnapshot, ToolSchema,
 };
+use superscience_runs::{open_project_store, RunManager};
 use superscience_skills::SkillIndex;
+use superscience_store::Store;
 use superscience_tools::{Approval, Tool, ToolEnv, ToolResult};
 
 const SUITE_SCHEMA: &str = "wisp.agent-eval-suite.v1";
@@ -819,8 +821,24 @@ impl superscience_runtime::RuntimeKernel for EvalRuntimeKernel {
         &mut self,
         _id: &str,
         code: &str,
+        _source_name: Option<&str>,
+        required_objects: &[String],
         _output: &superscience_runtime::RuntimeOutput,
     ) -> Result<superscience_runtime::KernelResp> {
+        let missing = required_objects
+            .iter()
+            .filter(|name| name.as_str() != "value")
+            .cloned()
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return Ok(superscience_runtime::KernelResp {
+                error: Some(format!(
+                    "required runtime objects are missing: {}",
+                    missing.join(", ")
+                )),
+                ..superscience_runtime::KernelResp::default()
+            });
+        }
         let stdout = if let Some(value) = code.strip_prefix("set:") {
             self.value = value.to_string();
             String::new()
@@ -886,7 +904,11 @@ impl Tool for FixtureMcpTool {
     }
 }
 
-pub async fn run(live_config: Option<ProviderConfig>, options: &EvalOptions) -> Result<()> {
+pub async fn run(
+    live_config: Option<ProviderConfig>,
+    live_vision: Option<ProviderConfig>,
+    options: &EvalOptions,
+) -> Result<()> {
     validate_options(options)?;
     let suite = load_suite(options.suite.as_deref())?;
     validate_suite(&suite, options.mode)?;
@@ -925,12 +947,21 @@ pub async fn run(live_config: Option<ProviderConfig>, options: &EvalOptions) -> 
                 let defaults = suite.defaults.clone();
                 let options = options.clone();
                 let live_config = model_config.clone();
+                let live_vision = live_vision.clone();
                 let cases_per_model = selected.len() * options.repeat;
                 tasks.spawn(async move {
                     let _permit = permit;
                     let order =
                         model_index * cases_per_model + case_index * options.repeat + repetition;
-                    let result = run_case(case, repetition, defaults, live_config, options).await;
+                    let result = run_case(
+                        case,
+                        repetition,
+                        defaults,
+                        live_config,
+                        live_vision,
+                        options,
+                    )
+                    .await;
                     (order, result)
                 });
             }
@@ -1135,6 +1166,7 @@ async fn run_case(
     repetition: usize,
     defaults: EvalLimits,
     live_config: Option<ProviderConfig>,
+    live_vision: Option<ProviderConfig>,
     options: EvalOptions,
 ) -> Result<ScenarioResult> {
     let model = live_config
@@ -1172,10 +1204,13 @@ async fn run_case(
                 case.vision_script.clone(),
             )))
         }
+        EvalMode::Live => live_vision.map(ProviderSource::Live),
         _ => None,
     };
     let max_context = limits.max_context_tokens.unwrap_or(DEFAULT_MAX_CONTEXT);
     let max_rounds = limits.max_rounds.unwrap_or(DEFAULT_MAX_ROUNDS);
+    let run_store = open_project_store(workspace.path(), "eval", &case.id).await?;
+    let run_manager = RunManager::new();
     let mut agent = build_agent(
         &case,
         workspace.path(),
@@ -1183,6 +1218,8 @@ async fn run_case(
         vision_source.as_ref(),
         max_context,
         max_rounds,
+        run_store.clone(),
+        run_manager.clone(),
     )?;
     if let Some(enabled) = case.auto_compact {
         agent.set_auto_compact(enabled);
@@ -1226,6 +1263,8 @@ async fn run_case(
             max_rounds,
             output.as_ref(),
             cancel.as_ref(),
+            run_store.clone(),
+            run_manager.clone(),
         ),
     )
     .await;
@@ -1384,6 +1423,8 @@ fn build_agent(
     vision: Option<&ProviderSource>,
     max_context: usize,
     max_rounds: usize,
+    run_store: Store,
+    run_manager: RunManager,
 ) -> Result<Agent> {
     let skill_paths = vec![root.join(".superscience").join("skills")];
     let skills = Arc::new(SkillIndex::load(&skill_paths));
@@ -1391,6 +1432,7 @@ fn build_agent(
     let mut registry =
         superscience_core::build_registry(skills.clone(), memory, case.memory_enabled);
     registry.add(Box::new(superscience_tools::ask_user::AskUserTool));
+    crate::runs::register_run_tools(&mut registry, run_store, run_manager, "eval");
     for (name, result) in &case.fixture_mcp {
         registry.add(Box::new(FixtureMcpTool {
             name: name.clone(),
@@ -1426,7 +1468,12 @@ fn build_agent(
         max_context,
         max_rounds,
     );
-    agent.seed_system_prompt(&skills, None);
+    // A dedicated vision provider describes images for a text-only primary.
+    // Native image parts would be sent to the primary instead.
+    if vision.is_some() {
+        agent.ctx.supports_vision = false;
+    }
+    agent.seed_system_prompt(&skills, Some(superscience_runs::runs_guidance()));
     Ok(agent)
 }
 
@@ -1457,6 +1504,8 @@ async fn run_actions(
     max_rounds: usize,
     output: &EvalOutput,
     cancel: &AtomicBool,
+    run_store: Store,
+    run_manager: RunManager,
 ) -> Result<()> {
     for action in actions {
         match action {
@@ -1522,7 +1571,16 @@ async fn run_actions(
             }
             EvalAction::Restart => {
                 agent.save();
-                *agent = build_agent(case, &agent.root, provider, vision, max_context, max_rounds)?;
+                *agent = build_agent(
+                    case,
+                    &agent.root,
+                    provider,
+                    vision,
+                    max_context,
+                    max_rounds,
+                    run_store.clone(),
+                    run_manager.clone(),
+                )?;
                 if let Some(enabled) = case.auto_compact {
                     agent.set_auto_compact(enabled);
                 }
@@ -2222,12 +2280,64 @@ mod tests {
             "delegation",
             "python",
             "r",
+            "runs",
         ] {
             assert!(
                 tags.contains(required),
                 "missing built-in coverage tag {required}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn run_wait_case_completes_without_shell_sleep() {
+        let suite: EvalSuite = serde_yaml::from_str(BUILTIN_SUITE).unwrap();
+        let case = suite
+            .cases
+            .iter()
+            .find(|case| case.id == "run-wait-without-sleep")
+            .cloned()
+            .expect("run-wait-without-sleep case");
+        let result = run_case(case, 1, suite.defaults, None, None, EvalOptions::default())
+            .await
+            .unwrap();
+        assert!(result.passed, "{:?}", result.failures);
+        assert!(
+            result
+                .tool_calls
+                .iter()
+                .any(|call| call.name == "run_in_context"),
+            "{:?}",
+            result.tool_calls
+        );
+        assert!(
+            result.tool_calls.iter().all(|call| call.name != "shell"),
+            "{:?}",
+            result.tool_calls
+        );
+    }
+
+    #[tokio::test]
+    async fn vision_fallback_case_uses_the_dedicated_vision_provider() {
+        let suite: EvalSuite = serde_yaml::from_str(BUILTIN_SUITE).unwrap();
+        let case = suite
+            .cases
+            .iter()
+            .find(|case| case.id == "vision-fallback")
+            .cloned()
+            .expect("vision-fallback case");
+        let result = run_case(case, 1, suite.defaults, None, None, EvalOptions::default())
+            .await
+            .unwrap();
+        assert!(result.passed, "{:?}", result.failures);
+        assert!(
+            result
+                .tool_calls
+                .iter()
+                .any(|call| call.name == "view_image"),
+            "{:?}",
+            result.tool_calls
+        );
     }
 
     #[test]
@@ -2286,6 +2396,7 @@ mod tests {
                 case,
                 1,
                 suite.defaults.clone(),
+                None,
                 None,
                 EvalOptions::default(),
             )
@@ -2445,6 +2556,7 @@ mod tests {
                 1,
                 suite.defaults.clone(),
                 None,
+                None,
                 EvalOptions::default(),
             )
             .await
@@ -2501,6 +2613,7 @@ mod tests {
                 case,
                 1,
                 suite.defaults.clone(),
+                None,
                 None,
                 EvalOptions::default(),
             )
@@ -2576,6 +2689,7 @@ mod tests {
                 case,
                 1,
                 suite.defaults.clone(),
+                None,
                 None,
                 EvalOptions::default(),
             )

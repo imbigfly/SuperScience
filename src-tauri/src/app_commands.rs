@@ -207,7 +207,7 @@ pub(super) async fn upload_to_context(
             }
         }
     };
-    let ap = state.active(window.label());
+    let ap = state.require_active(window.label())?;
     let frame_id = state.active_frame(window.label());
     crate::run_context::submit_local_uploads_to_context(
         &state.store,
@@ -245,7 +245,11 @@ pub(super) async fn download_file(
     path: String,
 ) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
-    let ap = state.active(window.label());
+    // Resolve against the active frame's working project so downloads inside
+    // an exploration branch read that branch's workspace, not the mainline.
+    let (ap, _scope) =
+        crate::exploration_commands::working_project_for_active_frame(&state, window.label())
+            .await?;
     let remote = parse_ssh_artifact_uri(&path);
     let local = if remote.is_none() {
         let real = superscience_tools::safety::validate_file_path(&ap.root, &path)?;
@@ -320,6 +324,26 @@ pub(super) fn share_image_file_name(default_name: &str) -> String {
         .unwrap_or_else(|| "superscience-share.png".to_string())
 }
 
+/// A user can replace the whole suggested name in a native save dialog. On
+/// Windows that may also remove the hidden `.html` suffix, after which a
+/// browser treats the UTF-8 document as plain text and shows its source. Keep
+/// the chosen name, including Unicode and spaces, but restore the file type.
+fn share_html_destination(mut path: std::path::PathBuf) -> std::path::PathBuf {
+    let is_html = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("html"));
+    if !is_html {
+        let mut name = path
+            .file_name()
+            .map(std::ffi::OsStr::to_os_string)
+            .unwrap_or_else(|| std::ffi::OsString::from("wisp-share"));
+        name.push(".html");
+        path.set_file_name(name);
+    }
+    path
+}
+
 // Generous ceiling for one long conversation image (base64 of ~48 MB PNG).
 const MAX_SHARE_PNG_BASE64_BYTES: usize = 64 * 1024 * 1024;
 
@@ -380,6 +404,7 @@ pub(super) async fn save_share_html(
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
+        .add_filter("HTML", &["html"])
         .set_file_name(&share_image_file_name(&default_name))
         .save_file(move |p| {
             let _ = tx.send(p);
@@ -387,7 +412,7 @@ pub(super) async fn save_share_html(
     let Some(dest) = rx.await.map_err(|e| format!("{e}"))? else {
         return Ok(None); // user cancelled
     };
-    let dest_path = std::path::PathBuf::from(dest.to_string());
+    let dest_path = share_html_destination(std::path::PathBuf::from(dest.to_string()));
     tokio::fs::write(&dest_path, html)
         .await
         .map_err(|e| format!("write failed: {e}"))?;
@@ -399,13 +424,13 @@ pub(super) async fn get_capabilities(
     state: State<'_, AppState>,
     window: tauri::WebviewWindow,
 ) -> Result<Capabilities, String> {
-    let ap = state.active(window.label());
+    let ap = state.require_active(window.label())?;
     let tags = load_skill_tags(&state.store).await;
     let (catalog, enabled) = project_skill_catalog(&state.store, &ap).await;
     let skills = skill_infos(&catalog, &tags, enabled.as_ref());
     let skill_counts = capability_skill_counts(&skills);
     let mcp_counts = capability_mcp_counts(&state.store, &ap).await;
-    let mut project = build_project_info(&state, window.label()).await;
+    let mut project = build_project_info(&state, window.label()).await?;
     project.skill_count = skill_counts.total();
     project.mcp_server_count = mcp_counts.total();
     Ok(Capabilities {
@@ -632,8 +657,26 @@ pub(super) fn open_app_doc(app: tauri::AppHandle, page: String) -> Result<(), St
 #[tauri::command]
 pub(super) fn open_browser_extension_page(
     state: State<'_, AppState>,
-) -> browser_bridge::BrowserExtensionSetup {
+) -> superscience_dto::BrowserExtensionSetup {
     state.browser_bridge.open_extension_setup()
+}
+
+/// Report whether the connected shared-browser extension matches this build.
+#[tauri::command]
+pub(super) async fn browser_extension_status(
+    state: State<'_, AppState>,
+) -> Result<superscience_dto::BrowserExtensionStatus, String> {
+    Ok(state.browser_bridge.extension_status().await)
+}
+
+/// Refresh the verified managed copy and reload it automatically when the
+/// connected extension supports that operation. Older extensions fall back to
+/// the extension-manager page with the exact stable path in the result.
+#[tauri::command]
+pub(super) async fn update_browser_extension(
+    state: State<'_, AppState>,
+) -> Result<superscience_dto::BrowserExtensionUpdateResult, String> {
+    Ok(state.browser_bridge.update_extension().await)
 }
 
 /// Live extension connection check for the offline banner's display gate.
@@ -650,13 +693,31 @@ pub(super) fn reveal_in_file_manager(
     path: String,
 ) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
-    let ap = state.active(window.label());
+    let ap = state.require_active(window.label())?;
     let real = superscience_tools::safety::validate_file_path(&ap.root, &path)?;
     if !real.exists() {
         return Err(format!("file not found: {path}"));
     }
     app.opener()
         .reveal_item_in_dir(&real)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub(super) fn open_workspace_path(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    path: String,
+) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let ap = state.require_active(window.label())?;
+    let real = superscience_tools::safety::validate_file_path(&ap.root, &path)?;
+    if !real.exists() {
+        return Err(format!("file not found: {path}"));
+    }
+    app.opener()
+        .open_path(real.to_string_lossy().into_owned(), None::<String>)
         .map_err(|e| e.to_string())
 }
 
@@ -707,7 +768,7 @@ mod app_doc_tests {
 
 #[cfg(test)]
 mod share_image_tests {
-    use super::share_image_file_name;
+    use super::{share_html_destination, share_image_file_name};
 
     #[test]
     fn keeps_only_a_safe_file_name_component() {
@@ -719,5 +780,21 @@ mod share_image_tests {
         assert_eq!(share_image_file_name("/tmp/evil/name.png"), "name.png");
         assert_eq!(share_image_file_name(""), "superscience-share.png");
         assert_eq!(share_image_file_name(".."), "superscience-share.png");
+    }
+
+    #[test]
+    fn html_destination_restores_the_extension_after_rename() {
+        assert_eq!(
+            share_html_destination(std::path::PathBuf::from("分析 result 01")),
+            std::path::PathBuf::from("分析 result 01.html")
+        );
+        assert_eq!(
+            share_html_destination(std::path::PathBuf::from("report.HTML")),
+            std::path::PathBuf::from("report.HTML")
+        );
+        assert_eq!(
+            share_html_destination(std::path::PathBuf::from("report.txt")),
+            std::path::PathBuf::from("report.txt.html")
+        );
     }
 }

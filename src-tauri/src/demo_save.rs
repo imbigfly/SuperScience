@@ -326,7 +326,7 @@ async fn resolve_workspace(
             }
         }
     }
-    Ok(state.active(window.label()).root)
+    Ok(state.require_active(window.label())?.root)
 }
 
 fn normalize_save_locale(locale: Option<&str>) -> &'static str {

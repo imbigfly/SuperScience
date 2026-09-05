@@ -87,7 +87,7 @@ pub(crate) async fn send_message_inner(
     if !resume && message.trim().is_empty() {
         return Err("message is empty".into());
     }
-    let mut ap = state.active(window_label);
+    let mut ap = state.require_active(window_label)?;
     let mut explicit_scope = None;
     // A session belongs to one project for life, but the per-window active slot
     // can drift while it keeps running (another project opened in this window,
@@ -113,6 +113,7 @@ pub(crate) async fn send_message_inner(
         explicit_scope = Some(scope);
     }
     let _project_activity = state.begin_project_activity(&ap.id)?;
+    ensure_project_live_approvals(state, &ap.id).await;
     let frame_scope = explicit_scope
         .clone()
         .unwrap_or_else(|| superscience_store::StateScope::mainline(ap.id.clone()));
@@ -226,9 +227,8 @@ pub(crate) async fn send_message_inner(
             .map(|delivery| delivery.id.clone())
             .collect::<Vec<_>>();
         let artifact_references = resolve_acp_artifact_references(&state.store, refs).await?;
-        // Record the destination before waiting for a busy session. A user can
-        // therefore send a queued desktop follow-up and immediately continue
-        // that same conversation from Feishu or WeChat.
+        // Record this project's last session. Desktop sends never move the IM
+        // target project; Feishu/WeChat keep their own `/project` destination.
         channels::record_last_message_session(&state.store, &frame_id)
             .await
             .map_err(|error| format!("Failed to update the shared last-message route: {error}"))?;
@@ -345,8 +345,8 @@ pub(crate) async fn send_message_inner(
             .await?;
     }
 
-    // Route on accepted send, not on eventual execution. In particular, a
-    // follow-up queued behind a long turn must become the target immediately.
+    // Record this project's last session on accepted send. Desktop traffic
+    // must not steal the Feishu/WeChat IM project.
     channels::record_last_message_session(&state.store, &frame_id)
         .await
         .map_err(|error| format!("Failed to update the shared last-message route: {error}"))?;
@@ -424,7 +424,11 @@ pub(crate) async fn send_message_inner(
         .flatten()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(DEFAULT_MAX_ITER);
-    let session_profile_id = models::session_profile_id(&state.store, &frame_id).await;
+    let (session_profile_id, rebound_model) =
+        models::resolve_session_profile(&state.store, &frame_id).await;
+    if rebound_model {
+        *guard = None;
+    }
     let model_label = models::session_label(&state.store, &frame_id).await;
     let specialist = specialists::session_specialist(&state.store, &frame_id).await;
     let max_context = match &specialist {
@@ -438,12 +442,13 @@ pub(crate) async fn send_message_inner(
     let delegation_enabled =
         delegation_runtime::session_delegation_enabled(&state.store, &frame_id).await;
     let plan_mode_enabled = plan_mode::session_plan_mode(&state.store, &frame_id).await;
-    let (provider, api_url, model, api_key, max_tokens, reasoning_effort) = match &specialist {
-        Some(spec) if !spec.model_id.trim().is_empty() => {
-            specialists::specialist_llm(&state.store, spec).await
-        }
-        _ => load_session_settings(&state.store, &frame_id).await,
-    };
+    let (provider, api_url, model, api_key, max_tokens, reasoning_effort, service_tier) =
+        match &specialist {
+            Some(spec) if !spec.model_id.trim().is_empty() => {
+                specialists::specialist_llm(&state.store, spec).await
+            }
+            _ => load_session_settings(&state.store, &frame_id).await,
+        };
     let cfg = build_provider_config(
         &provider,
         &api_url,
@@ -451,6 +456,7 @@ pub(crate) async fn send_message_inner(
         &model,
         max_tokens,
         &reasoning_effort,
+        &service_tier,
     )?;
     let primary_profile_id = specialist
         .as_ref()
@@ -704,9 +710,10 @@ pub(crate) async fn send_message_inner(
                 frame_id.clone(),
             )));
         }
-        let msgs = superscience_core::require_sqlite_session_messages(
+        let mut msgs = superscience_core::require_sqlite_session_messages(
             state.store.load_messages(&frame_id).await,
         )?;
+        superscience_core::bound_tool_results_in_history(&ap.root, &mut msgs);
         agent.ctx.messages = msgs;
         if let Some(message) = agent.ctx.messages.first_mut() {
             if let superscience_llm::Content::Text(prompt) = &mut message.content {
@@ -771,7 +778,9 @@ pub(crate) async fn send_message_inner(
         }
         *guard = Some(agent);
     }
-    let agent = guard.as_mut().unwrap();
+    let agent = guard
+        .as_mut()
+        .ok_or_else(|| "Failed to prepare the session agent.".to_string())?;
     let (auto_continue, auto_continue_limit) = load_auto_continue_settings(&state.store).await;
     apply_live_agent_settings(
         agent,
@@ -832,7 +841,7 @@ pub(crate) async fn send_message_inner(
                     .await
                     .map_err(|error| error.to_string())?;
                 append_ui_event(&state.store, &frame_id, &mut event_seq, event.clone()).await;
-                emit_agent_event(&app, event);
+                emit_agent_event_in(&app, event, Some(ap.id.as_str()));
                 persist_and_emit_terminal_event(
                     state,
                     &app,
@@ -978,13 +987,14 @@ pub(crate) async fn send_message_inner(
                         )
                         .await;
                         if !resources.is_empty() {
-                            emit_agent_event(
+                            emit_agent_event_in(
                                 &resource_app,
                                 AgentEvent::Resources {
                                     frame_id: fid,
                                     seq,
                                     resources: resources.iter().map(Into::into).collect(),
                                 },
+                                Some(resource_project_id.as_str()),
                             );
                         }
                     }
@@ -1095,10 +1105,13 @@ pub(crate) async fn send_message_inner(
     let (live_event_handle, live_event_tx) = {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
         let app = app.clone();
+        let live_project_id = ap.id.clone();
         let handle = tokio::spawn(coalesce_live_agent_events(
             rx,
             LIVE_EVENT_FLUSH_INTERVAL,
-            move |event| emit_agent_event_to_surfaces(&app, event),
+            move |event| {
+                emit_agent_event_to_surfaces_in(&app, event, Some(live_project_id.as_str()))
+            },
         ));
         (handle, tx)
     };
@@ -1264,7 +1277,7 @@ pub(crate) async fn send_message_inner(
                 },
             )
             .await;
-            emit_browser_tab_cleanup(state, &app, &browser_turn_id).await;
+            emit_browser_tab_cleanup(state, &app, &browser_turn_id, &ap.id).await;
             Ok(frame_id)
         }
         Err(e) => {
@@ -1284,17 +1297,29 @@ pub(crate) async fn send_message_inner(
                 },
             )
             .await;
-            emit_browser_tab_cleanup(state, &app, &browser_turn_id).await;
+            emit_browser_tab_cleanup(state, &app, &browser_turn_id, &ap.id).await;
             Err(client_turn_error(turn_started, &message))
         }
     }
 }
 
-async fn emit_browser_tab_cleanup(state: &AppState, app: &AppHandle, turn_id: &str) {
+async fn emit_browser_tab_cleanup(
+    state: &AppState,
+    app: &AppHandle,
+    turn_id: &str,
+    project_id: &str,
+) {
     if let browser_bridge::TabCleanupAction::Prompt(prompt) =
         state.browser_bridge.complete_turn(turn_id).await
     {
-        let _ = app.emit("browser-tab-cleanup", prompt);
+        emit_to_session_surfaces_filtered(
+            app,
+            &prompt.frame_id,
+            Some(project_id),
+            "browser-tab-cleanup",
+            &prompt,
+            false,
+        );
     }
 }
 

@@ -73,16 +73,21 @@ Eval and the long-lived JSONL RPC protocol:
 
 | Variable             | Purpose                                                       |
 |----------------------|---------------------------------------------------------------|
-| `SUPERSCIENCE_API_KEY` | Provider API key (CLI). Desktop uses the OS keyring.        |
-| `SUPERSCIENCE_PROVIDER` | CLI API provider: `openai` (default), `openai_responses`, or `anthropic` |
-| `SUPERSCIENCE_API_URL` | API root; defaults to DeepSeek / OpenAI / Anthropic         |
-| `SUPERSCIENCE_MODEL` | Model name                                                    |
-| `SUPERSCIENCE_MAX_CONTEXT` | Context budget (default 1,000,000)                      |
-| `SUPERSCIENCE_MAX_ITER` | Max agent iterations per turn (default 100; 0 = unlimited) |
-| `SUPERSCIENCE_SKILLS_PATH` | Extra `;`/`:`-separated SKILL.md catalog dirs            |
-| `SUPERSCIENCE_KERNEL_WORKER` | Override path to `kernel_worker.py` (bundled by default) |
-| `SUPERSCIENCE_MCP_COMMAND` | Launch an arbitrary stdio MCP server (full command line) |
-| `SUPERSCIENCE_MCP_PKG` | Launch a bundled bio-tools server, e.g. `mcp_pubmed`       |
+| `WISP_API_KEY`       | Provider API key (CLI). Desktop uses the OS keyring.          |
+| `WISP_PROVIDER`      | CLI API provider: `openai` (default), `openai_responses`, or `anthropic` |
+| `WISP_API_URL`       | API root; defaults to DeepSeek / OpenAI / Anthropic           |
+| `WISP_MODEL`         | Model name                                                    |
+| `WISP_VISION`        | `1`/`true` if the primary model can read images natively (default off) |
+| `WISP_VISION_MODEL`  | Dedicated image-analysis model when the primary model cannot see |
+| `WISP_VISION_PROVIDER` | Vision provider kind; defaults to `WISP_PROVIDER`           |
+| `WISP_VISION_API_URL` | Vision API root; defaults to `WISP_API_URL` or the provider default |
+| `WISP_VISION_API_KEY` | Optional vision key; defaults to `WISP_API_KEY`             |
+| `WISP_MAX_CONTEXT`   | Context budget (default 1,000,000)                            |
+| `WISP_MAX_ITER`      | Max agent iterations per turn (default 100; 0 = unlimited)    |
+| `WISP_SKILLS_PATH`   | Extra `;`/`:`-separated SKILL.md catalog dirs                 |
+| `WISP_KERNEL_WORKER` | Override path to `kernel_worker.py` (bundled by default)      |
+| `WISP_MCP_COMMAND`   | Launch an arbitrary stdio MCP server (full command line)      |
+| `WISP_MCP_PKG`       | Launch a bundled bio-tools server, e.g. `mcp_pubmed`          |
 
 Desktop stores API keys in the OS keyring and model profiles in the app-data
 SQLite store (`superscience.sqlite`). Custom credentials map a display name to an
@@ -128,6 +133,7 @@ SuperScience/
 │  ├─ superscience-mcp/     stdio JSON-RPC MCP client + McpTool adapter (bundled bio-tools)
 │  ├─ superscience-acp/     ACP v1 stdio client for external coding agents
 │  ├─ superscience-sync/    Encrypted snapshot protocol + self-hosted relay server
+│  ├─ wisp-runs/            Run control plane (run_in_context / monitor_run / harvest)
 │  └─ superscience-cli/     `superscience` headless binary
 ├─ src-tauri/       Tauri v2 desktop shell (commands + agent event stream)
 ├─ ui/              Leptos CSR frontend (built by Trunk, loaded in WebView2)
@@ -164,7 +170,9 @@ serde alias on the parser.
   `/chat/completions` and Anthropic `/v1/messages`), both with SSE streaming.
   `RoutedProvider` picks a low/medium/high tier per turn.
 - **Tools** (`superscience-tools`): filesystem + shell tools with Windows-aware
-  dangerous-command gating and a path sandbox rooted at the project directory.
+  dangerous-command gating. Relative filesystem paths resolve from the active
+  project root; isolated exploration and delegated sessions additionally keep
+  reads and searches inside that root.
 - **Python/R REPLs** (`superscience-runtime`): one manager-owned process per
   project/context/language keeps its namespace across cells and conversations;
   local, WSL, and SSH contexts share one versioned protocol.

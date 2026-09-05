@@ -667,18 +667,30 @@ fn mac_menu_locale_includes_english_edit_labels() {
     );
 }
 
-#[cfg(target_os = "macos")]
 #[test]
 fn mac_menu_action_maps_update_and_settings_ids() {
+    assert_eq!(super::mac_menu_action("action.new-window", false), None);
+    assert_eq!(super::mac_menu_action("action.new", false), None);
+    assert_eq!(super::mac_menu_action("action.projects", false), None);
     assert_eq!(
-        super::mac_menu_action("action.check-updates"),
+        super::mac_menu_action("action.check-updates", true),
         Some("check-updates")
     );
-    assert_eq!(super::mac_menu_action("action.issues"), Some("issues"));
-    assert_eq!(super::mac_menu_action("action.docs"), None);
-    assert_eq!(super::mac_menu_action("action.star-us"), None);
-    assert_eq!(super::mac_menu_action("action.settings"), Some("settings"));
-    assert_eq!(super::mac_menu_action("action.unknown"), None);
+    assert_eq!(
+        super::mac_menu_action("action.issues", true),
+        Some("issues")
+    );
+    assert_eq!(super::mac_menu_action("action.docs", true), None);
+    assert_eq!(super::mac_menu_action("action.star-us", true), None);
+    assert_eq!(
+        super::mac_menu_action("action.settings", true),
+        Some("settings")
+    );
+    assert_eq!(
+        super::mac_menu_action("action.new-window", true),
+        Some("new-window")
+    );
+    assert_eq!(super::mac_menu_action("action.unknown", true), None);
 }
 
 #[cfg(target_os = "macos")]
@@ -1509,6 +1521,55 @@ async fn at_mentioning_a_server_turns_it_on_for_the_session() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
+#[tokio::test]
+async fn create_session_frame_snapshots_the_global_default() {
+    let base = std::env::temp_dir().join(format!("wisp_session_snap_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&base).unwrap();
+    let store = superscience_store::Store::open(&base.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "P", &base.to_string_lossy())
+        .await
+        .unwrap();
+    store
+        .upsert_execution_context(&superscience_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap())
+        .await
+        .unwrap();
+    store
+        .set_setting(super::ssh_hosts::DEFAULT_EXECUTION_CONTEXT_KEY, "ssh:gpu")
+        .await
+        .unwrap();
+
+    let id = super::create_session_frame(&store, "p").await.unwrap();
+    assert_eq!(
+        super::ssh_hosts::stored_session_default_execution_context(&store, &id).await,
+        super::ssh_hosts::SessionDefaultExecutionContext::Remote("ssh:gpu".into())
+    );
+    assert!(store
+        .session_execution_context_enabled(&id, "ssh:gpu")
+        .await
+        .unwrap());
+
+    store
+        .set_setting(super::ssh_hosts::DEFAULT_EXECUTION_CONTEXT_KEY, "")
+        .await
+        .unwrap();
+    let local = super::create_session_frame(&store, "p").await.unwrap();
+    assert_eq!(
+        super::ssh_hosts::stored_session_default_execution_context(&store, &local).await,
+        super::ssh_hosts::SessionDefaultExecutionContext::Local
+    );
+    assert_eq!(
+        super::ssh_hosts::resolved_session_execution_context_id(&store, &id)
+            .await
+            .as_deref(),
+        Some("ssh:gpu")
+    );
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 #[test]
 fn session_runtime_status_labels() {
     let mut running = HashSet::new();
@@ -1728,6 +1789,17 @@ fn scope_gates_per_tool_modes() {
     assert_eq!(full.mode_for("asker"), Approval::Allow);
     assert_eq!(full.mode_for("blocked"), Approval::Deny);
     assert!(full.full());
+}
+
+#[test]
+fn live_approvals_fall_back_to_the_process_default() {
+    let mut live = super::LiveApprovals::default();
+    live.default.scope = super::Scope::Ask;
+    let mut overlay = super::ApprovalPolicy::default();
+    overlay.scope = super::Scope::Full;
+    live.by_project.insert("proj-a".into(), overlay);
+    assert!(live.for_project("proj-a").full());
+    assert!(!live.for_project("proj-b").full());
 }
 
 #[test]
@@ -2093,6 +2165,7 @@ fn capability_skill_counts_use_enabled_bundled_vs_project_added_inventory() {
 fn macos_close_hides_only_main_window_when_not_quitting() {
     assert!(should_hide_app_on_macos_close("main", false));
     assert!(!should_hide_app_on_macos_close("proj-default", false));
+    assert!(!should_hide_app_on_macos_close("home-1", false));
     assert!(!should_hide_app_on_macos_close("main", true));
 }
 
@@ -2100,6 +2173,7 @@ fn macos_close_hides_only_main_window_when_not_quitting() {
 fn windows_close_to_tray_applies_only_to_the_main_window() {
     assert!(should_hide_workspace_on_close("main"));
     assert!(!should_hide_workspace_on_close("proj-default"));
+    assert!(!should_hide_workspace_on_close("home-1"));
     assert!(!should_hide_workspace_on_close("pet"));
 }
 
@@ -2124,6 +2198,34 @@ fn project_window_url_carries_the_target_session() {
         super::project_commands::project_window_url("abc", Some("s1")),
         "index.html?project=abc&session=s1"
     );
+    assert_eq!(super::project_commands::blank_window_url(), "index.html");
+}
+
+#[test]
+fn default_capability_grants_ipc_to_blank_windows() {
+    let spec: serde_json::Value =
+        serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+    let windows: Vec<&str> = spec["windows"]
+        .as_array()
+        .expect("default capability lists windows")
+        .iter()
+        .filter_map(|value| value.as_str())
+        .collect();
+    assert!(
+        windows.contains(&"home-*"),
+        "File → New Window labels home-* must be allowed to close themselves: {windows:?}"
+    );
+    assert!(windows.contains(&"main"));
+    assert!(windows.contains(&"proj-*"));
+    let permissions: Vec<&str> = spec["permissions"]
+        .as_array()
+        .expect("default capability lists permissions")
+        .iter()
+        .filter_map(|value| value.as_str())
+        .collect();
+    assert!(permissions.contains(&"core:window:allow-close"));
+    assert!(permissions.contains(&"core:window:allow-minimize"));
+    assert!(permissions.contains(&"core:window:allow-toggle-maximize"));
 }
 
 #[test]
@@ -2310,6 +2412,84 @@ fn foreign_project_notification_fallback_never_arms_focus_navigation() {
         )
         .map(|selection| (selection.label, selection.arm_focus_navigation)),
         Some(("main".to_string(), false)),
+    );
+}
+
+#[test]
+fn session_surfaces_include_every_window_of_the_owning_project() {
+    let mut active_projects = HashMap::from([
+        ("main".to_string(), "workspace".to_string()),
+        ("proj-workspace".to_string(), "workspace".to_string()),
+        ("proj-other".to_string(), "other".to_string()),
+        ("pet".to_string(), "workspace".to_string()),
+    ]);
+    let active_frames = HashMap::from([
+        ("main".to_string(), "session-a".to_string()),
+        ("proj-workspace".to_string(), "session-b".to_string()),
+        ("proj-other".to_string(), "session-c".to_string()),
+    ]);
+
+    assert_eq!(
+        super::session_surface_window_labels(
+            Some("main"),
+            "session-a",
+            Some("workspace"),
+            &active_projects,
+            &active_frames,
+        ),
+        vec!["main".to_string(), "proj-workspace".to_string()],
+    );
+    // Window labels survive project switches. Routing, focusing and title
+    // updates must use the current binding even without a viewed session.
+    active_projects.insert("proj-workspace".into(), "other".into());
+    active_projects.insert("proj-other".into(), "workspace".into());
+    assert_eq!(
+        super::session_surface_window_labels(
+            None,
+            "",
+            Some("workspace"),
+            &active_projects,
+            &active_frames
+        ),
+        vec!["main".to_string(), "proj-other".to_string()],
+    );
+}
+
+#[test]
+fn session_surfaces_never_fall_back_onto_a_foreign_project() {
+    let active_projects = HashMap::from([("main".to_string(), "project-b".to_string())]);
+    let active_frames = HashMap::from([("main".to_string(), "session-b".to_string())]);
+
+    assert!(super::session_surface_window_labels(
+        Some("main"),
+        "session-a",
+        Some("project-a"),
+        &active_projects,
+        &active_frames,
+    )
+    .is_empty());
+}
+
+#[test]
+fn session_surfaces_without_project_id_only_hit_windows_viewing_the_session() {
+    let active_projects = HashMap::from([
+        ("main".to_string(), "workspace".to_string()),
+        ("proj-workspace".to_string(), "workspace".to_string()),
+    ]);
+    let active_frames = HashMap::from([
+        ("main".to_string(), "session-a".to_string()),
+        ("proj-workspace".to_string(), "session-b".to_string()),
+    ]);
+
+    assert_eq!(
+        super::session_surface_window_labels(
+            Some("proj-workspace"),
+            "session-b",
+            None,
+            &active_projects,
+            &active_frames,
+        ),
+        vec!["proj-workspace".to_string()],
     );
 }
 
@@ -2573,4 +2753,151 @@ fn ui_watchdog_unfocused_silence_is_not_stale() {
     let mut none = None;
     ui_watchdog_note_unfocused(&mut none);
     assert!(none.is_none());
+}
+
+async fn open_temp_store(prefix: &str) -> (superscience_store::Store, PathBuf) {
+    let path = std::env::temp_dir().join(format!("{prefix}_{}.sqlite", uuid::Uuid::new_v4()));
+    let store = superscience_store::Store::open(&path).await.unwrap();
+    (store, path)
+}
+
+fn cleanup_temp_store(store: superscience_store::Store, path: PathBuf) {
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("sqlite-wal"));
+    let _ = std::fs::remove_file(path.with_extension("sqlite-shm"));
+}
+
+#[tokio::test]
+async fn project_approval_overlay_does_not_change_the_global_policy() {
+    let (store, path) = open_temp_store("wisp_approval_overlay").await;
+    super::save_json_setting(&store, "approval_scope", &"ask")
+        .await
+        .unwrap();
+    super::save_json_setting(
+        &store,
+        "tool_approvals",
+        &HashMap::<String, String>::from([("shell".into(), "ask".into())]),
+    )
+    .await
+    .unwrap();
+
+    let written = super::persist_approval_scope_overlay(&store, Ok("proj-a".into()), "full")
+        .await
+        .unwrap();
+    assert_eq!(written, "proj-a");
+    super::persist_tool_approval_overlay(
+        &store,
+        Ok("proj-a".into()),
+        "shell".into(),
+        "allow".into(),
+    )
+    .await
+    .unwrap();
+    super::persist_skip_connectors_overlay(&store, Ok("proj-a".into()), "mcp_bio".into(), true)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        super::load_approval_scope_for(&store, None).await.as_str(),
+        "ask"
+    );
+    assert_eq!(
+        super::load_approval_scope_for(&store, Some("proj-a"))
+            .await
+            .as_str(),
+        "full"
+    );
+    assert_eq!(
+        super::load_approval_scope_for(&store, Some("proj-b"))
+            .await
+            .as_str(),
+        "ask"
+    );
+    assert_eq!(
+        store.get_setting("approval_scope:proj-a").await.unwrap(),
+        Some(serde_json::to_string("full").unwrap())
+    );
+    assert_eq!(
+        super::load_tool_approvals_for(&store, None)
+            .await
+            .get("shell")
+            .map(String::as_str),
+        Some("ask")
+    );
+    assert_eq!(
+        super::load_tool_approvals_for(&store, Some("proj-a"))
+            .await
+            .get("shell"),
+        None
+    );
+    assert!(super::load_skip_connectors_for(&store, Some("proj-a"))
+        .await
+        .contains("mcp_bio"));
+    assert!(!super::load_skip_connectors_for(&store, Some("proj-b"))
+        .await
+        .contains("mcp_bio"));
+    cleanup_temp_store(store, path);
+}
+
+#[tokio::test]
+async fn unbound_window_approval_overlay_setters_do_not_write_global_keys() {
+    let (store, path) = open_temp_store("wisp_approval_unbound").await;
+    let unbound = Err(super::BLANK_WINDOW_NO_PROJECT.to_string());
+
+    let scope_err = super::persist_approval_scope_overlay(&store, unbound.clone(), "full")
+        .await
+        .unwrap_err();
+    let tool_err =
+        super::persist_tool_approval_overlay(&store, unbound.clone(), "shell".into(), "ask".into())
+            .await
+            .unwrap_err();
+    let skip_err = super::persist_skip_connectors_overlay(&store, unbound, "mcp_bio".into(), true)
+        .await
+        .unwrap_err();
+
+    assert_eq!(scope_err, super::BLANK_WINDOW_NO_PROJECT);
+    assert_eq!(tool_err, super::BLANK_WINDOW_NO_PROJECT);
+    assert_eq!(skip_err, super::BLANK_WINDOW_NO_PROJECT);
+    assert!(store.get_setting("approval_scope").await.unwrap().is_none());
+    assert!(store.get_setting("tool_approvals").await.unwrap().is_none());
+    assert!(store
+        .get_setting("skip_approval_connectors")
+        .await
+        .unwrap()
+        .is_none());
+
+    super::persist_approval_scope_overlay(&store, Ok("proj-a".into()), "full")
+        .await
+        .unwrap();
+    assert!(store.get_setting("approval_scope").await.unwrap().is_none());
+    assert!(store
+        .get_setting("approval_scope:proj-a")
+        .await
+        .unwrap()
+        .is_some());
+    cleanup_temp_store(store, path);
+}
+
+#[test]
+fn project_approval_overlay_clears_idle_agents_only_for_that_project() {
+    use std::sync::atomic::Ordering;
+
+    let owned_runtime = Arc::new(SessionRuntime::new());
+    let other_runtime = Arc::new(SessionRuntime::new());
+    let mut sessions = HashMap::new();
+    sessions.insert("sess-a".into(), owned_runtime.clone());
+    sessions.insert("sess-b".into(), other_runtime.clone());
+    let owned = HashSet::from(["sess-a".to_string()]);
+
+    super::invalidate_idle_agents_owned(&sessions, &owned);
+
+    assert_eq!(
+        owned_runtime.agent_config_generation.load(Ordering::SeqCst),
+        1
+    );
+    assert_eq!(
+        other_runtime.agent_config_generation.load(Ordering::SeqCst),
+        0
+    );
 }

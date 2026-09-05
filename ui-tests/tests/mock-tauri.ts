@@ -27,6 +27,10 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     }
   };
   (window as any).__tauriEmit = emit;
+  // Tauri app listeners also receive events addressed to a different window.
+  (window as any).__tauriEmitToOtherWindow = (event: string, payload: unknown) => {
+    listeners[event]?.({ payload });
+  };
   // Tests that exercise startup-time native events must wait until the WASM
   // side has completed its async `listen()` registration. Exposing readiness
   // avoids arbitrary sleeps and preserves the real event bus semantics: an
@@ -376,6 +380,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   const syncedProjects = new Set<string>();
   const nextProjectOpenDelayMs: Record<string, number> = {};
   let nextProbeDelayMs = 0;
+  let nextMcpTestDelayMs = 0;
   let nextSessionImportDelayMs = 0;
   const nextProjectTransferDelayMs: Record<string, number> = {};
   let failNextProjectOpenId: string | null = null;
@@ -385,6 +390,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   };
   (window as any).__delayNextProbe = (milliseconds: number) => {
     nextProbeDelayMs = Math.max(0, Number(milliseconds) || 0);
+  };
+  (window as any).__delayNextMcpTest = (milliseconds: number) => {
+    nextMcpTestDelayMs = Math.max(0, Number(milliseconds) || 0);
   };
   (window as any).__delayNextSessionImport = (milliseconds: number) => {
     nextSessionImportDelayMs = Math.max(0, Number(milliseconds) || 0);
@@ -491,6 +499,15 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   // previews re-read content written by an agent tool.
   let workspaceR = 'library(Seurat)\nin_dir <- "data"\nplot(1:3)\n';
   (window as any).__setMockWorkspaceR = (value: string) => { workspaceR = String(value); };
+  // Editor saves land here; read_file serves them back like a real workspace.
+  const savedWorkspaceFiles = new Map<string, string>();
+  const FILE_NOW = Date.now();
+  const workspaceMtimes: Record<string, number> = {
+    data: FILE_NOW - 5 * 86_400_000,
+    DEG: FILE_NOW - 1 * 86_400_000,
+    "report.csv": FILE_NOW - 90_000,
+    "manuscript.docx": FILE_NOW - 2 * 86_400_000,
+  };
   let workspaceEntries = [
     { path: "data", is_dir: true, size: 0 },
     { path: "DEG", is_dir: true, size: 0 },
@@ -514,7 +531,10 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     { path: "manuscript.docx", is_dir: false, size: 11351 },
     { path: "office-preview.xlsx", is_dir: false, size: 3600 },
     { path: "office-preview.pptx", is_dir: false, size: 8600 },
-  ];
+  ].map((entry) => ({
+    ...entry,
+    modified_unix_millis: workspaceMtimes[entry.path] ?? FILE_NOW - 30 * 86_400_000,
+  }));
   type MemoryFile = { name: string; preview: string; bytes: number };
   const memoryByProject: Record<string, MemoryFile[]> = {
     default: [{ name: "2026-07-01.md", preview: "User prefers DeepSeek.", bytes: 128 }],
@@ -568,6 +588,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   let mockBrowserAutoLaunch = true;
   let mockBrowserAutoCloseTabs = false;
   let mockPendingBrowserTabCleanups: any[] = [];
+  let mockPendingBrowserNeedsHuman: any[] = [];
   let mockQuickActions = [{
     id: "literature_research",
     name: "Research literature",
@@ -775,6 +796,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       max_tokens: 4096,
       context_window: 128000,
       reasoning_effort: query.get("mockSessionModels") === "1" ? "low" : "",
+      service_tier: query.get("mockFastDefault") === "1" ? "priority" : "",
       supports_vision: query.get("mockTextOnlyModel") !== "1",
       use_for_vision: query.get("mockTextOnlyModel") !== "1",
       use_for_image_generation: false,
@@ -791,6 +813,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
       max_tokens: 4096,
       context_window: 200000,
       reasoning_effort: query.get("mockSessionModels") === "1" ? "max" : "",
+      service_tier: "",
       supports_vision: true,
       use_for_vision: false,
       use_for_image_generation: false,
@@ -858,6 +881,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     ? { "s-model-a": "default", "s-model-b": "default" }
     : {};
   const sessionReasoningEfforts: Record<string, string> = {};
+  const sessionServiceTiers: Record<string, string> = {};
   let mockAcpAgents = [
     { id: "acp-test", label: "Test ACP Agent", command: "fake-acp", args: ["--stdio"] },
   ];
@@ -1233,6 +1257,17 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
   ];
   (window as any).__mockExecutionContexts = executionContexts;
   const sessionExecutionContexts: Record<string, string[]> = {};
+  const sessionDefaultExecutionContext: Record<string, string> = {};
+  const snapshotSessionDefault = (sessionId: string) => {
+    if (defaultExecutionContext) {
+      sessionDefaultExecutionContext[sessionId] = defaultExecutionContext;
+      const selected = new Set(sessionExecutionContexts[sessionId] ?? []);
+      selected.add(defaultExecutionContext);
+      sessionExecutionContexts[sessionId] = [...selected].sort();
+    } else {
+      sessionDefaultExecutionContext[sessionId] = "local";
+    }
+  };
   const contextStoragePrefs: Record<
     string,
     { remote_data_root: string; remote_workdir_root: string; local_results_dir: string }
@@ -2199,7 +2234,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               return {
                 items: [{
                   role: "assistant",
-                  text: "[Open bound report](D:/ZZM/03.%20figures/report.md')\n\n[Open bound manuscript](/abs/path/D:/ZZM/paper/manuscript.docx)\n\n[Open bound references](references.bib)",
+                  text: "[Open bound report](D:/ZZM/03.%20figures/report.md')\n\n[Open bound manuscript](/abs/path/D:/ZZM/paper/manuscript.docx)\n\n[Open bound references](references.bib)\n\n[Open bound Python script](analysis/scripts/random_walk_demo.py)\n\n[Open bound R script](analysis/plot.R)",
                   tool_name: null,
                   ok: null,
                   resources: [
@@ -2236,6 +2271,30 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                       displayName: "references.bib",
                       kind: "text",
                       mimeType: "text/x-bibtex",
+                      status: "ready",
+                      error: null,
+                    },
+                    {
+                      id: "resource-link-python",
+                      ordinal: 3,
+                      originalReference: "analysis/scripts/random_walk_demo.py",
+                      artifactId: "resource-artifact-python",
+                      artifactVersionId: "resource-version-python",
+                      displayName: "random_walk_demo.py",
+                      kind: "code",
+                      mimeType: "text/x-python",
+                      status: "ready",
+                      error: null,
+                    },
+                    {
+                      id: "resource-link-r",
+                      ordinal: 4,
+                      originalReference: "analysis/plot.R",
+                      artifactId: "resource-artifact-r",
+                      artifactVersionId: "resource-version-r",
+                      displayName: "plot.R",
+                      kind: "code",
+                      mimeType: "text/x-r",
                       status: "ready",
                       error: null,
                     },
@@ -2497,6 +2556,29 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             ];
           case "pick_directory":
             return "/mock/root/new-project";
+          case "preview_workspace_session_recovery":
+            return {
+              workspace_dir: String(arg("workspaceDir") ?? "/mock/root/new-project"),
+              suggested_name: "Recovered study",
+              archive_count: 4,
+              valid_archive_count: 3,
+              recoverable_session_count: 2,
+              message_count: 648,
+              invalid_archive_count: 1,
+              duplicate_archive_count: 1,
+              earliest_message_at: 1_725_000_000,
+              latest_message_at: 1_725_003_600,
+            };
+          case "recover_workspace_sessions":
+            projectNames.recovered = String(arg("name") ?? "Recovered study");
+            return {
+              project_id: "recovered",
+              project_name: projectNames.recovered,
+              recovered_session_count: 2,
+              message_count: 648,
+              invalid_archive_count: 1,
+              duplicate_archive_count: 1,
+            };
           case "pick_executable_file":
             return "/mock/picked/Rscript";
           case "open_project": {
@@ -2555,6 +2637,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return null;
           case "open_project_window":
             return `proj-${arg("id")}`;
+          case "open_new_window":
+            return "home-mock";
           case "get_bootstrap_status":
             return {
               skills_loaded: 12,
@@ -2701,6 +2785,19 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               knowledge_bases: [{ id: "kb-00000001", name: "Lab notes" }],
             };
           }
+          case "list_pending_browser_needs_human":
+            return { tabs: mockPendingBrowserNeedsHuman };
+          case "confirm_browser_needs_human": {
+            const tabs = plain(arg("tabs") ?? []);
+            const still = Boolean((window as any).__mockNeedsHumanStillRequired);
+            if (still) {
+              return { still_required: tabs, cleared: [] };
+            }
+            mockPendingBrowserNeedsHuman = [];
+            return { still_required: [], cleared: tabs };
+          }
+          case "focus_browser_needs_human":
+            return null;
           case "set_browser_url_filters": {
             const next = plain(arg("filters") ?? {});
             mockBrowserUrlFilters = {
@@ -2890,6 +2987,13 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             const sessionId = String(arg("sessionId") ?? "");
             if (Object.prototype.hasOwnProperty.call(sessionReasoningEfforts, sessionId)) {
               return sessionReasoningEfforts[sessionId];
+            }
+            return null;
+          }
+          case "get_session_service_tier": {
+            const sessionId = String(arg("sessionId") ?? "");
+            if (Object.prototype.hasOwnProperty.call(sessionServiceTiers, sessionId)) {
+              return sessionServiceTiers[sessionId];
             }
             return null;
           }
@@ -3100,7 +3204,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             const frameId = String(arg("frameId") ?? "");
             if (!acpBindings[frameId]) return null;
             return {
-              availableModes: mockPlanFlow === "compat"
+              frameId,
+              configOptions: [{ id: "model", name: "Model", type: "select", currentValue: "smart", options: [{ value: "fast", name: "Fast" }, { value: "smart", name: "Smart" }] }],
+              modes: { availableModes: mockPlanFlow === "compat"
                 ? [
                     { id: "default", name: "Default" },
                     { id: "agent", name: "Agent" },
@@ -3108,7 +3214,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 : [
                     { id: "default", name: "Default" },
                     { id: "plan", name: "Plan" },
-                  ],
+                  ] },
             };
           }
           case "get_acp_session_agent":
@@ -3325,7 +3431,12 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             }
             const selected = new Set(sessionExecutionContexts[sessionId] ?? []);
             if (Boolean(arg("enabled"))) selected.add(contextId);
-            else selected.delete(contextId);
+            else {
+              selected.delete(contextId);
+              if (sessionDefaultExecutionContext[sessionId] === contextId) {
+                delete sessionDefaultExecutionContext[sessionId];
+              }
+            }
             sessionExecutionContexts[sessionId] = [...selected].sort();
             return [...sessionExecutionContexts[sessionId]];
           }
@@ -3407,6 +3518,29 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             defaultExecutionContext = String(contextId);
             return defaultExecutionContext;
           }
+          case "get_session_default_execution_context": {
+            const sessionId = String(arg("sessionId") ?? arg("session_id") ?? "");
+            return sessionDefaultExecutionContext[sessionId] ?? null;
+          }
+          case "set_session_default_execution_context": {
+            const sessionId = String(arg("sessionId") ?? arg("session_id") ?? "");
+            const contextId = arg("contextId") ?? arg("context_id");
+            if (!sessionId) throw new Error("Session not found");
+            if (contextId === null || contextId === undefined || String(contextId).trim() === "" || String(contextId) === "local") {
+              sessionDefaultExecutionContext[sessionId] = "local";
+              return "local";
+            }
+            const id = String(contextId);
+            const context = executionContexts.find((item) => item.id === id);
+            if (!context || context.kind === "local") {
+              throw new Error("Execution context not found");
+            }
+            sessionDefaultExecutionContext[sessionId] = id;
+            const selected = new Set(sessionExecutionContexts[sessionId] ?? []);
+            selected.add(id);
+            sessionExecutionContexts[sessionId] = [...selected].sort();
+            return id;
+          }
           case "probe_execution_context": {
             const delay = nextProbeDelayMs;
             nextProbeDelayMs = 0;
@@ -3437,9 +3571,21 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           case "execute_runtime": {
             // Echo the routing back as console text so a test can assert which
             // runtime the code was sent to, the way the real worker would.
+            // Plotting code additionally reports a captured PNG snapshot.
             const code = String(arg("code") ?? "");
-            if (code.includes("stop(")) return `[error] ${code}`;
-            return `[${arg("language")} @ ${arg("contextId")}] ${code}`;
+            // 1x1 transparent PNG, the smallest valid plot snapshot.
+            const tinyPng =
+              "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+            const plots = code.includes("plot(") || code.includes("plt.") ? [tinyPng] : [];
+            if (code.includes("stop(")) return { text: `[error] ${code}`, plots: [] };
+            return { text: `[${arg("language")} @ ${arg("contextId")}] ${code}`, plots };
+          }
+          case "execute_runtime_script": {
+            const scriptPath = String(arg("scriptPath") ?? arg("script_path") ?? "");
+            return {
+              text: `[runtime script] path=${scriptPath} sha256=abc runtime_id=rt generation=1\n[${arg("language")} @ ${arg("contextId")}] ${scriptPath}`,
+              plots: [],
+            };
           }
           case "inspect_runtime":
             return {
@@ -3484,6 +3630,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return info;
           }
           case "stop_runtime": {
+            // Keep the terminated record, matching RuntimeManager::stop.
             const info = runtimeInfos.find((item) =>
               item.key.projectId === String(arg("projectId") ?? arg("project_id"))
               && item.key.contextId === String(arg("contextId") ?? arg("context_id"))
@@ -3511,6 +3658,13 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               info.lastError = null;
             }
             return info ?? null;
+          }
+          case "dismiss_runtime": {
+            const id = String(arg("runtimeId"));
+            const info = runtimeInfos.find((item) => item.runtimeId === id);
+            if (info && info.status !== "dead") throw new Error("only terminated runtimes can be dismissed");
+            runtimeInfos = runtimeInfos.filter((item) => item.runtimeId !== id);
+            return null;
           }
           case "import_wsl_contexts":
             return [
@@ -3764,6 +3918,16 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               delete sessionReasoningEfforts[sessionId];
             } else {
               sessionReasoningEfforts[sessionId] = effort;
+            }
+            return null;
+          }
+          case "set_session_service_tier": {
+            const sessionId = String(arg("sessionId") ?? "");
+            const tier = arg("serviceTier");
+            if (tier === null || typeof tier === "undefined") {
+              delete sessionServiceTiers[sessionId];
+            } else {
+              sessionServiceTiers[sessionId] = String(tier);
             }
             return null;
           }
@@ -4056,8 +4220,12 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           case "revoke_all_approval_grants":
             mockApprovalGrants = [];
             return null;
-          case "test_mcp_connection":
+          case "test_mcp_connection": {
+            const delay = nextMcpTestDelayMs;
+            nextMcpTestDelayMs = 0;
+            if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
             return mockMcpTools;
+          }
           case "test_oauth_mcp_connection":
             if (mockOAuthPending) {
               await new Promise<void>((resolve) => {
@@ -4148,19 +4316,20 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 name: entry.path.slice(entry.path.lastIndexOf("/") + 1),
                 is_dir: entry.is_dir,
                 size: entry.size,
+                modified_unix_millis: entry.modified_unix_millis,
               }))
               .sort((a, b) => Number(b.is_dir) - Number(a.is_dir) || a.name.localeCompare(b.name));
           }
           case "create_file": {
             const path = String(arg("path") ?? "");
             if (workspaceEntries.some((entry) => entry.path === path)) throw new Error(`workspace entry '${path}' already exists`);
-            workspaceEntries.push({ path, is_dir: false, size: 0 });
+            workspaceEntries.push({ path, is_dir: false, size: 0, modified_unix_millis: Date.now() });
             return null;
           }
           case "create_directory": {
             const path = String(arg("path") ?? "");
             if (workspaceEntries.some((entry) => entry.path === path)) throw new Error(`workspace entry '${path}' already exists`);
-            workspaceEntries.push({ path, is_dir: true, size: 0 });
+            workspaceEntries.push({ path, is_dir: true, size: 0, modified_unix_millis: Date.now() });
             return null;
           }
           case "rename_entry": {
@@ -4193,16 +4362,16 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               return {
                 path,
                 entries: [
-                  { name: "rna-seq", is_dir: true, size: 0 },
-                  { name: "README.md", is_dir: false, size: 512 },
+                  { name: "rna-seq", is_dir: true, size: 0, modified_unix_millis: FILE_NOW - 86_400_000 },
+                  { name: "README.md", is_dir: false, size: 512, modified_unix_millis: FILE_NOW - 2 * 86_400_000 },
                 ],
               };
             }
             return {
               path: "/home/research",
-              entries: [
-                { name: "projects", is_dir: true, size: 0 },
-                { name: "notes.txt", is_dir: false, size: 128 },
+                entries: [
+                { name: "projects", is_dir: true, size: 0, modified_unix_millis: FILE_NOW - 86_400_000 },
+                { name: "notes.txt", is_dir: false, size: 128, modified_unix_millis: FILE_NOW - 90_000 },
               ],
             };
           }
@@ -4270,8 +4439,17 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               .slice(0, limit)
               .map(({ body: _body, ...session }) => session);
           }
+          case "save_file": {
+            const path = String(arg("path") ?? "");
+            savedWorkspaceFiles.set(path, String(arg("content") ?? ""));
+            return null;
+          }
           case "read_file": {
             const path = String(arg("path") ?? "report.csv");
+            const saved = savedWorkspaceFiles.get(path);
+            if (saved !== undefined) {
+              return { path, mime: "text/plain", text: saved, base64: null };
+            }
             if (path.toLowerCase().endsWith(".pdb")) {
               return { path, mime: "chemical/x-pdb", text: "ATOM      1  CA  ALA A   1      11.104  13.207   9.132  1.00 20.00           C\nEND\n", base64: null };
             }
@@ -4400,6 +4578,22 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 path: "artifact-version:resource-version-bib",
                 mime: "text/x-bibtex",
                 text: "@article{wisp,\n  title = {Wisp Science}\n}",
+                base64: null,
+              };
+            }
+            if (arg("versionId") === "resource-version-python") {
+              return {
+                path: "artifact-version:resource-version-python",
+                mime: "text/x-python",
+                text: "SEED = 42\nprint('random walk')\n",
+                base64: null,
+              };
+            }
+            if (arg("versionId") === "resource-version-r") {
+              return {
+                path: "artifact-version:resource-version-r",
+                mime: "text/x-r",
+                text: 'in_dir <- "data"\nplot(1:3)\n',
                 base64: null,
               };
             }
@@ -4749,6 +4943,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             }
             const id = `s-${Math.random().toString(36).slice(2)}`;
             sessionModels[id] = activeHttpModelId();
+            snapshotSessionDefault(id);
             return id;
           }
           case "rename_session": {
@@ -4793,6 +4988,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             sessionModels[id] = sessionModels[source] ?? activeHttpModelId();
             if (Object.prototype.hasOwnProperty.call(sessionReasoningEfforts, source)) {
               sessionReasoningEfforts[id] = sessionReasoningEfforts[source];
+            }
+            if (Object.prototype.hasOwnProperty.call(sessionServiceTiers, source)) {
+              sessionServiceTiers[id] = sessionServiceTiers[source];
             }
             return id;
           }
@@ -4842,6 +5040,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
           case "list_artifacts":
             return mockPublication ? [artifacts[1]] : [];
           case "download_artifact":
+          case "download_artifact_version":
             return null;
           case "side_chat": {
             const question = String(arg("question") ?? "");
@@ -4922,6 +5121,16 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             lastMessageBySession[fid] = msg;
             sessionModels[fid] ??= activeHttpModelId();
             const acpAgentId = arg("acpAgentId") ?? acpBindings[fid];
+            if (acpAgentId && String(msg).startsWith("ACPFAIL ")) {
+              const detail = String(msg).slice("ACPFAIL ".length);
+              // Startup can fail before a binding or user message exists.
+              if (detail !== "Agent process exited during startup") {
+                acpBindings[fid] = acpAgentId;
+              }
+              const message = `ACP turn failed: ${detail}`;
+              emit("agent", { kind: "Error", frame_id: fid, message });
+              throw new Error(`[turn-started] ${message}`);
+            }
             if (acpAgentId && String(msg).includes("ACPTHINK")) {
               // Codex-style ordering: visible commentary streams first, then
               // reasoning, then tool activity. The UI must preserve those as
@@ -5537,12 +5746,56 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 }, 12_000);
               });
             }
+            if (String(arg("message") ?? "").includes("RAUTOREFRESH")) {
+              // An agent `r` cell lazily revives the dead local R runtime and
+              // finishes; the open memory environment must follow without a
+              // manual sync click.
+              setTimeout(() => {
+                emit("agent", { kind: "User", frame_id: fid, text: msg });
+                emit("agent", { kind: "ToolCall", frame_id: fid, name: "r", preview: "[r @ local] x <- rnorm(10)" });
+                const local = runtimeInfos.find((item) =>
+                  item.key.projectId === "default"
+                  && item.key.contextId === "local"
+                  && item.key.language === "r"
+                );
+                if (local) {
+                  local.runtimeId = `runtime-r-local-${Date.now()}`;
+                  local.generation += 1;
+                  local.status = "ready";
+                  local.processId = 5501;
+                  local.lastActivityAtMs = Date.now();
+                  local.lastError = null;
+                }
+                emit("agent", { kind: "ToolResult", frame_id: fid, name: "r", ok: true, content: "(no output)" });
+                emit("agent", { kind: "Text", frame_id: fid, delta: "Created x in the R session." });
+                emit("agent", { kind: "Done", frame_id: fid });
+              }, 30);
+              return fid;
+            }
             if (String(arg("message") ?? "").includes("RNOTEBOOK")) {
               setTimeout(() => {
                 emit("agent", { kind: "User", frame_id: fid, text: msg });
                 emit("agent", { kind: "ToolCall", frame_id: fid, name: "r", preview: "[r @ ssh:gpu-server] summary(dataset)" });
                 emit("agent", { kind: "ToolResult", frame_id: fid, name: "r", ok: true, content: "Length Class Mode" });
                 emit("agent", { kind: "Text", frame_id: fid, delta: "R summary complete." });
+                emit("agent", { kind: "Done", frame_id: fid });
+              }, 30);
+              return fid;
+            }
+            if (String(arg("message") ?? "").includes("CLIPBOARDIMAGE")) {
+              setTimeout(() => {
+                emit("agent", { kind: "User", frame_id: fid, text: msg });
+                emit("agent", {
+                  kind: "Text",
+                  frame_id: fid,
+                  delta: [
+                    "Saved the screenshots as local files for this turn.",
+                    "",
+                    '<image name="clipboard-preview.png" path="C:\\Users\\Alice\\AppData\\Local\\Temp\\clipboard-preview.png"></image>',
+                    "",
+                    '<image name="clipboard-preview-2.png" path="C:\\Users\\Alice\\AppData\\Local\\Temp\\clipboard-preview-2.png"></image>',
+                  ].join("\n"),
+                });
                 emit("agent", { kind: "Done", frame_id: fid });
               }, 30);
               return fid;
@@ -5592,7 +5845,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
                 emit("agent", {
                   kind: "Text",
                   frame_id: fid,
-                  delta: "I inspected `old.csv` and created the requested output. See `notes/FIGURE_LEGEND.md`.",
+                  delta: "I inspected `old.csv` and created the requested output `new.png`. See `notes/FIGURE_LEGEND.md` and [the results folder](results/).",
                 });
                 emit("agent", { kind: "Done", frame_id: fid });
               }, 30);
@@ -5749,6 +6002,27 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
             return null;
           case "open_browser_extension_page":
             return { extension_path: "/mock/wisp/browser-extension", opened: false };
+          case "browser_extension_status":
+            return (window as any).__browserExtensionStatus ?? {
+              connected: false,
+              current_version: null,
+              bundled_version: "0.3.1",
+              current_protocol: 0,
+              required_protocol: 2,
+              update_required: false,
+              automatic_reload_available: false,
+              extension_path: "/mock/wisp/browser-extension",
+              extension_path_verified: true,
+              integrity_verified: true,
+              error: null,
+            };
+          case "update_browser_extension":
+            return (window as any).__browserExtensionUpdateResult ?? {
+              outcome: "manual_reload_required",
+              status: (window as any).__browserExtensionStatus,
+              opened: true,
+              error: null,
+            };
           case "extension_connected":
             return Boolean((window as any).__extensionConnected);
           case "ui_heartbeat":
@@ -6040,6 +6314,16 @@ export function parallelMock(): void {
             sync_relay_token: "",
             has_sync_relay_token: true,
           };
+          case "set_session_service_tier": {
+            const sessionId = String(arg("sessionId") ?? "");
+            const tier = arg("serviceTier");
+            if (tier === null || typeof tier === "undefined") {
+              delete sessionServiceTiers[sessionId];
+            } else {
+              sessionServiceTiers[sessionId] = String(tier);
+            }
+            return null;
+          }
           case "get_project_info": return project;
           case "generate_follow_up_questions": return [
             "Review the records that need manual correction",
@@ -6192,6 +6476,27 @@ export function parallelMock(): void {
             return null;
           case "open_browser_extension_page":
             return { extension_path: "/mock/wisp/browser-extension", opened: false };
+          case "browser_extension_status":
+            return (window as any).__browserExtensionStatus ?? {
+              connected: false,
+              current_version: null,
+              bundled_version: "0.3.1",
+              current_protocol: 0,
+              required_protocol: 2,
+              update_required: false,
+              automatic_reload_available: false,
+              extension_path: "/mock/wisp/browser-extension",
+              extension_path_verified: true,
+              integrity_verified: true,
+              error: null,
+            };
+          case "update_browser_extension":
+            return (window as any).__browserExtensionUpdateResult ?? {
+              outcome: "manual_reload_required",
+              status: (window as any).__browserExtensionStatus,
+              opened: true,
+              error: null,
+            };
           case "extension_connected":
             return Boolean((window as any).__extensionConnected);
           case "ui_heartbeat":

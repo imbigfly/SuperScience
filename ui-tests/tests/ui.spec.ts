@@ -174,10 +174,14 @@ async function selectAssistantReplyText(
     const selection = window.getSelection()!;
     selection.removeAllRanges();
     selection.addRange(range);
-    body.dispatchEvent(new MouseEvent(type, {
+    const rect = range.getBoundingClientRect();
+    const target = document.querySelector(".chat") ?? body;
+    target.dispatchEvent(new MouseEvent(type, {
       bubbles: true,
       cancelable: true,
       button: type === "contextmenu" ? 2 : 0,
+      clientX: rect.left + rect.width / 2,
+      clientY: rect.top + Math.min(rect.height / 2, 12),
     }));
     return node.data.trim();
   }, eventType);
@@ -1490,6 +1494,59 @@ test("selecting an ACP Agent from a populated HTTP session starts a fresh sessio
   expect(secondSend.sessionId).not.toBe(firstSend.sessionId);
 });
 
+for (const [locale, detail] of [
+  ["en", "Agent process exited during startup"],
+  ["en", "api: 401 unauthorized"],
+  ["zh", "api: 403 forbidden"],
+  ["zh", "This ACP Agent cannot resume or load the saved session."],
+  ["en", "api: 400 context window exceeded"],
+]) {
+  test(`ACP failure explains HTTP fallback and billing (${locale}, ${detail}) (#1118)`, async ({ page }) => {
+    await page.goto(`/?mockLocale=${locale}`);
+    await page.locator(".proj-card-main").first().click();
+    await page.locator(".model-picker-btn").click();
+    await page.getByRole("button", { name: /Test ACP Agent/ }).click();
+    await composer(page).fill(`ACPFAIL ${detail}`);
+    await composer(page).press("Enter");
+
+    const error = page.locator(".finding.err");
+    await expect(error).toContainText(detail);
+    await expect(error.locator(".finding-body")).toContainText(
+      locale === "zh" ? "未回退（fallback）到 HTTP 模型" : "did not fall back to an HTTP model",
+    );
+    await expect(error.locator(".finding-body")).toContainText(
+      locale === "zh" ? "可能产生额外费用" : "may incur separate charges",
+    );
+    await expect(error.getByRole("button", { name: locale === "zh" ? "继续执行" : "Resume", exact: true })).toHaveCount(0);
+    await expect(page.getByTestId("context-recovery-modal")).toHaveCount(0);
+    await expect(page.locator(".model-picker-label")).toHaveText("Test ACP Agent");
+    expect(await invokeCount(page, "send_message")).toBe(1);
+
+    await composer(page).fill("retry with the same ACP Agent");
+    await composer(page).press("Enter");
+    await expect(page.getByText("Hello from ACP.")).toBeVisible();
+    expect(await lastInvokeArgs(page, "send_message")).toMatchObject({ acpAgentId: "acp-test" });
+    expect(await invokeCount(page, "send_message")).toBe(2);
+    expect(await invokeCount(page, "set_active_model")).toBe(0);
+  });
+}
+
+test("restored ACP model options are usable before sending a message (#1112)", async ({ page }) => {
+  await openMockPlanSession(page, "acp");
+  await expect(page.locator(".model-picker-btn")).toContainText("Test ACP Agent");
+  await page.locator(".model-picker-btn").click();
+  const config = page.getByTestId("acp-session-config");
+  await expect(config.getByLabel("Model", { exact: true })).toHaveValue("smart");
+  await config.getByLabel("Model", { exact: true }).selectOption("fast");
+  await expect.poll(() => lastInvokeArgs(page, "set_acp_session_config")).toMatchObject({ frameId: "s1", configId: "model", value: { value: "fast" } });
+  await page.keyboard.press("Escape");
+  await newSessionButton(page).click();
+  await page.locator('[data-session-id="s1"]').click();
+  await expect(page.locator(".model-picker-btn")).toContainText("Test ACP Agent");
+  await page.locator(".model-picker-btn").click();
+  await expect(config.getByLabel("Model", { exact: true })).toHaveValue("fast");
+});
+
 test("ACP turn maps config, overlapping tools, plan, usage, and exact permission response", async ({ page }) => {
   await enterApp(page);
   await newSessionButton(page).click();
@@ -1690,6 +1747,47 @@ test("built-in propose_plan renders a plan card with a working action bar", asyn
   await expect(page.locator(".copy-toast")).toContainText("Plan approved; execution is starting");
 });
 
+test("plan entries render full Markdown without breaking status layout", async ({ page }) => {
+  await openMockPlanSession(page, "native");
+  await emitTauriEvent(page, "agent", {
+    kind: "ToolCall", frame_id: "s1", name: "propose_plan", preview: "1 steps",
+  });
+  await emitTauriEvent(page, "agent", {
+    kind: "ToolResult", frame_id: "s1", name: "propose_plan", ok: true,
+    content: JSON.stringify({
+      v: 1, source: "native",
+      entries: [{
+        status: "pending", priority: "high",
+        content: [
+          "## **实现** `Fast`",
+          "",
+          "> 保留 [Issue #1025](https://github.com/xuzhougeng/wisp-science/issues/1025)",
+          "",
+          "- Chat Completions",
+          "  - `service_tier=priority`",
+          "",
+          "```json",
+          "{\\\"service_tier\\\":\\\"priority\\\"}",
+          "```",
+          "",
+          "| 模式 | 值 |",
+          "| --- | --- |",
+          "| Fast | priority |",
+        ].join("\n"),
+      }],
+    }),
+  });
+  const entry = page.getByTestId("plan-card").last().locator(".plan-entry-text");
+  await expect(entry.locator("h2 strong")).toHaveText("实现");
+  await expect(entry.locator("code").first()).toHaveText("Fast");
+  await expect(entry.locator("blockquote")).toBeVisible();
+  await expect(entry.locator("ul li")).toHaveCount(2);
+  await expect(entry.locator("pre")).toBeVisible();
+  await expect(entry.locator("table")).toBeVisible();
+  await expect(entry).not.toContainText("**实现**");
+  await expect(page.getByTestId("plan-card").last().getByRole("img", { name: "High priority" })).toBeVisible();
+});
+
 test("built-in ask_user renders a question card whose option click sends the answer", async ({ page }) => {
   await openMockPlanSession(page, "native");
 
@@ -1730,6 +1828,36 @@ test("built-in ask_user renders a question card whose option click sends the ans
   await expect(card).toHaveAttribute("data-state", "answered");
   await expect(card).toContainText("Answer sent to the agent");
   await expect(card.locator(".plan-question-options")).toHaveCount(0);
+});
+
+test("ask_user question body renders markdown instead of source markers", async ({ page }) => {
+  await openMockPlanSession(page, "native");
+  await emitTauriEvent(page, "agent", { kind: "ToolCall", frame_id: "s1", name: "ask_user", preview: "Confirm?" });
+  await emitTauriEvent(page, "agent", {
+    kind: "ToolResult", frame_id: "s1", name: "ask_user", ok: true,
+    content: JSON.stringify({
+      v: 1, source: "native",
+      question: [
+        "请先定怎么测。**已核实** Local Published: `release-abc`.",
+        "",
+        "- 纳入：`code/organized.R`",
+        "- 排除：`code-example.r`",
+        "",
+        "详见 [PR #17](https://github.com/jarxunlai/ScientificFigureLibrary-community-archives/pull/17)。",
+      ].join("\n"),
+      options: [{ label: "先修 render.R", description: "给 organized.R 加上 `--input-dir`" }],
+      allow_freeform: true,
+      note: "Question submitted; end your turn.",
+    }),
+  });
+
+  const body = page.getByTestId("question-card").locator(".plan-question-text");
+  await expect(body.locator("strong")).toHaveText("已核实");
+  await expect(body.locator("code").first()).toHaveText("release-abc");
+  await expect(body.locator("ul li")).toHaveCount(2);
+  await expect(body.locator("a[href*='pull/17']")).toBeVisible();
+  await expect(body).not.toContainText("**已核实**");
+  await expect(page.getByTestId("question-card")).not.toContainText("end your turn");
 });
 
 test("ACP ask_user card resolves through respond_ask_user and settles", async ({ page }) => {
@@ -2614,6 +2742,79 @@ test("/share PNG keeps markdown tables and KaTeX from the live thread", async ({
   expect(pngHeight).toBeGreaterThan(400);
 });
 
+test("/share keeps a long picker at its scroll position and bounds exported prose", async ({ page }) => {
+  await enterApp(page);
+  const composerInput = composer(page);
+  await composerInput.fill("SHARETHINK seed a long share list");
+  await composerInput.press("Enter");
+  await expect(page.getByText("Alice confirmed the spectrum is clean.")).toBeVisible({ timeout: 10_000 });
+  const send = await lastInvokeArgs(page, "send_message");
+  const frameId = String(send.sessionId ?? send.session_id ?? "");
+  await page.evaluate((fid) => {
+    const emit = (window as any).__tauriEmit;
+    for (let index = 0; index < 12; index += 1) {
+      emit("agent", {
+        kind: "User",
+        frame_id: fid,
+        text: `follow-up ${index} ${"sample".repeat(45)}`,
+      });
+      emit("agent", {
+        kind: "Text",
+        frame_id: fid,
+        delta: `Long result ${index}: https://example.test/${"unbroken".repeat(55)}`,
+      });
+    }
+  }, frameId);
+  await expect(page.locator(".msg.user")).toHaveCount(13);
+
+  await page.getByTestId("share-topbar").click();
+  const overlay = page.getByTestId("share-overlay");
+  const list = overlay.locator(".share-list");
+  const rows = overlay.locator(".share-row");
+  await expect(rows).toHaveCount(27);
+  const before = await list.evaluate((element: HTMLElement) => {
+    element.scrollTop = element.scrollHeight;
+    return element.scrollTop;
+  });
+  expect(before).toBeGreaterThan(0);
+
+  // Updating one checkbox used to replace every row view, resetting the
+  // scroll container to zero. Keyed rows must survive consecutive updates.
+  await rows.nth(25).locator("input").click();
+  await expect.poll(() => list.evaluate((element: HTMLElement) => element.scrollTop))
+    .toBeGreaterThan(before * 0.8);
+  const afterFirst = await list.evaluate((element: HTMLElement) => element.scrollTop);
+  await rows.nth(24).locator("input").click();
+  await expect.poll(() => list.evaluate((element: HTMLElement) => element.scrollTop))
+    .toBeGreaterThan(afterFirst * 0.8);
+
+  await overlay.getByTestId("share-format-html").click();
+  await overlay.getByTestId("share-export").click();
+  await expect.poll(() => lastInvokeArgs(page, "save_share_html")).not.toBeNull();
+  const html = String((await lastInvokeArgs(page, "save_share_html")).html);
+  const layout = await page.evaluate(async (documentHtml) => {
+    const iframe = document.createElement("iframe");
+    iframe.style.cssText = "position:fixed;left:-9999px;width:420px;height:640px;border:0";
+    document.body.appendChild(iframe);
+    const loaded = new Promise((resolve) => {
+      iframe.addEventListener("load", () => resolve(undefined), { once: true });
+    });
+    iframe.srcdoc = documentHtml;
+    await loaded;
+    const doc = iframe.contentDocument!;
+    const prose = [...doc.querySelectorAll<HTMLElement>(".msg .body")];
+    const result = {
+      pageWidth: doc.documentElement.clientWidth,
+      pageScrollWidth: doc.documentElement.scrollWidth,
+      overflowingProse: prose.filter((element) => element.scrollWidth > element.clientWidth + 1).length,
+    };
+    iframe.remove();
+    return result;
+  }, html);
+  expect(layout.pageScrollWidth).toBeLessThanOrEqual(layout.pageWidth + 1);
+  expect(layout.overflowingProse).toBe(0);
+});
+
 test("/share hides the social copy flow and keeps PNG plus HTML export", async ({ page }) => {
   await enterApp(page);
   const composerInput = composer(page);
@@ -3369,6 +3570,7 @@ test("Ctrl+P command palette runs commands and switches themes", async ({ page }
   await expect(input).toHaveAttribute("inputmode", "search");
   await expect(input).toHaveAttribute("autocomplete", "off");
   await expect(palette).toContainText("New session");
+  await expect(palette).toContainText("New Window");
   await expect(palette.locator(".action-palette-row", { hasText: "New session" })
     .locator(".action-shortcut")).toHaveText("Ctrl+N");
   await expect(palette.locator(".action-palette-row", { hasText: "Search" })
@@ -4063,6 +4265,39 @@ test("side chat stays at the latest message after sending and switching tabs", a
   await expect.poll(bottomGap).toBeLessThan(8);
 });
 
+test("clicking a PNG path opens the image preview without the selection popup", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("CLIPBOARDIMAGE");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const reply = page.locator(".msg.assistant", { hasText: "Saved the screenshots as local files" });
+  await expect(reply).toBeVisible({ timeout: 10_000 });
+  const pathLink = reply.locator("a", { hasText: "clipboard-preview.png" }).first();
+  await expect(pathLink).toBeVisible();
+
+  // Clicking a long Windows path often selects the link label. mouseup used to
+  // treat that leftover selection as a quote and stack the popup on the preview.
+  await pathLink.evaluate((el) => {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, button: 0 }));
+  });
+  await expect(page.locator(".selection-popup")).toHaveCount(0);
+
+  await pathLink.click();
+  const modal = page.locator(".artifact-modal");
+  await expect(modal).toBeVisible();
+  await expect(modal.locator(".am-name")).toHaveText("clipboard-preview.png");
+  await expect(page.locator(".selection-popup")).toHaveCount(0);
+
+  await page.keyboard.press("Escape");
+  await expect(modal).toHaveCount(0);
+  await expect(reply).toBeVisible();
+});
+
 test("transcript selections add to the main composer without closing the right pane", async ({ page }) => {
   await enterApp(page);
   await composer(page).fill("STEPSDEMO");
@@ -4198,6 +4433,11 @@ test("Quick Actions opens its bound graph in the standalone Workflow Studio", as
     .click();
   const inspector = studio.getByTestId("workflow-graph-inspector");
   await expect(inspector.getByTestId("dynamic-task-id")).toHaveValue("synthesize");
+  await inspector.locator("details.dynamic-agent-advanced > summary").click();
+  const timeout = inspector.getByTestId("dynamic-task-timeout-secs");
+  await expect(timeout).toHaveAttribute("placeholder", "Empty = policy default; 0 = unlimited");
+  await timeout.fill("0");
+  await expect(timeout).toHaveValue("0");
   await expect(inspector.getByTestId("workflow-graph-remove-edge")).toHaveCount(2);
   const skillPicker = inspector.getByTestId("dynamic-task-skills");
   await expect(skillPicker.getByTestId("dynamic-task-skill-option")).toHaveCount(0);
@@ -4523,14 +4763,22 @@ test("Workflow graph edits nodes and dependencies directly on the canvas", async
 
 test("selected text can be staged as a removable side-chat quote", async ({ page }) => {
   await enterApp(page);
+  await expect(page.getByTestId("session-runtime-strip")).toBeVisible();
   await composer(page).fill("STEPSDEMO");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByText(/60,675 genes/)).toBeVisible({ timeout: 10_000 });
 
+  await expect(page.getByRole("button", { name: "Hide follow-up questions" })).toBeVisible();
   const selected = await selectAssistantReplyText(page);
-  await page.locator(".selection-popup")
-    .getByRole("button", { name: "Quote in side chat" })
-    .click();
+  const popup = page.locator(".selection-popup");
+  await expect(popup.getByRole("button", { name: "Quote in side chat" })).toBeVisible();
+  // Follow-scroll / composer resize must not steal the popup while the
+  // selection is still live — that is what failed ui-e2e on #1027.
+  await page.locator(".chat").evaluate((el) => {
+    el.scrollTop = Math.max(0, el.scrollTop - 8);
+  });
+  await expect(popup.getByRole("button", { name: "Quote in side chat" })).toBeVisible();
+  await popup.getByRole("button", { name: "Quote in side chat" }).click();
 
   const panel = page.locator(".rightpane");
   await expect(panel.locator(".sidechat-in-pane")).toBeVisible();
@@ -4544,9 +4792,8 @@ test("selected text can be staged as a removable side-chat quote", async ({ page
   await expect(panel.getByTestId("sidechat-quote")).toHaveCount(0);
 
   await selectAssistantReplyText(page);
-  await page.locator(".selection-popup")
-    .getByRole("button", { name: "Quote in side chat" })
-    .click();
+  await expect(popup.getByRole("button", { name: "Quote in side chat" })).toBeVisible();
+  await popup.getByRole("button", { name: "Quote in side chat" }).click();
   await input.fill("Why is this important?");
   await panel.getByRole("button", { name: "Send" }).click();
 
@@ -4778,7 +5025,7 @@ test("Generated artifacts survive follow-up tool commentary and ignore mentioned
   await page.getByRole("button", { name: "Send" }).click();
 
   const reply = page.locator(".msg.assistant", {
-    hasText: "I inspected old.csv and created the requested output.",
+    hasText: "I inspected old.csv and created the requested output",
   });
   await expect(reply).toBeVisible({ timeout: 10_000 });
   await expect(reply.locator(".message-artifacts-label")).toHaveText("Generated · 1");
@@ -4788,6 +5035,55 @@ test("Generated artifacts survive follow-up tool commentary and ignore mentioned
   await expect(reply.locator('.message-artifact-card[data-artifact-name="old-report.md"]')).toHaveCount(0);
   const pathLink = reply.locator('a.workspace-path-link[href="notes/FIGURE_LEGEND.md"]');
   await expect(pathLink).toHaveText("notes/FIGURE_LEGEND.md");
+  await expect.poll(async () => pathLink.evaluate((el) => {
+    const style = getComputedStyle(el);
+    return {
+      decoration: style.textDecorationLine,
+      shadow: style.boxShadow,
+      display: style.display,
+    };
+  })).toEqual({
+    decoration: "none",
+    shadow: "none",
+    display: "inline",
+  });
+
+  // Project paths in assistant replies own a file-focused context menu rather
+  // than falling through to the generic whole-message menu.
+  await pathLink.click({ button: "right" });
+  const pathMenu = page.locator(".ctx-menu");
+  await expect(pathMenu.getByRole("button", { name: "Open in center" })).toBeVisible();
+  await expect(pathMenu.getByRole("button", { name: "Copy absolute path" })).toBeVisible();
+  await expect(pathMenu.getByRole("button", { name: "Copy relative path" })).toBeVisible();
+  await expect(pathMenu.getByRole("button", { name: "Copy message" })).toHaveCount(0);
+  await pathMenu.getByRole("button", { name: "Show in file manager" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "reveal_in_file_manager")).toMatchObject({
+    path: "notes/FIGURE_LEGEND.md",
+  });
+  await expect(page.locator(".artifact-modal")).toHaveCount(0);
+
+  // A generated file mentioned in the answer is rendered as an artifact chip,
+  // not a workspace-path anchor. It must own the same file menu and must not
+  // fall through to "Copy message" (the real-world #1048 regression).
+  const artifactPath = reply.locator('.art-ref[data-workspace-path="/mock/root/results/new.png"]');
+  await expect(artifactPath).toHaveText("new.png");
+  await artifactPath.click({ button: "right" });
+  await expect(pathMenu.getByRole("button", { name: "Open with default app" })).toBeVisible();
+  await expect(pathMenu.getByRole("button", { name: "Copy message" })).toHaveCount(0);
+  await pathMenu.getByRole("button", { name: "Open with default app" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "open_workspace_path")).toMatchObject({
+    path: "results/new.png",
+  });
+
+  // Ordinary project-directory Markdown links share the same route.
+  const directoryPath = reply.locator('a[href="results/"]');
+  await directoryPath.click({ button: "right" });
+  await expect(pathMenu.getByRole("button", { name: "Open with default app" })).toBeVisible();
+  await pathMenu.getByRole("button", { name: "Show in file manager" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "reveal_in_file_manager")).toMatchObject({
+    path: "results/",
+  });
+
   await pathLink.click();
   const linkedModal = page.locator('.artifact-modal:has(.am-figure[data-file-path="notes/FIGURE_LEGEND.md"])');
   await expect(linkedModal).toBeVisible();
@@ -4814,7 +5110,7 @@ test("links inside the artifact modal preview never navigate the app", async ({ 
   await page.getByRole("button", { name: "Send" }).click();
 
   const reply = page.locator(".msg.assistant", {
-    hasText: "I inspected old.csv and created the requested output.",
+    hasText: "I inspected old.csv and created the requested output",
   });
   await reply.locator('a.workspace-path-link[href="notes/FIGURE_LEGEND.md"]').click();
   const modal = page.locator('.artifact-modal:has(.am-figure[data-file-path="notes/FIGURE_LEGEND.md"])');
@@ -5102,6 +5398,33 @@ test("Files creates, renames, deletes, and refreshes local entries", async ({ pa
   await expect.poll(() => lastInvokeArgs(page, "list_dir")).toMatchObject({ path: "." });
 });
 
+test("Files sorts by size and modified time and Escape closes only the sort menu", async ({ page }) => {
+  await enterApp(page);
+  await page.getByRole("button", { name: "Files" }).click();
+  const files = page.locator(".rp-files");
+  const fileRows = files.locator(".fb-row:not(.dir)");
+
+  await expect(files.locator('.fb-row[data-workspace-path="report.csv"] .fb-size')).toHaveText("4.0 KB");
+
+  await files.getByTestId("files-sort").click();
+  const sortMenu = files.locator(".fb-sort-menu");
+  await expect(sortMenu).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(sortMenu).toHaveCount(0);
+  await expect(files).toBeVisible();
+
+  await files.getByTestId("files-sort").click();
+  await sortMenu.getByRole("menuitem", { name: "Size" }).click();
+  await expect(fileRows.first()).toHaveAttribute("data-workspace-path", "manuscript.docx");
+  await expect(fileRows.first().locator(".fb-size")).toHaveText("11.1 KB");
+
+  await files.getByTestId("files-sort").click();
+  await sortMenu.getByRole("menuitem", { name: "Modified" }).click();
+  await expect(fileRows.first()).toHaveAttribute("data-workspace-path", "report.csv");
+  await expect(fileRows.first().locator(".fb-size")).toHaveText(/^\d{2}:\d{2}$/);
+  await expect(files.locator('.fb-row.dir[data-workspace-path="DEG"] .fb-size')).toHaveText(/\d/);
+});
+
 test("text entries keep the native context menu", async ({ page }) => {
   await enterApp(page);
   await page.locator(".proj-switch").click();
@@ -5247,7 +5570,9 @@ test("script previews show source while unknown file types are explicitly unsupp
 
   // An extension no mime claims (#307: pixi.toml) is still text — preview it.
   await openInCenter("pixi.toml");
-  await expect(page.locator(".center-file-preview .rp-code-body code")).toHaveClass(/language-ini/);
+  const tomlCode = page.locator(".center-file-preview .rp-code-body code");
+  await expect(tomlCode).toHaveClass(/language-ini/);
+  await expect(tomlCode.locator(".hljs-string")).toHaveText('"x"');
   await expect(page.locator(".center-file-preview")).toContainText("[project]");
 
   await openInCenter("protocol.rtf");
@@ -5358,7 +5683,7 @@ test("notebook preview renders saved rich outputs without active content", async
   await expect.poll(() => page.evaluate(() => Boolean((window as any).__notebookPwned))).toBe(false);
 });
 
-test("R scripts expose variables and console while only selected code can run", async ({ page }) => {
+test("R scripts expose variables and console and run selected code", async ({ page }) => {
   await enterApp(page);
   await page.getByRole("button", { name: "Files" }).click();
   await page.locator('[data-workspace-path="analysis.R"]').click({ button: "right" });
@@ -5372,20 +5697,21 @@ test("R scripts expose variables and console while only selected code can run", 
   await expect(binding.locator("option")).toHaveText(["R · gpu-server"]);
   await expect(binding).toHaveValue("ssh:gpu-server");
 
-  // The AI-first source preview has no whole-file run or direct-edit action.
   const filePreview = page.locator(".center-file-preview");
-  await expect(filePreview.getByRole("button", { name: "Run this script in its runtime" })).toHaveCount(0);
+  await expect(filePreview.getByRole("button", { name: "Run script" })).toBeVisible();
   await expect(filePreview.getByRole("button", { name: "Rewind" })).toHaveCount(0);
 
-  // The replacement control opens the bound runtime's variable rail and an
-  // initially empty console without executing the file.
+  // The replacement control opens the RStudio-style workbench: variable rail,
+  // an initially empty console, and an empty plots pane — without executing
+  // the file.
   await expect(page.locator(".center-file-console")).toHaveCount(0);
   await page.getByRole("button", { name: "Show runtime variables and console" }).click();
   await expect(page.locator(".center-runtime-environment")).toBeVisible();
-  await expect(page.locator(".center-file-console")).toContainText("Selected-code output will appear here.");
+  await expect(page.locator(".center-file-console")).toContainText("Run selected code or type in the prompt below");
+  await expect(page.locator(".center-runtime-plots")).toContainText("Plots from executed code appear here.");
 
-  // Selecting code offers the only execution path from the source preview.
-  // highlight.js splits the source into spans, so select one it produces.
+  // Selecting code still offers the floating execution path from the source
+  // preview. highlight.js splits the source into spans, so select one it produces.
   await page.locator(".center-file-preview .rp-code-body .hljs-string").evaluate((el) => {
     const range = document.createRange();
     range.selectNodeContents(el);
@@ -5394,7 +5720,18 @@ test("R scripts expose variables and console while only selected code can run", 
     selection.addRange(range);
     window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
   });
-  await page.locator(".selection-popup").getByRole("button", { name: "Run in runtime" }).click();
+  const popup = page.locator(".selection-popup");
+  await expect(popup).toHaveClass(/selection-popup-code/);
+  await expect(popup).toHaveCSS("flex-direction", "column");
+  await expect(popup.getByRole("button")).toHaveText([
+    "Run in runtime",
+    "Ask AI in the conversation",
+    "Quote in side chat",
+    "Explain in side chat",
+  ]);
+  await expect(popup.getByRole("button", { name: "Research literature" })).toHaveCount(0);
+  await expect(popup.getByRole("button", { name: "Add to review" })).toHaveCount(0);
+  await popup.getByRole("button", { name: "Run in runtime" }).click();
   await expect.poll(() => lastInvokeArgs(page, "execute_runtime")).toMatchObject({
     contextId: "ssh:gpu-server",
     language: "r",
@@ -5412,34 +5749,287 @@ test("R scripts expose variables and console while only selected code can run", 
   await expect(page.locator(".center-file-preview")).toHaveCSS("overflow", "hidden");
   await expect(page.locator(".center-file-console")).not.toHaveCSS("position", "sticky");
 
-  // Variables stay to the right of the source and span the bounded console.
+  // RStudio quadrants: source top-left, console below it, variables top-right,
+  // plots below the variables.
   const dockLayout = await page.locator(".center-file-preview").evaluate((preview) => {
     const source = preview.querySelector(".rp-code")!.getBoundingClientRect();
     const console_ = preview.querySelector(".center-file-console")!.getBoundingClientRect();
     const environment = preview.querySelector(".center-runtime-environment")!.getBoundingClientRect();
+    const plots = preview.querySelector(".center-runtime-plots")!.getBoundingClientRect();
     return {
+      sourceTop: Math.round(source.top),
       sourceBottom: Math.round(source.bottom),
       sourceRight: Math.round(source.right),
       consoleTop: Math.round(console_.top),
-      consoleHeight: Math.round(console_.height),
-      consoleBottom: Math.round(console_.bottom),
+      consoleRight: Math.round(console_.right),
       environmentLeft: Math.round(environment.left),
       environmentTop: Math.round(environment.top),
       environmentBottom: Math.round(environment.bottom),
-      sourceTop: Math.round(source.top),
-      viewportHeight: window.innerHeight,
+      plotsLeft: Math.round(plots.left),
+      plotsTop: Math.round(plots.top),
     };
   });
   expect(dockLayout.consoleTop).toBeGreaterThanOrEqual(dockLayout.sourceBottom);
-  expect(dockLayout.consoleHeight).toBeLessThanOrEqual(Math.round(dockLayout.viewportHeight * 0.28) + 1);
   expect(dockLayout.environmentLeft).toBeGreaterThanOrEqual(dockLayout.sourceRight);
   expect(dockLayout.environmentTop).toBeLessThanOrEqual(dockLayout.sourceTop);
-  expect(dockLayout.environmentBottom).toBeGreaterThanOrEqual(dockLayout.consoleBottom);
+  expect(dockLayout.plotsLeft).toBeGreaterThanOrEqual(dockLayout.consoleRight - 1);
+  expect(dockLayout.plotsTop).toBeGreaterThanOrEqual(dockLayout.environmentBottom);
 
   // Clearing empties the log without closing the inspector or runtime.
   await page.getByRole("button", { name: "Clear console" }).click();
-  await expect(page.locator(".center-file-console")).toContainText("Selected-code output will appear here.");
+  await expect(page.locator(".center-file-console")).toContainText("Run selected code or type in the prompt below");
   await expect(page.locator(".center-runtime-environment")).toBeVisible();
+});
+
+test("the runtime console prompt executes typed code and captures plots", async ({ page }) => {
+  await enterApp(page);
+  await page.getByRole("button", { name: "Files" }).click();
+  await page.locator('[data-workspace-path="analysis.R"]').click({ button: "right" });
+  await page.locator(".ctx-menu").getByRole("button", { name: "Open in center" }).click();
+  await page.getByRole("button", { name: "Show runtime variables and console" }).click();
+
+  // Typing at the prompt runs against the bound runtime, echoes the input,
+  // and appends the result — the RStudio console loop.
+  const prompt = page.getByRole("textbox", { name: "Console input" });
+  await expect(page.getByRole("button", { name: "Run console input (Enter)" })).toBeVisible();
+  await prompt.fill("summary(x)");
+  await prompt.press("Enter");
+  await expect.poll(() => lastInvokeArgs(page, "execute_runtime")).toMatchObject({
+    contextId: "ssh:gpu-server",
+    language: "r",
+    code: "summary(x)",
+  });
+  const console_ = page.locator(".center-file-console pre");
+  await expect(console_).toContainText("> summary(x)");
+  await expect(console_).toContainText("[r @ ssh:gpu-server] summary(x)");
+  await expect(prompt).toHaveValue("");
+
+  // A plotting command fills the bottom-right plots pane with the snapshot
+  // the runtime captured; non-plotting commands leave it untouched.
+  await expect(page.locator(".center-runtime-plots img")).toHaveCount(0);
+  await prompt.fill("plot(1:3)");
+  await prompt.press("Enter");
+  await expect(page.locator(".center-runtime-plots img")).toHaveCount(1);
+  await expect(page.locator(".center-runtime-plots-counter")).toHaveCount(0);
+
+  // A second plot arrives selected; paging moves through the history.
+  await prompt.fill("plot(4:6)");
+  await prompt.press("Enter");
+  await expect(page.locator(".center-runtime-plots-counter")).toHaveText("2 / 2");
+  await page.getByRole("button", { name: "Previous plot" }).click();
+  await expect(page.locator(".center-runtime-plots-counter")).toHaveText("1 / 2");
+  await page.getByRole("button", { name: "Next plot" }).click();
+  await expect(page.locator(".center-runtime-plots-counter")).toHaveText("2 / 2");
+
+  // ArrowUp recalls submitted history for editing.
+  await prompt.press("ArrowUp");
+  await expect(prompt).toHaveValue("plot(4:6)");
+  await prompt.press("ArrowUp");
+  await expect(prompt).toHaveValue("plot(1:3)");
+  await prompt.press("ArrowDown");
+  await expect(prompt).toHaveValue("plot(4:6)");
+
+  // The prompt is a real multi-line editor: Shift+Enter adds a line, while
+  // the visible Run action submits the complete cell.
+  await prompt.fill("x <- 1");
+  await prompt.press("Shift+Enter");
+  await prompt.type("x + 1");
+  await expect(prompt).toHaveValue("x <- 1\nx + 1");
+  await page.getByRole("button", { name: "Run console input (Enter)" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "execute_runtime")).toMatchObject({
+    contextId: "ssh:gpu-server",
+    language: "r",
+    code: "x <- 1\nx + 1",
+  });
+  await expect(prompt).toHaveValue("");
+  await prompt.press("ArrowUp");
+  await expect(prompt).toHaveValue("plot(4:6)");
+  await prompt.fill("");
+
+  // Clearing the pane empties the history without touching the console.
+  await page.getByRole("button", { name: "Clear plots" }).click();
+  await expect(page.locator(".center-runtime-plots")).toContainText("Plots from executed code appear here.");
+  await expect(console_).toContainText("[r @ ssh:gpu-server] plot(4:6)");
+});
+
+test("R sources are editable, save back to the workspace, and run selections", async ({ page }) => {
+  await enterApp(page);
+  await page.getByRole("button", { name: "Files" }).click();
+  await page.locator('[data-workspace-path="analysis.R"]').click({ button: "right" });
+  await page.locator(".ctx-menu").getByRole("button", { name: "Open in center" }).click();
+
+  const editor = page.getByRole("textbox", { name: "Source editor" });
+  await expect(editor).toHaveValue('library(Seurat)\nin_dir <- "data"\nplot(1:3)\n');
+  // No save affordance until the source changes.
+  await expect(page.locator("[data-editor-save]")).toHaveCount(0);
+
+  await editor.fill("library(Seurat)\nplot(4:6)\n");
+  // The highlighted mirror and the gutter follow the draft.
+  await expect(page.locator(".center-file-preview .rp-code-body")).toContainText("plot(4:6)");
+  await expect(page.locator(".center-file-preview .rp-code-gutter")).toHaveText("1\n2\n3");
+
+  // Ctrl+S persists through the workspace-scoped save command.
+  await editor.press("Control+s");
+  await expect.poll(() => lastInvokeArgs(page, "save_file")).toMatchObject({
+    path: "analysis.R",
+    content: "library(Seurat)\nplot(4:6)\n",
+  });
+  await expect(page.locator("[data-editor-save]")).toHaveCount(0);
+
+  // Selecting inside the editor still raises the quote popup with Run.
+  await editor.evaluate((element) => {
+    const textarea = element as HTMLTextAreaElement;
+    textarea.focus();
+    const start = textarea.value.indexOf("plot(4:6)");
+    textarea.setSelectionRange(start, start + "plot(4:6)".length);
+    window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+  });
+  const selectedMark = page.locator(".rp-code-selection-layer mark");
+  await expect(selectedMark).toHaveText("plot(4:6)");
+  await expect(page.locator(".rp-code-selection-status")).toHaveText("Selected line 2");
+  // Focused: native ::selection is the live paint so dragging is not delayed.
+  const nativeSelection = await editor.evaluate((element) =>
+    getComputedStyle(element, "::selection").backgroundColor);
+  expect(nativeSelection).not.toBe("rgba(0, 0, 0, 0)");
+  await page.locator(".selection-popup").getByRole("button", { name: "Run in runtime" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "execute_runtime")).toMatchObject({
+    contextId: "ssh:gpu-server",
+    language: "r",
+    code: "plot(4:6)",
+  });
+
+  // Ctrl/⌘+Enter is the fast path. With a collapsed caret it runs the current
+  // statement and advances to the next one; a persistent Run button exposes
+  // the same behavior to users who have not learned the shortcut yet.
+  await expect(page.locator("[data-editor-run]")).toBeVisible();
+  await editor.evaluate((element) => {
+    const textarea = element as HTMLTextAreaElement;
+    textarea.focus();
+    textarea.setSelectionRange(0, 0);
+  });
+  await editor.press("Control+Enter");
+  await expect.poll(() => lastInvokeArgs(page, "execute_runtime")).toMatchObject({
+    contextId: "ssh:gpu-server",
+    language: "r",
+    code: "library(Seurat)",
+  });
+  await expect.poll(() => editor.evaluate((element) =>
+    (element as HTMLTextAreaElement).selectionStart)).toBe("library(Seurat)\n".length);
+
+  await editor.evaluate((element) => {
+    const textarea = element as HTMLTextAreaElement;
+    const start = textarea.value.indexOf("plot(4:6)");
+    textarea.focus();
+    textarea.setSelectionRange(start, start + "plot(4:6)".length);
+  });
+  await editor.press("Control+Enter");
+  await expect.poll(() => lastInvokeArgs(page, "execute_runtime")).toMatchObject({
+    contextId: "ssh:gpu-server",
+    language: "r",
+    code: "plot(4:6)",
+  });
+
+  // A parenthesized call is one statement: caret on the first line sends both,
+  // then advances past the whole call. Dragging across those lines updates the
+  // toolbar before mouseup — the previous overlay only painted on select.
+  await editor.fill("sce <- FindVariableFeatures(sce,\n  verbose = FALSE)\nplot(1)\n");
+  await editor.evaluate((element) => {
+    const textarea = element as HTMLTextAreaElement;
+    textarea.focus();
+    textarea.setSelectionRange(0, 0);
+  });
+  await editor.press("Control+Enter");
+  await expect.poll(() => lastInvokeArgs(page, "execute_runtime")).toMatchObject({
+    contextId: "ssh:gpu-server",
+    language: "r",
+    code: "sce <- FindVariableFeatures(sce,\n  verbose = FALSE)",
+  });
+  await expect.poll(() => editor.evaluate((element) =>
+    (element as HTMLTextAreaElement).selectionStart)).toBe(
+      "sce <- FindVariableFeatures(sce,\n  verbose = FALSE)\n".length,
+    );
+
+  const box = (await editor.boundingBox())!;
+  await page.mouse.move(box.x + 24, box.y + 20);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 80, box.y + 42, { steps: 6 });
+  await expect.poll(() => editor.evaluate((element) => {
+    const textarea = element as HTMLTextAreaElement;
+    return textarea.selectionEnd - textarea.selectionStart;
+  })).toBeGreaterThan(0);
+  await expect(page.locator(".rp-code-selection-status")).toHaveText(/Selected lines 1–2/);
+  await page.mouse.up();
+
+  // The save button path: edit again and click Save.
+  await editor.fill("plot(7:9)\n");
+  await page.locator("[data-editor-save]").click();
+  await expect.poll(() => lastInvokeArgs(page, "save_file")).toMatchObject({
+    path: "analysis.R",
+    content: "plot(7:9)\n",
+  });
+
+  // Whole-script run reads the saved file in the bound runtime. A dirty draft
+  // is persisted first so the reported hash matches the buffer the user sees.
+  await page.getByRole("button", { name: "Run script" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "execute_runtime_script")).toMatchObject({
+    contextId: "ssh:gpu-server",
+    language: "r",
+    scriptPath: "analysis.R",
+  });
+  await expect(page.locator(".center-file-console")).toContainText("path=analysis.R");
+
+  await editor.fill("plot(10:12)\n");
+  await editor.press("Control+Shift+Enter");
+  await expect.poll(() => lastInvokeArgs(page, "save_file")).toMatchObject({
+    path: "analysis.R",
+    content: "plot(10:12)\n",
+  });
+  await expect.poll(() => lastInvokeArgs(page, "execute_runtime_script")).toMatchObject({
+    contextId: "ssh:gpu-server",
+    language: "r",
+    scriptPath: "analysis.R",
+  });
+});
+
+test("runtime workbench dividers resize the quadrants by dragging", async ({ page }) => {
+  await enterApp(page);
+  await page.getByRole("button", { name: "Files" }).click();
+  await page.locator('[data-workspace-path="analysis.R"]').click({ button: "right" });
+  await page.locator(".ctx-menu").getByRole("button", { name: "Open in center" }).click();
+  await page.getByRole("button", { name: "Show runtime variables and console" }).click();
+  await expect(page.locator(".center-runtime-environment")).toBeVisible();
+
+  // Dragging the vertical divider left widens the environment/plots column.
+  const environment = page.locator(".center-runtime-environment");
+  const environmentBefore = (await environment.boundingBox())!;
+  const colDivider = (await page.locator(".center-runtime-col-resizer").boundingBox())!;
+  await page.mouse.move(colDivider.x + 2, colDivider.y + colDivider.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(colDivider.x - 120, colDivider.y + colDivider.height / 2);
+  await page.mouse.up();
+  const environmentAfter = (await environment.boundingBox())!;
+  expect(environmentAfter.width).toBeGreaterThan(environmentBefore.width + 80);
+
+  // Dragging the horizontal divider up makes the console/plots row taller.
+  const console_ = page.locator(".center-file-console");
+  const consoleBefore = (await console_.boundingBox())!;
+  const rowDivider = (await page.locator(".center-runtime-row-resizer").boundingBox())!;
+  await page.mouse.move(rowDivider.x + rowDivider.width / 2, rowDivider.y + 2);
+  await page.mouse.down();
+  await page.mouse.move(rowDivider.x + rowDivider.width / 2, rowDivider.y - 100);
+  await page.mouse.up();
+  const consoleAfter = (await console_.boundingBox())!;
+  expect(consoleAfter.height).toBeGreaterThan(consoleBefore.height + 60);
+
+  // Escape cancels an in-progress divider drag (topmost layer only).
+  const divider = (await page.locator(".center-runtime-col-resizer").boundingBox())!;
+  await page.mouse.move(divider.x + 2, divider.y + divider.height / 2);
+  await page.mouse.down();
+  await expect(page.locator(".drag-overlay")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".drag-overlay")).toHaveCount(0);
+  await expect(page.locator(".center-runtime-environment")).toBeVisible();
+  await page.mouse.up();
 });
 
 test("a Python script rebinds to another execution context", async ({ page }) => {
@@ -5492,7 +6082,8 @@ test("files with no persistent runtime have no run control", async ({ page }) =>
 
   // .toml highlights as code but has no runtime to bind to.
   await expect(page.getByRole("combobox", { name: "Runtime this script runs in" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Run this script in its runtime" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Run script" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Run", exact: true })).toHaveCount(0);
 });
 
 test("Files browses registered SSH contexts without a real remote host", async ({ page }) => {
@@ -5583,7 +6174,12 @@ test("compute menu selects remote resources per session", async ({ page }) => {
 
   const menu = await openComputeMenu(page);
   await expect(menu).toBeVisible();
+  await expect(menu.getByText("Click a server to attach it to this chat.")).toBeVisible();
   await expect(menu.getByRole("button", { name: "Local", exact: true })).toHaveCount(0);
+  await expect(menu.getByRole("button", { name: "Add SSH host…" })).toBeVisible();
+  const defaultSelect = menu.getByTestId("compute-default-analysis");
+  await expect(defaultSelect).toHaveValue("");
+  await expect(defaultSelect).toContainText("Local by default");
   const search = menu.getByRole("searchbox", { name: "Search servers" });
   await search.fill("missing");
   await expect(menu.locator('[data-context-id="ssh:gpu-server"]')).toHaveCount(0);
@@ -5593,6 +6189,7 @@ test("compute menu selects remote resources per session", async ({ page }) => {
   await expect(server).toHaveCSS("display", "grid");
   await expect(menu.getByRole("button", { name: "Manage environments in Settings" })).toBeVisible();
   await expect(server).not.toHaveClass(/enabled/);
+  await expect(server).toContainText("Not in this chat");
   await server.click();
   await expect.poll(() => lastInvokeArgs(page, "set_session_execution_context_enabled")).toMatchObject({
     sessionId: expect.any(String),
@@ -5600,6 +6197,7 @@ test("compute menu selects remote resources per session", async ({ page }) => {
     enabled: true,
   });
   const firstSession = (await lastInvokeArgs(page, "set_session_execution_context_enabled")).sessionId;
+  await expect(server).toContainText("In this chat");
   await expect(page.locator(".composer-compute")).toHaveClass(/has-resource/);
 
   await page.keyboard.press("Escape");
@@ -5614,27 +6212,74 @@ test("compute menu selects remote resources per session", async ({ page }) => {
 test("compute menu sets and clears a default analysis environment", async ({ page }) => {
   await enterApp(page);
 
-  const menu = await openComputeMenu(page);
+  const agentMenu = await openAgentMenu(page);
+  await expect(agentMenu.getByRole("button", { name: /^Compute/ })).toContainText("Local by default");
+  await agentMenu.getByRole("button", { name: /^Compute/ }).click();
+  const menu = page.getByRole("menu", { name: "Compute" });
   const server = menu.locator('[data-context-id="ssh:gpu-server"]');
   await expect(server.locator(".compute-resource-default")).toHaveCount(0);
-  await server.getByRole("button", { name: "Set as default analysis environment" }).click();
+  await server.getByRole("button", { name: "Set as this chat's default" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "set_session_default_execution_context")).toMatchObject({
+    contextId: "ssh:gpu-server",
+  });
+  expect(await lastInvokeArgs(page, "set_default_execution_context")).toBeNull();
+  await expect(server).toHaveClass(/enabled/);
+  await expect(server.locator(".compute-resource-default")).toHaveText("Default");
+  await expect(server).toContainText("In this chat");
+  await expect(agentMenu.getByRole("button", { name: /^Compute/ })).toContainText("Default gpu-server");
+
+  await server.getByRole("button", { name: "Use local in this chat" }).click();
+  await expect.poll(async () =>
+    (await lastInvokeArgs(page, "set_session_default_execution_context"))?.contextId ?? null
+  ).toBeNull();
+  await expect(server.locator(".compute-resource-default")).toHaveCount(0);
+  await expect(agentMenu.getByRole("button", { name: /^Compute/ })).toContainText("1 remote");
+});
+
+test("new chats snapshot the global default without rewriting older chats", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Environments");
+  await page.getByTestId("default-analysis-environment").selectOption("ssh:gpu-server");
   await expect.poll(() => lastInvokeArgs(page, "set_default_execution_context")).toMatchObject({
     contextId: "ssh:gpu-server",
   });
-  // Setting the default also selects it for the current session.
-  await expect.poll(() => lastInvokeArgs(page, "set_session_execution_context_enabled")).toMatchObject({
-    sessionId: expect.any(String),
-    contextId: "ssh:gpu-server",
-    enabled: true,
-  });
+  await page.getByRole("button", { name: "Back to app" }).click();
+  await newSessionButton(page).click();
+
+  const agentMenu = await openAgentMenu(page);
+  await expect(agentMenu.getByRole("button", { name: /^Compute/ })).toContainText("Default gpu-server");
+  await expect(page.locator(".composer-compute")).toHaveClass(/has-resource/);
+  await agentMenu.getByRole("button", { name: /^Compute/ }).click();
+  const server = page.getByRole("menu", { name: "Compute" })
+    .locator('[data-context-id="ssh:gpu-server"]');
   await expect(server).toHaveClass(/enabled/);
   await expect(server.locator(".compute-resource-default")).toHaveText("Default");
+  await expect(server).toContainText("In this chat");
+  await expect(page.getByTestId("session-runtime-strip")
+    .locator('[data-testid="session-runtime-group"][data-runtime-context="ssh:gpu-server"]'))
+    .toBeVisible();
+});
 
-  await server.getByRole("button", { name: "Remove default" }).click();
-  await expect.poll(async () =>
-    (await lastInvokeArgs(page, "set_default_execution_context"))?.contextId ?? null
-  ).toBeNull();
-  await expect(server.locator(".compute-resource-default")).toHaveCount(0);
+test("compute menu default is isolated per conversation", async ({ page }) => {
+  await enterApp(page);
+
+  const firstMenu = await openComputeMenu(page);
+  await firstMenu.locator('[data-context-id="ssh:gpu-server"]')
+    .getByRole("button", { name: "Set as this chat's default" })
+    .click();
+  await expect.poll(() => lastInvokeArgs(page, "set_session_default_execution_context")).toMatchObject({
+    contextId: "ssh:gpu-server",
+  });
+  expect(await lastInvokeArgs(page, "set_default_execution_context")).toBeNull();
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+
+  await newSessionButton(page).click();
+  const secondMenu = await openComputeMenu(page);
+  await expect(secondMenu.getByTestId("compute-default-analysis")).toHaveValue("");
+  await expect(secondMenu.locator('[data-context-id="ssh:gpu-server"]'))
+    .not.toHaveClass(/enabled/);
+  await expect(page.getByRole("button", { name: /^Compute/ })).toContainText("Local by default");
 });
 
 test("environment panel attaches and detaches remote servers", async ({ page }) => {
@@ -5718,6 +6363,27 @@ test("first server enable asks for storage locations and the rail can edit them"
   await attach.locator('.context-attach-row[data-context-id="ssh:gpu-server"]').click();
   await expect(page.locator(".context-card", { hasText: "ssh:gpu-server" })).toBeVisible();
   await expect(dialog).toHaveCount(0);
+});
+
+test("settings sets the default analysis environment", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Environments");
+
+  const select = page.getByTestId("default-analysis-environment");
+  await expect(select).toBeVisible();
+  await expect(select).toHaveValue("");
+  await expect(select).toContainText("Local by default");
+  await expect(select).toContainText("gpu-server");
+  await select.selectOption("ssh:gpu-server");
+  await expect.poll(() => lastInvokeArgs(page, "set_default_execution_context")).toMatchObject({
+    contextId: "ssh:gpu-server",
+  });
+
+  await page.getByRole("button", { name: "Back to app" }).click();
+  const agentMenu = await openAgentMenu(page);
+  await expect(agentMenu.getByRole("button", { name: /^Compute/ })).toContainText("Default gpu-server");
+  await agentMenu.getByRole("button", { name: /^Compute/ }).click();
+  await expect(page.getByTestId("compute-default-analysis")).toHaveValue("ssh:gpu-server");
 });
 
 test("settings manages servers and probes them with the default environment skill", async ({ page }) => {
@@ -7133,6 +7799,21 @@ test("runtime panel shows lifecycle state and controls start stop restart", asyn
   });
 });
 
+test("terminated runtimes can be dismissed without restarting their interpreter", async ({ page }) => {
+  await enterApp(page);
+  await selectRemoteContext(page);
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  await page.getByRole("button", { name: "Environment", exact: true }).click();
+  await page.locator(".context-card", { hasText: "ssh:gpu-server" }).getByRole("button", { name: "View runtimes" }).click();
+  const runtime = page.locator('.runtime-card[data-runtime-id="runtime-python-ssh"]');
+  await expect(runtime.getByRole("button", { name: "Dismiss", exact: true })).toHaveCount(0);
+  await runtime.getByRole("button", { name: "Stop", exact: true }).click();
+  await runtime.getByRole("button", { name: "Dismiss", exact: true }).click();
+  await expect.poll(() => lastInvokeArgs(page, "dismiss_runtime")).toEqual({ runtimeId: "runtime-python-ssh" });
+  await expect(runtime).toHaveCount(0);
+  await expect(page.locator('.runtime-card[data-runtime-language="python"][data-runtime-context="ssh:gpu-server"]')).toContainText("Not started");
+});
+
 test("runtime inspector lists object metadata without loading object contents", async ({ page }) => {
   await enterApp(page);
   await selectRemoteContext(page);
@@ -7231,6 +7912,109 @@ test("runtime inspector lists object metadata without loading object contents", 
   await page.keyboard.press("Escape");
   await expect(rEnvironment).toHaveCount(0);
   await expect(page.locator(".rightpane")).toBeVisible();
+});
+
+test("pinned runtime environment stays on screen after the window shrinks", async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await enterApp(page);
+  await page.getByTestId("session-runtime-strip")
+    .locator('[data-runtime-language="r"][data-runtime-context="local"]')
+    .click();
+  const environment = page.getByRole("region", { name: "R Environment" });
+  await expect(environment).toBeVisible();
+  await environment.getByRole("button", { name: "Pin environment to conversation" }).click();
+  await expect(environment).toHaveClass(/is-pinned/);
+  await expectInsideViewport(environment, 1600, 900);
+
+  // Restoring a maximized window used to leave the pin at the old right-edge
+  // coordinates, so it vanished until the window was maximized again.
+  await page.setViewportSize({ width: 900, height: 640 });
+  await expect(environment).toBeVisible();
+  await expect.poll(async () => {
+    const box = await environment.boundingBox();
+    if (!box) return false;
+    return box.x >= 0
+      && box.y >= 0
+      && box.x + box.width <= 900
+      && box.y + box.height <= 640;
+  }).toBe(true);
+
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await expect(environment).toBeVisible();
+  await expectInsideViewport(environment, 1600, 900);
+});
+
+test("conversation runtime strip shows bound servers and opens R/Python environments", async ({ page }) => {
+  await enterApp(page);
+  const strip = page.getByTestId("session-runtime-strip");
+  await expect(strip).toBeVisible();
+  const local = strip.locator('[data-testid="session-runtime-group"][data-runtime-context="local"]');
+  await expect(local.getByTestId("session-runtime-chip")).toHaveCount(2);
+  await expect(local.locator('[data-runtime-language="python"]')).toContainText("Ready");
+  await expect(local.locator('[data-runtime-language="r"]')).toContainText("Dead");
+  await expect(strip.locator('[data-testid="session-runtime-group"][data-runtime-context="ssh:gpu-server"]')).toHaveCount(0);
+
+  await selectRemoteContext(page);
+  const remote = strip.locator('[data-testid="session-runtime-group"][data-runtime-context="ssh:gpu-server"]');
+  await expect(remote).toBeVisible();
+  await expect(remote.locator('[data-runtime-language="python"]')).toContainText("Busy");
+
+  await local.locator('[data-runtime-language="python"]').click();
+  const dialog = page.getByRole("dialog", { name: "Runtimes" });
+  await expect(dialog).toBeVisible();
+  await expect(page.getByRole("region", { name: "Python Environment" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(strip).toBeVisible();
+
+  await local.locator('[data-runtime-language="r"]').click();
+  await expect(page.getByRole("dialog", { name: "Runtimes" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "R Environment" })).toBeVisible();
+});
+
+test("an agent r cell refreshes the open R memory environment without manual sync", async ({ page }) => {
+  await enterApp(page);
+  const strip = page.getByTestId("session-runtime-strip");
+  const rChip = strip.locator('[data-runtime-language="r"][data-runtime-context="local"]');
+  await expect(rChip).toContainText("Dead");
+  await rChip.click();
+  const environment = page.getByRole("region", { name: "R Environment" });
+  await expect(environment).toBeVisible();
+  // Dead runtime: nothing to inspect yet, so the table stays empty.
+  await expect(environment.locator(".runtime-environment-row")).toHaveCount(0);
+  const inspectsBeforeTurn = await invokeCount(page, "inspect_runtime");
+
+  // Pin the panel so it floats next to the conversation, then let the agent
+  // run an R cell that lazily restarts the runtime.
+  await environment.getByRole("button", { name: "Pin environment to conversation" }).click();
+  await composer(page).fill("RAUTOREFRESH seed the session");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  // The finished tool call alone must refresh the status chip and re-inspect
+  // the open panel — no manual sync click.
+  await expect(rChip).toContainText("Ready");
+  await expect(environment.locator(".runtime-environment-row", { hasText: "counts" })).toBeVisible();
+  expect(await invokeCount(page, "inspect_runtime")).toBeGreaterThan(inspectsBeforeTurn);
+  await expect.poll(() => lastInvokeArgs(page, "inspect_runtime")).toMatchObject({
+    projectId: "default",
+    contextId: "local",
+    language: "r",
+  });
+});
+
+test("runtime environment switches language and filters objects", async ({ page }) => {
+  await enterApp(page);
+  await page.getByTestId("session-runtime-strip")
+    .locator('[data-runtime-language="python"][data-runtime-context="local"]')
+    .click();
+  const environment = page.getByRole("region", { name: "Python Environment" });
+  await expect(environment).toBeVisible();
+  await expect(environment.getByTestId("runtime-environment-lang")).toHaveCount(2);
+  await environment.getByTestId("runtime-object-filter").fill("model");
+  await expect(environment.locator(".runtime-environment-row", { hasText: "model" })).toBeVisible();
+  await expect(environment.locator(".runtime-environment-row", { hasText: "counts" })).toHaveCount(0);
+  await environment.getByRole("tab", { name: "Show R environment" }).click();
+  await expect(page.getByRole("region", { name: "R Environment" })).toBeVisible();
 });
 
 test("Windows environment settings imports installed WSL distributions", async ({ page }) => {
@@ -8350,6 +9134,97 @@ test("vision assignment keeps model fields and stored key placeholder untouched"
   await expect(page.getByLabel("Use for image analysis")).toBeChecked();
 });
 
+test("Fast profile toggle is available for both OpenAI HTTP protocols", async ({ page }) => {
+  await enterApp(page);
+  await openModelsSettings(page);
+
+  for (const provider of ["openai", "openai_responses"]) {
+    await providerSelect(page).selectOption(provider);
+    await page.getByLabel("Base URL").fill("https://api.openai.com/v1");
+    await page.getByRole("textbox", { name: "Model ID", exact: true }).fill("gpt-5.6-luna");
+    await page.getByLabel("Reasoning effort").selectOption("high");
+    const row = page.getByTestId("service-tier-toggle-row");
+    const toggle = page.getByTestId("service-tier-toggle");
+    await expect(row).toBeVisible();
+    if (await toggle.isChecked()) await row.locator(".toggle-track").click();
+    await expect(toggle).not.toBeChecked();
+    await row.locator(".toggle-track").click();
+    await expect(toggle).toBeChecked();
+    await expect(row).toHaveClass(/enabled/);
+    await expect(row).toContainText("On · priority");
+    await page.getByRole("button", { name: "Save" }).click();
+    await expect.poll(() => lastInvokeArgs(page, "save_model")).toMatchObject({
+      profile: { provider, reasoning_effort: "high", service_tier: "priority" },
+    });
+    await page.locator(".settings-list-row").first().click();
+  }
+
+  await providerSelect(page).selectOption("anthropic");
+  await expect(page.getByTestId("service-tier-toggle")).toHaveCount(0);
+});
+
+test("composer Fast lightning is a conversation override and has distinct states", async ({ page }) => {
+  await enterApp(page);
+  const fast = page.getByTestId("composer-fast-toggle");
+  await expect(fast).toBeVisible();
+  await expect(fast).toHaveAttribute("aria-pressed", "false");
+  await expect(fast).not.toHaveClass(/enabled/);
+  await fast.click();
+  await expect(fast).toHaveAttribute("aria-pressed", "true");
+  await expect(fast).toHaveClass(/enabled/);
+  await expect(fast).toHaveAttribute("title", /service_tier=priority/);
+  // No frame exists yet, so the choice is staged instead of mutating a profile.
+  await expect.poll(() => lastInvokeArgs(page, "save_model")).toBeNull();
+
+  await composer(page).fill("FAST FIRST TURN");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect.poll(async () => (await invokeArgsList(page, "set_session_service_tier")).length).toBe(1);
+  await expect.poll(() => lastInvokeArgs(page, "set_session_service_tier"))
+    .toMatchObject({ serviceTier: "priority" });
+  const order = await page.evaluate(() => ((window as any).__skillInvokeLog ?? [])
+    .map((call: any) => call.cmd)
+    .filter((cmd: string) => ["new_session", "set_session_service_tier", "send_message"].includes(cmd)));
+  expect(order.slice(-3)).toEqual(["new_session", "set_session_service_tier", "send_message"]);
+});
+
+test("composer Fast override is isolated per conversation and can return to inheritance", async ({ page }) => {
+  await enterApp(page, "/?mockSessionModels=1&mockFastDefault=1");
+  const fast = page.getByTestId("composer-fast-toggle");
+
+  await page.locator('[data-session-id="s-model-a"]').click();
+  await expect(fast).toHaveAttribute("aria-pressed", "true");
+  await expect(fast).toHaveAttribute("title", /profile default/);
+  await fast.click();
+  await expect.poll(() => lastInvokeArgs(page, "set_session_service_tier"))
+    .toMatchObject({ sessionId: "s-model-a", serviceTier: "" });
+  await expect(fast).toHaveAttribute("aria-pressed", "false");
+  await expect(fast).toHaveAttribute("title", /conversation overrides/);
+
+  await page.locator('[data-session-id="s-model-b"]').click();
+  await expect(fast).toHaveAttribute("aria-pressed", "true");
+  await expect(fast).toHaveAttribute("title", /profile default/);
+
+  await page.locator('[data-session-id="s-model-a"]').click();
+  await expect(fast).toHaveAttribute("aria-pressed", "false");
+  await fast.click();
+  await expect.poll(() => lastInvokeArgs(page, "set_session_service_tier"))
+    .toMatchObject({ sessionId: "s-model-a", serviceTier: undefined });
+  await expect(fast).toHaveAttribute("aria-pressed", "true");
+  await expect(fast).toHaveAttribute("title", /profile default/);
+});
+
+test("composer Fast lightning hides for ACP and unsupported HTTP providers", async ({ page }) => {
+  await enterApp(page);
+  await expect(page.getByTestId("composer-fast-toggle")).toBeVisible();
+  await page.locator(".model-picker-btn").click();
+  await page.getByRole("button", { name: /opus-4.8/ }).click();
+  await expect(page.getByTestId("composer-fast-toggle")).toHaveCount(0);
+
+  await page.locator(".model-picker-btn").click();
+  await page.getByRole("button", { name: /Test ACP Agent/ }).click();
+  await expect(page.getByTestId("composer-fast-toggle")).toHaveCount(0);
+});
+
 test("model settings rejects max output tokens above the known ceiling", async ({ page }) => {
   await enterApp(page);
   await openModelsSettings(page);
@@ -8448,6 +9323,8 @@ test("API access reuses a stored key for the same Base URL", async ({ page }) =>
     "placeholder",
     /api\.deepseek\.com/,
   );
+  await expect(page.getByTestId("provider-separate-key-hint"))
+    .toContainText("Paste a different key");
   await page.getByRole("button", { name: "Save" }).click();
   await expect.poll(async () => {
     const args = await lastInvokeArgs(page, "save_model");
@@ -8456,6 +9333,44 @@ test("API access reuses a stored key for the same Base URL", async ({ page }) =>
     key: null,
     profile: { model: "deepseek-v4-flash" },
   });
+});
+
+test("API access can paste a second key on the same Base URL", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Models");
+  await page.getByRole("button", { name: /Add API access/i }).click();
+
+  await expect(page.getByTestId("provider-separate-key-hint")).toBeVisible();
+  await page.getByTestId("provider-model-row").nth(0).getByLabel("Display name").fill("flash-work");
+  await page.getByTestId("provider-model-row").nth(1).getByLabel("Display name").fill("pro-work");
+  await page.getByLabel("API key (stored in OS keyring)").fill("sk-work");
+  await page.getByRole("button", { name: "Save" }).click();
+
+  await expect.poll(() => page.evaluate(() => ((window as any).__skillInvokeLog ?? [])
+    .filter((c: any) => c.cmd === "save_model")
+    .map((c: any) => {
+      const args = c.args instanceof Map ? Object.fromEntries(c.args) : c.args;
+      const profile = args.profile instanceof Map ? Object.fromEntries(args.profile) : args.profile;
+      return {
+        model: profile.model,
+        label: profile.label,
+        key: args.key ?? null,
+        apiUrl: profile.api_url,
+      };
+    }))).toEqual([
+      {
+        model: "deepseek-v4-pro",
+        label: "pro-work",
+        key: "sk-work",
+        apiUrl: "https://api.deepseek.com",
+      },
+      {
+        model: "deepseek-v4-flash",
+        label: "flash-work",
+        key: "sk-work",
+        apiUrl: "https://api.deepseek.com",
+      },
+    ]);
 });
 
 test("one DeepSeek Base URL can save Responses and Anthropic protocol models", async ({ page }) => {
@@ -9750,6 +10665,97 @@ test("Notion uses the generic Remote URL OAuth connection flow", async ({ page }
   await expect(page.getByText("OAuth", { exact: true })).toBeVisible();
 });
 
+test("MCP env values stay focused while typing and can be revealed", async ({ page }) => {
+  await enterApp(page);
+  await globalSettingsButton(page).click();
+  await page.getByRole("button", { name: "Connections" }).click();
+  await page.getByRole("button", { name: "Add connection" }).click();
+
+  const name = page.getByTestId("conn-secret-name").first();
+  const value = page.getByTestId("conn-secret-value").first();
+  const reveal = page.getByTestId("conn-secret-reveal").first();
+  await expect(value).toHaveAttribute("type", "password");
+  await expect(reveal).toHaveAttribute("aria-pressed", "false");
+
+  // Character-by-character: the previous list rebuilt every keystroke from
+  // conn_form, so focus dropped after the first letter and only paste worked.
+  await name.click();
+  await name.pressSequentially("API_KEY");
+  await expect(name).toHaveValue("API_KEY");
+  await expect(name).toBeFocused();
+
+  await value.click();
+  await value.pressSequentially("secret-token");
+  await expect(value).toHaveValue("secret-token");
+  await expect(value).toBeFocused();
+
+  await reveal.click();
+  await expect(value).toHaveAttribute("type", "text");
+  await expect(value).toHaveValue("secret-token");
+  await expect(reveal).toHaveAttribute("aria-pressed", "true");
+  await expect(value).toBeFocused();
+
+  await value.pressSequentially("-more");
+  await expect(value).toHaveValue("secret-token-more");
+  await expect(value).toBeFocused();
+
+  await reveal.click();
+  await expect(value).toHaveAttribute("type", "password");
+  await expect(value).toHaveValue("secret-token-more");
+
+  await page.getByRole("button", { name: "Add variable" }).click();
+  await expect(page.getByTestId("conn-secret-row")).toHaveCount(2);
+  const secondName = page.getByTestId("conn-secret-name").nth(1);
+  const secondValue = page.getByTestId("conn-secret-value").nth(1);
+  await secondName.fill("OTHER");
+  await secondValue.fill("second-value");
+  await expect(value).toHaveValue("secret-token-more");
+
+  await page.getByLabel("Name").fill("local-mcp");
+  await page.getByRole("textbox", { name: "Command" }).fill("npx");
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "add_mcp_connection")).toMatchObject({
+    conn: {
+      name: "local-mcp",
+      transport: {
+        kind: "stdio",
+        command: "npx",
+        env: [
+          { name: "API_KEY", value: "secret-token-more" },
+          { name: "OTHER", value: "second-value" },
+        ],
+      },
+    },
+  });
+});
+
+test("MCP test disables the button and shows progress until it finishes", async ({ page }) => {
+  await enterApp(page);
+  await globalSettingsButton(page).click();
+  await page.getByRole("button", { name: "Connections" }).click();
+  await page.getByRole("button", { name: "Add connection" }).click();
+  await page.getByLabel("Name").fill("local-mcp");
+  await page.getByRole("textbox", { name: "Command" }).fill("npx");
+  await page.evaluate(() => (window as any).__delayNextMcpTest(1200));
+
+  const testBtn = page.getByTestId("conn-test");
+  await testBtn.click();
+  await expect(testBtn).toBeDisabled();
+  await expect(testBtn).toHaveText("Testing…");
+  await expect(testBtn).toHaveAttribute("aria-busy", "true");
+  await expect(page.getByTestId("conn-test-status")).toContainText("Testing the connection");
+  await expect(page.getByRole("button", { name: "Save" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Cancel" })).toBeEnabled();
+
+  await testBtn.click({ force: true });
+  await expect.poll(async () => (await invokeArgsList(page, "test_mcp_connection")).length).toBe(1);
+
+  await expect(page.getByTestId("conn-test-status")).toHaveText("OK — 2 tools");
+  await expect(testBtn).toBeEnabled();
+  await expect(testBtn).toHaveText("Test");
+  await expect(page.getByRole("button", { name: "Save" })).toBeEnabled();
+});
+
 test("OAuth authorization keeps Cancel available and clears form status", async ({ page }) => {
   await enterApp(page, "/?mockOAuthPending=1");
   await globalSettingsButton(page).click();
@@ -9763,6 +10769,8 @@ test("OAuth authorization keeps Cancel available and clears form status", async 
 
   await page.getByRole("button", { name: "Test" }).click();
   await expect(page.getByText("Complete authorization in your browser…")).toBeVisible();
+  await expect(page.getByTestId("conn-test")).toBeDisabled();
+  await expect(page.getByTestId("conn-test")).toHaveAttribute("aria-busy", "true");
   const cancel = page.getByRole("button", { name: "Cancel" });
   await expect(cancel).toBeEnabled();
   await cancel.click();
@@ -9925,6 +10933,30 @@ test("large image approval warns before resizing and cannot be remembered", asyn
     approved: true,
     scope: "once",
   });
+});
+
+test("update_plan approval renders structured multiline Markdown", async ({ page }) => {
+  await enterApp(page, "/?mockSessionModels=1");
+  await page.locator('[data-session-id="s-model-a"]').click();
+  await page.evaluate(() => (window as any).__tauriEmit("confirm-request", {
+    frame_id: "s-model-a",
+    message: "Review the proposed plan",
+    tool: "update_plan",
+    preview: JSON.stringify({
+      v: 1,
+      steps: [{
+        status: "pending",
+        content: "**实现 Fast**\n\n- Chat Completions\n  - `service_tier=priority`\n\n> 保持默认兼容",
+      }],
+    }),
+  }));
+
+  const step = page.locator(".plan-step-text");
+  await expect(step.locator("strong")).toHaveText("实现 Fast");
+  await expect(step.locator("ul li")).toHaveCount(2);
+  await expect(step.locator("code")).toHaveText("service_tier=priority");
+  await expect(step.locator("blockquote")).toContainText("保持默认兼容");
+  await expect(step).not.toContainText("**实现 Fast**");
 });
 
 test("Escape closes plan feedback before rejecting the plan", async ({ page }) => {
@@ -10093,6 +11125,115 @@ test("browser tab cleanup confirms selected tabs and Escape keeps them", async (
   )).toBe(true);
 });
 
+test("switching projects clears browser prompts without dismissing the other project's tabs", async ({ page }) => {
+  await enterApp(page);
+  const tabs = [{ session: "shared", tab_id: 11, url: "https://paper.example", title: "Project A", frame_id: "s1", turn_id: "turn-a" }];
+  await emitTauriEvent(page, "browser-tab-cleanup", { turn_id: "turn-a", frame_id: "s1", tabs });
+  await emitTauriEvent(page, "browser-tab-cleanup", { turn_id: "turn-queued", frame_id: "s1", tabs });
+  await emitTauriEvent(page, "browser-needs-human", { tabs });
+  await expect(page.getByTestId("browser-needs-human")).toBeVisible();
+  await emitTauriEvent(page, "open-session", { projectId: "other", sessionId: "pet-frame" });
+  await expect.poll(() => lastInvokeArgs(page, "load_session")).toMatchObject({ id: "pet-frame" });
+  await expect(page.getByTestId("browser-tab-cleanup")).toHaveCount(0);
+  await expect(page.getByTestId("browser-needs-human")).toHaveCount(0);
+  expect(await lastInvokeArgs(page, "dismiss_browser_tab_cleanup")).toBeNull();
+  expect(await lastInvokeArgs(page, "confirm_browser_tab_cleanup")).toBeNull();
+});
+
+test("a delayed browser verification cannot restore another project's prompt", async ({ page }) => {
+  await enterApp(page);
+  await page.evaluate(() => {
+    const core = (window as any).__TAURI__.core;
+    const invoke = core.invoke;
+    core.invoke = (cmd: string, args: unknown) => cmd === "confirm_browser_needs_human"
+      ? new Promise((resolve) => { (window as any).__resolveVerification = resolve; })
+      : invoke(cmd, args);
+  });
+  const tabs = [{ session: "shared", tab_id: 11, url: "https://paper.example", title: "Project A", frame_id: "s1", turn_id: "turn-a" }];
+  await emitTauriEvent(page, "browser-needs-human", { tabs });
+  await page.getByTestId("browser-needs-human-done").click();
+  await expect.poll(() => page.evaluate(() => typeof (window as any).__resolveVerification)).toBe("function");
+  await emitTauriEvent(page, "open-session", { projectId: "other", sessionId: "pet-frame" });
+  await expect.poll(() => lastInvokeArgs(page, "load_session")).toMatchObject({ id: "pet-frame" });
+  await page.evaluate((tabs) => {
+    (window as any).__resolveVerification({ still_required: tabs, cleared: [] });
+  }, tabs);
+  await emitTauriEvent(page, "native-menu-action", "settings");
+  await expect(page.getByTestId("settings-nav-session")).toBeVisible();
+  await expect(page.getByTestId("browser-needs-human")).toHaveCount(0);
+});
+
+test("browser needs-human overlay reminds, confirms, and Escape snoozes", async ({ page }) => {
+  await enterApp(page);
+  const prompt = {
+    tabs: [
+      {
+        session: "shared",
+        tab_id: 12,
+        url: "https://www.sciencedirect.com/science",
+        title: "Just a moment...",
+        reason: "captcha_challenge",
+        frame_id: "s1",
+        turn_id: "turn-human",
+      },
+    ],
+  };
+  await emitTauriEvent(page, "browser-needs-human", prompt);
+  const dialog = page.getByTestId("browser-needs-human");
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("Human verification needed");
+  await expect(dialog).toContainText("Just a moment...");
+  await page.getByTestId("browser-needs-human-row-12").click();
+  await expect.poll(() => lastInvokeArgs(page, "focus_browser_needs_human")).toMatchObject({
+    session: "shared",
+    tabId: 12,
+  });
+
+  await page.evaluate(() => { (window as any).__mockNeedsHumanStillRequired = true; });
+  await page.getByTestId("browser-needs-human-done").click();
+  await expect(page.getByTestId("browser-needs-human-error")).toContainText("still on the page");
+  await expect(dialog).toBeVisible();
+
+  await page.evaluate(() => { (window as any).__mockNeedsHumanStillRequired = false; });
+  await page.getByTestId("browser-needs-human-done").click();
+  await expect(dialog).toHaveCount(0);
+  await expect.poll(() => lastInvokeArgs(page, "confirm_browser_needs_human")).toMatchObject({
+    tabs: [{ tab_id: 12 }],
+  });
+  await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
+    sessionId: "s1",
+    message: "I completed the human verification in the browser. Continue.",
+  });
+
+  await emitTauriEvent(page, "browser-needs-human", prompt);
+  await expect(page.getByTestId("browser-needs-human")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("browser-needs-human")).toHaveCount(0);
+});
+
+test("browser needs-human Escape closes only the overlay while settings stay open", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Browser");
+  await expect(page.getByTestId("browser-url-filters")).toBeVisible();
+  await emitTauriEvent(page, "browser-needs-human", {
+    tabs: [
+      {
+        session: "shared",
+        tab_id: 7,
+        url: "https://www.sciencedirect.com/science",
+        title: "Are you a robot?",
+        reason: "captcha_challenge",
+        frame_id: "s1",
+        turn_id: "turn-settings",
+      },
+    ],
+  });
+  await expect(page.getByTestId("browser-needs-human")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("browser-needs-human")).toHaveCount(0);
+  await expect(page.getByTestId("browser-url-filters")).toBeVisible();
+});
+
 test("browser tab cleanup Escape closes only the overlay while settings stay open", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Browser");
@@ -10164,21 +11305,34 @@ test("streaming assistant keeps formatted Markdown with a lightweight live tail"
   await expect(live.locator(".streaming-markdown-prefix strong").first()).toBeVisible();
   // Deltas and the Markdown commit interval are both ~50 ms. A Playwright poll
   // started after line 18 can miss every pending-tail window under CI load, so
-  // watch the attribute continuously from the page instead.
+  // watch the attribute continuously from the page instead. The live tail is
+  // removed when the turn finishes, which a slow runner can reach before the
+  // assertions below, so both the pending-byte peak and the node identity are
+  // recorded on `window` rather than re-resolved through the locator.
   await live.evaluate((element) => {
-    (element as any).__liveMarkdownProbe = true;
     const seen = { max: 0 };
-    const record = () => {
-      seen.max = Math.max(seen.max, Number(element.getAttribute("data-pending-bytes") ?? 0));
+    const record = (pending: string | null) => {
+      seen.max = Math.max(seen.max, Number(pending ?? 0));
       (window as any).__maxPendingBytes = seen.max;
+      const current = document.querySelector(".msg.assistant .streaming-markdown");
+      if (current && current !== element) (window as any).__liveMarkdownReplaced = true;
     };
     (window as any).__maxPendingBytes = 0;
-    record();
-    const observer = new MutationObserver(record);
-    observer.observe(element, { attributes: true, attributeFilter: ["data-pending-bytes"] });
+    (window as any).__liveMarkdownReplaced = false;
+    record(element.getAttribute("data-pending-bytes"));
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) record(mutation.oldValue);
+      record(element.getAttribute("data-pending-bytes"));
+    });
+    observer.observe(element, {
+      attributes: true,
+      attributeFilter: ["data-pending-bytes"],
+      attributeOldValue: true,
+    });
     const tick = () => {
-      record();
+      record(element.getAttribute("data-pending-bytes"));
       if (element.isConnected) requestAnimationFrame(tick);
+      else observer.disconnect();
     };
     requestAnimationFrame(tick);
   });
@@ -10186,7 +11340,7 @@ test("streaming assistant keeps formatted Markdown with a lightweight live tail"
   await expect(page.getByText("stream line 18", { exact: false })).toBeVisible({ timeout: 10_000 });
   await expect.poll(() => page.evaluate(() => Number((window as any).__maxPendingBytes ?? 0)))
     .toBeGreaterThan(0);
-  expect(await live.evaluate((element) => (element as any).__liveMarkdownProbe === true)).toBe(true);
+  expect(await page.evaluate(() => (window as any).__liveMarkdownReplaced === false)).toBe(true);
 
   await expect(page.getByText("stream line 23", { exact: false })).toBeVisible({ timeout: 10_000 });
   await expect(page.locator(".msg.assistant .body.md")).toBeVisible();
@@ -10215,6 +11369,48 @@ test("step commentary renders full Markdown before the overall turn finishes", a
   await expect(settledStep.locator("li")).toHaveCount(2);
   await expect(settledStep.locator("table")).toContainText("ESR1");
   await expect(settledStep.locator("code")).toHaveText("normalized_counts.csv");
+});
+
+test("long workspace scrolling keeps all headers visible across session switches (#1110)", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("make volcano.png");
+  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  await page.locator(".rp-tabs").getByRole("button", { name: /^Artifacts/ }).click();
+  const tiles = page.locator(".rp-tiles");
+  await expect(tiles).toBeVisible();
+  await tiles.evaluate((el) => {
+    const content = document.createElement("div");
+    content.style.cssText = "min-height:4000px;flex-shrink:0";
+    const end = document.createElement("button");
+    end.textContent = "Last artifact";
+    content.appendChild(end);
+    el.appendChild(content);
+    el.scrollTop = el.scrollHeight;
+  });
+  await expect.poll(() => tiles.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+  // A focus/outline jump must not turn clipped shell ancestors into scrollers.
+  await page.evaluate(() => {
+    for (const selector of [".app", ".sidebar", ".center", ".rightpane"]) {
+      const shell = document.querySelector<HTMLElement>(selector)!;
+      const overflow = document.createElement("div");
+      overflow.style.cssText = "position:absolute;top:1800px;width:1px;height:1px";
+      shell.appendChild(overflow);
+      overflow.scrollIntoView({ block: "start" });
+      shell.scrollTop = 600;
+    }
+  });
+  const viewport = page.viewportSize()!;
+  for (const selector of [".sidebar-head", ".center > .topbar", ".rp-tabs"]) {
+    await expectInsideViewport(page.locator(selector), viewport.width, viewport.height);
+  }
+  await newSessionButton(page).click();
+  await composer(page).fill("make second.png");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect.poll(() => tiles.evaluate((el) => el.scrollTop)).toBe(0);
+  for (const name of ["Agents", "Files", "Artifacts"]) {
+    await page.locator(".rp-tabs").getByRole("button", { name: new RegExp(`^${name}`) }).click();
+  }
 });
 
 test("chat keeps the user's reading position when streaming finishes (#670)", async ({ page }) => {
@@ -11387,7 +12583,10 @@ test("reverse preview selections anchor the action popup above the first selecte
   const popup = page.locator(".selection-popup");
   await expect(popup).toBeVisible();
   const anchorY = await popup.evaluate((element) => Number.parseFloat((element as HTMLElement).style.top));
-  expect(anchorY).toBeCloseTo(selection.top, 0);
+  // selection_popup_y keeps ≥120px clearance. CI fonts often land the heading
+  // just under that (~117px), so the popup clamps to 120 instead of selection.top.
+  const expectedY = Math.max(120, Math.round(selection.top));
+  expect(anchorY).toBeCloseTo(expectedY, 0);
   await expect.poll(() => popup.evaluate((element) => element.getBoundingClientRect().bottom))
     .toBeLessThan(selection.top);
 });
@@ -11403,6 +12602,13 @@ test("bound Markdown resources use immutable versions and a scrollable center pr
   const modal = page.locator(".artifact-modal");
   await expect(modal).toBeVisible();
   await expect(modal.locator(".am-name")).toHaveText("report.md");
+  // Downloading a pinned version must go through the version command — the
+  // workspace-path download would fail on branch/exploration views where the
+  // file only exists as a stored artifact version.
+  await modal.getByRole("button", { name: "Download" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "download_artifact_version"))
+    .toMatchObject({ versionId: "resource-version-markdown" });
+  expect(await lastInvokeArgs(page, "download_file")).toBeNull();
   await modal.getByRole("button", { name: "Open in center" }).click();
   const tab = page.locator('.center-tab[data-center-path="artifact-version:resource-version-markdown"]');
   await expect(tab).toContainText("report.md");
@@ -11444,6 +12650,82 @@ test("bound DOCX resources open their immutable preview", async ({ page }) => {
     .toMatchObject({ versionId: "resource-version-docx" });
 });
 
+test("bound Python resources open their immutable code preview", async ({ page }) => {
+  await page.goto("/?mockResourceSession=1");
+  await page.getByRole("button", { name: "Search" }).click();
+  const search = commandPalette(page);
+  await search.fill("Enumerate");
+  await search.press("Enter");
+
+  const pythonLink = page.getByRole("link", { name: "Open bound Python script" });
+  await expect(pythonLink).toHaveAttribute("title", "random_walk_demo.py");
+  await pythonLink.click();
+  const modal = page.locator(".artifact-modal");
+  await expect(modal).toBeVisible();
+  await expect(modal.locator(".am-name")).toHaveText("random_walk_demo.py");
+  const figure = modal.locator(".am-figure .rp-code-body code");
+  await expect(figure).toHaveClass(/language-python/);
+  await expect(figure).toContainText("SEED = 42");
+  await modal.getByRole("button", { name: "Open in center" }).click();
+  await expect(page.locator('.center-tab[data-center-path="artifact-version:resource-version-python"]'))
+    .toContainText("random_walk_demo.py");
+  const preview = page.locator(".center-file-preview");
+  await expect(preview.locator(".center-file-head > span").first())
+    .toHaveText("analysis/scripts/random_walk_demo.py");
+  await expect(preview.locator(".center-file-head")).not.toContainText("artifact-version:");
+  await expect(preview.locator(".center-file-snapshot-badge")).toHaveText("Snapshot");
+  const pythonCode = preview.locator(".rp-code-body code");
+  await expect(pythonCode).toHaveClass(/language-python/);
+  await expect(pythonCode.locator(".hljs-string")).toHaveText("'random walk'");
+  await expect(preview).toContainText("SEED = 42");
+  await preview.getByRole("button", { name: "Open in editor" }).click();
+  await expect(page.locator('.center-tab[data-center-path="analysis/scripts/random_walk_demo.py"]'))
+    .toHaveClass(/active/);
+  await expect(page.locator(".center-file-preview")).toHaveClass(/center-file-runtime-preview/);
+  await expect.poll(() => lastInvokeArgs(page, "read_artifact_version"))
+    .toMatchObject({ versionId: "resource-version-python" });
+});
+
+test("bound R resources open their immutable code preview", async ({ page }) => {
+  await page.goto("/?mockResourceSession=1");
+  await page.getByRole("button", { name: "Search" }).click();
+  const search = commandPalette(page);
+  await search.fill("Enumerate");
+  await search.press("Enter");
+
+  const rLink = page.getByRole("link", { name: "Open bound R script" });
+  await expect(rLink).toHaveAttribute("title", "plot.R");
+  await rLink.click();
+  const modal = page.locator(".artifact-modal");
+  await expect(modal).toBeVisible();
+  await expect(modal.locator(".am-name")).toHaveText("plot.R");
+  const figure = modal.locator(".am-figure .rp-code-body code");
+  await expect(figure).toHaveClass(/language-r/);
+  await expect(figure).toContainText("plot(1:3)");
+  await modal.getByRole("button", { name: "Open in center" }).click();
+  await expect(page.locator('.center-tab[data-center-path="artifact-version:resource-version-r"]'))
+    .toContainText("plot.R");
+  const preview = page.locator(".center-file-preview");
+  await expect(preview.locator(".center-file-head > span").first()).toHaveText("analysis/plot.R");
+  await expect(preview.locator(".center-file-head")).not.toContainText("artifact-version:");
+  await expect(preview.locator(".center-file-snapshot-badge")).toHaveText("Snapshot");
+  const rCode = preview.locator(".rp-code-body code");
+  await expect(rCode).toHaveClass(/language-r/);
+  await expect(rCode.locator(".hljs-string")).toHaveText('"data"');
+  await expect(preview).toContainText("plot(1:3)");
+  await expect.poll(() => preview.evaluate((element) => {
+    const code = element.querySelector<HTMLElement>(".rp-code");
+    if (!code) return 0;
+    return code.getBoundingClientRect().height / element.getBoundingClientRect().height;
+  })).toBeGreaterThan(0.75);
+  await preview.getByRole("button", { name: "Open in editor" }).click();
+  await expect(page.locator('.center-tab[data-center-path="analysis/plot.R"]')).toHaveClass(/active/);
+  await expect(page.locator(".center-file-preview")).toHaveClass(/center-file-runtime-preview/);
+  await expect(page.locator(".center-file-preview .rp-code-editor")).toBeVisible();
+  await expect.poll(() => lastInvokeArgs(page, "read_artifact_version"))
+    .toMatchObject({ versionId: "resource-version-r" });
+});
+
 test("bound BibTeX resources open their immutable text preview", async ({ page }) => {
   await page.goto("/?mockResourceSession=1");
   await page.getByRole("button", { name: "Search", exact: true }).click();
@@ -11460,6 +12742,7 @@ test("bound BibTeX resources open their immutable text preview", async ({ page }
     .toContainText("references.bib");
   await expect(page.locator(".center-file-preview"))
     .toContainText("@article{wisp");
+  await expect(page.locator(".center-file-preview [data-open-editor]")).toHaveCount(0);
   await expect.poll(() => lastInvokeArgs(page, "read_artifact_version"))
     .toMatchObject({ versionId: "resource-version-bib" });
 });
@@ -11615,6 +12898,7 @@ test("Windows uses the integrated title bar without covering the project landing
   // Home menus only list actions that work without an open project.
   await page.getByRole("button", { name: "File", exact: true }).click();
   await expect(page.getByRole("menuitem", { name: "New project" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "New Window" })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Import project" })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Scratch chat" })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Open settings" })).toBeVisible();
@@ -11651,6 +12935,7 @@ test("Windows uses the integrated title bar without covering the project landing
   await page.getByRole("button", { name: "File", exact: true }).click();
   // Inside a workspace the menus flip back to the session-scoped set.
   await expect(page.getByRole("menuitem", { name: "New session" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "New Window" })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "New project" })).toHaveCount(0);
   const exportCurrentProject = page.getByRole("menuitem", { name: "Export current project" });
   await expect(exportCurrentProject).toBeEnabled();
@@ -11835,6 +13120,30 @@ test("Windows titlebar menus close on Escape", async ({ browser }) => {
   await context.close();
 });
 
+test("File New Window asks the host for a second GUI", async ({ browser }) => {
+  // File/Edit/View live on the Windows integrated titlebar; Linux/macOS CI
+  // user agents never render that bar, so this must pin a Windows UA.
+  const context = await browser.newContext({
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/136 Safari/537.36",
+  });
+  const page = await context.newPage();
+  await page.addInitScript(tauriMock);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "File", exact: true }).click();
+  await page.getByRole("menuitem", { name: "New Window" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "open_new_window")).not.toBeNull();
+
+  // Stay on this document so the invoke log is not wiped by enterApp()'s goto.
+  await page.locator(".proj-card-main").first().click();
+  await expect(newSessionButton(page)).toBeVisible();
+  await page.getByRole("button", { name: "File", exact: true }).click();
+  await page.getByRole("menuitem", { name: "New Window" }).click();
+  await expect.poll(() => invokeCount(page, "open_new_window")).toBeGreaterThan(1);
+
+  await context.close();
+});
+
 test("compact workspace keeps the conversation usable and opens Inspector as a drawer", async ({ page }) => {
   await page.setViewportSize({ width: 800, height: 720 });
   await enterApp(page);
@@ -11988,6 +13297,39 @@ test("import can open an existing folder in place without copying it", async ({ 
     standardLayout: false,
   });
   await expect.poll(() => lastInvokeArgs(page, "import_project")).toBeNull();
+});
+
+test("workspace recovery previews archived conversations before transactional import", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Import project" }).click();
+  const options = page.getByTestId("project-import-options");
+  await expect(options.getByRole("button", { name: "Recover conversations from a workspace" })).toBeVisible();
+  await options.getByRole("button", { name: "Recover conversations from a workspace" }).click();
+
+  const recovery = page.getByTestId("workspace-session-recovery");
+  await expect(recovery).toBeVisible();
+  await expect(recovery.getByRole("heading", { name: "Recover workspace conversations" })).toBeVisible();
+  await expect(recovery.locator("#workspace-recovery-name")).toHaveValue("Recovered study");
+  await expect(recovery.locator(".workspace-recovery-stats")).toContainText("2conversations");
+  await expect(recovery.locator(".workspace-recovery-stats")).toContainText("648messages");
+  await expect(recovery).toContainText("1 damaged archive(s) and 1 duplicate archive(s) will be skipped");
+
+  // The preview owns the top Escape layer and closes immediately without a
+  // prior focus move or any import side effect.
+  await page.keyboard.press("Escape");
+  await expect(recovery).toBeHidden();
+  await expect.poll(() => lastInvokeArgs(page, "recover_workspace_sessions")).toBeNull();
+
+  await page.getByRole("button", { name: "Import project" }).click();
+  await page.getByTestId("project-import-options")
+    .getByRole("button", { name: "Recover conversations from a workspace" }).click();
+  await expect(recovery).toBeVisible();
+  await recovery.getByRole("button", { name: "Recover and open" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "recover_workspace_sessions")).toMatchObject({
+    workspaceDir: "/mock/root/new-project",
+    name: "Recovered study",
+  });
+  await expect.poll(() => lastInvokeArgs(page, "open_project")).toMatchObject({ id: "recovered" });
 });
 
 test("project transfers stay in a lower-right progress card without blocking other projects", async ({ page }) => {
@@ -12548,6 +13890,57 @@ test("desktop pet shows active Run titles and celebrates completion (#693)", asy
   await expect(pet).toHaveAttribute("data-state", "jumping", { timeout: 5_000 });
   await expect(label).toHaveText("Done");
   await expect(label).toBeVisible();
+});
+
+test("session and native menu events listen on the current window", async ({ page }) => {
+  await enterApp(page);
+  const windowEvents = [
+    "agent",
+    "confirm-request",
+    "browser-tab-cleanup",
+    "permission-request",
+    "acp-session-update",
+    "acp-session-state",
+    "permission-resolved",
+    "ask-user-request",
+    "ask-user-resolved",
+    "native-menu-action",
+    "browser-needs-human",
+  ];
+  for (const event of windowEvents) {
+    await expect.poll(() => page.evaluate((name) =>
+      Boolean((window as any).__tauriListenerReady?.(name)), event
+    )).toBe(true);
+    await expect.poll(() => page.evaluate((name) =>
+      (window as any).__tauriListenerScope(name), event
+    )).toBe("window");
+  }
+  await expect.poll(() => page.evaluate(() =>
+    Boolean((window as any).__tauriListenerReady?.("bootstrap-status")),
+  )).toBe(true);
+  await expect.poll(() => page.evaluate(() =>
+    (window as any).__tauriListenerScope("bootstrap-status"),
+  )).toBe("app");
+});
+
+test("native menu actions from another window leave this project alone", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("keep this draft");
+  await expect.poll(() => page.evaluate(() =>
+    (window as any).__tauriListenerReady("native-menu-action"),
+  )).toBe(true);
+  await page.evaluate(() => {
+    (window as any).__tauriEmitToOtherWindow("native-menu-action", "new-window");
+    (window as any).__tauriEmitToOtherWindow("native-menu-action", "projects");
+  });
+  // Await a local menu action to ensure the callbacks above have been handled.
+  await emitTauriEvent(page, "native-menu-action", "settings");
+  await expect(page.getByTestId("settings-nav-session")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(composer(page)).toHaveValue("keep this draft");
+  expect(await lastInvokeArgs(page, "open_new_window")).toBeNull();
+  await emitTauriEvent(page, "native-menu-action", "new-window");
+  await expect.poll(() => invokeArgsList(page, "open_new_window")).toHaveLength(1);
 });
 
 test("notification navigation opens the project and session that need the user (#499)", async ({ page }) => {

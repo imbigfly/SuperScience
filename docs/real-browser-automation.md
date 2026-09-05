@@ -1,4 +1,4 @@
-> **Runtime note (0.3.0):** see [browser-runtime-architecture.md](browser-runtime-architecture.md) and [browser-runtime-acceptance.md](browser-runtime-acceptance.md). The extension is Protocol v2. Shared Chrome stays on `ws://127.0.0.1:18765`; workspace Chrome uses a dedicated profile and `18766`. Reload the unpacked extension after upgrading.
+> **Runtime note (0.3.1):** see [browser-runtime-architecture.md](browser-runtime-architecture.md) and [browser-runtime-acceptance.md](browser-runtime-acceptance.md). The extension is Protocol v2. Shared Chrome stays on `ws://127.0.0.1:18765`; workspace Chrome uses a dedicated profile and `18766`. Wisp prepares a verified stable extension directory and automatically reloads compatible versions; older versions receive a guided one-time Reload fallback.
 
 # Real-browser automation
 
@@ -23,20 +23,19 @@ exact extension directory on that installation, and the following steps.
 1. Start SuperScience.
 2. Open `chrome://extensions` in the Chrome/Chromium profile SuperScience should use.
 3. Enable **Developer mode**.
-4. Choose **Load unpacked** and select the bundled `browser-extension/`
-   directory. In a source checkout this is the repository's
-   `browser-extension/` directory. An installed build reports its exact bundled
-   path through `browser_setup`. Select the directory itself, not an individual
-   file or archive inside it. The reported path comes from the running SuperScience
-   binary's native Tauri resource directory and must be copied verbatim; SuperScience
-   never translates it between Windows, WSL, macOS, or Linux path formats.
+4. Choose **Load unpacked** and select the managed `browser-extension/`
+   directory reported by `browser_setup`. Select the directory itself, not an
+   individual file or archive inside it. SuperScience validates the packaged files and
+   synchronizes this stable application-data directory before reporting it. The
+   path must be copied verbatim; SuperScience never translates it between Windows, WSL,
+   macOS, or Linux path formats.
 5. Open the extension popup and confirm that it says **Connected to SuperScience**.
 
 If the extension is not connected, live page retrieval fails closed. SuperScience
 shows a chat banner that the current answer includes no live web results,
 and the Agent must stop on live, latest, current, or URL-specific requests
 instead of answering from memory. The banner's **Set up browser** button
-opens the browser's extension page and copies the bundled path so the
+opens the browser's extension page and copies the managed path so the
 remaining steps are Developer mode and Load unpacked. After Chrome is open
 and the popup shows **Connected to SuperScience**, use **Retry after connecting**
 to run the same request again.
@@ -51,10 +50,11 @@ launching a browser.
 SuperScience records tabs it created during the current turn (by `tab_id`, including
 after in-tab navigation) and never includes tabs that were already open.
 When the setting is on, those tabs are closed when the turn ends (completed,
-stopped, or failed). When it is off, a confirmation lists them, all selected
-by default; uncheck any to keep, then close the rest or keep all. If the
-extension is disconnected at the end of the turn, the pending list is kept
-until it reconnects.
+stopped, or failed). Tabs waiting on human verification (`needs_human`) are
+skipped until the challenge is gone. When it is off, a confirmation lists them,
+all selected by default; uncheck any to keep, then close the rest or keep all.
+If the extension is disconnected at the end of the turn, the pending list is
+kept until it reconnects.
 
 The banner describes the answer on screen, not the session. It is derived from
 the browser tool results of the latest turn only, and a single successful
@@ -65,9 +65,14 @@ A connected extension also counts as connected even when a build cannot verify
 its own bundled `browser-extension/` copy.
 
 The unpacked extension remains installed in that browser profile across SuperScience
-and browser restarts. After updating SuperScience, click **Reload** on the extension
-card in `chrome://extensions` so the service worker picks up `wait_tab.js`.
-It reconnects to `ws://127.0.0.1:18765` when SuperScience is running. Only loopback
+and browser restarts. If its version is older than the current SuperScience build, an
+update banner shows the current and required versions and offers **Update
+extension**, **Copy extension path**, **Open extension page**, and **Recheck**.
+SuperScience first verifies and refreshes the managed files. Extension 0.3.1 and later
+can reload automatically; older versions require one click on **Reload** in
+`chrome://extensions` (or loading the managed directory if the previous install
+points elsewhere). SuperScience automatically rechecks the new handshake. The extension
+reconnects to `ws://127.0.0.1:18765` when SuperScience is running. Only loopback
 connections whose WebSocket origin is a Chrome extension with SuperScience's bundled,
 stable extension ID are accepted.
 
@@ -75,11 +80,17 @@ stable extension ID are accepted.
 
 When `web_scan` detects an **Are you a robot?** page together with a request to
 confirm that the visitor is human or complete a CAPTCHA challenge, it returns
-`human_intervention.required=true`. The Agent must stop browser automation, ask
-the user to complete the challenge manually in the current visible browser tab,
-and wait for confirmation. It then scans the same tab again and continues only
-after the challenge is gone. The persistent browser profile keeps any clearance
-cookie issued after the manual verification.
+`human_intervention.required=true` and marks that tab `needs_human`. Wisp shows
+a prompt asking you to complete the challenge in the visible browser tab. The
+Agent must stop browser automation, must not call `ask_user`, and must not
+click the challenge. After you confirm in the app, it scans the same tab again
+and continues only when the challenge is gone.
+
+While a tab is `needs_human`, **Automatically close browser tabs** skips it, and
+the turn-end cleanup dialog does not offer it. The persistent browser profile
+keeps any clearance cookie issued after the manual verification. Closing the
+browser window itself can still drop the page (and, if Chrome is set to clear
+cookies on exit, the clearance cookie).
 
 SuperScience does not attempt to click, solve, or bypass CAPTCHA challenges. A page that
 merely mentions the phrase **Are you a robot?** without the accompanying

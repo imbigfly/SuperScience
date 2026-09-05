@@ -8,6 +8,19 @@
 
 use serde_json::json;
 
+#[test]
+fn restored_acp_session_state_contract() {
+    let backend = superscience_dto::AcpSessionState {
+        frame_id: "frame-a".into(),
+        modes: Some(json!({"availableModes": [{"id":"plan","name":"Plan"}]})),
+        config_options: Some(vec![json!({"id":"model","currentValue":"smart"})]),
+    };
+    let ui: superscience_dto::AcpSessionState = roundtrip(&backend);
+    assert_eq!(ui.frame_id, "frame-a");
+    assert_eq!(ui.config_options.unwrap()[0]["currentValue"], "smart");
+    assert_eq!(ui.modes.unwrap()["availableModes"][0]["id"], "plan");
+}
+
 fn roundtrip<T: serde::Serialize, D: serde::de::DeserializeOwned>(value: &T) -> D {
     let json = serde_json::to_value(value).expect("backend value must serialize");
     serde_json::from_value(json).expect("UI DTO must accept the backend payload")
@@ -57,6 +70,7 @@ fn model_profile_contract() {
         max_tokens: 4096,
         context_window: 200_000,
         reasoning_effort: "high".into(),
+        service_tier: "priority".into(),
         supports_vision: true,
         use_for_vision: true,
         use_for_image_generation: false,
@@ -81,6 +95,7 @@ fn model_profile_contract() {
     assert_eq!(dto.max_tokens, 4096);
     assert_eq!(dto.context_window, 200_000);
     assert_eq!(dto.reasoning_effort, "high");
+    assert_eq!(dto.service_tier, "priority");
     assert!(dto.supports_vision);
     assert!(dto.use_for_vision);
     assert!(!dto.use_for_image_generation);
@@ -98,6 +113,20 @@ fn model_profile_contract() {
     assert_eq!(superscience_dto::VIDEO_RESOLUTIONS.len(), 3);
     assert_eq!(superscience_dto::VIDEO_DURATION_MIN_SECS, 1);
     assert_eq!(superscience_dto::VIDEO_DURATION_MAX_SECS, 15);
+}
+
+#[test]
+fn runtime_execution_summary_contract() {
+    let backend = crate::runtime_commands::RuntimeExecutionSummary {
+        text: "[error] object 'x' not found".into(),
+        plots: vec!["aGVsbG8=".into(), "d29ybGQ=".into()],
+    };
+    let dto: superscience_dto::RuntimeExecutionSummary = roundtrip(&backend);
+    assert_eq!(dto.text, "[error] object 'x' not found");
+    assert_eq!(
+        dto.plots,
+        vec!["aGVsbG8=".to_string(), "d29ybGQ=".to_string()]
+    );
 }
 
 #[test]
@@ -241,6 +270,35 @@ fn skill_update_preview_contract() {
 }
 
 #[test]
+fn workspace_session_recovery_contract() {
+    let preview = superscience_dto::WorkspaceSessionRecoveryPreview {
+        workspace_dir: "/study".into(),
+        suggested_name: "Study".into(),
+        archive_count: 4,
+        valid_archive_count: 3,
+        recoverable_session_count: 2,
+        message_count: 648,
+        invalid_archive_count: 1,
+        duplicate_archive_count: 1,
+        earliest_message_at: Some(10),
+        latest_message_at: Some(20),
+    };
+    let decoded: superscience_dto::WorkspaceSessionRecoveryPreview = roundtrip(&preview);
+    assert_eq!(decoded, preview);
+
+    let result = superscience_dto::WorkspaceSessionRecoveryResult {
+        project_id: "project".into(),
+        project_name: "Study".into(),
+        recovered_session_count: 2,
+        message_count: 648,
+        invalid_archive_count: 1,
+        duplicate_archive_count: 1,
+    };
+    let decoded: superscience_dto::WorkspaceSessionRecoveryResult = roundtrip(&result);
+    assert_eq!(decoded, result);
+}
+
+#[test]
 fn trajectory_snapshot_contract() {
     let backend = crate::trajectory::TrajectorySnapshot {
         frame_id: "frame-1".into(),
@@ -368,6 +426,34 @@ fn browser_tab_cleanup_prompt_contract() {
     assert_eq!(dto.tabs[0].url, "https://example.com/paper");
     assert_eq!(dto.tabs[0].title, "Paper");
     assert_eq!(dto.tabs[0].initial_url, "https://example.com");
+}
+
+#[test]
+fn browser_needs_human_prompt_contract() {
+    let prompt = superscience_dto::BrowserNeedsHumanPrompt {
+        tabs: vec![superscience_dto::BrowserNeedsHumanTab {
+            session: "shared".into(),
+            tab_id: 12,
+            url: "https://www.sciencedirect.com/science".into(),
+            title: "Just a moment...".into(),
+            reason: "captcha_challenge".into(),
+            frame_id: "frame-1".into(),
+            turn_id: "turn-1".into(),
+        }],
+    };
+    let dto: superscience_dto::BrowserNeedsHumanPrompt = roundtrip(&prompt);
+    assert_eq!(dto.tabs.len(), 1);
+    assert_eq!(dto.tabs[0].session, "shared");
+    assert_eq!(dto.tabs[0].tab_id, 12);
+    assert_eq!(dto.tabs[0].reason, "captcha_challenge");
+    assert_eq!(dto.tabs[0].frame_id, "frame-1");
+    let result = superscience_dto::BrowserNeedsHumanConfirmResult {
+        still_required: dto.tabs.clone(),
+        cleared: Vec::new(),
+    };
+    let dto: superscience_dto::BrowserNeedsHumanConfirmResult = roundtrip(&result);
+    assert_eq!(dto.still_required[0].tab_id, 12);
+    assert!(dto.cleared.is_empty());
 }
 
 #[test]

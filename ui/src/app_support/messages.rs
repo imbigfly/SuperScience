@@ -231,6 +231,7 @@ pub(crate) fn compose_icon(kind: &str) -> impl IntoView {
         "split" => view! { <rect x="3" y="4" width="18" height="16" rx="2"/><path d="M14 4v16"/> }.into_view(),
         "runtime-panel" => view! { <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M14 3v18"/><path d="M3 15h11"/><circle cx="17.5" cy="7" r="1" fill="currentColor" stroke="none"/><circle cx="17.5" cy="11" r="1" fill="currentColor" stroke="none"/> }.into_view(),
         "play" => view! { <path d="M6 4.5v15l13-7.5Z"/> }.into_view(),
+        "file-play" => view! { <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M10 12.5v5l4.5-2.5Z"/> }.into_view(),
         "bolt" => view! { <path d="M13 2 3 14h8l-1 8 10-12h-8l1-8z"/> }.into_view(),
         "up" => view! { <path d="m18 15-6-6-6 6"/> }.into_view(),
         "copy" => view! { <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/> }.into_view(),
@@ -238,6 +239,7 @@ pub(crate) fn compose_icon(kind: &str) -> impl IntoView {
         "star" => view! { <path d="m12 2.7 2.85 5.77 6.37.93-4.61 4.49 1.09 6.34L12 17.23l-5.7 3 1.09-6.34L2.78 9.4l6.37-.93Z"/> }.into_view(),
         "star-filled" => view! { <path d="m12 2.7 2.85 5.77 6.37.93-4.61 4.49 1.09 6.34L12 17.23l-5.7 3 1.09-6.34L2.78 9.4l6.37-.93Z" fill="currentColor"/> }.into_view(),
         "edit" => view! { <path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/> }.into_view(),
+        "code" => view! { <path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/> }.into_view(),
         "doc" => view! { <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/> }.into_view(),
         "image" => view! { <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/> }.into_view(),
         "video" => view! { <path d="m22 8-6 4 6 4V8Z"/><rect x="2" y="6" width="14" height="12" rx="2"/> }.into_view(),
@@ -251,9 +253,11 @@ pub(crate) fn compose_icon(kind: &str) -> impl IntoView {
         "slides" => view! { <path d="M2 3h20"/><path d="M21 3v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V3"/><path d="m7 21 5-5 5 5"/> }.into_view(),
         "computer" => view! { <rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/> }.into_view(),
         "server" => view! { <rect x="3" y="4" width="18" height="7" rx="1"/><rect x="3" y="13" width="18" height="7" rx="1"/><circle cx="7" cy="7.5" r="0.5" fill="currentColor"/><circle cx="7" cy="16.5" r="0.5" fill="currentColor"/> }.into_view(),
+        "monitor" => view! { <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/> }.into_view(),
         "user" => view! { <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/> }.into_view(),
         "wrench" => view! { <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/> }.into_view(),
         "clock" => view! { <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/> }.into_view(),
+        "sort" => view! { <path d="m21 16-4 4-4-4"/><path d="M17 20V4"/><path d="m3 8 4-4 4 4"/><path d="M7 4v16"/> }.into_view(),
         "search" => view! { <circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/> }.into_view(),
         "shield" => view! {
             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
@@ -1255,6 +1259,56 @@ pub(crate) fn plan_step_line(line: &str) -> Option<(&'static str, &str)> {
     None
 }
 
+fn plan_status_class(status: &str) -> &'static str {
+    match status {
+        "completed" | "done" => "done",
+        "in_progress" | "running" => "running",
+        "cancelled" => "cancelled",
+        _ => "pending",
+    }
+}
+
+/// New approvals carry structured steps so fenced code, blank lines, and
+/// task lists cannot be mistaken for top-level checklist rows. Old persisted
+/// approvals still parse the legacy marker format, including continuations.
+pub(crate) fn parse_plan_steps(preview: &str) -> Vec<(&'static str, String)> {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(preview) {
+        if value.get("v").and_then(serde_json::Value::as_u64) == Some(1) {
+            if let Some(steps) = value.get("steps").and_then(serde_json::Value::as_array) {
+                return steps
+                    .iter()
+                    .filter_map(|step| {
+                        let content = step.get("content")?.as_str()?.trim();
+                        (!content.is_empty()).then(|| {
+                            (
+                                plan_status_class(
+                                    step.get("status")
+                                        .and_then(serde_json::Value::as_str)
+                                        .unwrap_or("pending"),
+                                ),
+                                content.to_string(),
+                            )
+                        })
+                    })
+                    .collect();
+            }
+        }
+    }
+
+    let mut steps: Vec<(&'static str, String)> = vec![];
+    for line in preview.lines() {
+        if let Some((class, text)) = plan_step_line(line) {
+            steps.push((class, text.to_string()));
+        } else if let Some((_, text)) = steps.last_mut() {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(line);
+        }
+    }
+    steps
+}
+
 pub(crate) fn approval_allow_label_key(scope: &str) -> &'static str {
     match scope {
         "session" => "approval.allow_session",
@@ -1271,6 +1325,8 @@ pub(crate) fn ApprovalCard(
     message: String,
     session_id: String,
     on_decide: Callback<(String, bool, Option<String>, String)>,
+    on_artifact: Callback<usize>,
+    on_file: Callback<ModalArtifact>,
 ) -> impl IntoView {
     let locale = use_locale();
     let is_plan = tool == "update_plan";
@@ -1296,15 +1352,14 @@ pub(crate) fn ApprovalCard(
         }
     });
     let lang = tool_lang(&tool).to_string();
-    // For the plan card, `preview` is the rendered checklist; parse it into rows.
-    let plan_steps: Vec<(&'static str, String)> = if is_plan {
-        preview
-            .lines()
-            .filter_map(|l| plan_step_line(l).map(|(c, t)| (c, t.to_string())))
-            .collect()
+    // New approvals carry JSON; old persisted cards fall back to checklist text.
+    let plan_steps = if is_plan {
+        parse_plan_steps(&preview)
     } else {
         vec![]
     };
+    let project_root = use_context::<ReadSignal<Option<ProjectInfo>>>()
+        .and_then(|project| project.get().map(|project| project.root));
     let tool_for_title = tool.clone();
     let title = move || {
         let loc = locale.get();
@@ -1335,11 +1390,25 @@ pub(crate) fn ApprovalCard(
                 {if is_plan {
                     view! {
                         <div class="plan-steps">
-                            {plan_steps.into_iter().map(|(cls, text)| view! {
-                                <div class=format!("plan-step {cls}")>
-                                    <span class="plan-step-mark"></span>
-                                    <span class="plan-step-text">{text}</span>
-                                </div>
+                            {plan_steps.into_iter().map(|(cls, text)| {
+                                let html = enrich_md_html(
+                                    md_to_html(&text),
+                                    &[],
+                                    &[],
+                                    locale.get(),
+                                    project_root.as_deref(),
+                                );
+                                let step_artifact = on_artifact.clone();
+                                let step_file = on_file.clone();
+                                view! {
+                                    <div class=format!("plan-step {cls}")>
+                                        <span class="plan-step-mark"></span>
+                                        <div class="plan-step-text md" inner_html=html
+                                            on:click=move |ev: web_sys::MouseEvent| {
+                                                handle_md_click(&ev, &[], &[], &step_artifact, &step_file)
+                                            }></div>
+                                    </div>
+                                }
                             }).collect_view()}
                         </div>
                     }.into_view()

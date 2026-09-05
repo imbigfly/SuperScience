@@ -395,7 +395,7 @@ pub(crate) struct ProviderCandidateGenerator {
 
 impl ProviderCandidateGenerator {
     pub(crate) async fn from_profile(store: &Store, profile_id: &str) -> Result<Self, String> {
-        let (provider, api_url, model, api_key, max_tokens, reasoning_effort) =
+        let (provider, api_url, model, api_key, max_tokens, reasoning_effort, service_tier) =
             crate::models::profile_llm(store, profile_id)
                 .await
                 .ok_or_else(|| {
@@ -408,6 +408,7 @@ impl ProviderCandidateGenerator {
             &model,
             max_tokens.min(8_192),
             &reasoning_effort,
+            &service_tier,
         )?;
         Ok(Self {
             provider: Arc::from(superscience_llm::build(config)),

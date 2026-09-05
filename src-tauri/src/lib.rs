@@ -46,13 +46,13 @@ mod device_bridge;
 mod device_hub;
 mod dynamic_workflow;
 mod exploration_commands;
-mod exploration_isolation;
+pub(crate) use superscience_runs::exploration_isolation;
 mod exploration_promotion;
 mod exploration_workspace;
 mod feedback;
 mod file_browser;
 mod handwriting_calibrate;
-mod harvest;
+pub(crate) use superscience_runs::harvest;
 mod image_generation_tool;
 mod knowledge;
 mod knowledge_search_tool;
@@ -88,7 +88,7 @@ mod research_graph;
 mod resource_leases;
 mod resource_refs;
 mod review;
-mod run_context;
+pub(crate) use superscience_runs as run_context;
 mod runtime_commands;
 mod runtime_config_tool;
 mod runtime_launcher;
@@ -106,12 +106,12 @@ mod side_chat;
 mod skill_commands;
 mod skill_portfolio;
 mod skill_update;
-mod snapshot_store;
+pub(crate) use superscience_runs::snapshot_store;
 mod specialist_tool;
 mod specialists;
-mod ssh_guard;
+pub(crate) use superscience_runs::ssh_guard;
 mod ssh_hosts;
-mod ssh_master;
+pub(crate) use superscience_runs::ssh_master;
 mod storage_prefs;
 mod tctoken;
 mod terminal_sessions;
@@ -123,6 +123,7 @@ mod video_generation_tool;
 mod windows_snap;
 mod workspace_manifest;
 mod workspace_scan;
+mod workspace_session_recovery;
 mod wsl_contexts;
 
 pub(crate) use agent_turn::*;
@@ -131,7 +132,7 @@ use artifact_commands::{register_artifact, upload_file};
 use file_browser::{
     append_review_note, create_directory, create_file, delete_entry, list_dir, list_remote_dir,
     read_file, read_file_at, read_file_bytes, read_file_bytes_at, read_remote_file,
-    read_remote_file_bytes, rename_entry, search_files, FileContent,
+    read_remote_file_bytes, rename_entry, save_file, search_files, FileContent,
 };
 use session_export::{capture_env, export_session, get_artifact_provenance};
 use session_import::import_session_archive;
@@ -277,6 +278,35 @@ enum AgentEvent {
     },
 }
 
+impl AgentEvent {
+    fn frame_id(&self) -> &str {
+        match self {
+            Self::User { frame_id, .. }
+            | Self::MessageBoundary { frame_id, .. }
+            | Self::Resources { frame_id, .. }
+            | Self::Text { frame_id, .. }
+            | Self::Reasoning { frame_id, .. }
+            | Self::ToolCall { frame_id, .. }
+            | Self::ToolResult { frame_id, .. }
+            | Self::ToolPresentation { frame_id, .. }
+            | Self::Usage { frame_id, .. }
+            | Self::Compaction { frame_id, .. }
+            | Self::CompactionStarted { frame_id, .. }
+            | Self::ContextWarning { frame_id, .. }
+            | Self::Diff { frame_id, .. }
+            | Self::FileChanged { frame_id, .. }
+            | Self::Stdout { frame_id, .. }
+            | Self::Done { frame_id, .. }
+            | Self::Error { frame_id, .. }
+            | Self::DelegationCompleted { frame_id, .. }
+            | Self::ReviewStarted { frame_id, .. }
+            | Self::ReviewFailed { frame_id, .. }
+            | Self::Review { frame_id, .. }
+            | Self::CorrectionStarted { frame_id, .. } => frame_id,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Clone, PartialEq, Eq)]
 pub(crate) struct ConfirmRequest {
     /// Opaque, one-shot capability used by text-only remote approval surfaces.
@@ -304,8 +334,14 @@ impl ConfirmRequest {
     }
 }
 
-fn emit_confirm_request(app: &AppHandle, request: &ConfirmRequest) {
-    let _ = app.emit("confirm-request", request.clone());
+fn emit_confirm_request(app: &AppHandle, request: &ConfirmRequest, project_id: Option<&str>) {
+    emit_to_session_surfaces(
+        app,
+        &request.frame_id,
+        project_id,
+        "confirm-request",
+        request,
+    );
     channels::publish_approval_request(request);
 }
 
@@ -344,7 +380,7 @@ async fn request_image_resize_confirmation(
         .unwrap()
         .insert(frame_id.to_string());
     state.device_hub.mark_needs_user(frame_id, Some(project_id));
-    emit_confirm_request(app, &request);
+    emit_confirm_request(app, &request, Some(project_id));
     let approved = receive_confirm_decision(rx).await.approved();
     state.confirms.lock().unwrap().remove(frame_id);
     state.awaiting_confirm.lock().unwrap().remove(frame_id);
@@ -757,7 +793,7 @@ impl Scope {
 /// `tool_connector` is static (built once from `domains.json`); `tools`/`skip`/
 /// `scope` mirror the persisted settings and are refreshed by the approval
 /// commands.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct ApprovalPolicy {
     /// Global scope layered over the per-tool modes below.
     scope: Scope,
@@ -767,6 +803,48 @@ struct ApprovalPolicy {
     skip: HashSet<String>,
     /// Tool name -> bundled connector (domain slug), for resolving `skip`.
     tool_connector: HashMap<String, String>,
+}
+
+/// Process-wide defaults plus per-project overlays written from a window that
+/// already has a workspace open. Running turns read the overlay for their
+/// `project_id`, so changing approvals in project A does not rewrite project B.
+#[derive(Clone, Default)]
+struct LiveApprovals {
+    default: ApprovalPolicy,
+    by_project: HashMap<String, ApprovalPolicy>,
+}
+
+impl LiveApprovals {
+    fn for_project(&self, project_id: &str) -> &ApprovalPolicy {
+        self.by_project.get(project_id).unwrap_or(&self.default)
+    }
+}
+
+/// Returned by approval overlay setters when the invoking window has no bound
+/// project. Must stay exact: tests and the UI match on this string.
+const BLANK_WINDOW_NO_PROJECT: &str = "Open a project in this window before running that action.";
+
+/// Project bound to this window only. Unlike [`AppState::require_active`], this
+/// never falls back to `main` — writing an overlay (or the unprefixed global keys)
+/// from an unbound window would leak into every project that still inherits
+/// the default.
+fn bound_window_project_id(state: &AppState, label: &str) -> Result<String, String> {
+    state
+        .active
+        .read()
+        .unwrap()
+        .get(label)
+        .map(|project| project.id.clone())
+        .ok_or_else(|| BLANK_WINDOW_NO_PROJECT.to_string())
+}
+
+fn window_bound_project_id(state: &AppState, label: &str) -> Option<String> {
+    state
+        .active
+        .read()
+        .unwrap()
+        .get(label)
+        .map(|project| project.id.clone())
 }
 
 impl ApprovalPolicy {
@@ -1811,7 +1889,8 @@ async fn persist_and_emit_terminal_event(
         Ok(mut seq) => append_ui_event(&state.store, frame_id, &mut seq, event.clone()).await,
         Err(error) => tracing::warn!("load terminal UI event sequence failed: {error}"),
     }
-    emit_agent_event(app, event);
+    let project_id = state.store.frame_project_id(frame_id).await.ok().flatten();
+    emit_agent_event_in(app, event, project_id.as_deref());
 }
 
 /// Keep the raw terminal records intact for support bundles. Historical
@@ -1956,6 +2035,9 @@ struct Settings {
     /// Reasoning effort (none/minimal/low/medium/high/xhigh/max/ultra, model-dependent). Empty = provider default.
     #[serde(default)]
     reasoning_effort: String,
+    /// OpenAI-compatible HTTP `service_tier`. Empty = omit; `priority` = Fast.
+    #[serde(default)]
+    service_tier: String,
     /// LLM HTTP proxy. Empty = follow system/env proxy; `none` = force direct;
     /// otherwise a proxy URL (http://, https://, socks5://).
     #[serde(default)]
@@ -2026,6 +2108,26 @@ async fn clear_idle_agents(state: &AppState) {
     for rt in runtimes {
         rt.invalidate_cached_agent();
     }
+}
+
+fn invalidate_idle_agents_owned(
+    sessions: &HashMap<String, Arc<SessionRuntime>>,
+    owned: &HashSet<String>,
+) {
+    for (frame_id, runtime) in sessions {
+        if owned.contains(frame_id) {
+            runtime.invalidate_cached_agent();
+        }
+    }
+}
+
+async fn clear_idle_agents_for_project(state: &AppState, project_id: &str) {
+    let owned: HashSet<String> = match state.store.list_sessions(project_id).await {
+        Ok(rows) => rows.into_iter().map(|(id, ..)| id).collect(),
+        Err(_) => return,
+    };
+    let sessions = state.sessions.lock().await;
+    invalidate_idle_agents_owned(&sessions, &owned);
 }
 
 async fn clear_session_agent(state: &AppState, frame_id: &str) {
@@ -2222,6 +2324,81 @@ fn select_notification_window(
         .map(|label| selection(label, false))
 }
 
+/// Windows that should receive live session UI (agent stream, approvals).
+///
+/// Every window currently bound to the session's project sees the stream, so two
+/// views of the same workspace stay in sync. A window bound to a different
+/// project never does — unlike desktop notifications, live UI must not fall
+/// back onto a foreign workspace. Unbound File → New Window views and `pet`
+/// are excluded here; the pet overlay is added at emit time.
+fn session_surface_window_labels(
+    _origin: Option<&str>,
+    frame_id: &str,
+    project_id: Option<&str>,
+    active_projects: &HashMap<String, String>,
+    active_frames: &HashMap<String, String>,
+) -> Vec<String> {
+    let mut labels = if let Some(project_id) = project_id {
+        active_projects
+            .iter()
+            .filter(|(label, active_project)| {
+                label.as_str() != "pet" && active_project.as_str() == project_id
+            })
+            .map(|(label, _)| label.clone())
+            .collect::<Vec<_>>()
+    } else {
+        // Unknown owner: only windows already viewing this conversation.
+        // Never broadcast to `main` or to the origin's current (possibly
+        // foreign) project.
+        active_frames
+            .iter()
+            .filter(|(label, viewed)| viewed.as_str() == frame_id && label.as_str() != "pet")
+            .map(|(label, _)| label.clone())
+            .collect::<Vec<_>>()
+    };
+    labels.sort();
+    labels.dedup();
+    labels
+}
+
+/// Emit a live session event only to windows of that conversation's project.
+///
+/// `channels` / device-hub publishers stay process-wide; this helper is the
+/// GUI fan-out. The desktop pet listens for agent/approval activity, so it is
+/// included unless the caller is a window-local overlay such as browser-tab
+/// cleanup.
+pub(crate) fn emit_to_session_surfaces<T: Clone + Serialize>(
+    app: &AppHandle,
+    frame_id: &str,
+    project_id: Option<&str>,
+    event: &str,
+    payload: &T,
+) {
+    emit_to_session_surfaces_filtered(app, frame_id, project_id, event, payload, true);
+}
+
+pub(crate) fn emit_to_session_surfaces_filtered<T: Clone + Serialize>(
+    app: &AppHandle,
+    frame_id: &str,
+    project_id: Option<&str>,
+    event: &str,
+    payload: &T,
+    include_pet: bool,
+) {
+    let state = app.state::<AppState>();
+    let mut labels = state.session_surface_labels(frame_id, project_id);
+    if include_pet {
+        // The pet overlay is Windows-only; emit_to is a no-op if that window
+        // does not exist on this platform.
+        labels.push("pet".to_string());
+    }
+    labels.sort();
+    labels.dedup();
+    for label in labels {
+        let _ = app.emit_to(&label, event, payload.clone());
+    }
+}
+
 #[tauri::command]
 async fn update_mcp_app_context(
     state: State<'_, AppState>,
@@ -2337,7 +2514,7 @@ async fn request_mcp_app_tool_confirmation(
         .unwrap()
         .insert(frame_id.to_string());
     state.device_hub.mark_needs_user(frame_id, Some(project_id));
-    emit_confirm_request(app, &request);
+    emit_confirm_request(app, &request, Some(project_id));
     let decision = receive_confirm_decision(rx).await;
     state.confirms.lock().unwrap().remove(frame_id);
     state.awaiting_confirm.lock().unwrap().remove(frame_id);
@@ -2404,6 +2581,7 @@ async fn call_mcp_app_tool(
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| MCP_APP_STALE_INSTANCE_ERROR.to_string())?;
+    ensure_project_live_approvals(&state, &project_id).await;
     // Plan mode and frozen-project gates match agent tool calls: read-only
     // tools stay available, everything else refuses.
     if plan_mode::session_plan_mode(&state.store, &frame_id).await
@@ -2416,7 +2594,7 @@ async fn call_mcp_app_tool(
     let host_approval = state
         .approvals
         .read()
-        .map(|policy| policy.mode_for(&name))
+        .map(|live| live.for_project(&project_id).mode_for(&name))
         .unwrap_or(superscience_tools::Approval::Allow);
     let full_permission = state
         .full_permission_sessions
@@ -2655,7 +2833,7 @@ struct TauriOutput {
     confirms: ConfirmMap,
     awaiting_confirm: Arc<StdMutex<HashSet<String>>>,
     /// Shared live approval policy (see `AppState::approvals`).
-    approvals: Arc<StdRwLock<ApprovalPolicy>>,
+    approvals: Arc<StdRwLock<LiveApprovals>>,
     /// Built-in plan mode for this session, read once per turn. ACP-bound
     /// frames never set it — their plan mode lives on the agent side.
     plan_mode: bool,
@@ -2711,10 +2889,14 @@ impl TauriOutput {
         match &self.live_events {
             Some(tx) => {
                 if let Err(send_error) = tx.send(event) {
-                    emit_agent_event_to_surfaces(&self.app, send_error.0);
+                    emit_agent_event_to_surfaces_in(
+                        &self.app,
+                        send_error.0,
+                        Some(&self.project_id),
+                    );
                 }
             }
-            None => emit_agent_event_to_surfaces(&self.app, event),
+            None => emit_agent_event_to_surfaces_in(&self.app, event, Some(&self.project_id)),
         }
     }
 
@@ -2755,7 +2937,7 @@ impl TauriOutput {
             .insert(self.frame_id.clone());
         self.device_hub
             .mark_needs_user(&self.frame_id, Some(&self.project_id));
-        emit_confirm_request(&self.app, &request);
+        emit_confirm_request(&self.app, &request, Some(&self.project_id));
 
         // There is deliberately no timeout: lack of approval must never be
         // converted into a denial that lets the same agent turn continue.
@@ -2804,18 +2986,19 @@ impl TauriOutput {
     }
 }
 
-fn emit_agent_event_to_surfaces(app: &AppHandle, event: AgentEvent) {
+fn emit_agent_event_to_surfaces_in(app: &AppHandle, event: AgentEvent, project_id: Option<&str>) {
     if !matches!(event, AgentEvent::ToolPresentation { .. }) {
         channels::publish_agent_event(&event);
     }
-    let _ = app.emit("agent", event);
+    let frame_id = event.frame_id().to_string();
+    emit_to_session_surfaces(app, &frame_id, project_id, "agent", &event);
 }
 
-fn emit_agent_event(app: &AppHandle, event: AgentEvent) {
+pub(crate) fn emit_agent_event_in(app: &AppHandle, event: AgentEvent, project_id: Option<&str>) {
     app.state::<AppState>()
         .device_hub
-        .apply_agent_event(&event, None);
-    emit_agent_event_to_surfaces(app, event);
+        .apply_agent_event(&event, project_id);
+    emit_agent_event_to_surfaces_in(app, event, project_id);
 }
 
 fn should_persist_ui_event(event: &AgentEvent) -> bool {
@@ -2998,7 +3181,7 @@ impl Output for TauriOutput {
     fn approval_mode(&self, tool: &str) -> superscience_tools::Approval {
         self.approvals
             .read()
-            .map(|p| p.mode_for(tool))
+            .map(|live| live.for_project(&self.project_id).mode_for(tool))
             .unwrap_or(superscience_tools::Approval::Allow)
     }
     fn restrict_read_paths_to_project(&self) -> bool {
@@ -3064,7 +3247,12 @@ impl Output for TauriOutput {
         if self.force_ask_mutations {
             return false;
         }
-        self.full_permission() || self.approvals.read().map(|p| p.full()).unwrap_or(false)
+        self.full_permission()
+            || self
+                .approvals
+                .read()
+                .map(|live| live.for_project(&self.project_id).full())
+                .unwrap_or(false)
     }
     fn force_ask_mutations(&self) -> bool {
         self.force_ask_mutations
@@ -3107,6 +3295,9 @@ impl Output for TauriOutput {
     }
     fn frame_id(&self) -> Option<&str> {
         Some(self.frame_id.as_str())
+    }
+    fn project_id(&self) -> Option<&str> {
+        Some(self.project_id.as_str())
     }
     fn preflight_local_execution(&self, source: &str) -> Result<(), String> {
         match &self.exploration_isolation {
@@ -3212,6 +3403,7 @@ struct MacMenuLabels {
     help: &'static str,
     theme: &'static str,
     new_session: &'static str,
+    new_window: &'static str,
     projects: &'static str,
     files: &'static str,
     export_current_project: &'static str,
@@ -3260,6 +3452,7 @@ fn mac_menu_labels(locale: AppMenuLocale) -> MacMenuLabels {
             help: "帮助",
             theme: "主题",
             new_session: "新建会话",
+            new_window: "新建窗口",
             projects: "项目",
             files: "文件",
             export_current_project: "导出当前项目",
@@ -3304,6 +3497,7 @@ fn mac_menu_labels(locale: AppMenuLocale) -> MacMenuLabels {
             help: "Help",
             theme: "Theme",
             new_session: "New Session",
+            new_window: "New Window",
             projects: "Projects",
             files: "Files",
             export_current_project: "Export Current Project",
@@ -3351,10 +3545,14 @@ fn build_menu_item(
     builder.build(app)
 }
 
-#[cfg(target_os = "macos")]
-fn mac_menu_action(id: &str) -> Option<&'static str> {
+#[cfg(any(target_os = "macos", test))]
+fn mac_menu_action(id: &str, focused: bool) -> Option<&'static str> {
+    if !focused {
+        return None;
+    }
     match id {
         "action.new" => Some("new"),
+        "action.new-window" => Some("new-window"),
         "action.projects" => Some("projects"),
         "action.files" => Some("files"),
         "action.export-current-project" => Some("export-current-project"),
@@ -3384,8 +3582,11 @@ fn mac_menu_action(id: &str) -> Option<&'static str> {
 #[cfg(target_os = "macos")]
 fn wire_macos_menu_events(window: &tauri::WebviewWindow) {
     window.on_menu_event(|window, event| {
-        if let Some(action) = mac_menu_action(event.id().as_ref()) {
-            let _ = window.emit(NATIVE_MENU_ACTION_EVENT, action.to_string());
+        // Tauri invokes every window's menu handler for each native action.
+        if let Some(action) =
+            mac_menu_action(event.id().as_ref(), window.is_focused().unwrap_or(false))
+        {
+            let _ = window.emit_to(window.label(), NATIVE_MENU_ACTION_EVENT, action.to_string());
         }
     });
 }
@@ -3478,6 +3679,10 @@ fn install_macos_app_menu(app: &AppHandle, locale_tag: &str) -> Result<(), Strin
     let file_menu = SubmenuBuilder::new(app, labels.file)
         .item(
             &build_menu_item(app, "action.new", labels.new_session, Some("CmdOrCtrl+N"))
+                .map_err(|error| error.to_string())?,
+        )
+        .item(
+            &build_menu_item(app, "action.new-window", labels.new_window, None)
                 .map_err(|error| error.to_string())?,
         )
         .item(
@@ -3689,14 +3894,28 @@ fn effective_reasoning_effort(raw: &str) -> Option<String> {
     }
 }
 
+fn effective_service_tier(raw: &str, provider: &str) -> Option<String> {
+    let provider = normalized_provider(provider);
+    if !matches!(provider.as_str(), "openai" | "openai_responses") {
+        return None;
+    }
+    match raw.trim() {
+        "" | "default" => None,
+        "priority" | "fast" => Some("priority".to_string()),
+        _ => None,
+    }
+}
+
 fn apply_llm_advanced(
     cfg: &mut ProviderConfig,
     max_tokens: u64,
     reasoning_effort: &str,
+    service_tier: &str,
     provider: &str,
 ) {
     cfg.max_tokens = effective_max_tokens(max_tokens, provider);
     cfg.reasoning_effort = effective_reasoning_effort(reasoning_effort);
+    cfg.service_tier = effective_service_tier(service_tier, provider);
 }
 
 fn resolve_model_settings(
@@ -3733,28 +3952,38 @@ pub(crate) async fn load_settings(store: &Store) -> (String, String, String, Str
 async fn load_session_settings(
     store: &Store,
     frame_id: &str,
-) -> (String, String, String, String, u64, String) {
+) -> (String, String, String, String, u64, String, String) {
     let profile_id = models::session_profile_id(store, frame_id).await;
-    let (provider, api_url, model, api_key, max_tokens, profile_reasoning_effort) =
-        match models::profile_llm(store, &profile_id).await {
-            Some(config) => config,
-            None => {
-                let (provider, api_url, model, api_key) = load_settings(store).await;
-                let (max_tokens, reasoning_effort) = models::active_llm_advanced(store).await;
-                (
-                    provider,
-                    api_url,
-                    model,
-                    api_key,
-                    max_tokens,
-                    reasoning_effort,
-                )
-            }
-        };
+    let (
+        provider,
+        api_url,
+        model,
+        api_key,
+        max_tokens,
+        profile_reasoning_effort,
+        profile_service_tier,
+    ) = match models::profile_llm(store, &profile_id).await {
+        Some(config) => config,
+        None => {
+            let (provider, api_url, model, api_key) = load_settings(store).await;
+            let (max_tokens, reasoning_effort, service_tier) =
+                models::active_llm_advanced(store).await;
+            (
+                provider,
+                api_url,
+                model,
+                api_key,
+                max_tokens,
+                reasoning_effort,
+                service_tier,
+            )
+        }
+    };
     let (provider, api_url, model, api_key) =
         resolve_model_settings(provider, api_url, model, api_key);
     let reasoning_effort =
         models::session_reasoning_effort(store, frame_id, &profile_reasoning_effort).await;
+    let service_tier = models::session_service_tier(store, frame_id, &profile_service_tier).await;
     (
         provider,
         api_url,
@@ -3762,6 +3991,7 @@ async fn load_session_settings(
         api_key,
         max_tokens,
         reasoning_effort,
+        service_tier,
     )
 }
 
@@ -4054,6 +4284,28 @@ async fn load_json_setting<T: serde::de::DeserializeOwned + Default>(
         .unwrap_or_default()
 }
 
+async fn load_json_setting_for_project<T: serde::de::DeserializeOwned + Default>(
+    store: &Store,
+    key: &str,
+    project_id: Option<&str>,
+) -> T {
+    if let Some(id) = project_id.filter(|id| !id.is_empty()) {
+        let specific = format!("{key}:{id}");
+        if let Some(raw) = store.get_setting(&specific).await.ok().flatten() {
+            if let Ok(value) = serde_json::from_str(&raw) {
+                return value;
+            }
+        }
+    }
+    load_json_setting(store, key).await
+}
+
+/// Overlay key for a bound project. Setters pass a resolved project id so they
+/// cannot write the unprefixed global default (`approval_scope`, …).
+fn project_setting_key(key: &str, project_id: &str) -> String {
+    format!("{key}:{project_id}")
+}
+
 async fn save_json_setting<T: Serialize>(store: &Store, key: &str, val: &T) -> Result<(), String> {
     let json = serde_json::to_string(val).map_err(|e| format!("{e}"))?;
     store
@@ -4072,13 +4324,11 @@ async fn load_disabled_connectors(store: &Store) -> HashSet<String> {
 }
 
 /// Persisted per-tool approvals (tool name -> "ask"/"deny"; "allow" omitted).
-async fn load_tool_approvals(store: &Store) -> HashMap<String, String> {
-    load_json_setting(store, "tool_approvals").await
-}
-
-/// Persisted global approval scope ("full" | "auto" | "ask"; default "ask").
-async fn load_approval_scope(store: &Store) -> Scope {
-    Scope::parse(&load_json_setting::<String>(store, "approval_scope").await)
+async fn load_tool_approvals_for(
+    store: &Store,
+    project_id: Option<&str>,
+) -> HashMap<String, String> {
+    load_json_setting_for_project(store, "tool_approvals", project_id).await
 }
 
 async fn load_approval_grants(store: &Store) -> ApprovalGrants {
@@ -4089,12 +4339,82 @@ async fn save_approval_grants(store: &Store, grants: &ApprovalGrants) -> Result<
     save_json_setting(store, "approval_grants", &grants.persisted()).await
 }
 
+/// Persisted approval scope ("full" | "auto" | "ask"; default "ask").
+async fn load_approval_scope_for(store: &Store, project_id: Option<&str>) -> Scope {
+    Scope::parse(
+        &load_json_setting_for_project::<String>(store, "approval_scope", project_id).await,
+    )
+}
+
 /// Connector keys with "Skip approvals" on.
-async fn load_skip_connectors(store: &Store) -> HashSet<String> {
-    load_json_setting::<Vec<String>>(store, "skip_approval_connectors")
+async fn load_skip_connectors_for(store: &Store, project_id: Option<&str>) -> HashSet<String> {
+    load_json_setting_for_project::<Vec<String>>(store, "skip_approval_connectors", project_id)
         .await
         .into_iter()
         .collect()
+}
+
+/// Persist overlay setters refuse to write until the window has a bound
+/// project. Returning `project_id` lets the caller refresh only that overlay.
+async fn persist_approval_scope_overlay(
+    store: &Store,
+    project_id: Result<String, String>,
+    scope: &str,
+) -> Result<String, String> {
+    let project_id = project_id?;
+    save_json_setting(
+        store,
+        &project_setting_key("approval_scope", &project_id),
+        &Scope::parse(scope).as_str(),
+    )
+    .await?;
+    Ok(project_id)
+}
+
+async fn persist_tool_approval_overlay(
+    store: &Store,
+    project_id: Result<String, String>,
+    tool: String,
+    mode: String,
+) -> Result<String, String> {
+    let project_id = project_id?;
+    let mut approvals = load_tool_approvals_for(store, Some(&project_id)).await;
+    // Store only overrides; "allow" is the default, so drop it to stay compact.
+    if ApprovalMode::parse(&mode) == ApprovalMode::Allow {
+        approvals.remove(&tool);
+    } else {
+        approvals.insert(tool, ApprovalMode::parse(&mode).as_str().into());
+    }
+    save_json_setting(
+        store,
+        &project_setting_key("tool_approvals", &project_id),
+        &approvals,
+    )
+    .await?;
+    Ok(project_id)
+}
+
+async fn persist_skip_connectors_overlay(
+    store: &Store,
+    project_id: Result<String, String>,
+    key: String,
+    enabled: bool,
+) -> Result<String, String> {
+    let project_id = project_id?;
+    let mut skip = load_skip_connectors_for(store, Some(&project_id)).await;
+    if enabled {
+        skip.insert(key);
+    } else {
+        skip.remove(&key);
+    }
+    let list: Vec<String> = skip.into_iter().collect();
+    save_json_setting(
+        store,
+        &project_setting_key("skip_approval_connectors", &project_id),
+        &list,
+    )
+    .await?;
+    Ok(project_id)
 }
 
 /// tool name -> bundled connector (domain slug). Static; built from domains.json.
@@ -4110,25 +4430,72 @@ fn build_tool_connector_map() -> HashMap<String, String> {
 
 /// Snapshot the persisted approval state into a fresh `ApprovalPolicy`.
 async fn build_approval_policy(store: &Store) -> ApprovalPolicy {
+    build_approval_policy_for(store, None).await
+}
+
+async fn build_approval_policy_for(store: &Store, project_id: Option<&str>) -> ApprovalPolicy {
     ApprovalPolicy {
-        scope: load_approval_scope(store).await,
-        tools: load_tool_approvals(store)
+        scope: load_approval_scope_for(store, project_id).await,
+        tools: load_tool_approvals_for(store, project_id)
             .await
             .into_iter()
             .map(|(k, v)| (k, ApprovalMode::parse(&v)))
             .collect(),
-        skip: load_skip_connectors(store).await,
+        skip: load_skip_connectors_for(store, project_id).await,
         tool_connector: build_tool_connector_map(),
     }
 }
 
+async fn project_has_approval_overlay(store: &Store, project_id: &str) -> bool {
+    for key in [
+        "approval_scope",
+        "tool_approvals",
+        "skip_approval_connectors",
+    ] {
+        if store
+            .get_setting(&format!("{key}:{project_id}"))
+            .await
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Reload the live approval policy after a settings change so running sessions
 /// see it on their next tool call (approval is enforced live, not per session).
+/// `None` reloads the process-wide default (unprefixed keys). Kept for
+/// global-default writers (connector enable/disable stays process-wide).
+#[allow(dead_code)]
 async fn refresh_approval_policy(state: &AppState) {
-    let policy = build_approval_policy(&state.store).await;
-    if let Ok(mut guard) = state.approvals.write() {
-        *guard = policy;
+    refresh_approval_policy_for(state, None).await;
+}
+
+async fn refresh_approval_policy_for(state: &AppState, project_id: Option<&str>) {
+    let policy = build_approval_policy_for(&state.store, project_id).await;
+    if let Ok(mut live) = state.approvals.write() {
+        match project_id.filter(|id| !id.is_empty()) {
+            Some(id) => {
+                live.by_project.insert(id.to_string(), policy);
+            }
+            None => live.default = policy,
+        }
     }
+}
+
+async fn ensure_project_live_approvals(state: &AppState, project_id: &str) {
+    let already = state
+        .approvals
+        .read()
+        .map(|live| live.by_project.contains_key(project_id))
+        .unwrap_or(false);
+    if already || !project_has_approval_overlay(&state.store, project_id).await {
+        return;
+    }
+    refresh_approval_policy_for(state, Some(project_id)).await;
 }
 
 pub(crate) async fn load_pii_firewall_enabled(store: &Store) -> bool {
@@ -4482,6 +4849,7 @@ fn build_provider_config(
     model: &str,
     max_tokens: u64,
     reasoning_effort: &str,
+    service_tier: &str,
 ) -> Result<ProviderConfig, String> {
     let provider = normalized_provider(provider);
     let api_url = api_url.trim();
@@ -4502,7 +4870,13 @@ fn build_provider_config(
         "openai" => ProviderConfig::openai(api_url, api_key, model),
         _ => return Err(format!("Unsupported provider: {provider}")),
     };
-    apply_llm_advanced(&mut cfg, max_tokens, reasoning_effort, &provider);
+    apply_llm_advanced(
+        &mut cfg,
+        max_tokens,
+        reasoning_effort,
+        service_tier,
+        &provider,
+    );
     cfg.proxy = llm_proxy();
     Ok(cfg)
 }
@@ -4534,7 +4908,7 @@ fn add_configured_video_generation_tool(
 }
 
 pub(crate) async fn build_vision_provider_config(store: &Store) -> Option<ProviderConfig> {
-    let (provider, api_url, model, api_key, max_tokens, reasoning_effort) =
+    let (provider, api_url, model, api_key, max_tokens, reasoning_effort, service_tier) =
         models::vision_config(store).await?;
     vision_provider_config_from_parts(
         &provider,
@@ -4543,6 +4917,7 @@ pub(crate) async fn build_vision_provider_config(store: &Store) -> Option<Provid
         &api_key,
         max_tokens,
         &reasoning_effort,
+        &service_tier,
     )
 }
 
@@ -4563,6 +4938,7 @@ pub(crate) async fn build_assigned_vision_provider_config(
         &model,
         max_tokens,
         &reasoning_effort,
+        "",
     )
 }
 
@@ -4573,6 +4949,7 @@ fn vision_provider_config_from_parts(
     api_key: &str,
     max_tokens: u64,
     reasoning_effort: &str,
+    service_tier: &str,
 ) -> Option<ProviderConfig> {
     match build_provider_config(
         provider,
@@ -4581,6 +4958,7 @@ fn vision_provider_config_from_parts(
         model,
         max_tokens,
         reasoning_effort,
+        service_tier,
     ) {
         Ok(cfg) => Some(cfg),
         Err(e) => {
@@ -5126,6 +5504,7 @@ async fn create_session_frame(store: &Store, project_id: &str) -> Result<String,
         .create_frame(&id, project_id, "OPERON", &model_id)
         .await
         .map_err(|e| format!("{e}"))?;
+    ssh_hosts::snapshot_session_default_from_global(store, &id).await?;
     Ok(id)
 }
 
@@ -5509,7 +5888,7 @@ async fn generate_review_with_backend(
             if let Some(review::ReviewBackendConfig::HttpModel { profile_id }) = backend {
                 reviewer.model_id = profile_id;
             }
-            let (provider, api_url, model, api_key, max_tokens, reasoning_effort) =
+            let (provider, api_url, model, api_key, max_tokens, reasoning_effort, service_tier) =
                 specialists::specialist_llm(&state.store, &reviewer).await;
             let cfg = build_provider_config(
                 &provider,
@@ -5518,6 +5897,7 @@ async fn generate_review_with_backend(
                 &model,
                 max_tokens,
                 &reasoning_effort,
+                &service_tier,
             )?;
             let llm = superscience_llm::build(cfg);
             let reviewer_model = llm.model().to_string();
@@ -5615,13 +5995,19 @@ async fn persist_review(
     }
 }
 
-fn emit_review(app: &AppHandle, frame_id: &str, report: review::ReviewReport) {
-    emit_agent_event(
+fn emit_review(
+    app: &AppHandle,
+    frame_id: &str,
+    report: review::ReviewReport,
+    project_id: Option<&str>,
+) {
+    emit_agent_event_in(
         app,
         AgentEvent::Review {
             frame_id: frame_id.to_string(),
             report,
         },
+        project_id,
     );
 }
 
@@ -5665,7 +6051,7 @@ async fn automatic_review(
         }
         Ok(mut report) => {
             persist_review(&state.store, frame_id, agent.ctx.messages.len(), &report).await;
-            emit_review(app, frame_id, report.clone());
+            emit_review(app, frame_id, report.clone(), Some(&output.project_id));
             if report.has_findings() {
                 agent.ctx.inject_user(review::correction_prompt(&report));
                 output.emit(AgentEvent::CorrectionStarted {
@@ -5700,7 +6086,7 @@ async fn automatic_review(
                     }
                 }
                 persist_review(&state.store, frame_id, agent.ctx.messages.len(), &report).await;
-                emit_review(app, frame_id, report);
+                emit_review(app, frame_id, report, Some(&output.project_id));
             }
         }
     }
@@ -5733,26 +6119,28 @@ async fn automatic_review_acp(
         return;
     }
 
-    emit_agent_event(
+    emit_agent_event_in(
         app,
         AgentEvent::ReviewStarted {
             frame_id: frame_id.to_string(),
         },
+        Some(project.id.as_str()),
     );
     match generate_review(state, frame_id, &msgs, Some(cancel)).await {
         Err(error) => {
             tracing::warn!("automatic ACP review failed for {frame_id}: {error}");
-            emit_agent_event(
+            emit_agent_event_in(
                 app,
                 AgentEvent::ReviewFailed {
                     frame_id: frame_id.to_string(),
                     message: error,
                 },
+                Some(project.id.as_str()),
             );
         }
         Ok(mut report) => {
             persist_review(&state.store, frame_id, msgs.len(), &report).await;
-            emit_review(app, frame_id, report.clone());
+            emit_review(app, frame_id, report.clone(), Some(project.id.as_str()));
             if report.has_findings() {
                 let model = match state.store.get_acp_session(frame_id).await {
                     Ok(Some(binding)) => {
@@ -5762,12 +6150,13 @@ async fn automatic_review_acp(
                     }
                     _ => "ACP Agent".into(),
                 };
-                emit_agent_event(
+                emit_agent_event_in(
                     app,
                     AgentEvent::CorrectionStarted {
                         frame_id: frame_id.to_string(),
                         model,
                     },
+                    Some(project.id.as_str()),
                 );
                 let correction_prompt = review::correction_prompt(&report);
                 let correction =
@@ -5775,12 +6164,13 @@ async fn automatic_review_acp(
                         .await;
                 if let Err(error) = correction {
                     tracing::warn!("automatic ACP correction failed for {frame_id}: {error}");
-                    emit_agent_event(
+                    emit_agent_event_in(
                         app,
                         AgentEvent::ReviewFailed {
                             frame_id: frame_id.to_string(),
                             message: format!("correction turn failed: {error}"),
                         },
+                        Some(project.id.as_str()),
                     );
                     report.set_status("unaddressed");
                 } else {
@@ -5794,12 +6184,13 @@ async fn automatic_review_acp(
                                     tracing::warn!(
                                     "automatic ACP follow-up review failed for {frame_id}: {error}"
                                 );
-                                    emit_agent_event(
+                                    emit_agent_event_in(
                                         app,
                                         AgentEvent::ReviewFailed {
                                             frame_id: frame_id.to_string(),
                                             message: format!("follow-up review failed: {error}"),
                                         },
+                                        Some(project.id.as_str()),
                                     );
                                     report.set_status("unaddressed");
                                 }
@@ -5809,12 +6200,13 @@ async fn automatic_review_acp(
                             tracing::warn!(
                                 "load corrected ACP transcript failed for {frame_id}: {error}"
                             );
-                            emit_agent_event(
+                            emit_agent_event_in(
                                 app,
                                 AgentEvent::ReviewFailed {
                                     frame_id: frame_id.to_string(),
                                     message: format!("load corrected transcript failed: {error}"),
                                 },
+                                Some(project.id.as_str()),
                             );
                             report.set_status("unaddressed");
                         }
@@ -5827,7 +6219,7 @@ async fn automatic_review_acp(
                     .map(|messages| messages.len())
                     .unwrap_or(msgs.len());
                 persist_review(&state.store, frame_id, message_count, &report).await;
-                emit_review(app, frame_id, report);
+                emit_review(app, frame_id, report, Some(project.id.as_str()));
             }
         }
     }
@@ -5857,7 +6249,7 @@ async fn test_reviewer_backend(
     }
     reviewer.instructions = review::REVIEWER_RUBRIC.to_string();
 
-    let project = state.active(window.label());
+    let project = state.require_active(window.label())?;
     let _project_activity = state.begin_project_activity(&project.id)?;
     let session_acp_profile_id = match state.active_frame(window.label()) {
         Some(frame_id) => state
@@ -5944,32 +6336,35 @@ async fn review_session(
         {
             return Err("Nothing to review yet.".into());
         }
-        emit_agent_event(
+        emit_agent_event_in(
             &app,
             AgentEvent::ReviewStarted {
                 frame_id: frame_id.clone(),
             },
+            Some(project_id.as_str()),
         );
         let report = match generate_review(&state, &frame_id, &msgs, None).await {
             Ok(report) => report,
             Err(error) => {
-                emit_agent_event(
+                emit_agent_event_in(
                     &app,
                     AgentEvent::ReviewFailed {
                         frame_id: frame_id.clone(),
                         message: error.clone(),
                     },
+                    Some(project_id.as_str()),
                 );
                 return Err(error);
             }
         };
         persist_review(&state.store, &frame_id, msgs.len(), &report).await;
-        emit_agent_event(
+        emit_agent_event_in(
             &app,
             AgentEvent::Review {
                 frame_id: frame_id.clone(),
                 report,
             },
+            Some(project_id.as_str()),
         );
         Ok(())
     }
@@ -6021,12 +6416,13 @@ async fn generate_follow_up_questions(
         .await
         .map_err(|error| error.to_string())?;
     let specialist = specialists::session_specialist(&state.store, &session_id).await;
-    let (provider, api_url, model, api_key, max_tokens, reasoning_effort) = match specialist {
-        Some(ref specialist) if !specialist.model_id.trim().is_empty() => {
-            specialists::specialist_llm(&state.store, specialist).await
-        }
-        _ => load_session_settings(&state.store, &session_id).await,
-    };
+    let (provider, api_url, model, api_key, max_tokens, reasoning_effort, service_tier) =
+        match specialist {
+            Some(ref specialist) if !specialist.model_id.trim().is_empty() => {
+                specialists::specialist_llm(&state.store, specialist).await
+            }
+            _ => load_session_settings(&state.store, &session_id).await,
+        };
     let llm = superscience_llm::build(build_provider_config(
         &provider,
         &api_url,
@@ -6034,6 +6430,7 @@ async fn generate_follow_up_questions(
         &model,
         max_tokens.min(512),
         &reasoning_effort,
+        &service_tier,
     )?);
     let completion = llm
         .complete(
@@ -6079,7 +6476,7 @@ async fn side_chat(
             .await
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "Session project was not found.".to_string())?,
-        None => state.active(window.label()).id,
+        None => state.require_active(window.label())?.id,
     };
     let _project_activity = state.begin_project_activity(&project_id)?;
     let Some(ref frame_id) = frame_id else {
@@ -6132,7 +6529,7 @@ async fn side_chat(
     // ACP side chat: one-shot, read-only answer from the selected ACP Agent,
     // running in the active project root. Never touches the main thread.
     let answer = if let Some(agent_id) = acp_agent_id.as_deref().filter(|id| !id.is_empty()) {
-        let cwd = state.active(window.label()).root;
+        let cwd = state.require_active(window.label())?.root;
         acp::acp_side_chat_once(&state, &cwd, agent_id, &prompt).await?
     } else {
         http_llm?
@@ -6160,7 +6557,8 @@ async fn side_chat_http_provider(
     state: &AppState,
 ) -> Result<Box<dyn superscience_llm::Provider>, String> {
     let (provider, api_url, model, api_key) = load_settings(&state.store).await;
-    let (max_tokens, reasoning_effort) = models::active_llm_advanced(&state.store).await;
+    let (max_tokens, reasoning_effort, service_tier) =
+        models::active_llm_advanced(&state.store).await;
     let cfg = build_provider_config(
         &provider,
         &api_url,
@@ -6168,6 +6566,7 @@ async fn side_chat_http_provider(
         &model,
         max_tokens,
         &reasoning_effort,
+        &service_tier,
     )?;
     Ok(superscience_llm::build(cfg))
 }
@@ -6227,8 +6626,8 @@ fn list_memory_files(memory: &MemoryManager) -> Vec<MemoryFile> {
         .collect()
 }
 
-async fn build_project_info(state: &AppState, label: &str) -> ProjectInfo {
-    let ap = state.active(label);
+async fn build_project_info(state: &AppState, label: &str) -> Result<ProjectInfo, String> {
+    let ap = state.require_active(label)?;
     let (_, _, _, api_key) = load_settings(&state.store).await;
     let mcp = list_mcp_servers(&ap.root);
     // Prefer the user-set project name (Project Settings) over the folder name.
@@ -6249,7 +6648,7 @@ async fn build_project_info(state: &AppState, label: &str) -> ProjectInfo {
     } else {
         db_name
     };
-    ProjectInfo {
+    Ok(ProjectInfo {
         id: ap.id.clone(),
         name,
         root: ap.root.to_string_lossy().into_owned(),
@@ -6257,7 +6656,7 @@ async fn build_project_info(state: &AppState, label: &str) -> ProjectInfo {
         mcp_server_count: mcp.len(),
         memory_file_count: count_memory_files(&ap.memory),
         has_api_key: !api_key.is_empty(),
-    }
+    })
 }
 
 /// Tell the webview whether we're in dev (keep native context menu / DevTools).
@@ -6653,10 +7052,17 @@ fn spawn_deferred_startup(
         // "main" window is built in `run()` so it can carry an `on_navigation`
         // guard; these are the extra per-project ones. A project that was
         // since deleted simply fails to spawn.
-        for id in project_commands::persisted_windows(&store).await {
+        for (label, id) in project_commands::restored_window_projects(&store).await {
             let state = app.state::<AppState>();
-            let _ =
-                project_commands::spawn_project_window(&app, state.inner(), &id, None, None).await;
+            let _ = project_commands::spawn_project_window_with_label(
+                &app,
+                state.inner(),
+                &label,
+                &id,
+                None,
+                None,
+            )
+            .await;
         }
         let ms = started.elapsed().as_millis();
         update_startup_report(|report| report.deferred_ms = Some(ms));
@@ -6849,10 +7255,7 @@ pub fn run() {
                     .create_project("default", "Workspace", &legacy_ws)
                     .await
                     .ok();
-                let active_id = match store.get_setting("active_project_id").await.ok().flatten() {
-                    Some(id) if store.get_project(&id).await.ok().flatten().is_some() => id,
-                    _ => "default".to_string(),
-                };
+                let active_id = project_commands::startup_main_project_id(&store).await;
                 let (_, dir) = store
                     .get_project(&active_id)
                     .await
@@ -6887,9 +7290,12 @@ pub fn run() {
             let bootstrap = StdMutex::new(startup.record("tool_probe", || {
                 app_commands::initial_bootstrap(&root, skills.all().len())
             }));
-            let approvals = Arc::new(StdRwLock::new(startup.record("approvals", || {
-                tauri::async_runtime::block_on(build_approval_policy(&store))
-            })));
+            let approvals = Arc::new(StdRwLock::new(LiveApprovals {
+                default: startup.record("approvals", || {
+                    tauri::async_runtime::block_on(build_approval_policy(&store))
+                }),
+                by_project: HashMap::new(),
+            }));
             let approval_grants = Arc::new(StdMutex::new(startup.record("approval_grants", || {
                 tauri::async_runtime::block_on(load_approval_grants(&store))
             })));
@@ -6899,9 +7305,12 @@ pub fn run() {
             let browser_bridge = startup.record("browser_bridge", || {
                 tauri::async_runtime::block_on(browser_bridge::BrowserBridge::start(
                     browser_extension_dir,
+                    app_data.join("browser-extension"),
                     store.clone(),
                 ))
             });
+            let (needs_human_tx, mut needs_human_rx) = tokio::sync::mpsc::unbounded_channel();
+            tauri::async_runtime::block_on(browser_bridge.set_needs_human_sink(needs_human_tx));
             let device_hub = Arc::new(device_hub::DeviceHub::default());
             let device_bridge = Arc::new(device_bridge::DeviceBridge::new(
                 device_hub.clone(),
@@ -6944,8 +7353,17 @@ pub fn run() {
                 bootstrap,
                 plugin_runtime_errors: StdMutex::new(HashMap::new()),
                 reviewing: Arc::new(StdMutex::new(HashSet::new())),
+                scratch: StdMutex::new(HashMap::new()),
             };
             app.manage(state);
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    while let Some(tabs) = needs_human_rx.recv().await {
+                        browser_bridge::emit_browser_needs_human(&handle, &tabs).await;
+                    }
+                });
+            }
             app.manage(app_updates::PendingAppUpdate::default());
             app.manage(terminal_sessions::TerminalManager::new());
             app.manage(channels::ChannelManager::new());
@@ -7087,6 +7505,8 @@ pub fn run() {
             ssh_hosts::set_session_execution_context_enabled,
             ssh_hosts::set_default_execution_context,
             ssh_hosts::get_default_execution_context,
+            ssh_hosts::set_session_default_execution_context,
+            ssh_hosts::get_session_default_execution_context,
             ssh_hosts::add_ssh_host,
             ssh_hosts::test_ssh_connection,
             ssh_hosts::remove_ssh_host,
@@ -7118,8 +7538,10 @@ pub fn run() {
             runtime_commands::list_runtimes,
             runtime_commands::inspect_runtime,
             runtime_commands::execute_runtime,
+            runtime_commands::execute_runtime_script,
             runtime_commands::start_runtime,
             runtime_commands::stop_runtime,
+            runtime_commands::dismiss_runtime,
             runtime_commands::restart_runtime,
             runtime_commands::list_runs,
             runtime_commands::get_run_detail,
@@ -7164,6 +7586,8 @@ pub fn run() {
             debug_request::get_context_usage_details,
             project_transfer::export_project,
             project_transfer::import_project,
+            workspace_session_recovery::preview_workspace_session_recovery,
+            workspace_session_recovery::recover_workspace_sessions,
             codex_import::list_codex_sessions,
             codex_import::list_claude_sessions,
             codex_import::preview_codex_session,
@@ -7177,6 +7601,7 @@ pub fn run() {
             project_commands::create_project,
             project_commands::open_project,
             project_commands::open_project_window,
+            project_commands::open_new_window,
             project_commands::delete_project,
             project_commands::get_project_settings,
             project_commands::update_project,
@@ -7236,6 +7661,9 @@ pub fn run() {
             browser_bridge::list_pending_browser_tab_cleanups,
             browser_bridge::confirm_browser_tab_cleanup,
             browser_bridge::dismiss_browser_tab_cleanup,
+            browser_bridge::list_pending_browser_needs_human,
+            browser_bridge::confirm_browser_needs_human,
+            browser_bridge::focus_browser_needs_human,
             settings_commands::get_settings,
             settings_commands::set_settings,
             knowledge::get_knowledge_settings,
@@ -7259,11 +7687,13 @@ pub fn run() {
             models::list_models,
             models::get_session_model,
             models::get_session_reasoning_effort,
+            models::get_session_service_tier,
             models::save_model,
             models::remove_model,
             models::reorder_models,
             models::set_active_model,
             models::set_session_reasoning_effort,
+            models::set_session_service_tier,
             model_catalog::model_catalog_lookup,
             settings_commands::validate_settings,
             list_dir,
@@ -7277,6 +7707,7 @@ pub fn run() {
             search_files,
             read_file,
             read_file_bytes,
+            save_file,
             append_review_note,
             artifact_commands::list_artifacts,
             artifact_commands::search_artifacts,
@@ -7284,6 +7715,7 @@ pub fn run() {
             artifact_commands::read_artifact,
             artifact_commands::read_artifact_bytes,
             artifact_commands::download_artifact,
+            artifact_commands::download_artifact_version,
             artifact_commands::read_artifact_version,
             artifact_commands::read_artifact_version_bytes,
             artifact_commands::missing_files,
@@ -7335,9 +7767,12 @@ pub fn run() {
             app_commands::open_external_url,
             app_commands::open_app_doc,
             app_commands::open_browser_extension_page,
+            app_commands::browser_extension_status,
+            app_commands::update_browser_extension,
             app_commands::extension_connected,
             ui_heartbeat,
             app_commands::reveal_in_file_manager,
+            app_commands::open_workspace_path,
             connector_commands::list_mcp_connections,
             connector_commands::add_mcp_connection,
             connector_commands::authorize_http_connection,

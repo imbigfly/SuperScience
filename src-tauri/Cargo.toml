@@ -65,6 +65,7 @@ superscience-acp = { workspace = true }
 superscience-paths = { workspace = true }
 superscience-sync = { workspace = true }
 superscience-tools = { workspace = true }
+superscience-runs = { workspace = true }
 # Shared UI ⇄ Tauri invoke/event DTOs. Contract tests still round-trip backend
 # payloads into these types; live commands such as browser tab cleanup emit them.
 superscience-dto = { workspace = true }

@@ -14,7 +14,7 @@ const TRUST_EDGES_SETTING: &str = "ssh_trust_edges_v1";
 const PUBLIC_KEY_MARKER: &str = "__WISP_PUBLIC_KEY__:";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct SshTrustEdge {
+pub struct SshTrustEdge {
     source_context_id: String,
     destination_context_id: String,
     destination_target: String,
@@ -85,7 +85,7 @@ fn transport_label(transport: TransferTransport) -> &'static str {
 /// restart always retries (or fails cleanly) — it never reattaches a remote PID.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub(crate) enum TransferHandle {
+pub enum TransferHandle {
     LocalUpload {
         source_path: String,
         destination_context_id: String,
@@ -127,7 +127,7 @@ impl TransferHandle {
     }
 }
 
-pub(crate) async fn persist_transfer_handle(
+pub async fn persist_transfer_handle(
     store: &superscience_store::Store,
     owner_id: &str,
     run_id: &str,
@@ -606,7 +606,7 @@ fn verify_trust_payload(
     )
 }
 
-pub(crate) async fn load_trust_edges(store: &superscience_store::Store) -> Vec<SshTrustEdge> {
+pub async fn load_trust_edges(store: &superscience_store::Store) -> Vec<SshTrustEdge> {
     store
         .get_setting(TRUST_EDGES_SETTING)
         .await
@@ -636,12 +636,12 @@ async fn save_trust_edge(
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct RevokeTrustResponse {
+pub struct RevokeTrustResponse {
     edges: Vec<SshTrustEdge>,
     cleanup_error: Option<String>,
 }
 
-pub(crate) async fn revoke_trust_edge(
+pub async fn revoke_trust_edge(
     store: &superscience_store::Store,
     manager: &RunManager,
     source_context_id: &str,
@@ -861,7 +861,7 @@ fn remote_item_name(path: &str) -> Result<&str, String> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct UploadToContextItem {
+pub struct UploadToContextItem {
     pub source_path: String,
     pub destination_path: String,
     pub run_id: String,
@@ -869,7 +869,7 @@ pub(crate) struct UploadToContextItem {
 }
 
 /// Place one local item into the remote directory the Files panel is showing.
-pub(crate) fn join_remote_upload_destination(dir: &str, item_name: &str) -> Result<String, String> {
+pub fn join_remote_upload_destination(dir: &str, item_name: &str) -> Result<String, String> {
     if dir.is_empty()
         || dir.contains(['\0', '\n', '\r'])
         || dir.contains(['*', '?', '[', ']', '{', '}'])
@@ -900,7 +900,7 @@ pub(crate) fn join_remote_upload_destination(dir: &str, item_name: &str) -> Resu
 /// UI-initiated local → SSH uploads. Unlike the agent tool, this does not
 /// require the destination to be attached to the current session — Files can
 /// browse any registered, probed host.
-pub(crate) async fn submit_local_uploads_to_context(
+pub async fn submit_local_uploads_to_context(
     store: &superscience_store::Store,
     manager: &RunManager,
     project_id: &str,

@@ -1,8 +1,25 @@
 # Project transfer
 
-The Projects screen exports a project as `superscience-project-<name>.zip`. The archive
-contains the workspace's regular files plus project-owned conversations, artifacts,
-runs, plans, provenance, and research-graph records.
+SuperScience supports three deliberately different ways to bring a project onto a device:
+
+- **Open a folder in place** registers an existing local folder as a project. The
+  folder remains where it is and SuperScience does not copy its files. Use this after
+  copying a workspace yourself, checking out a repository, or placing it in a
+  cloud-drive folder.
+- **Import a ZIP archive** restores a complete SuperScience transfer into a new folder.
+  The Projects screen exports a project as `superscience-project-<name>.zip`. The
+  ZIP contains the workspace's regular files plus project-owned conversations,
+  artifacts, runs, plans, provenance, and research-graph records.
+- **Recover conversations from a workspace** scans `.wisp/history` in an
+  orphaned folder whose application database and SuperScience project ZIP are no longer
+  available. It registers the folder in place and imports the recoverable message
+  timelines into a `Recovered` conversation folder.
+
+Opening a folder in place creates a new local SuperScience project record. Conversation
+history and other records that exist only in another device's SuperScience database are
+not recovered from a plain folder copy; use ZIP export/import when those records
+must move too. Workspace conversation recovery is a best-effort disaster fallback,
+not an equivalent replacement for a complete project ZIP.
 
 To move a project from Windows to macOS:
 
@@ -18,6 +35,33 @@ stage, files, bytes, and path being processed. An export is published as the
 selected ZIP only after its completed archive has been checked against its
 manifest; while it is running, do not use the temporary or still-empty archive
 file as a transfer copy.
+
+## Recovering conversations from an orphaned workspace
+
+Choose **Import project → Recover conversations from a workspace** only when the
+original SuperScience application database, project ZIP, and sync revision are unavailable.
+After a folder is selected, SuperScience scans regular JSON files under `.wisp/history`,
+accepts both plain message-array compaction snapshots and structured Exploration
+checkpoints, deduplicates exact message arrays by content hash, and keeps the
+greatest `message_head` for checkpoints with the same source frame. The preview
+shows the recoverable conversation count, message count, valid archive count,
+time range, and skipped damaged/duplicate archives before making any database
+change.
+
+Confirming the preview registers the existing folder and inserts the project,
+`Recovered` folder, conversations, messages, and import provenance in one SQLite
+transaction. A failed insert leaves no half-recovered project, and SuperScience never
+rewrites or deletes the source history archives.
+
+The history files are snapshots rather than a complete portable project database.
+Recovery can restore their stored message timelines, including tool calls and
+reasoning fields, but cannot reconstruct database-only UI events, reviews,
+resource bindings, runs, undo indexes, branch relationships, or other project
+records. Plain message arrays do not identify their original frame, so exact
+copies can be deduplicated but distinct snapshots from one conversation may be
+recovered separately. Ordinary conversations that never produced a compaction or
+Exploration checkpoint may not appear in `.wisp/history` at all. Use project ZIP
+export/import or manual project sync for complete, planned backup and migration.
 
 ## Path rules
 

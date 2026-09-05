@@ -205,7 +205,12 @@ pub trait ToolEnv: Send + Sync {
                 .join(filename));
         }
         if !self.restrict_read_paths_to_project() {
-            return Ok(PathBuf::from(path));
+            let path = Path::new(path);
+            return Ok(if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                self.project_root().join(path)
+            });
         }
         if allow_directory {
             crate::safety::resolve_under_root(self.project_root(), path)
@@ -316,6 +321,12 @@ pub trait ToolEnv: Send + Sync {
     }
     /// Conversation frame this tool call belongs to. Paired with [`turn_id`].
     fn frame_id(&self) -> Option<&str> {
+        None
+    }
+    /// Host-owned project this tool call belongs to. Browser tools use it to
+    /// serialize access to the one shared Chrome session across windows.
+    /// CLI and tests leave this unset so occupancy is skipped.
+    fn project_id(&self) -> Option<&str> {
         None
     }
 }

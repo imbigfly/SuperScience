@@ -11,7 +11,12 @@ pub(crate) fn refresh_execution_contexts(into: RwSignal<Vec<ExecutionContext>>) 
     spawn_local(async move {
         let v = invoke("list_execution_contexts", JsValue::UNDEFINED).await;
         if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ExecutionContext>>(v) {
-            into.set(list);
+            // A no-op republish remounts the conversation runtime strip and
+            // resizes the composer, which fires a chat scroll and dismisses
+            // the selection popup (#1027).
+            if into.with_untracked(|current| current != &list) {
+                into.set(list);
+            }
         }
     });
 }
@@ -23,6 +28,44 @@ pub(crate) fn refresh_default_execution_context(into: RwSignal<Option<String>>) 
             into.set(id);
         }
     });
+}
+
+pub(crate) fn refresh_session_default_execution_context(
+    into: RwSignal<Option<String>>,
+    active_session: RwSignal<Option<String>>,
+    session_id: String,
+) {
+    spawn_local(async move {
+        let args = to_value(&serde_json::json!({ "sessionId": session_id.clone() })).unwrap();
+        let Ok(value) = invoke_checked("get_session_default_execution_context", args).await else {
+            return;
+        };
+        let Ok(id) = serde_wasm_bindgen::from_value::<Option<String>>(value) else {
+            return;
+        };
+        if active_session.get_untracked().as_deref() == Some(session_id.as_str())
+            && into.with_untracked(|current| current != &id)
+        {
+            into.set(id);
+        }
+    });
+}
+
+/// Effective omit-`context_id` target for the compute UI.
+/// `Some("local")` is an explicit pin to this machine; missing stored value
+/// follows the live global default.
+pub(crate) fn resolved_session_default_id(
+    stored: Option<&str>,
+    global: Option<&str>,
+) -> Option<String> {
+    match stored.map(str::trim).filter(|id| !id.is_empty()) {
+        Some("local") => None,
+        Some(id) => Some(id.to_string()),
+        None => global
+            .map(str::trim)
+            .filter(|id| is_remote_default_context_id(Some(id)))
+            .map(str::to_string),
+    }
 }
 
 pub(crate) fn refresh_session_execution_contexts(
@@ -39,7 +82,10 @@ pub(crate) fn refresh_session_execution_contexts(
             return;
         };
         if active_session.get_untracked().as_deref() == Some(session_id.as_str()) {
-            into.set(ids.into_iter().collect());
+            let next = ids.into_iter().collect::<HashSet<_>>();
+            if into.with_untracked(|current| current != &next) {
+                into.set(next);
+            }
         }
     });
 }
@@ -61,11 +107,64 @@ fn run_lists_render_eq(current: &[RunSummary], next: &[RunSummary]) -> bool {
         })
 }
 
+async fn fetch_runtimes(into: RwSignal<Vec<RuntimeInfo>>) -> Option<Vec<RuntimeInfo>> {
+    let value = invoke("list_runtimes", JsValue::UNDEFINED).await;
+    let list = serde_wasm_bindgen::from_value::<Vec<RuntimeInfo>>(value).ok()?;
+    // This is polled every second while the agent runs. A no-op republish
+    // rebuilds the memory environment panel, which recreates its filter input
+    // mid-keystroke; only real changes may publish.
+    if into.with_untracked(|current| current != &list) {
+        into.set(list.clone());
+    }
+    Some(list)
+}
+
 pub(crate) fn refresh_runtimes(into: RwSignal<Vec<RuntimeInfo>>) {
     spawn_local(async move {
-        let value = invoke("list_runtimes", JsValue::UNDEFINED).await;
-        if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<RuntimeInfo>>(value) {
-            into.set(list);
+        let _ = fetch_runtimes(into).await;
+    });
+}
+
+/// After an agent `python`/`r` cell finishes: pull the runtime list (the cell
+/// may have lazily started or killed a process) and, when the open memory
+/// environment shows that language, re-inspect it so its variable table
+/// follows the agent without a manual sync click. The inspect is gated on the
+/// *fresh* status — the signal the panel had could still say `missing` for a
+/// runtime the cell just created, and inspecting a truly absent runtime would
+/// replace the panel's content with a "not started" error.
+pub(crate) fn refresh_runtime_environment_after_tool(
+    language: String,
+    runtime_environment: RwSignal<Option<RuntimeSlot>>,
+    states: RwSignal<HashMap<String, RuntimeObjectState>>,
+    runtimes: RwSignal<Vec<RuntimeInfo>>,
+    locale: RwSignal<Locale>,
+) {
+    spawn_local(async move {
+        let Some(list) = fetch_runtimes(runtimes).await else {
+            return;
+        };
+        let Some(slot) = runtime_environment.get_untracked() else {
+            return;
+        };
+        if slot.language != language {
+            return;
+        }
+        let inspectable = list.iter().any(|info| {
+            info.key.project_id == slot.project_id
+                && info.key.context_id == slot.context_id
+                && info.key.language == slot.language
+                && matches!(info.status.as_str(), "ready" | "busy")
+        });
+        if inspectable {
+            inspect_runtime_objects(
+                runtime_binding_state_key(&slot.project_id, &slot.context_id, &slot.language),
+                slot.project_id,
+                slot.context_id,
+                slot.language,
+                locale,
+                states,
+                runtimes,
+            );
         }
     });
 }
@@ -357,12 +456,16 @@ fn context_runtime_available(ctx: &ExecutionContext, language: &str) -> bool {
 #[cfg(test)]
 mod runtime_slot_tests {
     use super::{
-        classify_ssh_failure, context_runtime_available, is_ssh_setup_error,
-        mention_compute_entries, ssh_connectivity_gap, ssh_fail_cause_keys, ssh_setup_context_id,
-        ComposerPickerItem, SshFailKind,
+        classify_ssh_failure, compute_menu_summary, compute_resource_state_key,
+        context_runtime_available, is_ssh_setup_error, mention_compute_entries,
+        remote_analysis_options, resolved_session_default_id, runtime_object_matches,
+        runtime_slots, session_runtime_groups, session_runtime_strip_view,
+        session_strip_context_ids, ssh_connectivity_gap, ssh_fail_cause_keys, ssh_setup_context_id,
+        ComposerPickerItem, RuntimeSlot, SshFailKind,
     };
-    use crate::dto::ExecutionContext;
+    use crate::dto::{ExecutionContext, RuntimeInfo, RuntimeKeyDto, RuntimeObject};
     use crate::i18n::Locale;
+    use std::collections::HashSet;
 
     fn context(
         kind: &str,
@@ -584,6 +687,216 @@ mod runtime_slot_tests {
             .any(|item| matches!(item, ComposerPickerItem::Context { .. })));
         assert!(mention_compute_entries("nomatch", &contexts).is_empty());
     }
+
+    fn slot(context_id: &str, language: &str) -> RuntimeSlot {
+        RuntimeSlot {
+            project_id: "p".into(),
+            project_label: "p".into(),
+            context_id: context_id.into(),
+            context_label: context_id.into(),
+            language: language.into(),
+            available: true,
+            info: None,
+        }
+    }
+
+    fn runtime_info(session_id: &str, activity: u64, runtime_id: &str) -> RuntimeInfo {
+        RuntimeInfo {
+            runtime_id: runtime_id.into(),
+            generation: 1,
+            key: RuntimeKeyDto {
+                project_id: "p".into(),
+                context_id: "ssh:gpu".into(),
+                language: "python".into(),
+                scope_key: "mainline".into(),
+                session_id: session_id.into(),
+            },
+            status: "ready".into(),
+            interpreter: Some("/usr/bin/python3".into()),
+            version: Some("3.8.10".into()),
+            process_id: Some(1),
+            started_at_ms: activity,
+            last_activity_at_ms: activity,
+            resident_memory_bytes: None,
+            last_error: None,
+        }
+    }
+
+    #[test]
+    fn runtime_slots_collapse_shared_and_session_owned_duplicates() {
+        let contexts = vec![context(
+            "ssh",
+            r#"{"python_executable":"/usr/bin/python3"}"#,
+            Some("ok"),
+        )];
+        let slots = runtime_slots(
+            vec![
+                runtime_info("", 10, "shared"),
+                runtime_info("frame-a", 20, "owned"),
+            ],
+            &contexts,
+            None,
+            &[],
+        );
+        let python = slots
+            .into_iter()
+            .filter(|slot| slot.language == "python" && slot.context_id == "ssh:gpu")
+            .collect::<Vec<_>>();
+        assert_eq!(python.len(), 1);
+        assert_eq!(
+            python[0].info.as_ref().map(|info| info.runtime_id.as_str()),
+            Some("owned")
+        );
+    }
+
+    #[test]
+    fn session_runtime_groups_keep_local_and_attached_remotes() {
+        let contexts = vec![
+            context("local", "{}", None),
+            context(
+                "ssh",
+                r#"{"rscript_executable":"/usr/bin/Rscript","r_jsonlite":true}"#,
+                Some("ok"),
+            ),
+        ];
+        let slots = vec![
+            slot("local", "python"),
+            slot("local", "r"),
+            slot("ssh:test", "python"),
+            slot("ssh:test", "r"),
+        ];
+        let attached = HashSet::new();
+        let local_only = session_runtime_groups(slots.clone(), &contexts, &attached);
+        assert_eq!(local_only.len(), 1);
+        assert_eq!(local_only[0].context_id, "local");
+        assert_eq!(local_only[0].slots.len(), 2);
+
+        let mut attached = HashSet::new();
+        attached.insert("ssh:test".into());
+        let both = session_runtime_groups(slots, &contexts, &attached);
+        assert_eq!(
+            both.iter()
+                .map(|group| group.context_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["local", "ssh:test"]
+        );
+    }
+
+    #[test]
+    fn session_runtime_strip_view_ignores_unattached_context_churn() {
+        let local_only = vec![context("local", "{}", None)];
+        let with_wsl = vec![
+            context("local", "{}", None),
+            ExecutionContext {
+                id: "wsl:Ubuntu-24.04".into(),
+                kind: "wsl".into(),
+                label: "Ubuntu-24.04".into(),
+                config_json: r#"{"distro":"Ubuntu-24.04"}"#.into(),
+                capabilities_json: "{}".into(),
+                last_probe_status: None,
+                last_probe_error: None,
+            },
+        ];
+        let slots = vec![slot("local", "python"), slot("local", "r")];
+        let attached = HashSet::new();
+        assert_eq!(
+            session_runtime_strip_view(slots.clone(), &local_only, &attached),
+            session_runtime_strip_view(slots, &with_wsl, &attached)
+        );
+    }
+
+    #[test]
+    fn compute_menu_summary_prefers_starred_default_over_empty_session() {
+        assert_eq!(
+            compute_menu_summary(Locale::Zh, Some("ssh:CPU3"), Some("CPU3"), 0),
+            "默认 CPU3"
+        );
+        assert_eq!(
+            compute_menu_summary(Locale::En, Some("ssh:gpu"), Some("gpu-server"), 2),
+            "Default gpu-server"
+        );
+        assert_eq!(
+            compute_menu_summary(Locale::Zh, None, None, 0),
+            "默认使用本地"
+        );
+        assert_eq!(
+            compute_menu_summary(Locale::Zh, None, None, 2),
+            "2 个远程环境"
+        );
+        assert_eq!(
+            compute_menu_summary(Locale::En, Some("local"), Some("Local"), 0),
+            "Local by default"
+        );
+    }
+
+    #[test]
+    fn compute_resource_state_key_distinguishes_default_from_session_attach() {
+        assert_eq!(compute_resource_state_key(true, true), "compute.attached");
+        assert_eq!(
+            compute_resource_state_key(false, true),
+            "compute.auto_attaches"
+        );
+        assert_eq!(
+            compute_resource_state_key(false, false),
+            "compute.not_attached"
+        );
+    }
+
+    #[test]
+    fn session_strip_context_ids_includes_remote_default() {
+        let attached = HashSet::new();
+        let ids = session_strip_context_ids(&attached, Some("ssh:CPU3"));
+        assert!(ids.contains("ssh:CPU3"));
+        assert!(session_strip_context_ids(&attached, Some("local")).is_empty());
+        assert!(session_strip_context_ids(&attached, None).is_empty());
+    }
+
+    #[test]
+    fn resolved_session_default_id_layers_snapshot_over_global() {
+        assert_eq!(
+            resolved_session_default_id(Some("ssh:cpu"), Some("ssh:gpu")).as_deref(),
+            Some("ssh:cpu")
+        );
+        assert_eq!(
+            resolved_session_default_id(Some("local"), Some("ssh:gpu")),
+            None
+        );
+        assert_eq!(
+            resolved_session_default_id(None, Some("ssh:gpu")).as_deref(),
+            Some("ssh:gpu")
+        );
+        assert_eq!(resolved_session_default_id(None, None), None);
+        assert_eq!(
+            resolved_session_default_id(Some(""), Some("ssh:gpu")).as_deref(),
+            Some("ssh:gpu")
+        );
+    }
+
+    #[test]
+    fn remote_analysis_options_skip_local() {
+        assert_eq!(
+            remote_analysis_options(&[
+                context("local", "{}", None),
+                context("ssh", "{}", Some("ok")),
+            ]),
+            vec![("ssh:test".into(), "Test".into())]
+        );
+    }
+
+    #[test]
+    fn runtime_object_filter_matches_name_type_or_summary() {
+        let object = RuntimeObject {
+            name: "sce".into(),
+            type_name: "Seurat".into(),
+            summary: "17775 × 70634".into(),
+            size_bytes: None,
+        };
+        assert!(runtime_object_matches(&object, ""));
+        assert!(runtime_object_matches(&object, "SCE"));
+        assert!(runtime_object_matches(&object, "seurat"));
+        assert!(runtime_object_matches(&object, "17775"));
+        assert!(!runtime_object_matches(&object, "adata"));
+    }
 }
 
 pub(crate) fn runtime_slots(
@@ -621,25 +934,35 @@ pub(crate) fn runtime_slots(
     };
 
     let mut present = HashSet::new();
-    let mut slots = runtimes
-        .into_iter()
-        .map(|info| {
-            present.insert((
-                info.key.project_id.clone(),
-                info.key.context_id.clone(),
-                info.key.language.clone(),
-            ));
-            RuntimeSlot {
-                project_id: info.key.project_id.clone(),
-                project_label: project_label(&info.key.project_id),
-                context_id: info.key.context_id.clone(),
-                context_label: context_label(&info.key.context_id),
-                language: info.key.language.clone(),
-                available: true,
-                info: Some(info),
+    let mut slots: Vec<RuntimeSlot> = Vec::new();
+    for info in runtimes {
+        let triple = (
+            info.key.project_id.clone(),
+            info.key.context_id.clone(),
+            info.key.language.clone(),
+        );
+        present.insert(triple.clone());
+        if let Some(existing) = slots.iter_mut().find(|slot| {
+            slot.project_id == info.key.project_id
+                && slot.context_id == info.key.context_id
+                && slot.language == info.key.language
+                && slot.info.is_some()
+        }) {
+            if runtime_info_outranks(existing.info.as_ref(), &info) {
+                existing.info = Some(info);
             }
-        })
-        .collect::<Vec<_>>();
+            continue;
+        }
+        slots.push(RuntimeSlot {
+            project_id: info.key.project_id.clone(),
+            project_label: project_label(&info.key.project_id),
+            context_id: info.key.context_id.clone(),
+            context_label: context_label(&info.key.context_id),
+            language: info.key.language.clone(),
+            available: true,
+            info: Some(info),
+        });
+    }
 
     if let Some(project) = active_project.as_ref() {
         for context in contexts {
@@ -666,6 +989,308 @@ pub(crate) fn runtime_slots(
             .then_with(|| left.language.cmp(&right.language))
     });
     slots
+}
+
+/// Prefer a conversation-owned Ready worker over a scope-shared duplicate so
+/// the compute panel does not paint two identical Python/R rows (#1100).
+fn runtime_info_outranks(current: Option<&RuntimeInfo>, candidate: &RuntimeInfo) -> bool {
+    let Some(current) = current else {
+        return true;
+    };
+    let current_owned = !current.key.session_id.is_empty();
+    let candidate_owned = !candidate.key.session_id.is_empty();
+    match (candidate_owned, current_owned) {
+        (true, false) => true,
+        (false, true) => false,
+        _ => candidate.last_activity_at_ms >= current.last_activity_at_ms,
+    }
+}
+
+/// Local is always on the conversation; remotes appear once attached, or when
+/// they are the default analysis environment (`python`/`r` omit `context_id`).
+pub(crate) fn session_visible_contexts<'a>(
+    contexts: &'a [ExecutionContext],
+    attached: &HashSet<String>,
+) -> Vec<&'a ExecutionContext> {
+    contexts
+        .iter()
+        .filter(|context| context.kind == "local" || attached.contains(&context.id))
+        .collect()
+}
+
+pub(crate) fn is_remote_default_context_id(id: Option<&str>) -> bool {
+    id.map(str::trim)
+        .is_some_and(|id| !id.is_empty() && id != "local")
+}
+
+pub(crate) fn session_strip_context_ids(
+    attached: &HashSet<String>,
+    default_id: Option<&str>,
+) -> HashSet<String> {
+    let mut ids = attached.clone();
+    if let Some(id) = default_id
+        .map(str::trim)
+        .filter(|id| is_remote_default_context_id(Some(id)))
+    {
+        ids.insert(id.to_string());
+    }
+    ids
+}
+
+pub(crate) fn compute_default_label(default_id: &str, contexts: &[ExecutionContext]) -> String {
+    contexts
+        .iter()
+        .find(|context| context.id == default_id)
+        .map(|context| {
+            if context.label.trim().is_empty() {
+                context.id.clone()
+            } else {
+                context.label.clone()
+            }
+        })
+        .unwrap_or_else(|| default_id.to_string())
+}
+
+pub(crate) fn compute_menu_summary(
+    locale: Locale,
+    default_id: Option<&str>,
+    default_label: Option<&str>,
+    session_remote_count: usize,
+) -> String {
+    if is_remote_default_context_id(default_id) {
+        let id = default_id.map(str::trim).unwrap_or_default();
+        let name = default_label
+            .map(str::trim)
+            .filter(|label| !label.is_empty())
+            .unwrap_or(id);
+        return tf(locale, "compute.default_named", &[("name", name)]);
+    }
+    if session_remote_count == 0 {
+        t(locale, "compute.default_local")
+    } else {
+        tf(
+            locale,
+            "composer.compute_count",
+            &[("n", &session_remote_count.to_string())],
+        )
+    }
+}
+
+pub(crate) fn compute_resource_state_key(attached: bool, is_default: bool) -> &'static str {
+    if attached {
+        "compute.attached"
+    } else if is_default {
+        "compute.auto_attaches"
+    } else {
+        "compute.not_attached"
+    }
+}
+
+pub(crate) fn remote_analysis_options(contexts: &[ExecutionContext]) -> Vec<(String, String)> {
+    contexts
+        .iter()
+        .filter(|context| matches!(context.kind.as_str(), "ssh" | "wsl"))
+        .map(|context| {
+            (
+                context.id.clone(),
+                if context.label.trim().is_empty() {
+                    context.id.clone()
+                } else {
+                    context.label.clone()
+                },
+            )
+        })
+        .collect()
+}
+
+#[component]
+pub(crate) fn DefaultAnalysisSelect(
+    locale: RwSignal<Locale>,
+    execution_contexts: RwSignal<Vec<ExecutionContext>>,
+    #[prop(into)] default_execution_context: Signal<Option<String>>,
+    on_change: Callback<Option<String>>,
+    #[prop(into)] test_id: String,
+    #[prop(default = "environments.default_analysis")] label_key: &'static str,
+) -> impl IntoView {
+    view! {
+        <select
+            data-testid=test_id
+            aria-label=move || t(locale.get(), label_key)
+            on:change=move |ev| {
+                let value = crate::text::dom_value(&ev);
+                on_change.call(if value.trim().is_empty() {
+                    None
+                } else {
+                    Some(value)
+                });
+            }
+        >
+            <option
+                value=""
+                prop:selected=move || {
+                    !is_remote_default_context_id(default_execution_context.get().as_deref())
+                }
+            >
+                {move || t(locale.get(), "compute.default_local")}
+            </option>
+            {move || {
+                remote_analysis_options(&execution_contexts.get())
+                    .into_iter()
+                    .map(|(id, label)| {
+                        let selected_id = id.clone();
+                        view! {
+                            <option
+                                value=id
+                                prop:selected=move || {
+                                    default_execution_context.get().as_deref()
+                                        == Some(selected_id.as_str())
+                                }
+                            >
+                                {label}
+                            </option>
+                        }
+                    })
+                    .collect_view()
+            }}
+        </select>
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct SessionRuntimeGroup {
+    pub context_id: String,
+    pub context_label: String,
+    pub kind: String,
+    pub slots: Vec<RuntimeSlot>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SessionRuntimeStripChip {
+    pub context_id: String,
+    pub context_label: String,
+    pub language: String,
+    pub status: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SessionRuntimeStripGroup {
+    pub context_id: String,
+    pub context_label: String,
+    pub kind: String,
+    pub chips: Vec<SessionRuntimeStripChip>,
+}
+
+pub(crate) fn session_runtime_strip_view(
+    slots: Vec<RuntimeSlot>,
+    contexts: &[ExecutionContext],
+    attached: &HashSet<String>,
+) -> Vec<SessionRuntimeStripGroup> {
+    session_runtime_groups(slots, contexts, attached)
+        .into_iter()
+        .map(|group| SessionRuntimeStripGroup {
+            context_id: group.context_id,
+            context_label: group.context_label,
+            kind: group.kind,
+            chips: group
+                .slots
+                .into_iter()
+                .map(|slot| {
+                    let status = slot_status(&slot);
+                    SessionRuntimeStripChip {
+                        context_id: slot.context_id,
+                        context_label: slot.context_label,
+                        language: slot.language,
+                        status,
+                    }
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+pub(crate) fn session_runtime_groups(
+    slots: Vec<RuntimeSlot>,
+    contexts: &[ExecutionContext],
+    attached: &HashSet<String>,
+) -> Vec<SessionRuntimeGroup> {
+    session_visible_contexts(contexts, attached)
+        .into_iter()
+        .filter_map(|context| {
+            let context_slots = slots
+                .iter()
+                .filter(|slot| slot.context_id == context.id)
+                .cloned()
+                .collect::<Vec<_>>();
+            if context_slots.is_empty() {
+                return None;
+            }
+            Some(SessionRuntimeGroup {
+                context_id: context.id.clone(),
+                context_label: if context.label.trim().is_empty() {
+                    context.id.clone()
+                } else {
+                    context.label.clone()
+                },
+                kind: context.kind.clone(),
+                slots: context_slots,
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn slot_status(slot: &RuntimeSlot) -> String {
+    slot.info
+        .as_ref()
+        .map(|info| info.status.clone())
+        .unwrap_or_else(|| {
+            if slot.available {
+                "missing".into()
+            } else {
+                "unavailable".into()
+            }
+        })
+}
+
+pub(crate) fn runtime_object_matches(object: &RuntimeObject, query: &str) -> bool {
+    let query = query.trim().to_ascii_lowercase();
+    if query.is_empty() {
+        return true;
+    }
+    object.name.to_ascii_lowercase().contains(&query)
+        || object.type_name.to_ascii_lowercase().contains(&query)
+        || object.summary.to_ascii_lowercase().contains(&query)
+}
+
+pub(crate) fn open_runtime_environment(
+    slot: RuntimeSlot,
+    runtime_environment: RwSignal<Option<RuntimeSlot>>,
+    object_states: RwSignal<HashMap<String, RuntimeObjectState>>,
+    runtimes: RwSignal<Vec<RuntimeInfo>>,
+    locale: RwSignal<Locale>,
+) {
+    let can_inspect = slot
+        .info
+        .as_ref()
+        .is_some_and(|info| matches!(info.status.as_str(), "ready" | "busy"));
+    // Key object snapshots by the stable binding, not the process runtime id:
+    // the panel then keeps showing data across lazy starts and restarts, and
+    // agent-driven refreshes land where the panel reads.
+    let inspect_key = runtime_binding_state_key(&slot.project_id, &slot.context_id, &slot.language);
+    let inspect_project = slot.project_id.clone();
+    let inspect_context = slot.context_id.clone();
+    let inspect_language = slot.language.clone();
+    runtime_environment.set(Some(slot));
+    if can_inspect {
+        inspect_runtime_objects(
+            inspect_key,
+            inspect_project,
+            inspect_context,
+            inspect_language,
+            locale,
+            object_states,
+            runtimes,
+        );
+    }
 }
 
 fn invoke_runtime_control(
@@ -764,6 +1389,10 @@ pub(crate) fn runtime_binding_state_key(
 /// exist. Use "add to chat" to hand a result to the agent.
 pub(crate) type RuntimeConsoles = HashMap<String, String>;
 
+/// Plot history per previewed file path: base64 PNG snapshots, oldest first.
+/// Ephemeral like the console it accompanies.
+pub(crate) type RuntimePlots = HashMap<String, Vec<String>>;
+
 /// R and Python consoles echo submitted code behind a prompt. Keeping that here
 /// is what lets one flat log stay readable as alternating input and output.
 fn console_echo(code: &str, locale: Locale) -> String {
@@ -813,6 +1442,7 @@ fn append_console(consoles: RwSignal<RuntimeConsoles>, path: &str, text: &str) {
 #[derive(Clone, Copy)]
 pub(crate) struct RuntimeRunCtx {
     pub(crate) consoles: RwSignal<RuntimeConsoles>,
+    pub(crate) plots: RwSignal<RuntimePlots>,
     pub(crate) busy: RwSignal<Option<String>>,
     pub(crate) runtimes: RwSignal<Vec<RuntimeInfo>>,
     pub(crate) project: RwSignal<Option<ProjectInfo>>,
@@ -833,26 +1463,97 @@ pub(crate) fn run_in_runtime(
     ctx: RuntimeRunCtx,
 ) {
     let code = code.trim().to_string();
-    // ponytail: one run at a time across all files. Key `busy` by path if two
-    // runtimes on different contexts ever need to run concurrently.
-    if code.is_empty() || ctx.busy.get_untracked().is_some() {
+    if code.is_empty() {
         return;
     }
-    ctx.inspector_open.set(true);
-    append_console(ctx.consoles, &path, &console_echo(&code, locale));
+    let echo = console_echo(&code, locale);
+    let args = serde_json::json!({
+        "contextId": context_id,
+        "language": language,
+        "code": code,
+    });
+    start_runtime_execution(
+        path,
+        context_id,
+        language,
+        locale,
+        ctx,
+        "execute_runtime",
+        args,
+        echo,
+    );
+}
+
+/// Run the saved file at `path` in the same bound runtime. The editor persists
+/// the draft first, so the host hashes the bytes on disk rather than a buffer.
+pub(crate) fn run_script_in_runtime(
+    path: String,
+    context_id: String,
+    language: String,
+    locale: Locale,
+    ctx: RuntimeRunCtx,
+) {
+    let echo = console_echo(&format!("script {path}"), locale);
+    let args = serde_json::json!({
+        "contextId": context_id,
+        "language": language,
+        "scriptPath": path,
+    });
+    start_runtime_execution(
+        path,
+        context_id,
+        language,
+        locale,
+        ctx,
+        "execute_runtime_script",
+        args,
+        echo,
+    );
+}
+
+fn start_runtime_execution(
+    path: String,
+    context_id: String,
+    language: String,
+    locale: Locale,
+    ctx: RuntimeRunCtx,
+    command: &'static str,
+    args: serde_json::Value,
+    echo: String,
+) {
+    // ponytail: one run at a time across all files. Key `busy` by path if two
+    // runtimes on different contexts ever need to run concurrently.
+    if ctx.busy.get_untracked().is_some() {
+        return;
+    }
+    // Only set when actually closed: a redundant `set(true)` still notifies
+    // subscribers, remounting the console/plots panes mid-session and wiping
+    // the console's local input history.
+    if !ctx.inspector_open.get_untracked() {
+        ctx.inspector_open.set(true);
+    }
+    append_console(ctx.consoles, &path, &echo);
     ctx.busy.set(Some(path.clone()));
     spawn_local(async move {
-        let args = to_value(&serde_json::json!({
-            "contextId": context_id,
-            "language": language,
-            "code": code,
-        }))
-        .unwrap();
-        let output = match invoke_checked("execute_runtime", args).await {
-            Ok(value) => value.as_string().unwrap_or_default(),
-            Err(error) => localize_backend(locale, &js_error_text(error)),
+        let output = match invoke_checked(command, to_value(&args).unwrap()).await {
+            Ok(value) => match serde_wasm_bindgen::from_value::<RuntimeExecutionSummary>(value) {
+                Ok(summary) => summary,
+                Err(error) => RuntimeExecutionSummary {
+                    text: error.to_string(),
+                    plots: Vec::new(),
+                },
+            },
+            Err(error) => RuntimeExecutionSummary {
+                text: localize_backend(locale, &js_error_text(error)),
+                plots: Vec::new(),
+            },
         };
-        append_console(ctx.consoles, &path, &output);
+        append_console(ctx.consoles, &path, &output.text);
+        if !output.plots.is_empty() {
+            ctx.plots.update(|plots| {
+                plots.entry(path.clone()).or_default().extend(output.plots);
+            });
+        }
         ctx.busy.set(None);
         // Execution may have lazily created the process. Inspect by its stable
         // binding key so variables appear without waiting for list_runtimes to
@@ -911,22 +1612,91 @@ fn runtime_environment_viewport() -> (i32, i32) {
         .unwrap_or((1280, 720))
 }
 
-fn clamp_runtime_environment_position(x: i32, y: i32) -> (i32, i32) {
-    const MARGIN: i32 = 16;
-    const PANEL_WIDTH: i32 = 620;
-    const PANEL_HEIGHT: i32 = 560;
-    let (viewport_width, viewport_height) = runtime_environment_viewport();
-    let width = PANEL_WIDTH.min((viewport_width - MARGIN * 2).max(0));
-    let height = PANEL_HEIGHT.min((viewport_height - MARGIN * 2).max(0));
+const RUNTIME_ENVIRONMENT_MARGIN: i32 = 16;
+const RUNTIME_ENVIRONMENT_PANEL_WIDTH: i32 = 620;
+const RUNTIME_ENVIRONMENT_PANEL_HEIGHT: i32 = 560;
+
+pub(crate) fn clamp_runtime_environment_position_in(
+    x: i32,
+    y: i32,
+    viewport_width: i32,
+    viewport_height: i32,
+) -> (i32, i32) {
+    let width = RUNTIME_ENVIRONMENT_PANEL_WIDTH
+        .min((viewport_width - RUNTIME_ENVIRONMENT_MARGIN * 2).max(0));
+    let height = RUNTIME_ENVIRONMENT_PANEL_HEIGHT
+        .min((viewport_height - RUNTIME_ENVIRONMENT_MARGIN * 2).max(0));
     (
-        x.clamp(MARGIN, (viewport_width - width - MARGIN).max(MARGIN)),
-        y.clamp(MARGIN, (viewport_height - height - MARGIN).max(MARGIN)),
+        x.clamp(
+            RUNTIME_ENVIRONMENT_MARGIN,
+            (viewport_width - width - RUNTIME_ENVIRONMENT_MARGIN).max(RUNTIME_ENVIRONMENT_MARGIN),
+        ),
+        y.clamp(
+            RUNTIME_ENVIRONMENT_MARGIN,
+            (viewport_height - height - RUNTIME_ENVIRONMENT_MARGIN).max(RUNTIME_ENVIRONMENT_MARGIN),
+        ),
     )
+}
+
+pub(crate) fn clamp_runtime_environment_position(x: i32, y: i32) -> (i32, i32) {
+    let (viewport_width, viewport_height) = runtime_environment_viewport();
+    clamp_runtime_environment_position_in(x, y, viewport_width, viewport_height)
 }
 
 fn default_runtime_environment_position() -> (i32, i32) {
     let (viewport_width, viewport_height) = runtime_environment_viewport();
-    clamp_runtime_environment_position(viewport_width - 636, (viewport_height - 560) / 2)
+    clamp_runtime_environment_position(
+        viewport_width - RUNTIME_ENVIRONMENT_PANEL_WIDTH - RUNTIME_ENVIRONMENT_MARGIN,
+        (viewport_height - RUNTIME_ENVIRONMENT_PANEL_HEIGHT) / 2,
+    )
+}
+
+#[cfg(test)]
+mod runtime_environment_position_tests {
+    use super::{
+        clamp_runtime_environment_position_in, RUNTIME_ENVIRONMENT_MARGIN,
+        RUNTIME_ENVIRONMENT_PANEL_HEIGHT, RUNTIME_ENVIRONMENT_PANEL_WIDTH,
+    };
+
+    #[test]
+    fn shrinking_a_maximized_window_pulls_the_pin_back_on_screen() {
+        let maximized_x = 1920 - RUNTIME_ENVIRONMENT_PANEL_WIDTH - RUNTIME_ENVIRONMENT_MARGIN;
+        let maximized_y = (1080 - RUNTIME_ENVIRONMENT_PANEL_HEIGHT) / 2;
+        let restored_width = 1100;
+        let restored_height = 760;
+        let (x, y) = clamp_runtime_environment_position_in(
+            maximized_x,
+            maximized_y,
+            restored_width,
+            restored_height,
+        );
+        assert_eq!(
+            x,
+            restored_width - RUNTIME_ENVIRONMENT_PANEL_WIDTH - RUNTIME_ENVIRONMENT_MARGIN
+        );
+        assert_eq!(
+            y,
+            restored_height - RUNTIME_ENVIRONMENT_PANEL_HEIGHT - RUNTIME_ENVIRONMENT_MARGIN
+        );
+        assert!(x + RUNTIME_ENVIRONMENT_PANEL_WIDTH <= restored_width);
+        assert!(y + RUNTIME_ENVIRONMENT_PANEL_HEIGHT <= restored_height);
+    }
+
+    #[test]
+    fn a_left_aligned_pin_stays_put_when_the_window_grows() {
+        assert_eq!(
+            clamp_runtime_environment_position_in(16, 16, 1920, 1080),
+            (16, 16)
+        );
+    }
+
+    #[test]
+    fn a_tiny_window_keeps_the_margin() {
+        assert_eq!(
+            clamp_runtime_environment_position_in(400, 300, 400, 300),
+            (RUNTIME_ENVIRONMENT_MARGIN, RUNTIME_ENVIRONMENT_MARGIN)
+        );
+    }
 }
 
 #[component]
@@ -938,10 +1708,18 @@ pub(crate) fn RuntimeEnvironmentPanel(
     locale: RwSignal<Locale>,
     states: RwSignal<HashMap<String, RuntimeObjectState>>,
     runtimes: RwSignal<Vec<RuntimeInfo>>,
+    contexts: RwSignal<Vec<ExecutionContext>>,
+    active_project: RwSignal<Option<ProjectInfo>>,
+    projects: RwSignal<Vec<ProjectSummary>>,
     selection_popup: RwSignal<Option<(String, Option<String>, i32, i32)>>,
 ) -> impl IntoView {
     let drag_start = Rc::new(Cell::new(None::<(i32, i32, i32, i32, i32)>));
     let dragging = create_rw_signal(false);
+    let filter_query = create_rw_signal(String::new());
+    create_effect(move |_| {
+        let _ = selected.get();
+        filter_query.set(String::new());
+    });
 
     move || {
         selected.get().map(|mut slot| {
@@ -955,18 +1733,32 @@ pub(crate) fn RuntimeEnvironmentPanel(
                 && runtime.key.language == slot.language
         });
         let language_label = if slot.language == "r" { "R" } else { "Python" };
-        let status = slot.info.as_ref()
-            .map(|info| info.status.clone())
-            .unwrap_or_else(|| if slot.available { "missing".into() } else { "unavailable".into() });
+        let status = slot_status(&slot);
         let status_class = format!("runtime-status {status}");
-        let runtime_id = slot.info.as_ref().map(|info| info.runtime_id.clone()).unwrap_or_default();
+        // The binding key survives the process: a runtime the agent lazily
+        // started (or restarted) mid-conversation publishes its inspection
+        // under the same key this panel reads.
+        let state_key = runtime_binding_state_key(&slot.project_id, &slot.context_id, &slot.language);
+        let has_runtime = slot.info.is_some();
         let can_refresh = status == "ready";
-        let refresh_runtime_id = runtime_id.clone();
-        let loading_runtime_id = runtime_id.clone();
-        let content_runtime_id = runtime_id;
+        let refresh_state_key = state_key.clone();
+        let loading_state_key = state_key.clone();
+        let content_state_key = state_key;
         let refresh_project = slot.project_id.clone();
         let refresh_context = slot.context_id.clone();
         let refresh_language = slot.language.clone();
+        let sibling_slots = runtime_slots(
+            runtimes.get(),
+            &contexts.get(),
+            active_project.get(),
+            &projects.get(),
+        )
+        .into_iter()
+        .filter(|sibling| {
+            sibling.project_id == slot.project_id && sibling.context_id == slot.context_id
+        })
+        .collect::<Vec<_>>();
+        let selected_language = slot.language.clone();
 
         view! {
             <section class="runtime-environment-panel" role="region"
@@ -1027,6 +1819,45 @@ pub(crate) fn RuntimeEnvironmentPanel(
                         <h3>{tf(locale.get(), "runtime.environment_title", &[("language", language_label)])}</h3>
                         <span>{format!("{} · {}", slot.project_label, slot.context_label)}</span>
                     </div>
+                    {(sibling_slots.len() > 1).then(|| {
+                        let tabs = sibling_slots.clone();
+                        view! {
+                            <div class="runtime-environment-langs" role="tablist"
+                                aria-label=t(locale.get(), "runtime.switch_language_list")>
+                                {tabs.into_iter().map(|sibling| {
+                                    let language = sibling.language.clone();
+                                    let click_slot = sibling.clone();
+                                    let current_language = selected_language.clone();
+                                    let active = language == selected_language;
+                                    let label = language_display(&language).to_string();
+                                    view! {
+                                        <button type="button" role="tab"
+                                            class="runtime-environment-lang"
+                                            class:active=active
+                                            data-testid="runtime-environment-lang"
+                                            data-runtime-language=language.clone()
+                                            aria-selected=active.to_string()
+                                            title=tf(locale.get(), "runtime.switch_language", &[("language", &label)])
+                                            aria-label=tf(locale.get(), "runtime.switch_language", &[("language", &label)])
+                                            on:click=move |_| {
+                                                if language == current_language {
+                                                    return;
+                                                }
+                                                open_runtime_environment(
+                                                    click_slot.clone(),
+                                                    selected,
+                                                    states,
+                                                    runtimes,
+                                                    locale,
+                                                );
+                                            }>
+                                            {label}
+                                        </button>
+                                    }
+                                }).collect_view()}
+                            </div>
+                        }
+                    })}
                     <button type="button" class="runtime-environment-pin"
                         class:active=move || pinned.get()
                         aria-pressed=move || pinned.get().to_string()
@@ -1057,10 +1888,10 @@ pub(crate) fn RuntimeEnvironmentPanel(
                         title=t(locale.get(), "runtime.inspect_objects")
                         aria-label=t(locale.get(), "runtime.inspect_objects")
                         disabled=move || !can_refresh || states.with(|states| {
-                            states.get(&loading_runtime_id).is_some_and(|state| state.loading)
+                            states.get(&loading_state_key).is_some_and(|state| state.loading)
                         })
                         on:click=move |_| inspect_runtime_objects(
-                            refresh_runtime_id.clone(),
+                            refresh_state_key.clone(),
                             refresh_project.clone(),
                             refresh_context.clone(),
                             refresh_language.clone(),
@@ -1077,6 +1908,14 @@ pub(crate) fn RuntimeEnvironmentPanel(
                             dragging.set(false);
                         }>{compose_icon("close")}</button>
                 </div>
+                <div class="runtime-environment-filter">
+                    <input type="search" data-testid="runtime-object-filter"
+                        autocomplete="off"
+                        aria-label=t(locale.get(), "runtime.objects_filter")
+                        placeholder=t(locale.get(), "runtime.objects_filter_ph")
+                        prop:value=move || filter_query.get()
+                        on:input=move |ev| filter_query.set(event_target_value(&ev)) />
+                </div>
                 <div class="runtime-environment-table-head" aria-hidden="true">
                     <span>{t(locale.get(), "runtime.object_name")}</span>
                     <span>{t(locale.get(), "runtime.object_type")}</span>
@@ -1085,14 +1924,17 @@ pub(crate) fn RuntimeEnvironmentPanel(
                 </div>
                 <div class="runtime-environment-body">
                     {move || {
-                        if content_runtime_id.is_empty() {
+                        let state = states.with(|states| {
+                            states.get(&content_state_key).cloned().unwrap_or_default()
+                        });
+                        // No process and nothing inspected yet: a last-known
+                        // snapshot (from before a stop or crash) stays visible
+                        // next to the status chip instead of vanishing.
+                        if !has_runtime && state.snapshot.is_none() && state.error.is_none() {
                             return view! {
                                 <div class="runtime-environment-empty">{t(locale.get(), "runtime.environment_unavailable")}</div>
                             }.into_view();
                         }
-                        let state = states.with(|states| {
-                            states.get(&content_runtime_id).cloned().unwrap_or_default()
-                        });
                         if state.loading && state.snapshot.is_none() {
                             return view! {
                                 <div class="runtime-environment-empty">{t(locale.get(), "runtime.objects_loading")}</div>
@@ -1111,11 +1953,23 @@ pub(crate) fn RuntimeEnvironmentPanel(
                                 <div class="runtime-environment-empty">{t(locale.get(), "runtime.objects_empty")}</div>
                             }.into_view();
                         }
-                        let shown = snapshot.objects.len();
+                        let query = filter_query.get();
+                        let objects = snapshot
+                            .objects
+                            .into_iter()
+                            .filter(|object| runtime_object_matches(object, &query))
+                            .collect::<Vec<_>>();
+                        if objects.is_empty() {
+                            return view! {
+                                <div class="runtime-environment-empty">{t(locale.get(), "runtime.objects_none_match")}</div>
+                            }.into_view();
+                        }
+                        let shown = objects.len();
                         let total = snapshot.total_count;
                         view! {
                             <div class="runtime-environment-rows">
-                                {snapshot.objects.into_iter().map(|object| {
+                                {objects.into_iter().map(|object| {
+                                    let is_error = object.type_name.eq_ignore_ascii_case("unavailable");
                                     let size = object.size_bytes.map(format_bytes).unwrap_or_else(|| "—".into());
                                     let summary = if object.summary.is_empty() { "—".into() } else { object.summary };
                                     let quote = runtime_object_quote(
@@ -1123,7 +1977,8 @@ pub(crate) fn RuntimeEnvironmentPanel(
                                     );
                                     let key_quote = quote.clone();
                                     view! {
-                                        <div class="runtime-environment-row" role="button" tabindex="0"
+                                        <div class="runtime-environment-row" class:is-error=is_error
+                                            role="button" tabindex="0"
                                             title=t(locale.get(), "runtime.quote_object")
                                             on:click=move |ev: web_sys::MouseEvent| {
                                                 selection_popup.set(Some((
@@ -1155,7 +2010,7 @@ pub(crate) fn RuntimeEnvironmentPanel(
                                     }
                                 }).collect_view()}
                             </div>
-                            {(shown < total).then(|| view! {
+                            {(shown < total || !query.trim().is_empty()).then(|| view! {
                                 <div class="runtime-objects-limit">{
                                     tf(locale.get(), "runtime.objects_showing", &[
                                         ("shown", &shown.to_string()),
@@ -1249,14 +2104,11 @@ pub(crate) fn RuntimeCard(
     let selected_project = slot.project_id.clone();
     let selected_context = slot.context_id.clone();
     let selected_language = slot.language.clone();
-    let inspect_project = slot.project_id.clone();
-    let inspect_context = slot.context_id.clone();
-    let inspect_language = slot.language.clone();
-    let inspect_runtime_id = runtime_id.clone();
     let can_stop = matches!(status.as_str(), "starting" | "ready" | "busy");
     let can_restart = matches!(status.as_str(), "ready" | "busy" | "dead");
     let can_start = status == "missing";
-    let can_inspect = status == "ready";
+    let can_dismiss = status == "dead";
+    let dismiss_id = runtime_id.clone();
 
     view! {
         <div class="runtime-card" data-runtime-language=slot.language.clone()
@@ -1272,18 +2124,13 @@ pub(crate) fn RuntimeCard(
                 <button type="button" class="runtime-language"
                     aria-label=tf(locale.get_untracked(), "runtime.open_environment", &[("language", language_label)])
                     on:click=move |_| {
-                        runtime_environment.set(Some(environment_slot.clone()));
-                        if can_inspect {
-                            inspect_runtime_objects(
-                                inspect_runtime_id.clone(),
-                                inspect_project.clone(),
-                                inspect_context.clone(),
-                                inspect_language.clone(),
-                                locale,
-                                object_states,
-                                runtimes,
-                            );
-                        }
+                        open_runtime_environment(
+                            environment_slot.clone(),
+                            runtime_environment,
+                            object_states,
+                            runtimes,
+                            locale,
+                        );
                     }>
                     <span>{language_label}</span>
                     <span class="runtime-language-open" aria-hidden="true">{compose_icon("chevron-right")}</span>
@@ -1291,7 +2138,6 @@ pub(crate) fn RuntimeCard(
                 <span class=status_class>{runtime_status_label(locale.get_untracked(), &status)}</span>
             </div>
             <div class="runtime-identity">{identity}</div>
-            <div class="runtime-context">{format!("{} · {}", slot.project_id, slot.context_id)}</div>
             {metadata.filter(|value| !value.is_empty()).map(|value| view! {
                 <div class="runtime-meta">{value}</div>
             })}
@@ -1301,6 +2147,11 @@ pub(crate) fn RuntimeCard(
             })}
             {last_error.map(|error| view! { <div class="context-error">{error}</div> })}
             <div class="runtime-actions">
+                {can_dismiss.then(|| view! {
+                    <button type="button" class="runtime-dismiss" on:click=move |_| {
+                        invoke_runtime_control("dismiss_runtime", serde_json::json!({ "runtimeId": dismiss_id.clone() }), locale, runtimes);
+                    }>{move || t(locale.get(), "runtime.dismiss")}</button>
+                })}
                 {interpreter_form.map(|form| view! {
                     <button type="button" class="runtime-config"
                         on:click=move |_| runtime_interpreter_form.set(Some(form.clone()))>
@@ -1350,6 +2201,137 @@ pub(crate) fn RuntimeCard(
                 })}
             </div>
         </div>
+    }
+}
+
+#[component]
+pub(crate) fn SessionRuntimeStrip(
+    locale: RwSignal<Locale>,
+    execution_contexts: RwSignal<Vec<ExecutionContext>>,
+    session_execution_contexts: RwSignal<HashSet<String>>,
+    default_execution_context: RwSignal<Option<String>>,
+    session_default_execution_context: RwSignal<Option<String>>,
+    runtimes: RwSignal<Vec<RuntimeInfo>>,
+    active_project: RwSignal<Option<ProjectInfo>>,
+    projects: RwSignal<Vec<ProjectSummary>>,
+    runtime_environment: RwSignal<Option<RuntimeSlot>>,
+    runtime_environment_pinned: RwSignal<bool>,
+    object_states: RwSignal<HashMap<String, RuntimeObjectState>>,
+    context_details_modal: RwSignal<Option<(String, ContextModalKind)>>,
+    selected_context_id: RwSignal<Option<String>>,
+) -> impl IntoView {
+    let groups = create_memo(move |_| {
+        let resolved = resolved_session_default_id(
+            session_default_execution_context.get().as_deref(),
+            default_execution_context.get().as_deref(),
+        );
+        let attached =
+            session_strip_context_ids(&session_execution_contexts.get(), resolved.as_deref());
+        session_runtime_strip_view(
+            runtime_slots(
+                runtimes.get(),
+                &execution_contexts.get(),
+                active_project.get(),
+                &projects.get(),
+            ),
+            &execution_contexts.get(),
+            &attached,
+        )
+    });
+    view! {
+        {move || {
+            let groups = groups.get();
+            if groups.is_empty() {
+                return None;
+            }
+            Some(view! {
+                <div class="session-runtime-strip" data-testid="session-runtime-strip"
+                    aria-label=t(locale.get(), "runtime.strip_title")>
+                    {groups.into_iter().map(|group| {
+                        let manage_id = group.context_id.clone();
+                        let kind_icon = if group.kind == "local" { "monitor" } else { "server" };
+                        view! {
+                            <div class="session-runtime-group" data-testid="session-runtime-group"
+                                data-runtime-context=group.context_id.clone()>
+                                <button type="button" class="session-runtime-host"
+                                    title=tf(locale.get(), "runtime.strip_manage", &[("context", &group.context_label)])
+                                    aria-label=tf(locale.get(), "runtime.strip_manage", &[("context", &group.context_label)])
+                                    on:click=move |_| {
+                                        selected_context_id.set(Some(manage_id.clone()));
+                                        context_details_modal.set(Some((
+                                            manage_id.clone(),
+                                            ContextModalKind::Runtimes,
+                                        )));
+                                    }>
+                                    <span class="session-runtime-host-icon">{compose_icon(kind_icon)}</span>
+                                    <span class="session-runtime-host-name">{group.context_label.clone()}</span>
+                                </button>
+                                <div class="session-runtime-chips">
+                                    {group.chips.into_iter().map(|chip| {
+                                        let language_label = language_display(&chip.language).to_string();
+                                        let context_label = chip.context_label.clone();
+                                        let context_id = chip.context_id.clone();
+                                        let language = chip.language.clone();
+                                        let status = chip.status.clone();
+                                        let status_class = format!("runtime-status {status}");
+                                        view! {
+                                            <button type="button" class="session-runtime-chip"
+                                                data-testid="session-runtime-chip"
+                                                data-runtime-language=chip.language.clone()
+                                                data-runtime-context=chip.context_id.clone()
+                                                data-runtime-status=status.clone()
+                                                title=tf(
+                                                    locale.get(),
+                                                    "runtime.strip_open",
+                                                    &[("language", &language_label), ("context", &context_label)],
+                                                )
+                                                aria-label=tf(
+                                                    locale.get(),
+                                                    "runtime.strip_open",
+                                                    &[("language", &language_label), ("context", &context_label)],
+                                                )
+                                                on:click=move |_| {
+                                                    let Some(slot) = runtime_slots(
+                                                        runtimes.get_untracked(),
+                                                        &execution_contexts.get_untracked(),
+                                                        active_project.get_untracked(),
+                                                        &projects.get_untracked(),
+                                                    )
+                                                    .into_iter()
+                                                    .find(|slot| {
+                                                        slot.context_id == context_id
+                                                            && slot.language == language
+                                                    })
+                                                    else {
+                                                        return;
+                                                    };
+                                                    open_runtime_environment(
+                                                        slot,
+                                                        runtime_environment,
+                                                        object_states,
+                                                        runtimes,
+                                                        locale,
+                                                    );
+                                                    if !runtime_environment_pinned.get_untracked() {
+                                                        selected_context_id.set(Some(context_id.clone()));
+                                                        context_details_modal.set(Some((
+                                                            context_id.clone(),
+                                                            ContextModalKind::Runtimes,
+                                                        )));
+                                                    }
+                                                }>
+                                                <span class="session-runtime-lang">{language_label}</span>
+                                                <span class=status_class>{runtime_status_label(locale.get(), &status)}</span>
+                                            </button>
+                                        }
+                                    }).collect_view()}
+                                </div>
+                            </div>
+                        }
+                    }).collect_view()}
+                </div>
+            })
+        }}
     }
 }
 
@@ -2201,6 +3183,7 @@ pub(crate) fn ContextDetailsOverlay(
                                             pinned=runtime_environment_pinned
                                             position=runtime_environment_position context_modal=modal
                                             locale=locale states=object_states runtimes=runtimes
+                                            contexts=contexts active_project=active_project projects=projects
                                             selection_popup=selection_popup />
                                     })}
                                 </div>

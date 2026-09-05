@@ -14,12 +14,16 @@ pub use kernel::{
     KernelClient, KernelReady, KernelResp, KernelWriteScope, MAX_CODE_BYTES, PROTOCOL_VERSION,
 };
 pub use manager::{
-    LaunchedRuntime, RuntimeEvent, RuntimeExecution, RuntimeInfo, RuntimeKernel, RuntimeKey,
-    RuntimeLanguage, RuntimeLauncher, RuntimeManager, RuntimeMetadata, RuntimeObject,
-    RuntimeObjectList, RuntimeOutput, RuntimeStatus, LOCAL_CONTEXT_ID, MAINLINE_RUNTIME_SCOPE,
+    LaunchedRuntime, RuntimeEvent, RuntimeExecution, RuntimeExecutionOptions, RuntimeInfo,
+    RuntimeKernel, RuntimeKey, RuntimeLanguage, RuntimeLauncher, RuntimeManager, RuntimeMetadata,
+    RuntimeObject, RuntimeObjectList, RuntimeOutput, RuntimeStatus, LOCAL_CONTEXT_ID,
+    MAINLINE_RUNTIME_SCOPE,
+};
+pub use tool::{
+    format_response, format_script_response, read_project_script, ProjectScript, RTool, ReplTool,
+    ScriptProvenance,
 };
 pub use provision::{
     auto_items_satisfied, probe_local_runtimes, run_provision, FakeHost, ProvisionHost,
     ProvisionItem, RealHost, RuntimeProvisionState,
 };
-pub use tool::{format_response, RTool, ReplTool};

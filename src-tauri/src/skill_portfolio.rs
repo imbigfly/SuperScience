@@ -120,7 +120,7 @@ pub(crate) async fn plan_skill_portfolio(
         return Err("Choose a planning model.".into());
     }
 
-    let project = state.active(window.label());
+    let project = state.require_active(window.label())?;
     let frame_id = state.active_frame(window.label());
     let policy = delegation_runtime::dynamic_delegation_policy_for_project(
         &state.store,
@@ -198,7 +198,7 @@ async fn planner_provider(
         .into_iter()
         .find(|profile| profile.id == model_id)
         .ok_or_else(|| format!("Unknown planning model: {model_id}"))?;
-    let (provider, api_url, model, api_key, max_tokens, reasoning_effort) =
+    let (provider, api_url, model, api_key, max_tokens, reasoning_effort, service_tier) =
         models::profile_llm(store, model_id)
             .await
             .ok_or_else(|| format!("Unknown planning model: {model_id}"))?;
@@ -211,6 +211,7 @@ async fn planner_provider(
         &model,
         max_tokens,
         &reasoning_effort,
+        &service_tier,
     )?;
     Ok((superscience_llm::build(config), profile.label))
 }
@@ -315,6 +316,7 @@ fn build_draft(
             model_id: None,
             executor: None,
             budget: None,
+            timeout_secs: None,
         });
     }
     if selected_skill_count == 0 {

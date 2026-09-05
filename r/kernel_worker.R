@@ -105,11 +105,74 @@ inspect_runtime <- function() {
 }
 
 # Plotting must never open a desktop window. Users can still call png(), pdf(),
-# ggsave(), or another explicit file device for context-local artifacts.
-options(device = function(...) grDevices::pdf(file = NULL))
+# ggsave(), or another explicit file device for context-local artifacts. The
+# implicit device keeps its display list enabled so each cell's current plot
+# can be snapshotted for the workbench plots pane without closing the device —
+# incremental drawing (plot() now, lines() in a later cell) keeps working.
+plot_state <- new.env(parent = emptyenv())
+plot_state$devices <- integer()
+plot_state$last_snapshot <- NULL
 
-evaluate_cell <- function(code) {
-  expressions <- parse(text = code, keep.source = TRUE)
+wisp_default_device <- function(...) {
+  grDevices::pdf(file = NULL)
+  grDevices::dev.control(displaylist = "enable")
+  plot_state$devices <- c(plot_state$devices, grDevices::dev.cur())
+}
+options(device = wisp_default_device)
+
+# Base64 PNG of the implicit device's current plot, or character() when there
+# is nothing new. Only devices opened by wisp_default_device are snapshotted:
+# a user's own png()/pdf() device already writes their chosen file. Re-emitting
+# an unchanged display list is suppressed so a plot-free cell after a plotting
+# cell reports no plots.
+collect_plots <- function() {
+  current <- grDevices::dev.cur()
+  if (current == 1L || !(current %in% plot_state$devices)) {
+    return(character())
+  }
+  snapshot <- tryCatch(grDevices::recordPlot(), error = function(condition) NULL)
+  if (is.null(snapshot) || is.null(snapshot[[1L]])) {
+    return(character())
+  }
+  file <- tempfile(fileext = ".png")
+  on.exit(unlink(file), add = TRUE)
+  rendered <- tryCatch(
+    {
+      grDevices::png(filename = file, width = 896L, height = 632L, res = 108L)
+      replay_device <- grDevices::dev.cur()
+      grDevices::replayPlot(snapshot)
+      grDevices::dev.off(replay_device)
+      file.exists(file) && file.size(file) > 0L
+    },
+    error = function(condition) {
+      if (grDevices::dev.cur() != current) {
+        try(grDevices::dev.off(), silent = TRUE)
+      }
+      FALSE
+    }
+  )
+  if (current %in% grDevices::dev.list()) {
+    grDevices::dev.set(current)
+  }
+  if (!isTRUE(rendered)) {
+    return(character())
+  }
+  encoded <- jsonlite::base64_enc(readBin(file, what = "raw", n = file.size(file)))
+  encoded <- gsub("[\r\n]", "", encoded)
+  if (identical(encoded, plot_state$last_snapshot)) {
+    return(character())
+  }
+  plot_state$last_snapshot <- encoded
+  encoded
+}
+
+evaluate_cell <- function(code, source_name = NULL) {
+  source_file <- if (!is.null(source_name)) {
+    srcfilecopy(source_name, strsplit(code, "\n", fixed = TRUE)[[1L]])
+  } else {
+    NULL
+  }
+  expressions <- parse(text = code, srcfile = source_file, keep.source = TRUE)
   if (length(expressions) == 0L) {
     return(invisible(NULL))
   }
@@ -123,7 +186,7 @@ evaluate_cell <- function(code) {
   invisible(NULL)
 }
 
-execute_cell <- function(code) {
+execute_cell <- function(code, source_name = NULL) {
   diagnostics <- character()
   error_text <- NULL
   started <- proc.time()
@@ -131,7 +194,7 @@ execute_cell <- function(code) {
   output <- capture.output(
     tryCatch(
       withCallingHandlers(
-        evaluate_cell(code),
+        evaluate_cell(code, source_name),
         warning = function(condition) {
           diagnostics <<- c(
             diagnostics,
@@ -174,6 +237,7 @@ execute_cell <- function(code) {
     stdout = truncate_text(output),
     stderr = truncate_text(diagnostics),
     error = error_text,
+    plots = collect_plots(),
     usage = list(
       wall_s = unname(elapsed[["elapsed"]]),
       cpu_s = unname(elapsed[["user.self"]] + elapsed[["sys.self"]]),
@@ -231,8 +295,64 @@ repeat {
   } else {
     ""
   }
-  result <- execute_cell(code)
-  emit_frame(list(
+  required_objects <- if (is.null(request$required_objects)) {
+    character()
+  } else if (
+    is.list(request$required_objects) &&
+      all(vapply(
+        request$required_objects,
+        function(name) is.character(name) && length(name) == 1L && nzchar(name),
+        logical(1)
+      ))
+  ) {
+    unlist(request$required_objects, use.names = FALSE)
+  } else {
+    NULL
+  }
+  if (is.null(required_objects)) {
+    emit_frame(list(
+      type = "result",
+      id = request_id,
+      stdout = "",
+      stderr = "",
+      error = "required_objects must be an array of non-empty strings",
+      interrupted = FALSE,
+      usage = list(wall_s = 0, cpu_s = 0, rss_kb = 0)
+    ))
+    next
+  }
+  missing_objects <- required_objects[!vapply(
+    required_objects,
+    exists,
+    logical(1),
+    envir = runtime_env,
+    inherits = FALSE
+  )]
+  if (length(missing_objects) > 0L) {
+    emit_frame(list(
+      type = "result",
+      id = request_id,
+      stdout = "",
+      stderr = "",
+      error = paste0(
+        "required runtime objects are missing: ",
+        paste(missing_objects, collapse = ", ")
+      ),
+      interrupted = FALSE,
+      usage = list(wall_s = 0, cpu_s = 0, rss_kb = 0)
+    ))
+    next
+  }
+  source_name <- if (
+    is.character(request$source_name) && length(request$source_name) == 1L &&
+      nzchar(request$source_name)
+  ) {
+    request$source_name
+  } else {
+    NULL
+  }
+  result <- execute_cell(code, source_name)
+  frame <- list(
     type = "result",
     id = request_id,
     stdout = result$stdout,
@@ -240,5 +360,10 @@ repeat {
     error = result$error,
     interrupted = FALSE,
     usage = result$usage
-  ))
+  )
+  if (length(result$plots) > 0L) {
+    # I() keeps a single snapshot serialized as a JSON array, not a string.
+    frame$plots <- I(result$plots)
+  }
+  emit_frame(frame)
 }

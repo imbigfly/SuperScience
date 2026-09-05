@@ -1,4 +1,12 @@
-use super::Store;
+use super::{Store, FRAME_DEFAULT_EXECUTION_CONTEXT_PREFIX};
+
+const FRAME_SETTING_PREFIXES: &[&str] = &[
+    "frame_specialist:",
+    "frame_delegation_enabled:",
+    "frame_plan_mode:",
+    "frame_agent_completion:",
+    FRAME_DEFAULT_EXECUTION_CONTEXT_PREFIX,
+];
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -463,7 +471,7 @@ impl Store {
         }
         let mut tx = self.begin_write().await?;
         let source = sqlx::query(
-            "SELECT project_id,agent_name,status,model,reasoning_effort,input_tokens,output_tokens,completed_at,title \
+            "SELECT project_id,agent_name,status,model,reasoning_effort,service_tier,input_tokens,output_tokens,completed_at,title \
              FROM frames WHERE id=? AND parent_frame_id=id",
         )
         .bind(source_frame_id)
@@ -488,9 +496,9 @@ impl Store {
         let now = chrono::Utc::now().timestamp();
         sqlx::query(
             "INSERT INTO frames(\
-               id,parent_frame_id,root_frame_id,agent_name,status,project_id,branched_from,model,reasoning_effort,\
+               id,parent_frame_id,root_frame_id,agent_name,status,project_id,branched_from,model,reasoning_effort,service_tier,\
                input_tokens,output_tokens,created_at,updated_at,completed_at,title\
-             ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+             ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(target_frame_id)
         .bind(target_frame_id)
@@ -501,6 +509,7 @@ impl Store {
         .bind(source_frame_id)
         .bind(source.try_get::<Option<String>, _>("model")?)
         .bind(source.try_get::<Option<String>, _>("reasoning_effort")?)
+        .bind(source.try_get::<Option<String>, _>("service_tier")?)
         .bind(source.try_get::<Option<i64>, _>("input_tokens")?)
         .bind(source.try_get::<Option<i64>, _>("output_tokens")?)
         .bind(now)
@@ -580,12 +589,7 @@ impl Store {
         .bind(source_frame_id)
         .execute(&mut *tx)
         .await?;
-        for prefix in [
-            "frame_specialist:",
-            "frame_delegation_enabled:",
-            "frame_plan_mode:",
-            "frame_agent_completion:",
-        ] {
+        for prefix in FRAME_SETTING_PREFIXES {
             let source_key = format!("{prefix}{source_frame_id}");
             let target_key = format!("{prefix}{target_frame_id}");
             sqlx::query(
@@ -1959,12 +1963,7 @@ async fn merge_selected_exploration_into_mainline_in_tx(
         .bind(exploration_frame_id)
         .execute(&mut **tx)
         .await?;
-    for prefix in [
-        "frame_specialist:",
-        "frame_delegation_enabled:",
-        "frame_plan_mode:",
-        "frame_agent_completion:",
-    ] {
+    for prefix in FRAME_SETTING_PREFIXES {
         let source_key = format!("{prefix}{source_frame_id}");
         let exploration_key = format!("{prefix}{exploration_frame_id}");
         sqlx::query(
@@ -1984,12 +1983,14 @@ async fn merge_selected_exploration_into_mainline_in_tx(
     sqlx::query(
         "UPDATE frames SET model=(SELECT model FROM frames WHERE id=?),\
              reasoning_effort=(SELECT reasoning_effort FROM frames WHERE id=?),\
+             service_tier=(SELECT service_tier FROM frames WHERE id=?),\
              input_tokens=(SELECT input_tokens FROM frames WHERE id=?),\
              output_tokens=(SELECT output_tokens FROM frames WHERE id=?),\
              completed_at=(SELECT completed_at FROM frames WHERE id=?),\
              seen_at=MAX(COALESCE(seen_at,0),COALESCE((SELECT seen_at FROM frames WHERE id=?),0)),\
              updated_at=? WHERE id=? AND project_id=? AND exploration_id IS NULL",
     )
+    .bind(exploration_frame_id)
     .bind(exploration_frame_id)
     .bind(exploration_frame_id)
     .bind(exploration_frame_id)
@@ -2266,12 +2267,7 @@ pub(crate) async fn purge_exploration_scope_in_tx(
         }
         query.execute(&mut **tx).await?;
     }
-    for prefix in [
-        "frame_specialist:",
-        "frame_delegation_enabled:",
-        "frame_plan_mode:",
-        "frame_agent_completion:",
-    ] {
+    for prefix in FRAME_SETTING_PREFIXES {
         sqlx::query("DELETE FROM settings WHERE key=?")
             .bind(format!("{prefix}{frame_id}"))
             .execute(&mut **tx)

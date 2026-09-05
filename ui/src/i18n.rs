@@ -477,7 +477,8 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "models.entries") => Some("Models"),
         (Locale::En, "models.entries_hint") => Some("Each model chooses its protocol and optional endpoint suffix while sharing the Base URL and key."),
         (Locale::En, "models.byok_hint") => Some("Set the shared Base URL and key once. Every model below uses them."),
-        (Locale::En, "models.reuse_key") => Some("Using the saved key for {host} — leave blank to reuse."),
+        (Locale::En, "models.reuse_key") => Some("Leave blank to reuse the saved key for {host}."),
+        (Locale::En, "models.separate_key_hint") => Some("Paste a different key to add another batch on this Base URL. Give those models distinct display names if the IDs overlap."),
         (Locale::En, "models.need_chat") => Some("Add at least one chat model. An image-only setup still needs a chat model."),
         (Locale::En, "models.quick_add") => Some("Quick setup:"),
         (Locale::En, "models.manage") => Some("Manage models"),
@@ -670,15 +671,21 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "composer.compute_count") => Some("{n} remote"),
         (Locale::En, "compute.local") => Some("Local"),
         (Locale::En, "compute.default_local") => Some("Local by default"),
+        (Locale::En, "compute.default_named") => Some("Default {name}"),
+        (Locale::En, "compute.menu_hint") => Some(
+            "Use the dropdown to choose this chat's default for python/r. Click a server to attach it to this chat.",
+        ),
+        (Locale::En, "compute.session_default") => Some("This chat's default"),
         (Locale::En, "compute.search") => Some("Search servers"),
-        (Locale::En, "compute.enabled") => Some("Preferred"),
-        (Locale::En, "compute.disabled") => Some("Not selected"),
+        (Locale::En, "compute.attached") => Some("In this chat"),
+        (Locale::En, "compute.not_attached") => Some("Not in this chat"),
+        (Locale::En, "compute.auto_attaches") => Some("Auto-attaches"),
         (Locale::En, "compute.manage") => Some("Manage environments in Settings"),
         (Locale::En, "compute.add_host") => Some("Add SSH host…"),
         (Locale::En, "compute.analysis_default") => Some("Default"),
         (Locale::En, "compute.wsl_default") => Some("WSL default"),
-        (Locale::En, "compute.set_default") => Some("Set as default analysis environment"),
-        (Locale::En, "compute.clear_default") => Some("Remove default"),
+        (Locale::En, "compute.set_default") => Some("Set as this chat's default"),
+        (Locale::En, "compute.clear_default") => Some("Use local in this chat"),
         (Locale::En, "hosts.add") => Some("Add SSH host"),
         (Locale::En, "hosts.edit") => Some("Edit SSH host"),
         (Locale::En, "hosts.auth_method") => Some("Authentication"),
@@ -773,13 +780,15 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "agents.task.executor") => Some("Executor"),
         (Locale::En, "agents.task.auto") => Some("Policy default"),
         (Locale::En, "agents.task.isolated") => Some("Use an isolated workspace"),
-        (Locale::En, "agents.task.advanced_hint") => Some("Leave budget fields empty for unlimited. Use 0 to explicitly remove a limit."),
+        (Locale::En, "agents.task.advanced_hint") => Some("Leave budget fields empty for unlimited. Runtime uses the policy default when empty; use 0 to remove its limit."),
         (Locale::En, "agents.task.max_tokens") => Some("Max tokens"),
         (Locale::En, "agents.task.max_tokens_hint") => Some("Empty = unlimited"),
         (Locale::En, "agents.task.max_tools") => Some("Max tool calls"),
         (Locale::En, "agents.task.max_tools_hint") => Some("Empty = unlimited"),
         (Locale::En, "agents.task.max_cost") => Some("Max cost (microunits)"),
         (Locale::En, "agents.task.max_cost_hint") => Some("Empty = unlimited"),
+        (Locale::En, "agents.task.timeout") => Some("Max runtime (seconds)"),
+        (Locale::En, "agents.task.timeout_hint") => Some("Empty = policy default; 0 = unlimited"),
         (Locale::En, "agents.task.output_schema") => Some("Output JSON Schema"),
         (Locale::En, "agents.task.output_schema_hint") => Some("Leave empty for the standard result contract (summary, files_changed, artifacts, evidence, tests, risks)."),
         (Locale::En, "agents.task.workspace") => Some("Workspace"),
@@ -1022,6 +1031,8 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "center.close_right") => Some("Close tabs to the right"),
         (Locale::En, "center.close_all") => Some("Close all files"),
         (Locale::En, "center.split") => Some("Chat beside the document"),
+        (Locale::En, "center.snapshot") => Some("Snapshot"),
+        (Locale::En, "center.open_editor") => Some("Open in editor"),
         (Locale::En, "center.resize_split") => Some("Resize document and chat"),
         (Locale::En, "preview.zoom_out") => Some("Zoom out"),
         (Locale::En, "preview.zoom_reset") => Some("Reset zoom"),
@@ -1150,6 +1161,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "runtime.configure") => Some("Configure path"),
         (Locale::En, "runtime.start") => Some("Start"),
         (Locale::En, "runtime.stop") => Some("Stop"),
+        (Locale::En, "runtime.dismiss") => Some("Dismiss"),
         (Locale::En, "runtime.restart") => Some("Restart"),
         (Locale::En, "runtime.starting") => Some("Starting"),
         (Locale::En, "runtime.ready") => Some("Ready"),
@@ -1161,8 +1173,29 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "runtime.toggle_panel") => Some("Show runtime variables and console"),
         (Locale::En, "runtime.console") => Some("Runtime console"),
         (Locale::En, "runtime.console_clear") => Some("Clear console"),
-        (Locale::En, "runtime.console_empty") => Some("Selected-code output will appear here."),
+        (Locale::En, "runtime.console_empty") => Some("Run selected code or type in the prompt below; output appears here."),
         (Locale::En, "runtime.console_omitted") => Some("… {n} submitted lines omitted …"),
+        (Locale::En, "runtime.console_input") => Some("Console input"),
+        (Locale::En, "runtime.console_input_placeholder") => Some("Type {language} code · Enter runs · Shift+Enter adds a line"),
+        (Locale::En, "runtime.console_run") => Some("Run"),
+        (Locale::En, "runtime.console_run_hint") => Some("Run console input (Enter)"),
+        (Locale::En, "runtime.plots") => Some("Plots"),
+        (Locale::En, "runtime.plots_empty") => Some("Plots from executed code appear here."),
+        (Locale::En, "runtime.plots_clear") => Some("Clear plots"),
+        (Locale::En, "runtime.plot_prev") => Some("Previous plot"),
+        (Locale::En, "runtime.plot_next") => Some("Next plot"),
+        (Locale::En, "runtime.plot_alt") => Some("Plot {index} of {total}"),
+        (Locale::En, "editor.source") => Some("Source editor"),
+        (Locale::En, "editor.run") => Some("Run"),
+        (Locale::En, "editor.run_hint") => Some("Run selection or current statement (Ctrl/⌘+Enter)"),
+        (Locale::En, "editor.run_shortcut") => Some("Ctrl/⌘+Enter runs selection or current statement"),
+        (Locale::En, "editor.run_script") => Some("Run script"),
+        (Locale::En, "editor.run_script_hint") => Some("Save, then run the whole script in its runtime (Ctrl/⌘+Shift+Enter). Loaded data stays in memory."),
+        (Locale::En, "editor.selection_line") => Some("Selected line {line}"),
+        (Locale::En, "editor.selection_lines") => Some("Selected lines {start}–{end}"),
+        (Locale::En, "editor.save") => Some("Save"),
+        (Locale::En, "editor.saving") => Some("Saving…"),
+        (Locale::En, "editor.save_hint") => Some("Save file (Ctrl+S)"),
         (Locale::En, "runtime.worker_closed") => Some("The runtime process exited unexpectedly. Restart it before running more code."),
         (Locale::En, "runtime.unavailable") => Some("Unavailable"),
         (Locale::En, "runtime.unavailable_hint") => Some("Probe this context or configure its interpreter. R also requires jsonlite."),
@@ -1185,6 +1218,14 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "runtime.objects_hint") => Some("Refresh to list in-memory objects without loading their contents."),
         (Locale::En, "runtime.objects_empty") => Some("No user objects in this runtime."),
         (Locale::En, "runtime.objects_showing") => Some("Showing {shown} of {total} objects."),
+        (Locale::En, "runtime.objects_filter") => Some("Filter objects"),
+        (Locale::En, "runtime.objects_filter_ph") => Some("Filter by name or type"),
+        (Locale::En, "runtime.objects_none_match") => Some("No objects match this filter."),
+        (Locale::En, "runtime.switch_language") => Some("Show {language} environment"),
+        (Locale::En, "runtime.switch_language_list") => Some("Runtime languages"),
+        (Locale::En, "runtime.strip_title") => Some("Servers and runtimes for this conversation"),
+        (Locale::En, "runtime.strip_open") => Some("Open {language} on {context}"),
+        (Locale::En, "runtime.strip_manage") => Some("Open runtimes for {context}"),
         (Locale::En, "runtime.quote_object") => Some("Add this variable to chat or explain it"),
         (Locale::En, "runtime_config.title") => Some("Runtime interpreters"),
         (Locale::En, "runtime_config.scope") => Some("Saved in Wisp for execution context {context}."),
@@ -1428,6 +1469,15 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "browser.cleanup.close") => Some("Close selected"),
         (Locale::En, "browser.cleanup.keep") => Some("Keep all"),
         (Locale::En, "browser.cleanup.error") => Some("Could not close the selected tabs. The extension may be disconnected."),
+        (Locale::En, "browser.needs_human.title") => Some("Human verification needed"),
+        (Locale::En, "browser.needs_human.body") => Some("This page needs you to complete a human-verification challenge in the visible browser tab. Wisp will not click or bypass it, and will keep the tab open until you finish."),
+        (Locale::En, "browser.needs_human.hint") => Some("Complete the challenge in the browser. Do not close that tab or quit the browser until it succeeds."),
+        (Locale::En, "browser.needs_human.done") => Some("I completed verification"),
+        (Locale::En, "browser.needs_human.later") => Some("Later"),
+        (Locale::En, "browser.needs_human.show") => Some("Show this tab"),
+        (Locale::En, "browser.needs_human.still") => Some("The challenge is still on the page. Complete it in the browser tab, then try again."),
+        (Locale::En, "browser.needs_human.error") => Some("Could not re-check the tab. The browser extension may be disconnected."),
+        (Locale::En, "browser.needs_human.continue") => Some("I completed the human verification in the browser. Continue."),
         (Locale::En, "browser.offline.eyebrow") => Some("No live retrieval"),
         (Locale::En, "browser.offline.title") => Some("This answer has no live web results"),
         (Locale::En, "browser.offline.body") => Some("The browser extension is not connected. This reply is based only on the model's existing knowledge."),
@@ -1436,6 +1486,25 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "browser.offline.setup_done") => Some("Extension path copied. In the browser tab that just opened: enable Developer mode, then choose \"Load unpacked\" and paste the path."),
         (Locale::En, "browser.offline.setup_failed") => Some("Couldn't open the browser automatically. Open chrome://extensions yourself, enable Developer mode, and load the bundled extension from the Wisp install folder."),
         (Locale::En, "browser.offline.dismiss") => Some("Dismiss"),
+        (Locale::En, "browser.extension.eyebrow") => Some("Browser extension update"),
+        (Locale::En, "browser.extension.title") => Some("Wisp Real Browser Bridge is out of date"),
+        (Locale::En, "browser.extension.body") => Some("Connected version {current}; this build includes {required}. Update before using newer browser tools."),
+        (Locale::En, "browser.extension.manual_title") => Some("Updated files are ready — reload the extension"),
+        (Locale::En, "browser.extension.manual_body") => Some("Chrome cannot reload version {current} automatically. On the extension page, reload Wisp Real Browser Bridge {required}; if it still shows the old version, load the unpacked folder below."),
+        (Locale::En, "browser.extension.waiting_title") => Some("Waiting for the browser extension to reconnect"),
+        (Locale::En, "browser.extension.waiting_body") => Some("Last detected version {current}; this build requires {required}. Keep Wisp running while the extension reconnects, or open the extension page below."),
+        (Locale::En, "browser.extension.unknown") => Some("unknown"),
+        (Locale::En, "browser.extension.update") => Some("Update extension"),
+        (Locale::En, "browser.extension.updating") => Some("Updating…"),
+        (Locale::En, "browser.extension.updated") => Some("Browser extension updated and reconnected."),
+        (Locale::En, "browser.extension.manual_ready") => Some("Updated extension path copied. Reload the extension in the browser, then Wisp will recheck automatically."),
+        (Locale::En, "browser.extension.failed") => Some("Could not prepare the browser extension update. Check the error and retry."),
+        (Locale::En, "browser.extension.copy_path") => Some("Copy extension path"),
+        (Locale::En, "browser.extension.path_copied") => Some("Extension path copied."),
+        (Locale::En, "browser.extension.open_page") => Some("Open extension page"),
+        (Locale::En, "browser.extension.open_failed") => Some("Could not open the extension page automatically. Open chrome://extensions in your browser."),
+        (Locale::En, "browser.extension.recheck") => Some("Recheck"),
+        (Locale::En, "browser.extension.dismiss") => Some("Dismiss"),
         (Locale::En, "settings.nav.connections") => Some("MCP Links"),
         (Locale::En, "settings.nav.channels") => Some("Remote Access"),
         (Locale::En, "settings.nav.knowledge") => Some("Knowledge Base"),
@@ -1611,7 +1680,9 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "settings.usage.previous") => Some("Previous"),
         (Locale::En, "settings.usage.next") => Some("Next"),
         (Locale::En, "settings.usage.page") => Some("Page {page} of {pages}"),
-        (Locale::En, "environments.hint") => Some("Manage, probe, and configure local or remote environments here. Choose remote compute separately for each conversation from the Compute menu."),
+        (Locale::En, "environments.hint") => Some("Manage, probe, and configure local or remote environments here. The dropdown on this page is the default for new chats. Each conversation can pin its own default from the Compute menu."),
+        (Locale::En, "environments.default_analysis") => Some("Default analysis environment"),
+        (Locale::En, "environments.default_analysis_hint") => Some("New conversations start here. python and r run on this environment when the agent does not pick a server. Existing chats keep the default they already pinned."),
         (Locale::En, "environments.empty") => Some("No environments are available."),
         (Locale::En, "environments.remove") => Some("Remove server"),
         (Locale::En, "environments.edit") => Some("Edit server"),
@@ -1973,6 +2044,16 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "settings.reasoning_effort.known_hint") => Some("Known-supported values for this model family: {list}"),
         (Locale::En, "settings.reasoning_effort.unknown_hint") => Some("Unrecognized model — an unsupported value may be silently ignored or rejected by the API."),
         (Locale::En, "settings.reasoning_effort.unsupported_hint") => Some("This provider does not take a reasoning-effort parameter; non-default values are ignored."),
+        (Locale::En, "settings.service_tier") => Some("Fast mode"),
+        (Locale::En, "settings.service_tier.default") => Some("Off · Provider default"),
+        (Locale::En, "settings.service_tier.fast") => Some("On · priority"),
+        (Locale::En, "settings.service_tier.hint") => Some("Sets the default for new conversations. Fast sends top-level service_tier=priority on OpenAI Chat Completions and Responses, independently of reasoning effort, and may increase quota usage. A conversation can override it from the lightning button."),
+        (Locale::En, "composer.fast.on_profile") => Some("Fast is on · Click to turn off\nRequests send service_tier=priority and may use more quota.\nInherited from the profile default."),
+        (Locale::En, "composer.fast.on_session") => Some("Fast is on · Click to turn off\nRequests send service_tier=priority and may use more quota.\nThis conversation overrides the profile default."),
+        (Locale::En, "composer.fast.off_profile") => Some("Fast is off · Click to turn on\nInherited from the profile default."),
+        (Locale::En, "composer.fast.off_session") => Some("Fast is off · Click to turn on\nThis conversation overrides the profile default."),
+        (Locale::En, "composer.fast.running") => Some("Fast cannot be changed while a task is running. Change it after completion for the next turn."),
+        (Locale::En, "composer.fast.saving") => Some("Saving Fast mode…"),
         (Locale::En, "settings.supports_vision") => Some("Supports image input"),
         (Locale::En, "settings.use_for_vision") => Some("Use for image analysis"),
         (Locale::En, "settings.vision_hint") => Some("Image attachments go directly to visual input models; non-visual models and image tools use this assigned model for text observations."),
@@ -2021,7 +2102,11 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "conn.secret_add_header") => Some("Add header"),
         (Locale::En, "conn.secret_add_env") => Some("Add variable"),
         (Locale::En, "conn.secret_remove") => Some("Remove"),
+        (Locale::En, "conn.secret_show") => Some("Show value"),
+        (Locale::En, "conn.secret_hide") => Some("Hide value"),
         (Locale::En, "conn.test") => Some("Test"),
+        (Locale::En, "conn.testing") => Some("Testing…"),
+        (Locale::En, "conn.testing_status") => Some("Testing the connection…"),
         (Locale::En, "conn.featured") => Some("Featured — bundled bio-tools (PubMed, GEO, UniProt, PDB…)"),
         (Locale::En, "conn.custom") => Some("Custom connections"),
         (Locale::En, "conn.tools_count") => Some("{n} tools"),
@@ -2126,6 +2211,9 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "err.api_key_required") => Some("API key is required."),
         (Locale::En, "err.max_tokens_ceiling") => Some("{model} accepts at most {max} output tokens — lower Max output tokens."),
         (Locale::En, "err.unknown") => Some("Unknown error"),
+        (Locale::En, "err.blank_window_no_project") => {
+            Some("Open a project in this window before running that action.")
+        }
         (Locale::En, "err.validation_timeout") => Some("Validation timed out after 30s"),
         (Locale::En, "err.vision_probe_failed") => Some(" This check sent a test image because \"supports images\" is on. If the model has no vision support, turn that off and validate again."),
         (Locale::En, "err.skill_no_md") => Some("The selected folder has no SKILL.md."),
@@ -2238,6 +2326,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "chat.video_preview_unavailable") => Some("Generated video preview unavailable"),
         (Locale::En, "err.hint.balance") => Some("The provider account is out of credit. Top up on the provider's billing page, then retry."),
         (Locale::En, "err.hint.auth") => Some("The API key was rejected. Check the API key in Settings → Models."),
+        (Locale::En, "err.hint.acp_no_fallback") => Some("This ACP request stopped. Wisp did not fall back to an HTTP model. Check the ACP Agent's connection and sign-in, then send your message again. To use an HTTP model, start a new conversation and select it explicitly; HTTP API usage may incur separate charges."),
         (Locale::En, "err.hint.context") => Some("The conversation exceeds the model's context limit. Send /compact to fold old turns, start a new session, or switch to a model with a larger context window."),
         (Locale::En, "err.hint.image") => Some("This model does not accept image input. Remove the images or switch to a vision-capable model."),
         (Locale::En, "err.hint.model_name") => Some("The provider does not recognize the configured model name. Check the model name in Settings → Models."),
@@ -2352,6 +2441,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "ctx.attach_directory") => Some("Add folder to chat"),
         (Locale::En, "ctx.register_artifact") => Some("Register as artifact"),
         (Locale::En, "ctx.reveal_in_manager") => Some("Show in file manager"),
+        (Locale::En, "ctx.open_with_system") => Some("Open with default app"),
         (Locale::En, "ctx.export_session") => Some("Export session"),
         (Locale::En, "ctx.export_debug_request") => Some("Export debug request (what was sent)"),
         (Locale::En, "ctx.open_session") => Some("Open session"),
@@ -2462,6 +2552,11 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "files.new_directory") => Some("New folder"),
         (Locale::En, "files.refresh") => Some("Refresh"),
         (Locale::En, "files.select_entries") => Some("Select"),
+        (Locale::En, "files.sort") => Some("Sort"),
+        (Locale::En, "files.sort_by") => Some("Sort by"),
+        (Locale::En, "files.sort_name") => Some("Name"),
+        (Locale::En, "files.sort_size") => Some("Size"),
+        (Locale::En, "files.sort_modified") => Some("Modified"),
         (Locale::En, "files.copy_absolute_path") => Some("Copy absolute path"),
         (Locale::En, "files.copy_relative_path") => Some("Copy relative path"),
         (Locale::En, "files.rename_file") => Some("Rename file"),
@@ -2914,6 +3009,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "command.group.help") => Some("Help"),
         (Locale::En, "command.no_results") => Some("No matching commands"),
         (Locale::En, "command.new_session") => Some("New session"),
+        (Locale::En, "command.new_window") => Some("New Window"),
         (Locale::En, "command.scratch") => Some("Scratch chat"),
         (Locale::En, "scratch.title") => Some("Scratch chat"),
         (Locale::En, "scratch.open") => Some("Scratch chat"),
@@ -2976,11 +3072,24 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "projects.search_close") => Some(" close"),
         (Locale::En, "projects.new") => Some("New project"),
         (Locale::En, "projects.import") => Some("Import project"),
-        (Locale::En, "projects.import_options_hint") => Some("Choose whether to use an existing folder in place or restore a complete Wisp archive."),
+        (Locale::En, "projects.import_options_hint") => Some("Open an existing folder, restore a complete Wisp archive, or recover conversations from workspace history."),
         (Locale::En, "projects.import_in_place") => Some("Open a folder in place"),
         (Locale::En, "projects.import_in_place_hint") => Some("Keep every file where it is. Wisp registers the folder without copying it."),
         (Locale::En, "projects.import_zip") => Some("Import a ZIP archive"),
         (Locale::En, "projects.import_zip_hint") => Some("Restore workspace files, conversations, and Wisp project records into a new folder."),
+        (Locale::En, "projects.recover_workspace") => Some("Recover conversations from a workspace"),
+        (Locale::En, "projects.recover_workspace_hint") => Some("Scan .wisp/history in an orphaned workspace and rebuild the recoverable conversation timelines in place."),
+        (Locale::En, "projects.recover_title") => Some("Recover workspace conversations"),
+        (Locale::En, "projects.recover_notice") => Some("This is a best-effort recovery of message timelines from .wisp/history. It does not restore UI-only events, runs, reviews, or other database-only records, and the source archives are not changed."),
+        (Locale::En, "projects.recover_sessions") => Some("conversations"),
+        (Locale::En, "projects.recover_messages") => Some("messages"),
+        (Locale::En, "projects.recover_archives") => Some("valid archives"),
+        (Locale::En, "projects.recover_range") => Some("Message range: {start} – {end}"),
+        (Locale::En, "projects.recover_range_unknown") => Some("The archives do not contain usable message timestamps."),
+        (Locale::En, "projects.recover_skipped") => Some("{invalid} damaged archive(s) and {duplicate} duplicate archive(s) will be skipped."),
+        (Locale::En, "projects.recover_empty") => Some("No recoverable conversations were found in this workspace."),
+        (Locale::En, "projects.recover_action") => Some("Recover and open"),
+        (Locale::En, "projects.recovering") => Some("Recovering…"),
         (Locale::En, "projects.open_folder_title") => Some("Open project folder"),
         (Locale::En, "projects.open_folder_hint") => Some("Wisp will use this folder in place. No project files are copied."),
         (Locale::En, "projects.open_folder_action") => Some("Open project"),
@@ -3500,7 +3609,8 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "models.entries") => Some("模型"),
         (Locale::Zh, "models.entries_hint") => Some("每个模型可独立选择协议和可选 Endpoint 后缀，并共享上面的 Base URL 与密钥。"),
         (Locale::Zh, "models.byok_hint") => Some("Base URL 与密钥只填写一次，下面每个模型都会使用它们。"),
-        (Locale::Zh, "models.reuse_key") => Some("将使用 {host} 上已保存的密钥，留空即可复用。"),
+        (Locale::Zh, "models.reuse_key") => Some("留空则复用 {host} 上已保存的密钥。"),
+        (Locale::Zh, "models.separate_key_hint") => Some("粘贴另一把密钥可在同一 Base URL 上再配置一批模型。若模型 ID 相同，请用不同的显示名称区分。"),
         (Locale::Zh, "models.need_chat") => Some("至少添加一个对话模型。仅生图的配置也需要一个对话模型。"),
         (Locale::Zh, "models.quick_add") => Some("快速配置："),
         (Locale::Zh, "models.manage") => Some("模型管理"),
@@ -3693,15 +3803,21 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "composer.compute_count") => Some("{n} 个远程环境"),
         (Locale::Zh, "compute.local") => Some("本地"),
         (Locale::Zh, "compute.default_local") => Some("默认使用本地"),
+        (Locale::Zh, "compute.default_named") => Some("默认 {name}"),
+        (Locale::Zh, "compute.menu_hint") => Some(
+            "用上方下拉框选择本对话里 python / r 的默认运行位置。点击服务器以加入本会话。",
+        ),
+        (Locale::Zh, "compute.session_default") => Some("本对话默认"),
         (Locale::Zh, "compute.search") => Some("搜索服务器"),
-        (Locale::Zh, "compute.enabled") => Some("优先"),
-        (Locale::Zh, "compute.disabled") => Some("未选择"),
+        (Locale::Zh, "compute.attached") => Some("本会话"),
+        (Locale::Zh, "compute.not_attached") => Some("未加入"),
+        (Locale::Zh, "compute.auto_attaches") => Some("将自动加入"),
         (Locale::Zh, "compute.manage") => Some("前往设置管理环境"),
         (Locale::Zh, "compute.add_host") => Some("添加 SSH 主机…"),
         (Locale::Zh, "compute.analysis_default") => Some("默认"),
         (Locale::Zh, "compute.wsl_default") => Some("WSL 默认"),
-        (Locale::Zh, "compute.set_default") => Some("设为默认分析环境"),
-        (Locale::Zh, "compute.clear_default") => Some("取消默认"),
+        (Locale::Zh, "compute.set_default") => Some("设为本对话默认"),
+        (Locale::Zh, "compute.clear_default") => Some("本对话改用本地"),
         (Locale::Zh, "hosts.add") => Some("添加 SSH 主机"),
         (Locale::Zh, "hosts.edit") => Some("编辑 SSH 主机"),
         (Locale::Zh, "hosts.auth_method") => Some("认证方式"),
@@ -3796,13 +3912,15 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "agents.task.executor") => Some("执行器"),
         (Locale::Zh, "agents.task.auto") => Some("使用策略默认值"),
         (Locale::Zh, "agents.task.isolated") => Some("使用隔离工作区"),
-        (Locale::Zh, "agents.task.advanced_hint") => Some("预算字段留空表示不限制。填 0 可显式取消限制。"),
+        (Locale::Zh, "agents.task.advanced_hint") => Some("预算字段留空表示不限制。最长运行时间留空使用策略默认值，填 0 表示不限时。"),
         (Locale::Zh, "agents.task.max_tokens") => Some("最大 Token 数"),
         (Locale::Zh, "agents.task.max_tokens_hint") => Some("留空 = 不限"),
         (Locale::Zh, "agents.task.max_tools") => Some("最大工具调用数"),
         (Locale::Zh, "agents.task.max_tools_hint") => Some("留空 = 不限"),
         (Locale::Zh, "agents.task.max_cost") => Some("最大费用（微单位）"),
         (Locale::Zh, "agents.task.max_cost_hint") => Some("留空 = 不限"),
+        (Locale::Zh, "agents.task.timeout") => Some("最长运行时间（秒）"),
+        (Locale::Zh, "agents.task.timeout_hint") => Some("留空 = 策略默认值；0 = 不限时"),
         (Locale::Zh, "agents.task.output_schema") => Some("输出 JSON Schema"),
         (Locale::Zh, "agents.task.output_schema_hint") => Some("留空使用标准输出格式（summary, files_changed, artifacts, evidence, tests, risks）。"),
         (Locale::Zh, "agents.task.workspace") => Some("工作区"),
@@ -4045,6 +4163,8 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "center.close_right") => Some("关闭右侧标签"),
         (Locale::Zh, "center.close_all") => Some("关闭全部文件"),
         (Locale::Zh, "center.split") => Some("在文档旁边对话"),
+        (Locale::Zh, "center.snapshot") => Some("对话快照"),
+        (Locale::Zh, "center.open_editor") => Some("打开编辑器"),
         (Locale::Zh, "center.resize_split") => Some("调整文档和对话宽度"),
         (Locale::Zh, "preview.zoom_out") => Some("缩小"),
         (Locale::Zh, "preview.zoom_reset") => Some("重置缩放"),
@@ -4173,6 +4293,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "runtime.configure") => Some("配置路径"),
         (Locale::Zh, "runtime.start") => Some("启动"),
         (Locale::Zh, "runtime.stop") => Some("停止"),
+        (Locale::Zh, "runtime.dismiss") => Some("移除"),
         (Locale::Zh, "runtime.restart") => Some("重启"),
         (Locale::Zh, "runtime.starting") => Some("启动中"),
         (Locale::Zh, "runtime.ready") => Some("就绪"),
@@ -4184,8 +4305,29 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "runtime.toggle_panel") => Some("显示 Runtime 变量和控制台"),
         (Locale::Zh, "runtime.console") => Some("Runtime 控制台"),
         (Locale::Zh, "runtime.console_clear") => Some("清空控制台"),
-        (Locale::Zh, "runtime.console_empty") => Some("选中代码运行后的输出会显示在这里。"),
+        (Locale::Zh, "runtime.console_empty") => Some("选中代码运行，或在下方输入代码，输出会显示在这里。"),
         (Locale::Zh, "runtime.console_omitted") => Some("… 已省略 {n} 行提交代码 …"),
+        (Locale::Zh, "runtime.console_input") => Some("控制台输入"),
+        (Locale::Zh, "runtime.console_input_placeholder") => Some("输入 {language} 代码 · 回车运行 · Shift+回车换行"),
+        (Locale::Zh, "runtime.console_run") => Some("运行"),
+        (Locale::Zh, "runtime.console_run_hint") => Some("运行控制台输入（回车）"),
+        (Locale::Zh, "runtime.plots") => Some("图形"),
+        (Locale::Zh, "runtime.plots_empty") => Some("运行代码生成的图形会显示在这里。"),
+        (Locale::Zh, "runtime.plots_clear") => Some("清空图形"),
+        (Locale::Zh, "runtime.plot_prev") => Some("上一张图"),
+        (Locale::Zh, "runtime.plot_next") => Some("下一张图"),
+        (Locale::Zh, "runtime.plot_alt") => Some("第 {index}/{total} 张图"),
+        (Locale::Zh, "editor.source") => Some("源码编辑器"),
+        (Locale::Zh, "editor.run") => Some("运行"),
+        (Locale::Zh, "editor.run_hint") => Some("运行选中代码或当前语句（Ctrl/⌘+Enter）"),
+        (Locale::Zh, "editor.run_shortcut") => Some("Ctrl/⌘+Enter 运行选中代码或当前语句"),
+        (Locale::Zh, "editor.run_script") => Some("运行脚本"),
+        (Locale::Zh, "editor.run_script_hint") => Some("先保存，再在绑定的 Runtime 中运行整个脚本（Ctrl/⌘+Shift+Enter）。已加载的数据仍留在内存中。"),
+        (Locale::Zh, "editor.selection_line") => Some("已选择第 {line} 行"),
+        (Locale::Zh, "editor.selection_lines") => Some("已选择第 {start}–{end} 行"),
+        (Locale::Zh, "editor.save") => Some("保存"),
+        (Locale::Zh, "editor.saving") => Some("保存中…"),
+        (Locale::Zh, "editor.save_hint") => Some("保存文件（Ctrl+S）"),
         (Locale::Zh, "runtime.worker_closed") => Some("Runtime 进程意外退出，请重启后再运行代码。"),
         (Locale::Zh, "runtime.unavailable") => Some("不可用"),
         (Locale::Zh, "runtime.unavailable_hint") => Some("请先探测该环境或配置解释器；R 还需要 jsonlite。"),
@@ -4208,6 +4350,14 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "runtime.objects_hint") => Some("刷新即可列出内存对象，不会读取对象内容。"),
         (Locale::Zh, "runtime.objects_empty") => Some("该运行时中没有用户对象。"),
         (Locale::Zh, "runtime.objects_showing") => Some("显示 {shown}/{total} 个对象。"),
+        (Locale::Zh, "runtime.objects_filter") => Some("筛选对象"),
+        (Locale::Zh, "runtime.objects_filter_ph") => Some("按名称或类型筛选"),
+        (Locale::Zh, "runtime.objects_none_match") => Some("没有符合筛选条件的对象。"),
+        (Locale::Zh, "runtime.switch_language") => Some("查看 {language} 内存环境"),
+        (Locale::Zh, "runtime.switch_language_list") => Some("运行时语言"),
+        (Locale::Zh, "runtime.strip_title") => Some("当前对话绑定的服务器与运行时"),
+        (Locale::Zh, "runtime.strip_open") => Some("打开 {context} 上的 {language}"),
+        (Locale::Zh, "runtime.strip_manage") => Some("打开 {context} 的交互运行时"),
         (Locale::Zh, "runtime.quote_object") => Some("将该变量加入对话或让 AI 解释"),
         (Locale::Zh, "runtime_config.title") => Some("运行时解释器"),
         (Locale::Zh, "runtime_config.scope") => Some("保存在 Wisp 的执行环境 {context} 中。"),
@@ -4451,6 +4601,15 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "browser.cleanup.close") => Some("关闭所选"),
         (Locale::Zh, "browser.cleanup.keep") => Some("全部保留"),
         (Locale::Zh, "browser.cleanup.error") => Some("无法关闭所选标签页。浏览器扩展可能已断开。"),
+        (Locale::Zh, "browser.needs_human.title") => Some("需要完成人机验证"),
+        (Locale::Zh, "browser.needs_human.body") => Some("当前页面需要你在可见的浏览器标签里完成人机验证。Wisp 不会点击或绕过验证，并会在你完成前保留这个标签。"),
+        (Locale::Zh, "browser.needs_human.hint") => Some("请在浏览器中完成验证。成功前不要关闭该标签，也不要退出浏览器。"),
+        (Locale::Zh, "browser.needs_human.done") => Some("我已完成验证"),
+        (Locale::Zh, "browser.needs_human.later") => Some("稍后"),
+        (Locale::Zh, "browser.needs_human.show") => Some("显示此标签"),
+        (Locale::Zh, "browser.needs_human.still") => Some("页面上仍有验证。请在浏览器标签中完成后再试。"),
+        (Locale::Zh, "browser.needs_human.error") => Some("无法复查该标签。浏览器扩展可能已断开。"),
+        (Locale::Zh, "browser.needs_human.continue") => Some("我已在浏览器中完成人机验证，请继续。"),
         (Locale::Zh, "browser.offline.eyebrow") => Some("未联网检索"),
         (Locale::Zh, "browser.offline.title") => Some("本次回答未包含任何联网检索结果"),
         (Locale::Zh, "browser.offline.body") => Some("浏览器扩展未连接。该回答仅基于模型已有知识，不是实时检索结果。"),
@@ -4459,6 +4618,25 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "browser.offline.setup_done") => Some("扩展路径已复制。在刚打开的浏览器页面中开启「开发者模式」，再点「加载已解压的扩展程序」并粘贴路径。"),
         (Locale::Zh, "browser.offline.setup_failed") => Some("未能自动打开浏览器。请自行打开 chrome://extensions 开启开发者模式，并从 Wisp 安装目录加载扩展。"),
         (Locale::Zh, "browser.offline.dismiss") => Some("关闭"),
+        (Locale::Zh, "browser.extension.eyebrow") => Some("浏览器扩展更新"),
+        (Locale::Zh, "browser.extension.title") => Some("Wisp Real Browser Bridge 版本过低"),
+        (Locale::Zh, "browser.extension.body") => Some("当前已连接版本为 {current}，本构建内置版本为 {required}。请先更新，再使用新版浏览器工具。"),
+        (Locale::Zh, "browser.extension.manual_title") => Some("新版文件已就绪，请重新加载扩展"),
+        (Locale::Zh, "browser.extension.manual_body") => Some("Chrome 无法自动重新加载版本 {current}。请在扩展管理页重新加载 Wisp Real Browser Bridge {required}；若仍显示旧版本，请从下方目录“加载已解压的扩展程序”。"),
+        (Locale::Zh, "browser.extension.waiting_title") => Some("正在等待浏览器扩展重新连接"),
+        (Locale::Zh, "browser.extension.waiting_body") => Some("上次检测到版本 {current}，本构建要求 {required}。请保持 Wisp 运行以等待扩展重连，或打开下方扩展管理页。"),
+        (Locale::Zh, "browser.extension.unknown") => Some("未知"),
+        (Locale::Zh, "browser.extension.update") => Some("更新扩展"),
+        (Locale::Zh, "browser.extension.updating") => Some("正在更新…"),
+        (Locale::Zh, "browser.extension.updated") => Some("浏览器扩展已更新并重新连接。"),
+        (Locale::Zh, "browser.extension.manual_ready") => Some("新版扩展路径已复制。请在浏览器中重新加载扩展，Wisp 会自动复检。"),
+        (Locale::Zh, "browser.extension.failed") => Some("无法准备浏览器扩展更新，请查看错误后重试。"),
+        (Locale::Zh, "browser.extension.copy_path") => Some("复制扩展路径"),
+        (Locale::Zh, "browser.extension.path_copied") => Some("扩展路径已复制。"),
+        (Locale::Zh, "browser.extension.open_page") => Some("打开扩展管理页"),
+        (Locale::Zh, "browser.extension.open_failed") => Some("无法自动打开扩展管理页，请在浏览器中打开 chrome://extensions。"),
+        (Locale::Zh, "browser.extension.recheck") => Some("重新检测"),
+        (Locale::Zh, "browser.extension.dismiss") => Some("关闭"),
         (Locale::Zh, "settings.nav.connections") => Some("MCP链接"),
         (Locale::Zh, "settings.nav.channels") => Some("远程接入"),
         (Locale::Zh, "settings.nav.knowledge") => Some("知识库"),
@@ -4634,7 +4812,9 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "settings.usage.previous") => Some("上一页"),
         (Locale::Zh, "settings.usage.next") => Some("下一页"),
         (Locale::Zh, "settings.usage.page") => Some("第 {page} / {pages} 页"),
-        (Locale::Zh, "environments.hint") => Some("在这里管理、探测并配置本地或远程环境。远程计算资源请在每个会话的「计算」菜单中单独选择。"),
+        (Locale::Zh, "environments.hint") => Some("在这里管理、探测并配置本地或远程环境。本页下拉框是新对话的起点；每个对话还可以在「计算环境」菜单里钉自己的默认。"),
+        (Locale::Zh, "environments.default_analysis") => Some("默认分析环境"),
+        (Locale::Zh, "environments.default_analysis_hint") => Some("新对话从这里开始。Agent 调用 python / r 且未指定服务器时在此运行。已经创建的对话不会跟着改。"),
         (Locale::Zh, "environments.empty") => Some("暂无可用环境。"),
         (Locale::Zh, "environments.remove") => Some("移除服务器"),
         (Locale::Zh, "environments.edit") => Some("编辑服务器"),
@@ -4993,6 +5173,16 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "settings.reasoning_effort.known_hint") => Some("该模型家族已知支持：{list}"),
         (Locale::Zh, "settings.reasoning_effort.unknown_hint") => Some("未能识别该模型——无效取值可能被服务端静默忽略或直接报错。"),
         (Locale::Zh, "settings.reasoning_effort.unsupported_hint") => Some("该提供商不接受推理强度参数，非默认值会被忽略。"),
+        (Locale::Zh, "settings.service_tier") => Some("Fast 模式"),
+        (Locale::Zh, "settings.service_tier.default") => Some("关闭 · Provider default"),
+        (Locale::Zh, "settings.service_tier.fast") => Some("开启 · priority"),
+        (Locale::Zh, "settings.service_tier.hint") => Some("这里设置新对话的默认值。Fast 会在 OpenAI Chat Completions 和 Responses 请求顶层发送 service_tier=priority，与推理强度独立，并可能增加配额消耗；单个对话可用输入框旁的闪电按钮覆盖。"),
+        (Locale::Zh, "composer.fast.on_profile") => Some("Fast 已开启 · 点击关闭\n请求将发送 service_tier=priority，可能增加配额消耗。\n来自配置默认值。"),
+        (Locale::Zh, "composer.fast.on_session") => Some("Fast 已开启 · 点击关闭\n请求将发送 service_tier=priority，可能增加配额消耗。\n当前对话已覆盖配置默认值。"),
+        (Locale::Zh, "composer.fast.off_profile") => Some("Fast 已关闭 · 点击开启\n来自配置默认值。"),
+        (Locale::Zh, "composer.fast.off_session") => Some("Fast 已关闭 · 点击开启\n当前对话已覆盖配置默认值。"),
+        (Locale::Zh, "composer.fast.running") => Some("任务运行期间不可切换 Fast；完成后可修改下一轮请求。"),
+        (Locale::Zh, "composer.fast.saving") => Some("正在保存 Fast 模式…"),
         (Locale::Zh, "settings.supports_vision") => Some("支持图片输入"),
         (Locale::Zh, "settings.use_for_vision") => Some("用于图片分析"),
         (Locale::Zh, "settings.vision_hint") => Some("图片附件会直接发送给支持视觉的输入模型；非视觉模型和图片工具会调用这里指定的模型并获取文本观察结果。"),
@@ -5041,7 +5231,11 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "conn.secret_add_header") => Some("添加请求头"),
         (Locale::Zh, "conn.secret_add_env") => Some("添加变量"),
         (Locale::Zh, "conn.secret_remove") => Some("移除"),
+        (Locale::Zh, "conn.secret_show") => Some("显示值"),
+        (Locale::Zh, "conn.secret_hide") => Some("隐藏值"),
         (Locale::Zh, "conn.test") => Some("测试"),
+        (Locale::Zh, "conn.testing") => Some("正在测试…"),
+        (Locale::Zh, "conn.testing_status") => Some("正在测试连接…"),
         (Locale::Zh, "conn.featured") => Some("精选 —— 内置 bio-tools（PubMed / GEO / UniProt / PDB…）"),
         (Locale::Zh, "conn.custom") => Some("自定义连接"),
         (Locale::Zh, "conn.tools_count") => Some("{n} 个工具"),
@@ -5152,6 +5346,9 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "err.api_key_required") => Some("API 密钥不能为空。"),
         (Locale::Zh, "err.max_tokens_ceiling") => Some("{model} 的最大输出 tokens 上限为 {max}，请调低「最大输出 tokens」。"),
         (Locale::Zh, "err.unknown") => Some("未知错误"),
+        (Locale::Zh, "err.blank_window_no_project") => {
+            Some("请先在此窗口打开一个项目，再执行该操作。")
+        }
         (Locale::Zh, "err.validation_timeout") => Some("验证超时（30 秒）"),
         (Locale::Zh, "err.vision_probe_failed") => Some(" 因为勾选了「支持图片」，本次验证发送了一张测试图片。如果该模型不支持图片，请取消勾选后重新验证。"),
         (Locale::Zh, "err.file_not_found") => Some("文件未找到：{path}"),
@@ -5256,6 +5453,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "chat.video_preview_unavailable") => Some("无法预览生成的视频"),
         (Locale::Zh, "err.hint.balance") => Some("服务商账户余额不足。请前往服务商官网充值后重试。"),
         (Locale::Zh, "err.hint.auth") => Some("API 密钥被拒绝。请在 设置 → 模型 中检查 API 密钥。"),
+        (Locale::Zh, "err.hint.acp_no_fallback") => Some("本次 ACP 请求已停止，Wisp 未回退（fallback）到 HTTP 模型。请检查 ACP Agent 的连接和登录状态后重新发送消息。如需使用 HTTP 模型，请新建会话并明确选择；HTTP API 调用可能产生额外费用。"),
         (Locale::Zh, "err.hint.context") => Some("对话长度超出模型上下文上限。发送 /compact 压缩旧轮次，或新开会话，或换用上下文更大的模型。"),
         (Locale::Zh, "err.hint.image") => Some("当前模型不支持图片输入。请移除消息中的图片，或换用支持视觉的模型。"),
         (Locale::Zh, "err.hint.model_name") => Some("服务商不识别所配置的模型名。请在 设置 → 模型 中核对模型名。"),
@@ -5370,6 +5568,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "ctx.attach_directory") => Some("添加文件夹到对话"),
         (Locale::Zh, "ctx.register_artifact") => Some("登记为产物"),
         (Locale::Zh, "ctx.reveal_in_manager") => Some("在文件管理器中打开"),
+        (Locale::Zh, "ctx.open_with_system") => Some("使用系统默认应用打开"),
         (Locale::Zh, "ctx.export_session") => Some("导出会话"),
         (Locale::Zh, "ctx.export_debug_request") => Some("导出调试请求（实际发送内容）"),
         (Locale::Zh, "ctx.open_session") => Some("打开会话"),
@@ -5480,6 +5679,11 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "files.new_directory") => Some("新建文件夹"),
         (Locale::Zh, "files.refresh") => Some("刷新"),
         (Locale::Zh, "files.select_entries") => Some("选择"),
+        (Locale::Zh, "files.sort") => Some("排序"),
+        (Locale::Zh, "files.sort_by") => Some("排序方式"),
+        (Locale::Zh, "files.sort_name") => Some("名称"),
+        (Locale::Zh, "files.sort_size") => Some("大小"),
+        (Locale::Zh, "files.sort_modified") => Some("更新时间"),
         (Locale::Zh, "files.copy_absolute_path") => Some("复制绝对路径"),
         (Locale::Zh, "files.copy_relative_path") => Some("复制相对路径"),
         (Locale::Zh, "files.rename_file") => Some("重命名文件"),
@@ -5933,6 +6137,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "command.group.help") => Some("帮助"),
         (Locale::Zh, "command.no_results") => Some("没有匹配的命令"),
         (Locale::Zh, "command.new_session") => Some("新建会话"),
+        (Locale::Zh, "command.new_window") => Some("新建窗口"),
         (Locale::Zh, "command.scratch") => Some("随手一聊"),
         (Locale::Zh, "scratch.title") => Some("随手一聊"),
         (Locale::Zh, "scratch.open") => Some("随手一聊"),
@@ -5995,11 +6200,24 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "projects.search_close") => Some(" 关闭"),
         (Locale::Zh, "projects.new") => Some("新建项目"),
         (Locale::Zh, "projects.import") => Some("导入项目"),
-        (Locale::Zh, "projects.import_options_hint") => Some("请选择原地使用已有文件夹，或恢复一份完整的 Wisp 压缩包。"),
+        (Locale::Zh, "projects.import_options_hint") => Some("请选择原地使用已有文件夹、恢复完整的 Wisp 压缩包，或从工作区历史中恢复会话。"),
         (Locale::Zh, "projects.import_in_place") => Some("原地打开文件夹"),
         (Locale::Zh, "projects.import_in_place_hint") => Some("文件保持在当前位置；Wisp 只登记此文件夹，不复制任何项目文件。"),
         (Locale::Zh, "projects.import_zip") => Some("导入 ZIP 压缩包"),
         (Locale::Zh, "projects.import_zip_hint") => Some("把工作区文件、会话和 Wisp 项目记录完整恢复到一个新文件夹。"),
+        (Locale::Zh, "projects.recover_workspace") => Some("从工作区恢复会话"),
+        (Locale::Zh, "projects.recover_workspace_hint") => Some("扫描孤立工作区中的 .wisp/history，并在原位置重建可恢复的会话时间线。"),
+        (Locale::Zh, "projects.recover_title") => Some("恢复工作区会话"),
+        (Locale::Zh, "projects.recover_notice") => Some("这是基于 .wisp/history 的尽力恢复，只恢复消息时间线，不恢复仅存在于数据库中的 UI 事件、运行、审阅等记录；原始存档不会被修改。"),
+        (Locale::Zh, "projects.recover_sessions") => Some("个会话"),
+        (Locale::Zh, "projects.recover_messages") => Some("条消息"),
+        (Locale::Zh, "projects.recover_archives") => Some("个有效存档"),
+        (Locale::Zh, "projects.recover_range") => Some("消息时间范围：{start} – {end}"),
+        (Locale::Zh, "projects.recover_range_unknown") => Some("存档中没有可用的消息时间戳。"),
+        (Locale::Zh, "projects.recover_skipped") => Some("将跳过 {invalid} 个损坏存档和 {duplicate} 个重复存档。"),
+        (Locale::Zh, "projects.recover_empty") => Some("这个工作区中没有找到可恢复的会话。"),
+        (Locale::Zh, "projects.recover_action") => Some("恢复并打开"),
+        (Locale::Zh, "projects.recovering") => Some("正在恢复…"),
         (Locale::Zh, "projects.open_folder_title") => Some("打开项目文件夹"),
         (Locale::Zh, "projects.open_folder_hint") => Some("Wisp 会原地使用此文件夹，不会复制项目文件。"),
         (Locale::Zh, "projects.open_folder_action") => Some("打开项目"),
@@ -6214,6 +6432,64 @@ pub fn localize_backend(locale: Locale, msg: &str) -> String {
         m if m.eq_ignore_ascii_case("client updates config not found") => {
             t(locale, "err.client_updates_config_not_found")
         }
+        m if m.starts_with("workspace_recovery_no_history:") => {
+            if locale == Locale::Zh {
+                "所选文件夹中没有可读取的 .wisp/history 会话存档目录。".into()
+            } else {
+                m.trim_start_matches("workspace_recovery_no_history:")
+                    .trim()
+                    .into()
+            }
+        }
+        m if m.starts_with("workspace_recovery_registered:") => {
+            t(locale, "projects.folder_registered")
+        }
+        m if m.starts_with("workspace_recovery_no_sessions:") => {
+            t(locale, "projects.recover_empty")
+        }
+        m if m.starts_with("workspace_recovery_name_required:") => {
+            if locale == Locale::Zh {
+                "项目名称不能为空。".into()
+            } else {
+                "Project name is required.".into()
+            }
+        }
+        m if m.starts_with("workspace_recovery_invalid_workspace:") => {
+            if locale == Locale::Zh {
+                "无法打开所选工作区，请确认该路径仍然存在且是文件夹。".into()
+            } else {
+                m.trim_start_matches("workspace_recovery_invalid_workspace:")
+                    .trim()
+                    .into()
+            }
+        }
+        m if m.starts_with("workspace_recovery_not_writable:") => {
+            if locale == Locale::Zh {
+                "所选工作区不可写，无法登记为可继续使用的恢复项目。".into()
+            } else {
+                m.trim_start_matches("workspace_recovery_not_writable:")
+                    .trim()
+                    .into()
+            }
+        }
+        m if m.starts_with("workspace_recovery_too_large:") => {
+            if locale == Locale::Zh {
+                "工作区历史超过安全恢复上限，请减少存档数量或大小后重试。".into()
+            } else {
+                m.trim_start_matches("workspace_recovery_too_large:")
+                    .trim()
+                    .into()
+            }
+        }
+        m if m.starts_with("workspace_recovery_import_failed:") => {
+            if locale == Locale::Zh {
+                "恢复会话写入失败，未创建半恢复项目；原始工作区未被修改。".into()
+            } else {
+                m.trim_start_matches("workspace_recovery_import_failed:")
+                    .trim()
+                    .into()
+            }
+        }
         m if m.starts_with("exploration_round_active:") => {
             if locale == Locale::Zh {
                 "另一个主线会话已有当前探索轮；请先结束该轮探索。".to_string()
@@ -6385,6 +6661,9 @@ pub fn localize_backend(locale: Locale, msg: &str) -> String {
         "This project is busy. Try again when the current project operation finishes." => {
             t(locale, "projects.transfer.export_locked")
         }
+        "Open a project in this window before running that action." => {
+            t(locale, "err.blank_window_no_project")
+        }
         m if m.starts_with("Project workspace is not a directory: ") => {
             if locale == Locale::Zh {
                 format!(
@@ -6503,6 +6782,9 @@ pub fn is_context_limit_error(msg: &str) -> bool {
 }
 
 fn api_error_hint_key(msg: &str) -> Option<&'static str> {
+    if msg.starts_with(crate::dto::ACP_TURN_ERROR_PREFIX) {
+        return Some("err.hint.acp_no_fallback");
+    }
     if !msg.contains("api: ") && !msg.contains("http: ") {
         return None;
     }
@@ -6666,6 +6948,29 @@ mod api_error_hint_tests {
     }
 
     #[test]
+    fn acp_failures_explain_no_fallback_and_never_offer_http_recovery() {
+        for detail in [
+            "Agent process exited",
+            "api: 401 unauthorized",
+            "api: 403 forbidden",
+            "This ACP Agent cannot resume or load the saved session.",
+            "api: 400 context window exceeded",
+            "api: 400 unknown variant image_url",
+        ] {
+            let error = format!("{}{detail}", crate::dto::ACP_TURN_ERROR_PREFIX);
+            for locale in [Locale::En, Locale::Zh] {
+                let hint = t(locale, "err.hint.acp_no_fallback");
+                assert_eq!(api_error_hint(locale, &error), Some(hint.clone()));
+                let localized = localize_backend(locale, &error);
+                assert!(localized.contains(detail));
+                assert!(localized.contains(&hint));
+            }
+            assert!(!is_context_limit_error(&error));
+            assert!(!is_image_unsupported(&error));
+        }
+    }
+
+    #[test]
     fn localize_backend_appends_hint() {
         let msg = r#"api: 402 {"error":{"message":"Insufficient Balance"}}"#;
         let out = localize_backend(Locale::Zh, msg);
@@ -6774,6 +7079,20 @@ mod queue_label_tests {
     fn sidebar_specialists_label_exists_in_both_locales() {
         assert_eq!(t(Locale::En, "sidebar.specialists"), "Specialists");
         assert_eq!(t(Locale::Zh, "sidebar.specialists"), "专家");
+    }
+
+    #[test]
+    fn file_sort_labels_exist_in_both_locales() {
+        assert_eq!(t(Locale::En, "files.sort"), "Sort");
+        assert_eq!(t(Locale::Zh, "files.sort"), "排序");
+        assert_eq!(t(Locale::En, "files.sort_by"), "Sort by");
+        assert_eq!(t(Locale::Zh, "files.sort_by"), "排序方式");
+        assert_eq!(t(Locale::En, "files.sort_name"), "Name");
+        assert_eq!(t(Locale::Zh, "files.sort_name"), "名称");
+        assert_eq!(t(Locale::En, "files.sort_size"), "Size");
+        assert_eq!(t(Locale::Zh, "files.sort_size"), "大小");
+        assert_eq!(t(Locale::En, "files.sort_modified"), "Modified");
+        assert_eq!(t(Locale::Zh, "files.sort_modified"), "更新时间");
     }
 
     #[test]
@@ -6919,6 +7238,42 @@ mod queue_label_tests {
         assert_eq!(t(Locale::Zh, "settings.nav.knowledge"), "知识库");
         assert_eq!(t(Locale::En, "settings.nav.knowledge"), "Knowledge Base");
         assert_eq!(Locale::default(), Locale::Zh);
+    }
+
+    #[test]
+    fn browser_needs_human_labels_exist_in_both_locales() {
+        assert_eq!(
+            t(Locale::En, "browser.needs_human.title"),
+            "Human verification needed"
+        );
+        assert_eq!(
+            t(Locale::Zh, "browser.needs_human.title"),
+            "需要完成人机验证"
+        );
+        assert_eq!(
+            t(Locale::En, "browser.needs_human.done"),
+            "I completed verification"
+        );
+        assert_eq!(t(Locale::Zh, "browser.needs_human.done"), "我已完成验证");
+    }
+
+    #[test]
+    fn mcp_test_progress_labels_exist_in_both_locales() {
+        assert_eq!(t(Locale::En, "conn.testing"), "Testing…");
+        assert_eq!(t(Locale::Zh, "conn.testing"), "正在测试…");
+        assert_eq!(
+            t(Locale::En, "conn.testing_status"),
+            "Testing the connection…"
+        );
+        assert_eq!(t(Locale::Zh, "conn.testing_status"), "正在测试连接…");
+    }
+
+    #[test]
+    fn mcp_secret_visibility_labels_exist_in_both_locales() {
+        assert_eq!(t(Locale::En, "conn.secret_show"), "Show value");
+        assert_eq!(t(Locale::Zh, "conn.secret_show"), "显示值");
+        assert_eq!(t(Locale::En, "conn.secret_hide"), "Hide value");
+        assert_eq!(t(Locale::Zh, "conn.secret_hide"), "隐藏值");
     }
 
     #[test]

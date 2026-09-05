@@ -25,10 +25,15 @@ SuperScience calls remote LLM APIs through model profiles. Desktop users
 configure these in **Settings -> Models**. **Add API access** is bring-your-own-key:
 enter the shared **Base URL** and API key first, then add every chat and image
 model that key can call. Each model row independently selects its **Protocol**,
-model ID, optional endpoint suffix, display name, and capabilities. Profiles
-that share a normalized Base URL share the key even when their protocols or
-endpoint suffixes differ. Editing a profile can still change that one model.
-Changing the key on any profile updates the others on the same Base URL.
+model ID, optional endpoint suffix, display name, and capabilities. Models
+created in one **Add API access** form share that form's Base URL and key, even
+when their protocols or endpoint suffixes differ. Leave the key blank to reuse
+a key already stored for that Base URL. Paste a different key to keep the new
+models on a separate credential — the same host can have several keys, each
+with its own model batch. Use distinct **display names** when two batches use
+the same model IDs. Changing a stored key on one profile updates other profiles
+that currently share that same key and Base URL; it does not overwrite a
+different key on the same host.
 A models.dev catalog baked in at build time maps exact model IDs to the
 vendor's documented ceilings: for a catalog-known model the form auto-fills
 **Max output tokens** and **Context window** and shows the ceiling next to the
@@ -50,13 +55,27 @@ Choosing a level saves it as the profile's default — it applies to every
 conversation using that model and is not scoped to the current conversation.
 Choosing "default" clears the value so the provider decides.
 
+OpenAI Chat Completions and Responses profiles also have a **Fast mode** toggle
+on the model form, next to reasoning effort. Off uses the provider default and
+omits the field; on sends top-level `service_tier: "priority"` on ordinary
+turns, tool calls, retries, and continue-generation. It is independent of
+reasoning effort and may increase quota usage. The model toggle is the default
+for new conversations. A lightning button beside the composer model picker
+shows the effective state and stores an independent per-conversation override;
+turning it back to the profile default clears that override. The button is
+disabled during a running turn and hidden for unsupported providers and ACP
+Agents. ACP Fast Mode remains a separate Agent session configuration.
+
 The built-in Reader used by `#` session references inherits that profile's
-model and reasoning effort, but the first retrieval pass is capped at 2048
-output tokens. If hidden reasoning fills that budget, or the JSON lands in a
-thinking field instead of visible content, Reader retries once with the
-profile's full output budget and parses JSON from either field. If structured
-retrieval still fails, the cited transcript is injected in truncated form so
-the main turn can still use the reference.
+model, not its reasoning effort. Retrieval turns disable DeepSeek thinking
+(the V4 default is thinking-on at `high`) and cap each transcript chunk well
+below a 1M context window so a long session from another project cannot fill
+a single JSON-extraction call. The first pass is still capped at 2048 output
+tokens; if the JSON is truncated or lands in a thinking field, Reader retries
+once with the profile's full output budget and parses the last complete JSON
+object from either field. If structured retrieval still fails, a head-and-tail
+excerpt of the cited transcript is injected so the main turn can still use the
+reference.
 
 Model profiles describe model access and capabilities for the **built-in SuperScience
 agent**. External coding agents (Codex / Claude via ACP) are configured under
@@ -146,8 +165,8 @@ metadata endpoint as image models — no billable video is generated.
 
 | Protocol | Use when | Per-model fields |
 | --- | --- | --- |
-| OpenAI Chat Completions | DeepSeek, GLM, local gateways, or any `/chat/completions` compatible endpoint | Protocol, Model ID, optional endpoint suffix |
-| OpenAI Responses | Reasoning/tool-call models through `/v1/responses` | Protocol, Model ID, optional endpoint suffix |
+| OpenAI Chat Completions | DeepSeek, GLM, local gateways, or any `/chat/completions` compatible endpoint | Protocol, Model ID, optional endpoint suffix, optional Fast default |
+| OpenAI Responses | Reasoning/tool-call models through `/v1/responses` | Protocol, Model ID, optional endpoint suffix, optional Fast default |
 | Anthropic | Claude-compatible models through `/v1/messages` | Protocol, Model ID, optional endpoint suffix |
 
 Enter the API root as the shared Base URL. Do not append `/v1`,
@@ -167,6 +186,9 @@ Responses leave the endpoint suffix blank. A model using DeepSeek's Anthropic
 entry selects the Anthropic protocol and sets its endpoint suffix to
 `/anthropic`, producing the effective Base URL
 `https://api.deepseek.com/anthropic` before SuperScience adds `/v1/messages`.
+To put a second DeepSeek key on the same host, open **Add API access** again,
+keep `https://api.deepseek.com`, and paste the other key instead of leaving
+it blank.
 
 OpenAI-compatible reasoning streams are normalized into one reasoning channel.
 Empty `content` placeholders sent alongside Alibaba/DashScope
@@ -278,10 +300,14 @@ The `superscience` headless CLI uses environment variables and supports the
 same API protocols:
 
 ```powershell
-$env:SUPERSCIENCE_PROVIDER = "openai"           # openai, openai_responses, or anthropic
-$env:SUPERSCIENCE_API_URL  = "https://api.deepseek.com"
-$env:SUPERSCIENCE_MODEL    = "deepseek-v4-flash"
-$env:SUPERSCIENCE_API_KEY  = "<your provider key>"
+$env:WISP_PROVIDER = "openai"           # openai, openai_responses, or anthropic
+$env:WISP_API_URL  = "https://api.deepseek.com"
+$env:WISP_MODEL    = "deepseek-v4-flash"
+$env:WISP_API_KEY  = "<your provider key>"
+# Optional dedicated vision model when the primary chat model cannot see images:
+$env:WISP_VISION_PROVIDER = "openai"
+$env:WISP_VISION_API_URL  = "https://api.openai.com/v1"
+$env:WISP_VISION_MODEL    = "gpt-4o-mini"
 cargo run -p superscience-cli
 ```
 

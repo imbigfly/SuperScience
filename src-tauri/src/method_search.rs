@@ -911,7 +911,7 @@ pub(crate) async fn get_method_search_run(
     window: tauri::WebviewWindow,
     run_id: String,
 ) -> Result<MethodSearchRunDetails, String> {
-    let project = state.active(window.label());
+    let project = state.require_active(window.label())?;
     method_search_details(&state.store, &project.root, &project.id, &run_id).await
 }
 
@@ -921,7 +921,7 @@ pub(crate) async fn pause_method_search(
     window: tauri::WebviewWindow,
     run_id: String,
 ) -> Result<MethodSearchRunDetails, String> {
-    let project = state.active(window.label());
+    let project = state.require_active(window.label())?;
     let _activity = state.begin_project_activity(&project.id)?;
     method_search_details(&state.store, &project.root, &project.id, &run_id).await?;
     if !state
@@ -1170,7 +1170,7 @@ pub(crate) async fn cancel_method_search(
     window: tauri::WebviewWindow,
     run_id: String,
 ) -> Result<MethodSearchRunDetails, String> {
-    let project = state.active(window.label());
+    let project = state.require_active(window.label())?;
     let _activity = state.begin_project_activity(&project.id)?;
     let details = method_search_details(&state.store, &project.root, &project.id, &run_id).await?;
     if details.run.status.is_terminal() {

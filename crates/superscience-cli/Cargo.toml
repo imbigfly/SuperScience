@@ -27,3 +27,5 @@ superscience-llm = { workspace = true }
 superscience-core = { workspace = true }
 superscience-skills = { workspace = true }
 superscience-tools = { workspace = true }
+superscience-runs = { workspace = true }
+superscience-store = { workspace = true }

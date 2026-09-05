@@ -8,7 +8,22 @@ local, WSL, or SSH execution contexts.
 
 ## 1. Decision summary
 
-superscience needs two different execution planes:
+Terminated runtime cards offer **Dismiss / 移除**. Dismiss removes only the
+selected dead instance from the in-memory registry, without launching an
+interpreter or deleting project files. Live instances must first be stopped.
+The current project's configured language slot remains available as Not started;
+stale records from other projects disappear. Runtime generation counters survive
+dismissal so guards cannot accidentally match a replacement. WSL worker deployment
+uses scripts on stdin (the #1081 fix); both changes require an updated build and
+are not present in the v1.8.1 installer.
+
+Python/R source arguments treat missing, null, empty, and whitespace-only
+`code`/`script_path` values as absent. Exactly one non-blank source is required;
+inline code is preserved verbatim, and previews use the same presence rule.
+Non-string values remain validation errors. This normalization is performed in
+Rust without schema combinators, preserving OpenAI-compatible gateway support.
+
+SuperScience needs two different execution planes:
 
 - `RunManager` owns bounded or detached one-off work whose durable result is a
   `Run`.
@@ -527,22 +542,42 @@ network.
 
 ## 12. Agent tools and host API
 
-The existing `python` tool remains backward-compatible:
+The existing `python` tool remains backward-compatible and can also execute a
+saved project script without leaving the runtime:
 
 ```text
-python(code, context_id?)
+python(code? | script_path?, required_objects?, expected_runtime_generation?, context_id?)
 ```
 
-- `code` remains required.
+- Exactly one of `code` or `script_path` is required. The schema keeps both
+  optional and the host rejects a call that supplies neither or both, because
+  tool schemas reach user-configured OpenAI-compatible gateways verbatim and a
+  `oneOf` branch is not portable across them.
+- `script_path` is a project-relative UTF-8 `.py` file; the host reads and hashes
+  its exact content, then sends the content to the selected runtime. The file
+  need not be copied to an SSH host — but the path is always resolved in the
+  *local* project root, so a script that exists only on the remote host cannot be
+  named this way. Read it into `code`, or fetch it into the project first.
 - `context_id` is optional and defaults to `local`, preserving existing model calls.
 - A non-local value must resolve to a registered ExecutionContext.
 - The tool lazily ensures and reuses the runtime for its key.
+- `required_objects` declares top-level binding names that must already exist;
+  attribute or slot paths such as `adata.X` or `obj$slot` are not resolved. When
+  non-empty, the tool never lazily starts an empty runtime, and it rejects a
+  runtime started in another directory instead of falling back to a new one; the
+  worker checks the bindings before evaluating any source.
+- `expected_runtime_generation` optionally rejects a restarted/replaced runtime.
 
 The new R tool mirrors it:
 
 ```text
-r(code, context_id?)
+r(code? | script_path?, required_objects?, expected_runtime_generation?, context_id?)
 ```
+
+Its `script_path` must name a project-relative `.R` file. Script paths are source
+artifacts, not process-launch instructions: both languages execute the saved
+source inside their existing persistent namespace. Results from script execution
+include the project-relative path, SHA-256, runtime id, and generation.
 
 Tool descriptions state that variables and loaded data persist per
 project/context/language, that package installation belongs to an explicitly chosen
@@ -561,10 +596,11 @@ Minimal host/UI commands:
 
 Agent execution uses the manager directly. `execute_runtime` was deferred until the
 UI gained a code editor; the center file preview is now one, so it exists for the
-script binding described in §13.1. It returns console text rather than a structured
-result: code that raised is still a successful call, tagged `[error]` by the same
-formatter the agent tools use. Because the user submits code they are looking at,
-it does not route through agent tool approval.
+script binding described in §13.1. It returns a small structured summary — the
+console text plus any plot snapshots the cell produced as base64 PNGs
+(`RuntimeExecutionSummary`). Code that raised is still a successful call, tagged
+`[error]` by the same formatter the agent tools use. Because the user submits code
+they are looking at, it does not route through agent tool approval.
 
 ## 13. UI
 
@@ -592,11 +628,31 @@ cannot host the language is not honoured — it resolves to one that can, so the
 picker's displayed context and the context a run is sent to never disagree. When
 no context can host the language there is no binding or runtime inspector.
 
-The source preview is deliberately read-only and has no whole-script run action.
-Selecting code exposes the runtime execution action; it lazily starts the runtime,
-so no separate Start click is needed. Selecting source and choosing the AI handoff
-opens the existing conversation beside the preview, where code changes are made
-through the agent rather than an inline text editor.
+The source pane is directly editable for `.R`/`.py` workspace files: a
+highlighted mirror sits under a transparent textarea, unsaved drafts are held
+outside the component so an agent `FileChanged` remount cannot drop them, and
+Ctrl+S (or the Save chip) persists through the workspace-scoped `save_file`
+command — user-driven like `execute_runtime`, outside agent tool approval.
+Files whose preview was truncated stay read-only, because saving a clipped
+head would destroy the tail. The editor paints a live native textarea selection while focused, so dragging
+across lines is not delayed until mouseup, and keeps a dedicated mark layer
+for the same range after blur. It reports the selected line range in its
+toolbar. Ctrl/Command+Enter runs the selection; with
+a collapsed caret it runs the current statement — a parenthesized call, pipe
+chain, or `if`/`function`/`def` body may span lines — and advances to the next
+statement. A visible Run action exposes the same behavior without requiring the
+shortcut. The editor toolbar has a whole-script Run action
+(Ctrl/Command+Shift+Enter) beside the selection/statement Run. It saves a dirty
+draft first, then calls
+`execute_runtime_script` so the host reads and hashes the file on disk and
+executes that content inside the bound persistent runtime — the same path the
+agent `script_path` argument uses. A truncated preview stays read-only and has
+no whole-script action, because saving a clipped head would destroy the tail.
+Selecting code (in the editor's textarea or a read-only preview) continues to
+expose the floating runtime execution action. Either UI execution path lazily
+starts the runtime, so no separate Start click is needed. Selecting source and
+choosing the AI handoff opens the existing conversation beside the preview,
+where the agent can also make code changes.
 
 The AI handoff retains both the selected text and its workspace path. The user
 turn tells the agent that a change request targets that file, and the system
@@ -608,15 +664,25 @@ reference-only. Successful `edit` and `write` calls emit a post-write
 the earlier diff-preview event is not used for refresh because it occurs before
 the filesystem mutation.
 
-The toolbar's runtime-inspector action shows variables on the right and a
-per-file console below the source. Running selected code opens this layout and
-refreshes both surfaces automatically. Output does not enter the transcript. A
-user-driven run is not an agent tool call, and persisting one as a `Role::Tool`
-message would emit a `tool_result` with no matching `tool_use`, which the
-Anthropic API rejects. Flooding the transcript with every REPL iteration would
-also re-send that output on every later turn. The existing "add to chat" action
-remains the way to hand a result to the agent. The console is in-memory for the
-same reason the runtime is: a log that outlived its process would describe
+The toolbar's runtime-inspector action opens an RStudio-style quadrant layout:
+source top-left, an interactive console bottom-left, variables top-right, and a
+plots pane bottom-right. The two dividers between the quadrants are draggable
+(with an Escape cancel while dragging), resizing the right column and the
+bottom row. Running selected code opens this layout and refreshes the
+surfaces automatically. The console owns a visible multi-line prompt: Enter
+runs the complete input, Shift+Enter adds a line, the adjacent Run action is an
+equivalent mouse path, and ArrowUp/ArrowDown recall submitted single-line
+history. Typed code runs against the same bound runtime as a selection run. The
+plots pane shows the snapshots each execution
+reported (base64 PNGs from the worker — matplotlib figure harvest on Python,
+implicit-device `recordPlot` snapshot on R) with previous/next paging and a
+clear action. Output does not enter the transcript. A user-driven run is not an
+agent tool call, and persisting one as a `Role::Tool` message would emit a
+`tool_result` with no matching `tool_use`, which the Anthropic API rejects.
+Flooding the transcript with every REPL iteration would also re-send that
+output on every later turn. The existing "add to chat" action remains the way
+to hand a result to the agent. The console and plot history are in-memory for
+the same reason the runtime is: a log that outlived its process would describe
 variables that no longer exist. The console is a bounded bottom dock with its
 own normal scroll surface and does not overlay the source.
 
@@ -641,11 +707,12 @@ or explicitly stage a mismatch rather than guessing. Until that model is fully
 typed, tool calls use explicit context-native paths and `context_id`.
 
 Each runtime call remains a tool execution in the originating conversation, not a
-`Run`. Its code/context input and bounded output continue to be persisted with that
-tool call. Live runtime status can expose runtime ID/generation, but runtime v1 does
-not add a durable cross-conversation execution journal solely to duplicate persisted
-tool messages. Consequently, v1 does not claim complete replay of shared in-memory
-state assembled across multiple conversations.
+`Run`. Its code or script path, context input, and bounded output continue to be
+persisted with that tool call. Script results additionally record the content hash,
+runtime ID, and generation, so later file edits do not erase which source executed.
+Runtime v1 does not add a durable cross-conversation execution journal solely to
+duplicate persisted tool messages. Consequently, v1 does not claim complete replay
+of shared in-memory state assembled across multiple conversations.
 
 Files created remotely remain remote references unless the user or an output spec
 explicitly downloads them. Runtime does not recursively snapshot a remote filesystem

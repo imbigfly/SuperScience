@@ -11,6 +11,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+/// Identifies a stopped ACP turn in persisted errors and invoke rejections.
+/// The UI must not offer native HTTP transcript recovery for these errors.
+pub const ACP_TURN_ERROR_PREFIX: &str = "ACP turn failed: ";
+
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
 pub struct ContextUsage {
     #[serde(default)]
@@ -1156,6 +1160,7 @@ mod session_context_window_tests {
             max_tokens: 8_192,
             context_window,
             reasoning_effort: String::new(),
+            service_tier: String::new(),
             supports_vision: false,
             use_for_vision: false,
             use_for_image_generation: false,
@@ -1637,6 +1642,8 @@ pub struct Settings {
     #[serde(default)]
     pub reasoning_effort: String,
     #[serde(default)]
+    pub service_tier: String,
+    #[serde(default)]
     pub proxy_url: String,
     #[serde(default)]
     pub supports_vision: bool,
@@ -1753,7 +1760,43 @@ pub struct BrowserTabCleanupPrompt {
     pub tabs: Vec<BrowserTabCleanupItem>,
 }
 
-/// Reply of `open_browser_extension_page`: bundled extension path and whether
+/// A tab whose current page needs the user to complete a human-verification
+/// challenge before browser automation may continue.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserNeedsHumanTab {
+    #[serde(default)]
+    pub session: String,
+    pub tab_id: i64,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub frame_id: String,
+    #[serde(default)]
+    pub turn_id: String,
+}
+
+/// Live set of tabs waiting on human verification. Replaces the previous
+/// snapshot each time it is emitted.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserNeedsHumanPrompt {
+    #[serde(default)]
+    pub tabs: Vec<BrowserNeedsHumanTab>,
+}
+
+/// Result of re-scanning tabs the user marked as completed.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserNeedsHumanConfirmResult {
+    #[serde(default)]
+    pub still_required: Vec<BrowserNeedsHumanTab>,
+    #[serde(default)]
+    pub cleared: Vec<BrowserNeedsHumanTab>,
+}
+
+/// Reply of `open_browser_extension_page`: managed extension path and whether
 /// a browser was launched on its extension-manager page.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BrowserExtensionSetup {
@@ -1761,6 +1804,47 @@ pub struct BrowserExtensionSetup {
     pub extension_path: Option<String>,
     #[serde(default)]
     pub opened: bool,
+}
+
+/// Compatibility and integrity state of the shared-browser extension.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserExtensionStatus {
+    #[serde(default)]
+    pub connected: bool,
+    #[serde(default)]
+    pub current_version: Option<String>,
+    #[serde(default)]
+    pub bundled_version: Option<String>,
+    #[serde(default)]
+    pub current_protocol: i64,
+    #[serde(default)]
+    pub required_protocol: i64,
+    #[serde(default)]
+    pub update_required: bool,
+    #[serde(default)]
+    pub automatic_reload_available: bool,
+    #[serde(default)]
+    pub extension_path: Option<String>,
+    #[serde(default)]
+    pub extension_path_verified: bool,
+    #[serde(default)]
+    pub integrity_verified: bool,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// Result of preparing the bundled browser extension and attempting to reload
+/// it. `outcome` is `updated`, `manual_reload_required`, or `error`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrowserExtensionUpdateResult {
+    #[serde(default)]
+    pub outcome: String,
+    #[serde(default)]
+    pub status: BrowserExtensionStatus,
+    #[serde(default)]
+    pub opened: bool,
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 fn default_sync_backend() -> String {
@@ -1913,6 +1997,7 @@ impl Default for Settings {
             resume_last_session: true,
             max_tokens: 8192,
             reasoning_effort: String::new(),
+            service_tier: String::new(),
             proxy_url: String::new(),
             supports_vision: false,
             sync_backend: "relay".into(),
@@ -2089,7 +2174,7 @@ pub struct AcpSessionUpdate {
     pub payload: serde_json::Value,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AcpSessionState {
     pub frame_id: String,
@@ -2588,6 +2673,8 @@ pub struct DirEntry {
     pub name: String,
     pub is_dir: bool,
     pub size: u64,
+    #[serde(default)]
+    pub modified_unix_millis: Option<u64>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -2659,6 +2746,33 @@ pub struct ProjectSummary {
     pub last_synced_at: Option<i64>,
 }
 
+/// Read-only scan result shown before an orphaned workspace is registered and
+/// its `.wisp/history` context archives are imported.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct WorkspaceSessionRecoveryPreview {
+    pub workspace_dir: String,
+    pub suggested_name: String,
+    pub archive_count: usize,
+    pub valid_archive_count: usize,
+    pub recoverable_session_count: usize,
+    pub message_count: usize,
+    pub invalid_archive_count: usize,
+    pub duplicate_archive_count: usize,
+    pub earliest_message_at: Option<i64>,
+    pub latest_message_at: Option<i64>,
+}
+
+/// Result of the transactional workspace-session recovery import.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct WorkspaceSessionRecoveryResult {
+    pub project_id: String,
+    pub project_name: String,
+    pub recovered_session_count: usize,
+    pub message_count: usize,
+    pub invalid_archive_count: usize,
+    pub duplicate_archive_count: usize,
+}
+
 /// Editable project settings (Project Settings modal). `agent_context` is the
 /// project's `.superscience/SUPERSCIENCE.md`, injected into every seeded system prompt.
 #[derive(Clone, Deserialize, Default)]
@@ -2728,6 +2842,8 @@ pub struct ModelProfile {
     pub context_window: u64,
     #[serde(default)]
     pub reasoning_effort: String,
+    #[serde(default)]
+    pub service_tier: String,
     #[serde(default)]
     pub supports_vision: bool,
     #[serde(default)]
@@ -3114,8 +3230,11 @@ pub struct ApprovalGrantRow {
 
 /// Editor row for a header or env secret. `value` is the typed replacement;
 /// empty keeps the stored secret when `has_value` is true.
+///
+/// `row_id` is UI-only (keyed list identity). It is not serialized.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct ConnSecretField {
+    pub row_id: u64,
     pub name: String,
     pub value: String,
     pub has_value: bool,
@@ -3124,6 +3243,7 @@ pub struct ConnSecretField {
 impl ConnSecretField {
     pub fn from_entry(entry: &McpSecretEntry) -> Self {
         Self {
+            row_id: 0,
             name: entry.name.clone(),
             value: String::new(),
             has_value: entry.has_value
@@ -3216,6 +3336,7 @@ mod image_generation_model_tests {
             max_tokens: 0,
             context_window: 128_000,
             reasoning_effort: String::new(),
+            service_tier: String::new(),
             supports_vision: false,
             use_for_vision: false,
             use_for_image_generation: false,
@@ -3268,6 +3389,7 @@ mod video_generation_model_tests {
             max_tokens: 0,
             context_window: 128_000,
             reasoning_effort: String::new(),
+            service_tier: String::new(),
             supports_vision: false,
             use_for_vision: false,
             use_for_image_generation: false,
@@ -3334,6 +3456,7 @@ pub struct ModelForm {
     pub max_tokens: u64,
     pub context_window: u64,
     pub reasoning_effort: String,
+    pub service_tier: String,
     pub supports_vision: bool,
     pub use_for_vision: bool,
     pub use_for_image_generation: bool,
@@ -3585,7 +3708,7 @@ pub struct OnboardingState {
     pub show: bool,
 }
 
-/// Mirrors `wisp_store::ResearchNode`. `kind` stays a plain string because the
+/// Mirrors `superscience_store::ResearchNode`. `kind` stays a plain string because the
 /// backend enum serializes to snake_case and the pane only ever groups on it.
 /// `metadata_json` arrives as the store's raw JSON string, not an object.
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -4022,6 +4145,9 @@ pub struct DynamicAgentTaskProposal {
     pub model_id: Option<String>,
     pub executor: Option<AgentExecutorSelection>,
     pub budget: Option<AgentBudgetProposal>,
+    /// Omit to inherit policy, use zero for unlimited, or set seconds.
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -4165,7 +4291,7 @@ pub struct AgentWorkflow {
     pub updated_at: i64,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, PartialEq, Eq)]
 pub struct ExecutionContext {
     pub id: String,
     pub kind: String,
@@ -4370,9 +4496,13 @@ pub struct RuntimeKeyDto {
     pub project_id: String,
     pub context_id: String,
     pub language: String,
+    #[serde(default)]
+    pub scope_key: String,
+    #[serde(default)]
+    pub session_id: String,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeInfo {
     pub runtime_id: String,
@@ -4411,6 +4541,16 @@ pub struct RuntimeObjectState {
     pub error: Option<String>,
 }
 
+/// One user-driven `execute_runtime` result: console text as the agent tools
+/// would render it, plus the plots the cell produced as base64-encoded PNGs.
+#[derive(Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeExecutionSummary {
+    pub text: String,
+    #[serde(default)]
+    pub plots: Vec<String>,
+}
+
 #[derive(Clone)]
 pub struct RuntimeSlot {
     pub project_id: String,
@@ -4422,7 +4562,7 @@ pub struct RuntimeSlot {
     pub info: Option<RuntimeInfo>,
 }
 
-/// Mirrors `wisp_store::Run`, minus the columns only the backend acts on
+/// Mirrors `superscience_store::Run`, minus the columns only the backend acts on
 /// (`input_refs_json` / `output_specs_json` / `remote_handle_json` /
 /// the always-NULL `script_path`). No blanket `allow(dead_code)`: an unread
 /// field here means the UI is dropping data again, and the warning is the

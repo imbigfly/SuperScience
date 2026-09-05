@@ -500,7 +500,7 @@ async fn enable_skill_names(state: &AppState, label: &str, names: &[String]) -> 
     if names.is_empty() {
         return Ok(());
     }
-    let ap = state.active(label);
+    let ap = state.require_active(label)?;
     if let Some(mut enabled) = load_enabled_skill_names(&state.store, &ap.id).await {
         for name in names {
             enabled.insert(name.clone());

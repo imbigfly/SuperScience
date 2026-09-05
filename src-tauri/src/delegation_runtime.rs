@@ -152,7 +152,7 @@ pub(crate) async fn get_session_delegation_enabled(
     window: tauri::WebviewWindow,
     session_id: String,
 ) -> Result<bool, String> {
-    let project = state.active(window.label());
+    let project = state.require_active(window.label())?;
     ensure_project_frame(&state.store, &project.id, &session_id).await?;
     Ok(session_delegation_enabled(&state.store, &session_id).await)
 }
@@ -184,7 +184,7 @@ pub(crate) async fn list_agent_workflows(
     window: tauri::WebviewWindow,
     session_id: Option<String>,
 ) -> Result<Vec<AgentWorkflowSnapshot>, String> {
-    let project = state.active(window.label());
+    let project = state.require_active(window.label())?;
     let Some(session_id) = session_id else {
         return Ok(vec![]);
     };
@@ -322,10 +322,14 @@ fn root_limits_for_plan(
             host.budget_ceiling.max_cost_microunits,
             defaults.max_cost_microunits / u64::from(MAX_ROOT_AGENT_TASKS),
         ),
-        wall_time_secs: host
-            .timeout_ceiling_secs
-            .or(host.default_timeout_secs)
-            .unwrap_or(defaults.wall_time_secs),
+        // A finite batch deadline is the sum of its per-task limits, so serial
+        // tasks do not consume one another's allowance. Any unlimited task
+        // makes the root deadline unlimited as well.
+        wall_time_secs: plan.steps.iter().try_fold(0_u64, |total, step| {
+            step.spec
+                .timeout_secs
+                .map(|seconds| total.saturating_add(seconds))
+        }),
     }
 }
 
@@ -409,12 +413,15 @@ pub(crate) async fn create_dynamic_agent_workflow_draft(
     .await
 }
 
+/// Workflow Studio editor options for the window's bound project.
+/// File → New Window (`home-*`) has no project yet; return an error instead of
+/// panicking, which would exit every open window.
 #[tauri::command]
 pub(crate) async fn get_dynamic_agent_options(
     state: State<'_, crate::AppState>,
     window: tauri::WebviewWindow,
 ) -> Result<dynamic_workflow::DynamicAgentEditorOptions, String> {
-    let project = state.active(window.label());
+    let project = state.require_active(window.label())?;
     let frame_id = state.active_frame(window.label());
     let policy = dynamic_delegation_policy_for_project(
         &state.store,
@@ -580,7 +587,7 @@ pub(crate) async fn get_agent_workflow_result(
     workflow_id: String,
     step_id: String,
 ) -> Result<AgentWorkflowResultDetail, String> {
-    let project = state.active(window.label());
+    let project = state.require_active(window.label())?;
     load_agent_workflow_result(&state.store, &project.id, &workflow_id, &step_id).await
 }
 
@@ -639,7 +646,7 @@ pub(crate) async fn approve_agent_workflow(
     workflow_id: String,
     expected_version: i64,
 ) -> Result<AgentWorkflowSnapshot, String> {
-    let project = state.active(window.label());
+    let project = state.require_active(window.label())?;
     let current = project_workflow(&state.store, &project.id, &workflow_id).await?;
     require_workflow_delegation(&state.store, &current).await?;
     let automatic = current.mode == "automatic";
@@ -665,7 +672,7 @@ pub(crate) async fn cancel_agent_workflow(
     window: tauri::WebviewWindow,
     workflow_id: String,
 ) -> Result<(), String> {
-    let project = state.active(window.label());
+    let project = state.require_active(window.label())?;
     let workflow = project_workflow(&state.store, &project.id, &workflow_id).await?;
     if workflow.status != AgentWorkflowStatus::Running {
         return Err("Only a running Agent workflow can be cancelled.".into());
@@ -688,7 +695,7 @@ pub(crate) async fn discard_agent_workflow(
     window: tauri::WebviewWindow,
     workflow_id: String,
 ) -> Result<(), String> {
-    let project = state.active(window.label());
+    let project = state.require_active(window.label())?;
     let workflow = project_workflow(&state.store, &project.id, &workflow_id).await?;
     // Cancel a running workflow before discarding; deleting mid-flight would
     // orphan the live attempt.
@@ -710,7 +717,7 @@ pub(crate) async fn retry_agent_workflow(
     workflow_id: String,
     budget_overrides: Option<HashMap<String, dynamic_workflow::AgentBudgetProposal>>,
 ) -> Result<AgentWorkflowSnapshot, String> {
-    let project = state.active(window.label());
+    let project = state.require_active(window.label())?;
     let snapshot = match budget_overrides.filter(|overrides| !overrides.is_empty()) {
         Some(overrides) => {
             let frame_id = state.active_frame(window.label());
@@ -938,7 +945,7 @@ pub(crate) async fn run_agent_workflow(
     window: tauri::WebviewWindow,
     workflow_id: String,
 ) -> Result<DelegationExecutionResult, String> {
-    let project = state.active(window.label());
+    let project = state.require_active(window.label())?;
     let _project_activity = state.begin_project_activity(&project.id)?;
     execute_agent_workflow(
         &state.store,
@@ -1308,7 +1315,9 @@ async fn build_dynamic_delegation_policy(
         // tool calls, or cost unless the user sets a per-task budget.
         budget_ceiling: AgentBudget::default(),
         default_timeout_secs: Some(600),
-        timeout_ceiling_secs: Some(1_800),
+        // Local users can explicitly opt out of the default wall timeout.
+        // Managed and nested policies may still install a finite ceiling.
+        timeout_ceiling_secs: None,
         auto_safe: true,
         ..DelegationHostPolicy::default()
     };
@@ -1368,11 +1377,9 @@ pub(crate) fn nested_delegation_policy(
         (vec![], None)
     };
     let timeout = parent.timeout_secs.map(|value| {
-        value.min(
-            host.timeout_ceiling_secs
-                .unwrap_or(value)
-                .min(limits.wall_time_secs),
-        )
+        value
+            .min(host.timeout_ceiling_secs.unwrap_or(value))
+            .min(limits.wall_time_secs.unwrap_or(value))
     });
     let revision_source = serde_json::to_vec(&(
         &host.revision,
@@ -2494,7 +2501,7 @@ impl AgentDelegator for NativeDelegator {
             String::new()
         };
         let prompt = delegation_task_prompt(&request, &host_evidence)?;
-        let (provider, api_url, model, api_key, max_tokens, reasoning_effort) =
+        let (provider, api_url, model, api_key, max_tokens, reasoning_effort, service_tier) =
             native_llm_config(&self.store, &request).await?;
         let cfg = build_provider_config(
             &provider,
@@ -2508,6 +2515,7 @@ impl AgentDelegator for NativeDelegator {
                 .map(u64::from)
                 .unwrap_or(max_tokens),
             &reasoning_effort,
+            &service_tier,
         )
         .map_err(anyhow::Error::msg)?;
         let llm = superscience_llm::build(cfg);
@@ -2781,7 +2789,7 @@ impl AgentDelegator for NativeDelegator {
 async fn native_llm_config(
     store: &Store,
     request: &AgentDelegationRequest,
-) -> anyhow::Result<(String, String, String, String, u64, String)> {
+) -> anyhow::Result<(String, String, String, String, u64, String, String)> {
     let profile_id = request
         .spec
         .model
@@ -2794,7 +2802,7 @@ async fn native_llm_config(
         .ok_or_else(|| anyhow::anyhow!("resolved model profile no longer exists"))?;
     if profile.active {
         let (provider, api_url, model, api_key) = load_settings(store).await;
-        let (max_tokens, reasoning_effort) = models::active_llm_advanced(store).await;
+        let (max_tokens, reasoning_effort, service_tier) = models::active_llm_advanced(store).await;
         return Ok((
             provider,
             api_url,
@@ -2802,6 +2810,7 @@ async fn native_llm_config(
             api_key,
             max_tokens,
             reasoning_effort,
+            service_tier,
         ));
     }
     models::profile_llm(store, profile_id)
@@ -2861,6 +2870,15 @@ async fn sync_child_execution_contexts(
         store
             .set_session_execution_context_enabled(child_frame_id, context_id, true)
             .await?;
+    }
+    if let Some(parent_frame_id) = parent_frame_id {
+        crate::ssh_hosts::copy_session_default_execution_context(
+            store,
+            parent_frame_id,
+            child_frame_id,
+        )
+        .await
+        .map_err(anyhow::Error::msg)?;
     }
     Ok(())
 }
@@ -4860,7 +4878,57 @@ mod tests {
             model_id: None,
             executor: None,
             budget: None,
+            timeout_secs: None,
         }
+    }
+
+    #[test]
+    fn root_wall_deadline_sums_finite_tasks_and_disappears_for_unlimited() {
+        let (registry, mut host) = test_dynamic_policy();
+        host.default_timeout_secs = Some(30);
+        host.timeout_ceiling_secs = None;
+        let task = |id: &str, timeout_secs| DelegatedTaskProposal {
+            id: id.into(),
+            instruction: format!("Complete {id}"),
+            context_summary: String::new(),
+            depends_on: vec![],
+            capabilities: vec!["reasoning".into()],
+            skill_bindings: vec![],
+            specialist: None,
+            output_schema: None,
+            isolated: false,
+            model_id: None,
+            executor: None,
+            budget: None,
+            timeout_secs,
+            input: json!({}),
+        };
+        let finite = registry
+            .resolve_plan(
+                "finite",
+                DelegationMode::Manual,
+                1,
+                vec![task("first", None), task("second", Some(45))],
+                &host,
+            )
+            .unwrap()
+            .into_plan();
+        assert_eq!(
+            root_limits_for_plan(&finite, &host).wall_time_secs,
+            Some(75)
+        );
+
+        let unlimited = registry
+            .resolve_plan(
+                "unlimited",
+                DelegationMode::Manual,
+                1,
+                vec![task("open", Some(0))],
+                &host,
+            )
+            .unwrap()
+            .into_plan();
+        assert_eq!(root_limits_for_plan(&unlimited, &host).wall_time_secs, None);
     }
 
     #[test]
@@ -5518,6 +5586,13 @@ mod tests {
             .set_session_execution_context_enabled("child", "ssh:stale", true)
             .await
             .unwrap();
+        crate::ssh_hosts::persist_session_default_execution_context(
+            &store,
+            "parent",
+            crate::ssh_hosts::SessionDefaultExecutionContext::Remote("ssh:selected".into()),
+        )
+        .await
+        .unwrap();
 
         sync_child_execution_contexts(&store, Some("parent"), "child")
             .await
@@ -5531,6 +5606,10 @@ mod tests {
             .session_execution_context_enabled("child", "ssh:stale")
             .await
             .unwrap());
+        assert_eq!(
+            crate::ssh_hosts::stored_session_default_execution_context(&store, "child").await,
+            crate::ssh_hosts::SessionDefaultExecutionContext::Remote("ssh:selected".into())
+        );
         drop(store);
         std::fs::remove_dir_all(root).ok();
     }
@@ -7044,6 +7123,7 @@ mod tests {
                     model_id: None,
                     executor: None,
                     budget: None,
+                    timeout_secs: None,
                     input: json!({}),
                 },
                 &host,

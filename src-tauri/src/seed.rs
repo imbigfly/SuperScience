@@ -191,7 +191,7 @@ pub(super) fn load_demo_cmd(
     id: String,
     locale: Option<String>,
 ) -> Result<Demo, String> {
-    let ap = state.active(window.label());
+    let ap = state.require_active(window.label())?;
     extract_demo_assets_in(&id, &ap.root, &demo_search_dirs(Some(&state.app_data)))?;
     load_demo_from(&id, locale.as_deref(), Some(&state.app_data))
         .ok_or_else(|| format!("demo '{id}' not found"))

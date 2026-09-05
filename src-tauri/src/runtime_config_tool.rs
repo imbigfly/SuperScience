@@ -192,7 +192,7 @@ mod tests {
     #[tokio::test]
     async fn sets_one_context_interpreter_without_changing_the_other_fields() {
         let db = std::env::temp_dir().join(format!(
-            "wisp_runtime_config_tool_{}.sqlite",
+            "superscience_runtime_config_tool_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
         let store = Store::open(&db).await.unwrap();
@@ -239,7 +239,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_unknown_languages_without_changing_the_context() {
         let db = std::env::temp_dir().join(format!(
-            "wisp_runtime_config_tool_invalid_{}.sqlite",
+            "superscience_runtime_config_tool_invalid_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
         let store = Store::open(&db).await.unwrap();
@@ -275,7 +275,7 @@ mod tests {
     #[tokio::test]
     async fn schema_and_preview_make_the_scope_explicit() {
         let db = std::env::temp_dir().join(format!(
-            "wisp_runtime_config_tool_schema_{}.sqlite",
+            "superscience_runtime_config_tool_schema_{}.sqlite",
             uuid::Uuid::new_v4()
         ));
         let store = Store::open(&db).await.unwrap();

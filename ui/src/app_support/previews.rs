@@ -500,14 +500,19 @@ pub(crate) fn NotebookFilePreview(path: String) -> impl IntoView {
 }
 
 #[component]
-pub(crate) fn WorkspaceFilePreview(dom_id: String, path: String, kind: String) -> impl IntoView {
+pub(crate) fn WorkspaceFilePreview(
+    dom_id: String,
+    path: String,
+    kind: String,
+    #[prop(optional)] filename: Option<String>,
+) -> impl IntoView {
     match kind.as_str() {
         "csv" => view! { <CsvFilePreview path=path /> }.into_view(),
         // Artifact/version tabs aren't real paths, so the extension can't be read
         // back off them — the kind is the only language signal here.
         "json" => view! { <CodeFilePreview path=path lang="json".to_string() /> }.into_view(),
         "code" | "text" => {
-            let lang = code_lang(&path).unwrap_or("plaintext").to_string();
+            let lang = preview_code_lang(&path, filename.as_deref()).to_string();
             view! { <CodeFilePreview path=path lang=lang /> }.into_view()
         }
         "notebook" => view! { <NotebookFilePreview path=path /> }.into_view(),
@@ -1255,15 +1260,199 @@ pub(crate) fn artifact_preview(a: &Artifact, dom_id: String, locale: Locale) -> 
         PreviewData::File { path, kind } => view! {
             <p class="rp-path hint">{a.location.clone().unwrap_or_else(|| path.clone())}</p>
             <div class="rp-file-preview" data-file-path=path.clone()>
-                <WorkspaceFilePreview dom_id=dom_id path=path.clone() kind=kind.clone() />
+                <WorkspaceFilePreview
+                    dom_id=dom_id
+                    path=path.clone()
+                    kind=kind.clone()
+                    filename=a.name.clone()
+                />
             </div>
         }
         .into_view(),
     }
 }
 
+/// Label for the center-preview path chip. Artifact and artifact-version tabs
+/// have no workspace path, so `workspace_relative_path` would print the raw
+/// `artifact-version:<uuid>` spelling; prefer the live workspace path when
+/// the chat binding still knows it, otherwise the display filename.
+pub(crate) fn center_preview_heading(
+    path: &str,
+    name: &str,
+    display_path: &str,
+    workspace_path: Option<&str>,
+) -> String {
+    if let Some(workspace_path) = workspace_path.filter(|path| !path.is_empty()) {
+        return workspace_path.to_string();
+    }
+    if !name.is_empty()
+        && (artifact_id_path(path).is_some() || artifact_version_id_path(path).is_some())
+    {
+        name.to_string()
+    } else {
+        display_path.to_string()
+    }
+}
+
+/// Workspace source a chat-opened `artifact-version:` snapshot can switch to.
+/// Only code files (R/Python/…) get an editor; images and office docs stay
+/// on the immutable preview.
+pub(crate) fn snapshot_workspace_source(
+    preview_path: &str,
+    items: &[ChatItem],
+    project_root: Option<&str>,
+) -> Option<String> {
+    let version_id = artifact_version_id_path(preview_path)?;
+    for item in items {
+        let ChatItem::Assistant { resources, .. } = item else {
+            continue;
+        };
+        for resource in resources {
+            if resource.artifact_version_id.as_deref() != Some(version_id) {
+                continue;
+            }
+            let path = workspace_source_from_reference(&resource.original_reference, project_root)?;
+            if file_kind(&path) == Some("code") {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+fn workspace_source_from_reference(reference: &str, project_root: Option<&str>) -> Option<String> {
+    let path = normalize_path(reference.trim());
+    if path.is_empty() {
+        return None;
+    }
+    if let Some(root) = project_root {
+        if let Some(relative) = workspace_relative_path(root, &path) {
+            if artifact_id_path(&relative).is_none()
+                && artifact_version_id_path(&relative).is_none()
+            {
+                return Some(relative);
+            }
+        }
+    }
+    let absolute = path.starts_with('/')
+        || matches!(
+            path.as_bytes(),
+            [drive, b':', b'/', ..] if drive.is_ascii_alphabetic()
+        );
+    (!absolute).then_some(path)
+}
+
+#[cfg(test)]
+mod center_preview_heading_tests {
+    use super::{center_preview_heading, snapshot_workspace_source};
+    use crate::dto::{ChatItem, MessageResource};
+
+    fn resource(version_id: &str, reference: &str, kind: &str) -> MessageResource {
+        MessageResource {
+            id: format!("res-{version_id}"),
+            ordinal: 0,
+            original_reference: reference.into(),
+            artifact_id: Some(format!("art-{version_id}")),
+            artifact_version_id: Some(version_id.into()),
+            display_name: reference
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or(reference)
+                .into(),
+            kind: kind.into(),
+            mime_type: "text/plain".into(),
+            status: "ready".into(),
+            error: None,
+        }
+    }
+
+    #[test]
+    fn artifact_tabs_show_the_filename_not_the_id() {
+        assert_eq!(
+            center_preview_heading(
+                "artifact-version:a2097ac1-f535-4e88-a0c4-9d5a72091d06",
+                "mathys2019_umap.R",
+                "artifact-version:a2097ac1-f535-4e88-a0c4-9d5a72091d06",
+                None,
+            ),
+            "mathys2019_umap.R"
+        );
+        assert_eq!(
+            center_preview_heading(
+                "artifact-version:a2097ac1-f535-4e88-a0c4-9d5a72091d06",
+                "mathys2019_umap.R",
+                "artifact-version:a2097ac1-f535-4e88-a0c4-9d5a72091d06",
+                Some("analysis/scripts/mathys2019_umap.R"),
+            ),
+            "analysis/scripts/mathys2019_umap.R"
+        );
+        assert_eq!(
+            center_preview_heading(
+                "artifact:art-html",
+                "report.html",
+                "artifact:art-html",
+                None
+            ),
+            "report.html"
+        );
+    }
+
+    #[test]
+    fn workspace_paths_keep_the_relative_heading() {
+        assert_eq!(
+            center_preview_heading(
+                "analysis/scripts/mathys2019_umap.R",
+                "mathys2019_umap.R",
+                "analysis/scripts/mathys2019_umap.R",
+                None,
+            ),
+            "analysis/scripts/mathys2019_umap.R"
+        );
+    }
+
+    #[test]
+    fn bound_code_snapshots_resolve_the_workspace_source() {
+        let items = vec![ChatItem::Assistant {
+            text: "[script](analysis/plot.R)".into(),
+            model: None,
+            resources: vec![resource("ver-r", "analysis/plot.R", "code")],
+        }];
+        assert_eq!(
+            snapshot_workspace_source("artifact-version:ver-r", &items, Some("/work/project")),
+            Some("analysis/plot.R".into())
+        );
+        assert_eq!(
+            snapshot_workspace_source("artifact-version:missing", &items, Some("/work/project")),
+            None
+        );
+        let markdown = vec![ChatItem::Assistant {
+            text: "[report](report.md)".into(),
+            model: None,
+            resources: vec![resource("ver-md", "report.md", "markdown")],
+        }];
+        assert_eq!(
+            snapshot_workspace_source("artifact-version:ver-md", &markdown, Some("/work/project")),
+            None
+        );
+        let outside = vec![ChatItem::Assistant {
+            text: "[script](D:/other/plot.R)".into(),
+            model: None,
+            resources: vec![resource("ver-out", "D:/other/plot.R", "code")],
+        }];
+        assert_eq!(
+            snapshot_workspace_source("artifact-version:ver-out", &outside, Some("/work/project")),
+            None
+        );
+    }
+}
+
 /// Right-pane code view with a line-number gutter (Claude Science style).
 /// The gutter is a plain <pre> (no <code>) so highlight.js skips it.
+///
+/// The highlighted `<code>` node is driven imperatively, same as
+/// `RpCodeEditor`: highlight.js rewrites its children, which the reactive
+/// renderer must not also own (otherwise a parent re-render wipes the
+/// colours and the chat-opened snapshot looks like plain text).
 #[component]
 pub(crate) fn RpCodeView(lang: String, body: String) -> impl IntoView {
     let lang_class = if lang.is_empty() {
@@ -1271,12 +1460,15 @@ pub(crate) fn RpCodeView(lang: String, body: String) -> impl IntoView {
     } else {
         lang.clone()
     };
-    let hid = unique_dom_id("rpcode");
-    let hid_for_effect = hid.clone();
-    let body_track = body.clone();
+    let code_id = unique_dom_id("rpcode");
+    let code_ref = create_node_ref::<html::Code>();
+    let highlight_id = code_id.clone();
+    let highlight_body = body.clone();
     create_effect(move |_| {
-        let _ = &body_track;
-        schedule_highlight(hid_for_effect.clone());
+        if code_ref.get().is_none() {
+            return;
+        }
+        set_highlighted_code(highlight_id.clone(), highlight_body.clone());
     });
     // split('\n') matches how <pre> renders a trailing newline, keeping the
     // gutter aligned with the body line-for-line.
@@ -1286,10 +1478,351 @@ pub(crate) fn RpCodeView(lang: String, body: String) -> impl IntoView {
         .collect::<Vec<_>>()
         .join("\n");
     view! {
-        <div class="rp-code" id=hid.clone()>
+        <div class="rp-code">
             <pre class="rp-code-gutter">{gutter}</pre>
-            <pre class="rp-code-body"><code class=format!("language-{lang_class}")>{body.clone()}</code></pre>
+            <pre class="rp-code-body"><code node_ref=code_ref class=format!("language-{lang_class}") id=code_id></code></pre>
         </div>
+    }
+}
+
+/// Editable center source view for R/Python scripts: the same gutter +
+/// highlighted body as `RpCodeView`, with a transparent textarea overlaid so
+/// the user can type directly. The highlighted `<code>` node is driven
+/// imperatively (`set_highlighted_code`) because highlight.js rewrites its
+/// children, which the reactive renderer must not also own.
+///
+/// Drafts live in the caller's map keyed by path, so unsaved edits survive a
+/// preview remount (an agent `FileChanged` bumps the revision). Files the
+/// preview could not load in full fall back to the read-only view — saving a
+/// clipped head would destroy the tail.
+/// Persist one draft through the workspace-scoped save command. Returns the
+/// backend's raw error text; callers localize it, because the two callers
+/// (explicit Save and save-then-run) surface it in the same place.
+async fn save_draft(path: &str, content: &str) -> Result<(), String> {
+    let args = to_value(&serde_json::json!({ "path": path, "content": content })).unwrap();
+    invoke_checked("save_file", args)
+        .await
+        .map(|_| ())
+        .map_err(|error| js_error_text(error))
+}
+
+fn textarea_source_selection(textarea: &web_sys::HtmlTextAreaElement) -> (u32, u32) {
+    let start = textarea
+        .selection_start()
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let end = textarea.selection_end().ok().flatten().unwrap_or(start);
+    (start, end)
+}
+
+#[component]
+pub(crate) fn RpCodeEditor(
+    dom_id: String,
+    path: String,
+    lang: String,
+    drafts: RwSignal<HashMap<String, String>>,
+    busy: RwSignal<Option<String>>,
+    on_run: Callback<String>,
+    /// Run the whole saved file in the bound runtime. Fired only after the
+    /// draft is on disk, so the backend reads exactly what the user sees.
+    on_run_script: Callback<()>,
+) -> impl IntoView {
+    let locale = use_locale();
+    let disk = create_rw_signal::<Option<String>>(None);
+    let clipped_note = create_rw_signal::<Option<String>>(None);
+    let err = create_rw_signal::<Option<String>>(None);
+    let saving = create_rw_signal(false);
+    let save_error = create_rw_signal::<Option<String>>(None);
+    let code_id = unique_dom_id("rpedit");
+    let input_ref = create_node_ref::<html::Textarea>();
+    let selection = create_rw_signal((0_u32, 0_u32));
+
+    let load_path = path.clone();
+    create_effect(move |_| {
+        let path = load_path.clone();
+        let loc = locale.get();
+        spawn_local(async move {
+            let fc = match load_file_content(&path, loc, Some(TEXT_PREVIEW_MAX_BYTES)).await {
+                Ok(fc) => fc,
+                Err(e) => {
+                    err.set(Some(e));
+                    return;
+                }
+            };
+            let Some(text) = fc.text.as_deref() else {
+                err.set(Some(t(loc, "preview.unsupported_file")));
+                return;
+            };
+            let (rendered, shown) = clip_preview_text(text);
+            if fc.truncated || rendered.len() < text.len() {
+                clipped_note.set(preview_truncation_note(&fc, shown, loc));
+                disk.set(Some(rendered));
+            } else {
+                clipped_note.set(None);
+                disk.set(Some(text.to_string()));
+            }
+            err.set(None);
+        });
+    });
+
+    let draft_path = path.clone();
+    let draft = create_memo(move |_| {
+        drafts
+            .with(|drafts| drafts.get(&draft_path).cloned())
+            .or_else(|| disk.get())
+            .unwrap_or_default()
+    });
+    let dirty = create_memo(move |_| disk.get().is_some_and(|saved| saved != draft.get()));
+    let selection_view = create_memo(move |_| {
+        let (start, end) = selection.get();
+        source_selection(&draft.get(), start, end)
+    });
+    let selection_label = create_memo(move |_| {
+        let selected = selection_view.get();
+        if selected.selected.is_empty() {
+            None
+        } else if selected.start_line == selected.end_line {
+            Some(tf(
+                locale.get(),
+                "editor.selection_line",
+                &[("line", &selected.start_line.to_string())],
+            ))
+        } else {
+            Some(tf(
+                locale.get(),
+                "editor.selection_lines",
+                &[
+                    ("start", &selected.start_line.to_string()),
+                    ("end", &selected.end_line.to_string()),
+                ],
+            ))
+        }
+    });
+
+    // The highlighted mirror under the textarea. The trailing newline keeps
+    // the mirror's height covering the caret's empty last line.
+    let mirror_id = code_id.clone();
+    create_effect(move |_| {
+        if clipped_note.get().is_some() || err.get().is_some() || disk.get().is_none() {
+            return;
+        }
+        set_highlighted_code(mirror_id.clone(), format!("{}\n", draft.get()));
+    });
+
+    // Adopt one save outcome into the editor's state. Returns whether the draft
+    // reached disk, which is what save-then-run gates on.
+    let commit_save = move |path: &str, content: String, result: Result<(), String>| match result {
+        Ok(()) => {
+            disk.set(Some(content));
+            drafts.update(|drafts| {
+                drafts.remove(path);
+            });
+            save_error.set(None);
+            true
+        }
+        Err(error) => {
+            save_error.set(Some(localize_backend(locale.get_untracked(), &error)));
+            false
+        }
+    };
+
+    let save_path = path.clone();
+    let save_now = Callback::new(move |_: ()| {
+        if !dirty.get_untracked() || saving.get_untracked() {
+            return;
+        }
+        let path = save_path.clone();
+        let content = draft.get_untracked();
+        saving.set(true);
+        spawn_local(async move {
+            let result = save_draft(&path, &content).await;
+            commit_save(&path, content, result);
+            saving.set(false);
+        });
+    });
+
+    let run_lang = lang.clone();
+    let run_now = Callback::new(move |_: ()| {
+        if busy.get_untracked().is_some() {
+            return;
+        }
+        let (start, end) = input_ref
+            .get()
+            .map(|textarea| textarea_source_selection(&textarea))
+            .unwrap_or_else(|| selection.get_untracked());
+        selection.set((start, end));
+        let Some(execution) = source_execution(&draft.get_untracked(), start, end, &run_lang)
+        else {
+            return;
+        };
+        on_run.call(execution.code);
+        if let Some(caret) = execution.next_caret_utf16 {
+            selection.set((caret, caret));
+            if let Some(textarea) = input_ref.get() {
+                let _ = textarea.set_selection_range(caret, caret);
+                let _ = textarea.focus();
+            }
+        }
+    });
+
+    let run_script_path = path.clone();
+    let run_script_now = Callback::new(move |_: ()| {
+        if busy.get_untracked().is_some() || saving.get_untracked() {
+            return;
+        }
+        let path = run_script_path.clone();
+        let content = draft.get_untracked();
+        let needs_save = dirty.get_untracked();
+        spawn_local(async move {
+            if needs_save {
+                saving.set(true);
+                let result = save_draft(&path, &content).await;
+                let saved = commit_save(&path, content, result);
+                saving.set(false);
+                if !saved {
+                    return;
+                }
+            }
+            on_run_script.call(());
+        });
+    });
+
+    let input_path = path.clone();
+    let lang_class = if lang.is_empty() {
+        "plaintext".to_string()
+    } else {
+        lang.clone()
+    };
+    let fallback_lang = lang.clone();
+    let sync_selection = Callback::new(move |_: ()| {
+        if let Some(textarea) = input_ref.get_untracked() {
+            let next = textarea_source_selection(&textarea);
+            if selection.get_untracked() != next {
+                selection.set(next);
+            }
+        }
+    });
+
+    move || {
+        if let Some(e) = err.get() {
+            return view! { <div class="rp-error">{e}</div> }.into_view();
+        }
+        let Some(loaded) = disk.get() else {
+            return view! { <div class="rp-heavy">{move || t(locale.get(), "loading")}</div> }
+                .into_view();
+        };
+        if clipped_note.get().is_some() {
+            return view! {
+                {text_preview_banner(clipped_note.get())}
+                <RpCodeView lang=fallback_lang.clone() body=loaded />
+            }
+            .into_view();
+        }
+        let _ = loaded;
+        let gutter = move || {
+            let n = draft.with(|text| text.split('\n').count()).max(1);
+            (1..=n)
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let input_path = input_path.clone();
+        let keydown_save = save_now;
+        let keydown_run = run_now;
+        let keydown_sync = sync_selection;
+        let keydown_run_script = run_script_now;
+        view! {
+            <div class="rp-code-editor" id=dom_id.clone()>
+                <div class="rp-code-toolbar">
+                    <span class="rp-code-selection-status" class:active=move || selection_label.get().is_some()>
+                        {move || selection_label.get().unwrap_or_else(|| t(locale.get(), "editor.run_shortcut").into())}
+                    </span>
+                    <div class="spacer"></div>
+                    <button type="button" class="center-file-btn" data-editor-run-script=""
+                        disabled=move || busy.get().is_some() || saving.get()
+                        title=move || t(locale.get(), "editor.run_script_hint")
+                        on:click=move |_| run_script_now.call(())>
+                        {compose_icon("file-play")}
+                        <span>{move || t(locale.get(), "editor.run_script")}</span>
+                    </button>
+                    <button type="button" class="center-file-btn primary" data-editor-run=""
+                        disabled=move || busy.get().is_some()
+                        title=move || t(locale.get(), "editor.run_hint")
+                        on:click=move |_| run_now.call(())>
+                        {compose_icon("play")}
+                        <span>{move || t(locale.get(), "editor.run")}</span>
+                    </button>
+                    {move || (dirty.get() || save_error.get().is_some()).then(|| view! {
+                        {move || save_error.get().map(|error| view! {
+                            <span class="rp-code-save-error">{error}</span>
+                        })}
+                        <button type="button" class="center-file-btn" data-editor-save=""
+                            disabled=move || saving.get()
+                            title=move || t(locale.get(), "editor.save_hint")
+                            on:click=move |_| save_now.call(())>
+                            {move || t(locale.get(), if saving.get() { "editor.saving" } else { "editor.save" })}
+                        </button>
+                    })}
+                </div>
+                <div class="rp-code rp-code-editable">
+                    <pre class="rp-code-gutter">{gutter}</pre>
+                    <div class="rp-code-edit-stack">
+                        <pre class="rp-code-body" aria-hidden="true"><code
+                            class=format!("language-{lang_class}") id=code_id.clone()></code></pre>
+                        <pre class="rp-code-selection-layer" aria-hidden="true">{move || {
+                            let selected = selection_view.get();
+                            view! {
+                                <span>{selected.before}</span>
+                                <mark>{selected.selected}</mark>
+                                <span>{format!("{}\n", selected.after)}</span>
+                            }
+                        }}</pre>
+                        <textarea node_ref=input_ref class="rp-code-input" wrap="off" spellcheck="false"
+                            autocomplete="off" autocorrect="off" autocapitalize="off"
+                            aria-label=move || t(locale.get(), "editor.source")
+                            prop:value=move || draft.get()
+                            on:input=move |event| {
+                                let value = event_target_value(&event);
+                                drafts.update(|drafts| {
+                                    drafts.insert(input_path.clone(), value);
+                                });
+                                sync_selection.call(());
+                            }
+                            on:select=move |_| sync_selection.call(())
+                            on:click=move |_| sync_selection.call(())
+                            on:keyup=move |_| sync_selection.call(())
+                            on:mousemove=move |event: web_sys::MouseEvent| {
+                                if event.buttons() & 1 == 0 {
+                                    return;
+                                }
+                                sync_selection.call(());
+                            }
+                            on:keydown=move |event: web_sys::KeyboardEvent| {
+                                if event.key() == "Enter"
+                                    && (event.ctrl_key() || event.meta_key())
+                                    && !ime_composing(&event)
+                                {
+                                    event.prevent_default();
+                                    if event.shift_key() {
+                                        keydown_run_script.call(());
+                                    } else {
+                                        keydown_run.call(());
+                                    }
+                                } else if event.key().eq_ignore_ascii_case("s")
+                                    && (event.ctrl_key() || event.meta_key())
+                                {
+                                    event.prevent_default();
+                                    keydown_save.call(());
+                                } else {
+                                    request_animation_frame(move || keydown_sync.call(()));
+                                }
+                            }></textarea>
+                    </div>
+                </div>
+            </div>
+        }
+        .into_view()
     }
 }
 
@@ -1299,40 +1832,80 @@ pub(crate) fn opens_in_modal(kind: &str) -> bool {
     matches!(kind, "image" | "pdf" | "csv")
 }
 
-/// Fire the native save dialog to download a workspace file (backend copies it).
-/// Remote-preview paths go out as the ssh:// spelling `download_file` already
-/// understands, so the modal's download button works for remote files too.
-pub(crate) fn download_artifact(path: String) {
-    if let Some(id) = artifact_id_path(&path).map(str::to_owned) {
-        spawn_local(async move {
-            let arg = to_value(&serde_json::json!({ "id": id })).unwrap();
-            if let Err(error) = invoke_checked("download_artifact", arg).await {
-                show_toast(&localize_backend(
-                    Locale::detect_browser(),
-                    &js_error_text(error),
-                ));
-            }
-        });
-        return;
+/// Map each preview-path spelling onto the backend command that can save it:
+/// `artifact:` ids and pinned `artifact-version:` ids have no workspace path,
+/// so they go to their dedicated commands; remote previews go out as the
+/// ssh:// spelling `download_file` already understands; everything else is a
+/// workspace path for `download_file`.
+pub(crate) fn download_invocation(path: &str) -> Option<(&'static str, serde_json::Value)> {
+    if let Some(id) = artifact_id_path(path) {
+        return Some(("download_artifact", serde_json::json!({ "id": id })));
     }
-    let path = match remote_file_path(&path) {
+    if let Some(id) = artifact_version_id_path(path) {
+        return Some((
+            "download_artifact_version",
+            serde_json::json!({ "versionId": id }),
+        ));
+    }
+    let path = match remote_file_path(path) {
         Some((context_id, remote_path)) => {
-            match crate::context_menu::remote_file_download_uri(context_id, remote_path) {
-                Some(uri) => uri,
-                None => return,
-            }
+            crate::context_menu::remote_file_download_uri(context_id, remote_path)?
         }
-        None => path,
+        None => path.to_string(),
+    };
+    Some(("download_file", serde_json::json!({ "path": path })))
+}
+
+/// Fire the native save dialog to download the file behind a preview path
+/// (backend copies it).
+pub(crate) fn download_artifact(path: String) {
+    let Some((command, args)) = download_invocation(&path) else {
+        return;
     };
     spawn_local(async move {
-        let arg = to_value(&serde_json::json!({ "path": path })).unwrap();
-        if let Err(error) = invoke_checked("download_file", arg).await {
+        if let Err(error) = invoke_checked(command, to_value(&args).unwrap()).await {
             show_toast(&localize_backend(
                 Locale::detect_browser(),
                 &js_error_text(error),
             ));
         }
     });
+}
+
+#[cfg(test)]
+mod download_invocation_tests {
+    use super::download_invocation;
+
+    #[test]
+    fn routes_each_preview_path_spelling_to_its_command() {
+        assert_eq!(
+            download_invocation("artifact:art-1"),
+            Some(("download_artifact", serde_json::json!({ "id": "art-1" })))
+        );
+        // Pinned versions (branch/exploration previews) must download the
+        // exact displayed bytes, never a workspace path that may not exist.
+        assert_eq!(
+            download_invocation("artifact-version:ver-1"),
+            Some((
+                "download_artifact_version",
+                serde_json::json!({ "versionId": "ver-1" })
+            ))
+        );
+        assert_eq!(
+            download_invocation("remote:ssh:gpu:/data/run.csv"),
+            Some((
+                "download_file",
+                serde_json::json!({ "path": "ssh://gpu/data/run.csv" })
+            ))
+        );
+        assert_eq!(
+            download_invocation("results/report.md"),
+            Some((
+                "download_file",
+                serde_json::json!({ "path": "results/report.md" })
+            ))
+        );
+    }
 }
 
 pub(crate) fn reveal_in_file_manager(path: String) {
@@ -1342,7 +1915,25 @@ pub(crate) fn reveal_in_file_manager(path: String) {
     }
     spawn_local(async move {
         let arg = to_value(&serde_json::json!({ "path": path })).unwrap();
-        let _ = invoke_checked("reveal_in_file_manager", arg).await;
+        if let Err(error) = invoke_checked("reveal_in_file_manager", arg).await {
+            show_warning_toast(&js_error_text(error));
+        }
+    });
+}
+
+pub(crate) fn open_workspace_path_in_system(path: String) {
+    // Remote and snapshot-only resources have no OS-visible workspace path.
+    if remote_file_path(&path).is_some()
+        || path.starts_with("artifact:")
+        || path.starts_with("artifact-version:")
+    {
+        return;
+    }
+    spawn_local(async move {
+        let arg = to_value(&serde_json::json!({ "path": path })).unwrap();
+        if let Err(error) = invoke_checked("open_workspace_path", arg).await {
+            show_warning_toast(&js_error_text(error));
+        }
     });
 }
 
@@ -1502,7 +2093,12 @@ pub(crate) fn ArtifactModal(
                 <div class="am-figure" class:zoomable-preview=is_zoomable
                     class:docx-preview=is_docx class:office-preview=is_office
                     data-file-path=path_head.clone()>
-                    <WorkspaceFilePreview dom_id=dom_id path=path_head.clone() kind=kind.clone() />
+                    <WorkspaceFilePreview
+                        dom_id=dom_id
+                        path=path_head.clone()
+                        kind=kind.clone()
+                        filename=name.clone()
+                    />
                 </div>
                 <div class="am-tabs">
                     {["code","log","inputs","env"].iter().map(|k| {

@@ -1,21 +1,23 @@
 use crate::agent_workflows::{workflow_studio as workflow_studio_view, AgentPanelState};
 use crate::app_support::{
-    allow_drop, apply_base_url_suggestions, build_conn_json, bundled_connector_blurb,
-    close_details_ancestor, compose_icon, conn_form_from_row, context_capability_summary,
-    cred_group_configured, cred_group_mark, drag_session_id, endpoint_has_stored_key,
-    focus_element_soon, format_relative_time, group_models_by_channel,
+    allow_drop, apply_base_url_suggestions, blank_conn_secret_field, build_conn_json,
+    bundled_connector_blurb, close_details_ancestor, compose_icon, conn_form_from_row,
+    context_capability_summary, cred_group_configured, cred_group_mark, drag_session_id,
+    endpoint_has_stored_key, focus_element_soon, format_relative_time, group_models_by_channel,
     import_custom_css_from_input, join_tags, js_error_text, mcp_tool_brief, model_form_entry,
-    new_acp_form, new_model_form, profiles_to_edit_form, provider_entries_are_pristine,
-    provider_mark_letter, quick_action_label, reviewer_backend_key, reviewer_backend_label,
-    reviewer_missing_acp_profile_id, select_form_row, set_reviewer_backend, settings_nav_group,
-    settings_section_label, settings_subpage_label, shorten_skill_pin, show_toast,
-    skill_matches_filter, skill_update_result_message, start_session_drag, sync_form_from_selected,
-    CRED_GROUPS,
+    new_acp_form, new_conn_form, new_model_form, profiles_to_edit_form,
+    provider_entries_are_pristine, provider_mark_letter, quick_action_label,
+    reviewer_backend_key, reviewer_backend_label, reviewer_missing_acp_profile_id,
+    select_form_row, set_reviewer_backend, settings_nav_group, settings_section_label,
+    settings_subpage_label, shorten_skill_pin, show_toast, skill_matches_filter,
+    skill_update_result_message, start_session_drag, sync_form_from_selected,
+    DefaultAnalysisSelect, CRED_GROUPS,
 };
 use crate::bindings::{invoke, invoke_checked, is_mac, is_windows};
 use crate::dto::*;
 use crate::i18n::{
-    brand_visible_copy, localize_backend, set_document_lang, t, tf, Locale, BRAND_GITHUB_REPO,
+    brand_visible_copy, localize_backend, set_document_lang, t, tf, use_locale, Locale,
+    BRAND_GITHUB_REPO,
 };
 use crate::knowledge_settings::{
     load_knowledge_settings, persist_knowledge_settings, test_knowledge_settings,
@@ -864,6 +866,7 @@ pub(super) struct SettingsViewState {
     pub(super) pet_status: RwSignal<PetStatus>,
     pub(super) ssh_hosts: RwSignal<Vec<SshHost>>,
     pub(super) execution_contexts: RwSignal<Vec<ExecutionContext>>,
+    pub(super) default_execution_context: RwSignal<Option<String>>,
     pub(super) runtime_interpreter_form: RwSignal<Option<RuntimeInterpreterForm>>,
     pub(super) probing_context_id: RwSignal<Option<String>>,
     pub(super) delete_confirm: RwSignal<Option<DeleteConfirm>>,
@@ -1765,6 +1768,207 @@ fn provider_model_entries_editor(
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConnSecretKind {
+    Env,
+    Headers,
+}
+
+fn conn_secret_rows(form: &ConnForm, kind: ConnSecretKind) -> &[ConnSecretField] {
+    match kind {
+        ConnSecretKind::Env => &form.env,
+        ConnSecretKind::Headers => &form.headers,
+    }
+}
+
+fn conn_secret_rows_mut(form: &mut ConnForm, kind: ConnSecretKind) -> &mut Vec<ConnSecretField> {
+    match kind {
+        ConnSecretKind::Env => &mut form.env,
+        ConnSecretKind::Headers => &mut form.headers,
+    }
+}
+
+/// Keyed secret rows so typing a name/value does not remount the inputs.
+#[component]
+fn ConnSecretRows(
+    conn_form: RwSignal<Option<ConnForm>>,
+    kind: ConnSecretKind,
+    #[prop(into)] disabled: MaybeSignal<bool>,
+) -> impl IntoView {
+    let locale = use_locale();
+    view! {
+        <For
+            each=move || {
+                conn_form.with(|form| {
+                    form.as_ref()
+                        .map(|form| {
+                            conn_secret_rows(form, kind)
+                                .iter()
+                                .map(|row| row.row_id)
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default()
+                })
+            }
+            key=|id| *id
+            let:row_id
+        >
+            {
+                let reveal = create_rw_signal(false);
+                let value_ref = create_node_ref::<leptos::html::Input>();
+                view! {
+                    <div class="conn-secret-row" data-testid="conn-secret-row">
+                        <input
+                            data-testid="conn-secret-name"
+                            autocomplete="off"
+                            placeholder=move || match kind {
+                                ConnSecretKind::Env => "NAME".to_string(),
+                                ConnSecretKind::Headers => {
+                                    if conn_form.with(|form| {
+                                        form.as_ref().is_some_and(|form| form.auth == "oauth")
+                                    }) {
+                                        "X-Custom-Header".to_string()
+                                    } else {
+                                        "Authorization".to_string()
+                                    }
+                                }
+                            }
+                            prop:value=move || {
+                                conn_form.with(|form| {
+                                    form.as_ref()
+                                        .and_then(|form| {
+                                            conn_secret_rows(form, kind)
+                                                .iter()
+                                                .find(|row| row.row_id == row_id)
+                                        })
+                                        .map(|row| row.name.clone())
+                                        .unwrap_or_default()
+                                })
+                            }
+                            prop:disabled=move || disabled.get()
+                            on:input=move |ev| {
+                                let value = event_target_input(&ev).value();
+                                conn_form.update(|form| if let Some(form) = form {
+                                    if let Some(row) = conn_secret_rows_mut(form, kind)
+                                        .iter_mut()
+                                        .find(|row| row.row_id == row_id)
+                                    {
+                                        row.name = value;
+                                    }
+                                });
+                            }
+                        />
+                        <div class="conn-secret-value">
+                            <input
+                                node_ref=value_ref
+                                data-testid="conn-secret-value"
+                                attr:type=move || if reveal.get() { "text" } else { "password" }
+                                autocomplete="new-password"
+                                placeholder=move || {
+                                    let has_value = conn_form.with(|form| {
+                                        form.as_ref()
+                                            .and_then(|form| {
+                                                conn_secret_rows(form, kind)
+                                                    .iter()
+                                                    .find(|row| row.row_id == row_id)
+                                            })
+                                            .map(|row| row.has_value)
+                                            .unwrap_or(false)
+                                    });
+                                    if has_value {
+                                        t(locale.get(), "conn.secret_keep").to_string()
+                                    } else if kind == ConnSecretKind::Headers
+                                        && conn_form.with(|form| {
+                                            form.as_ref().is_some_and(|form| form.auth == "oauth")
+                                        })
+                                    {
+                                        "value".to_string()
+                                    } else if kind == ConnSecretKind::Headers {
+                                        "Bearer token".to_string()
+                                    } else {
+                                        t(locale.get(), "conn.secret_value").to_string()
+                                    }
+                                }
+                                prop:value=move || {
+                                    conn_form.with(|form| {
+                                        form.as_ref()
+                                            .and_then(|form| {
+                                                conn_secret_rows(form, kind)
+                                                    .iter()
+                                                    .find(|row| row.row_id == row_id)
+                                            })
+                                            .map(|row| row.value.clone())
+                                            .unwrap_or_default()
+                                    })
+                                }
+                                prop:disabled=move || disabled.get()
+                                on:input=move |ev| {
+                                    let value = event_target_input(&ev).value();
+                                    conn_form.update(|form| if let Some(form) = form {
+                                        if let Some(row) = conn_secret_rows_mut(form, kind)
+                                            .iter_mut()
+                                            .find(|row| row.row_id == row_id)
+                                        {
+                                            row.value = value;
+                                        }
+                                    });
+                                }
+                            />
+                            <button
+                                type="button"
+                                class="conn-secret-reveal"
+                                data-testid="conn-secret-reveal"
+                                title=move || {
+                                    t(
+                                        locale.get(),
+                                        if reveal.get() {
+                                            "conn.secret_hide"
+                                        } else {
+                                            "conn.secret_show"
+                                        },
+                                    )
+                                }
+                                aria-label=move || {
+                                    t(
+                                        locale.get(),
+                                        if reveal.get() {
+                                            "conn.secret_hide"
+                                        } else {
+                                            "conn.secret_show"
+                                        },
+                                    )
+                                }
+                                aria-pressed=move || if reveal.get() { "true" } else { "false" }
+                                prop:disabled=move || disabled.get()
+                                on:click=move |_| {
+                                    reveal.update(|on| *on = !*on);
+                                    if let Some(input) = value_ref.get() {
+                                        let _ = input.focus();
+                                    }
+                                }
+                            >
+                                {move || compose_icon(if reveal.get() { "eye-off" } else { "eye" })}
+                            </button>
+                        </div>
+                        <button
+                            type="button"
+                            class="settings-list-remove"
+                            data-testid="conn-secret-remove"
+                            title=move || t(locale.get(), "conn.secret_remove")
+                            aria-label=move || t(locale.get(), "conn.secret_remove")
+                            prop:disabled=move || disabled.get()
+                            on:click=move |_| conn_form.update(|form| if let Some(form) = form {
+                                conn_secret_rows_mut(form, kind)
+                                    .retain(|row| row.row_id != row_id);
+                            })
+                        >{compose_icon("close")}</button>
+                    </div>
+                }
+            }
+        </For>
+    }
+}
+
 #[component]
 pub(super) fn SettingsView(
     state: SettingsViewState,
@@ -1799,6 +2003,7 @@ pub(super) fn SettingsView(
     import_wsl_contexts: Callback<()>,
     remove_ssh_host: Callback<String>,
     probe_compute_resource: Callback<String>,
+    set_default_compute_resource: Callback<Option<String>>,
     open_terminal_session: Callback<TerminalSessionSummary>,
 ) -> impl IntoView {
     let SettingsViewState {
@@ -1869,6 +2074,7 @@ pub(super) fn SettingsView(
         pet_status,
         ssh_hosts,
         execution_contexts,
+        default_execution_context,
         runtime_interpreter_form,
         probing_context_id,
         delete_confirm,
@@ -2177,6 +2383,8 @@ pub(super) fn SettingsView(
     let plugin_install_mode = create_rw_signal("local".to_string());
     let plugin_search = create_rw_signal(String::new());
     let oauth_authorizing = create_rw_signal(false);
+    let conn_testing = create_rw_signal(false);
+    let conn_test_seq = create_rw_signal(0u64);
     let custom_cred_name = create_rw_signal(String::new());
     let custom_cred_env = create_rw_signal(String::new());
     let custom_cred_value = create_rw_signal(String::new());
@@ -2788,6 +2996,19 @@ pub(super) fn SettingsView(
                 {move || (settings_section.get() == "environments").then(|| view! {
                     <div class="settings-pane settings-pane-list environment-settings-pane">
                         <p class="settings-note">{move || t(locale.get(), "environments.hint")}</p>
+                        <div class="environment-default-field">
+                            <label>
+                                {move || t(locale.get(), "environments.default_analysis")}
+                                <DefaultAnalysisSelect
+                                    locale=locale
+                                    execution_contexts=execution_contexts
+                                    default_execution_context=default_execution_context
+                                    on_change=set_default_compute_resource
+                                    test_id="default-analysis-environment".to_string()
+                                />
+                            </label>
+                            <p class="settings-field-hint">{move || t(locale.get(), "environments.default_analysis_hint")}</p>
+                        </div>
                         {move || trust_cleanup_error.get().map(|error| view! {
                             <div class="settings-status fail" role="alert">
                                 {format!("{}: {error}", t(locale.get(), "environments.trust_cleanup_failed"))}
@@ -3827,6 +4048,14 @@ pub(super) fn SettingsView(
                                                 }
                                                 autocomplete="new-password"
                                                 on:input=move |ev| model_form_key.set(event_target_input(&ev).value()) /></label>
+                                        {move || {
+                                            let url = model_form.get().map(|f| f.api_url).unwrap_or_default();
+                                            endpoint_has_stored_key(&models.get(), &url).then(|| view! {
+                                                <span class="hint span-2" data-testid="provider-separate-key-hint">
+                                                    {t(locale.get(), "models.separate_key_hint")}
+                                                </span>
+                                            })
+                                        }}
                                     </div>
                                     {provider_model_entries_editor(model_form, locale, model_catalog_limits, delete_confirm, model_form_msg, validate_model_form, 1)}
                                     <div class="row settings-footer">
@@ -6621,41 +6850,10 @@ pub(super) fn SettingsView(
                                                 on:input=move |ev| conn_form.update(|o| if let Some(o)=o { o.args = event_target_input(&ev).value(); }) /></label>
                                         <div class="conn-secret-fields">
                                             <span class="conn-secret-label">{move || t(locale.get(),"conn.env")}</span>
-                                            {move || conn_form.get().map(|f| f.env).unwrap_or_default().into_iter().enumerate().map(|(idx, field)| {
-                                                let has_value = field.has_value;
-                                                view! {
-                                                    <div class="conn-secret-row">
-                                                        <input placeholder="NAME"
-                                                            prop:value=field.name
-                                                            on:input=move |ev| conn_form.update(|o| if let Some(o)=o {
-                                                                if let Some(row) = o.env.get_mut(idx) {
-                                                                    row.name = event_target_input(&ev).value();
-                                                                }
-                                                            }) />
-                                                        <input type="password" autocomplete="new-password"
-                                                            placeholder=move || if has_value {
-                                                                t(locale.get(), "conn.secret_keep").to_string()
-                                                            } else {
-                                                                t(locale.get(), "conn.secret_value").to_string()
-                                                            }
-                                                            prop:value=field.value
-                                                            on:input=move |ev| conn_form.update(|o| if let Some(o)=o {
-                                                                if let Some(row) = o.env.get_mut(idx) {
-                                                                    row.value = event_target_input(&ev).value();
-                                                                }
-                                                            }) />
-                                                        <button type="button" class="settings-list-remove"
-                                                            title=move || t(locale.get(), "conn.secret_remove")
-                                                            aria-label=move || t(locale.get(), "conn.secret_remove")
-                                                            on:click=move |_| conn_form.update(|o| if let Some(o)=o {
-                                                                if idx < o.env.len() { o.env.remove(idx); }
-                                                            })>{compose_icon("close")}</button>
-                                                    </div>
-                                                }
-                                            }).collect_view()}
+                                            <ConnSecretRows conn_form=conn_form kind=ConnSecretKind::Env disabled=oauth_authorizing />
                                             <button type="button" class="settings-add-btn conn-secret-add"
                                                 on:click=move |_| conn_form.update(|o| if let Some(o)=o {
-                                                    o.env.push(ConnSecretField::default());
+                                                    o.env.push(blank_conn_secret_field());
                                                 })>
                                                 {compose_icon("plus")}
                                                 <span>{move || t(locale.get(), "conn.secret_add_env")}</span>
@@ -6681,48 +6879,11 @@ pub(super) fn SettingsView(
                                         </label>
                                         <div class="conn-secret-fields">
                                             <span class="conn-secret-label">{move || t(locale.get(),"conn.headers")}</span>
-                                            {move || conn_form.get().map(|f| f.headers).unwrap_or_default().into_iter().enumerate().map(|(idx, field)| {
-                                                let has_value = field.has_value;
-                                                let oauth = conn_form.get().is_some_and(|form| form.auth == "oauth");
-                                                view! {
-                                                    <div class="conn-secret-row">
-                                                        <input placeholder=if oauth { "X-Custom-Header" } else { "Authorization" }
-                                                            prop:value=field.name
-                                                            disabled=move || oauth_authorizing.get()
-                                                            on:input=move |ev| conn_form.update(|o| if let Some(o)=o {
-                                                                if let Some(row) = o.headers.get_mut(idx) {
-                                                                    row.name = event_target_input(&ev).value();
-                                                                }
-                                                            }) />
-                                                        <input type="password" autocomplete="new-password"
-                                                            placeholder=move || if has_value {
-                                                                t(locale.get(), "conn.secret_keep").to_string()
-                                                            } else if oauth {
-                                                                "value".to_string()
-                                                            } else {
-                                                                "Bearer token".to_string()
-                                                            }
-                                                            prop:value=field.value
-                                                            disabled=move || oauth_authorizing.get()
-                                                            on:input=move |ev| conn_form.update(|o| if let Some(o)=o {
-                                                                if let Some(row) = o.headers.get_mut(idx) {
-                                                                    row.value = event_target_input(&ev).value();
-                                                                }
-                                                            }) />
-                                                        <button type="button" class="settings-list-remove"
-                                                            title=move || t(locale.get(), "conn.secret_remove")
-                                                            aria-label=move || t(locale.get(), "conn.secret_remove")
-                                                            disabled=move || oauth_authorizing.get()
-                                                            on:click=move |_| conn_form.update(|o| if let Some(o)=o {
-                                                                if idx < o.headers.len() { o.headers.remove(idx); }
-                                                            })>{compose_icon("close")}</button>
-                                                    </div>
-                                                }
-                                            }).collect_view()}
+                                            <ConnSecretRows conn_form=conn_form kind=ConnSecretKind::Headers disabled=oauth_authorizing />
                                             <button type="button" class="settings-add-btn conn-secret-add"
                                                 disabled=move || oauth_authorizing.get()
                                                 on:click=move |_| conn_form.update(|o| if let Some(o)=o {
-                                                    o.headers.push(ConnSecretField::default());
+                                                    o.headers.push(blank_conn_secret_field());
                                                 })>
                                                 {compose_icon("plus")}
                                                 <span>{move || t(locale.get(), "conn.secret_add_header")}</span>
@@ -6734,42 +6895,83 @@ pub(super) fn SettingsView(
                                         && conn_form.get().is_some_and(|form| form.auth == "oauth")).then(|| view!{
                                         <p class="settings-note">{move || t(locale.get(), "conn.oauth.desc")}</p>
                                     })}
-                                    {move || conn_test_msg.get().map(|(ok,msg)| view!{
-                                        <div class="settings-status" class:ok=ok class:fail=move||!ok>{msg}</div>
-                                    })}
+                                    {move || if conn_testing.get() {
+                                        view! {
+                                            <div class="settings-status pending" data-testid="conn-test-status"
+                                                role="status" aria-live="polite">
+                                                <span class="conn-test-spinner" aria-hidden="true"></span>
+                                                {move || t(
+                                                    locale.get(),
+                                                    if oauth_authorizing.get() {
+                                                        "conn.oauth.waiting"
+                                                    } else {
+                                                        "conn.testing_status"
+                                                    },
+                                                )}
+                                            </div>
+                                        }.into_view()
+                                    } else {
+                                        conn_test_msg.get().map(|(ok, msg)| view! {
+                                            <div class="settings-status" class:ok=ok class:fail=!ok
+                                                data-testid="conn-test-status">{msg}</div>
+                                        }).into_view()
+                                    }}
                                     <div class="row settings-footer">
-                                        <button type="button" disabled=move || oauth_authorizing.get()
-                                            on:click=move |_| { let f = conn_form.get().unwrap_or_default();
-                                            spawn_local(async move {
+                                        <button type="button" data-testid="conn-test"
+                                            disabled=move || conn_testing.get() || oauth_authorizing.get()
+                                            attr:aria-busy=move || if conn_testing.get() { "true" } else { "false" }
+                                            on:click=move |_| {
+                                                if conn_testing.get() || oauth_authorizing.get() {
+                                                    return;
+                                                }
+                                                let f = conn_form.get().unwrap_or_default();
+                                                conn_testing.set(true);
+                                                conn_test_msg.set(None);
+                                                conn_test_seq.update(|n| *n += 1);
+                                                let seq = conn_test_seq.get_untracked();
                                                 let oauth = f.kind == "http" && f.auth == "oauth";
                                                 if oauth {
                                                     oauth_authorizing.set(true);
-                                                    conn_test_msg.set(Some((true, t(locale.get(), "conn.oauth.waiting").into())));
                                                 }
-                                                let conn = build_conn_json(&f, false);
-                                                let command = if oauth {
-                                                    "test_oauth_mcp_connection"
-                                                } else {
-                                                    "test_mcp_connection"
-                                                };
-                                                match invoke_checked(command, to_value(&serde_json::json!({"conn": conn})).unwrap()).await {
-                                                    Ok(v) => match serde_wasm_bindgen::from_value::<Vec<ConnectorTool>>(v) {
-                                                        Ok(tools) => {
-                                                            let n = tools.len();
-                                                            if let Some(id) = f.id.clone() {
-                                                                custom_conn_tools.update(|m| { m.insert(id, tools); });
+                                                spawn_local(async move {
+                                                    let conn = build_conn_json(&f, false);
+                                                    let command = if oauth {
+                                                        "test_oauth_mcp_connection"
+                                                    } else {
+                                                        "test_mcp_connection"
+                                                    };
+                                                    let outcome = invoke_checked(
+                                                        command,
+                                                        to_value(&serde_json::json!({"conn": conn})).unwrap(),
+                                                    )
+                                                    .await;
+                                                    if conn_test_seq.get_untracked() != seq {
+                                                        return;
+                                                    }
+                                                    match outcome {
+                                                        Ok(v) => match serde_wasm_bindgen::from_value::<Vec<ConnectorTool>>(v) {
+                                                            Ok(tools) => {
+                                                                let n = tools.len();
+                                                                if let Some(id) = f.id.clone() {
+                                                                    custom_conn_tools.update(|m| { m.insert(id, tools); });
+                                                                }
+                                                                conn_test_msg.set(Some((true, format!("OK — {n} tools"))));
                                                             }
-                                                            conn_test_msg.set(Some((true, format!("OK — {n} tools"))));
-                                                        }
-                                                        Err(e) => conn_test_msg.set(Some((false, e.to_string()))),
-                                                    },
-                                                    Err(e) => conn_test_msg.set(Some((false, js_error_text(e)))),
-                                                }
-                                                if oauth {
-                                                    oauth_authorizing.set(false);
-                                                }
-                                            });
-                                        }>{move || t(locale.get(),"conn.test")}</button>
+                                                            Err(e) => conn_test_msg.set(Some((false, e.to_string()))),
+                                                        },
+                                                        Err(e) => conn_test_msg.set(Some((false, js_error_text(e)))),
+                                                    }
+                                                    conn_testing.set(false);
+                                                    if oauth {
+                                                        oauth_authorizing.set(false);
+                                                    }
+                                                });
+                                            }>
+                                            {move || t(
+                                                locale.get(),
+                                                if conn_testing.get() { "conn.testing" } else { "conn.test" },
+                                            )}
+                                        </button>
                                         <button type="button"
                                             on:click=move |_| {
                                                 if oauth_authorizing.get() {
@@ -6777,10 +6979,16 @@ pub(super) fn SettingsView(
                                                         let _ = invoke_checked("cancel_oauth_authorization", JsValue::UNDEFINED).await;
                                                     });
                                                 }
+                                                conn_test_seq.update(|n| *n += 1);
+                                                conn_testing.set(false);
                                                 oauth_authorizing.set(false);
                                                 close_settings_subpage.call(());
                                             }>{move || t(locale.get(),"settings.cancel")}</button>
-                                        <button type="button" class="primary" on:click=move |_| { let f = conn_form.get().unwrap_or_default();
+                                        <button type="button" class="primary" on:click=move |_| {
+                                            if conn_testing.get() || oauth_authorizing.get() {
+                                                return;
+                                            }
+                                            let f = conn_form.get().unwrap_or_default();
                                             spawn_local(async move {
                                                 if f.kind == "http" && f.auth == "oauth" {
                                                     oauth_authorizing.set(true);
@@ -6807,7 +7015,7 @@ pub(super) fn SettingsView(
                                                     conn_form.set(None); conn_test_msg.set(None); refresh_conns.call(());
                                                 }
                                             });
-                                        } disabled=move || oauth_authorizing.get()>
+                                        } disabled=move || conn_testing.get() || oauth_authorizing.get()>
                                             {move || t(locale.get(), "settings.save")}
                                         </button>
                                     </div>
@@ -6968,7 +7176,7 @@ pub(super) fn SettingsView(
                                 format!("{} ({})", t(locale.get(), "settings.nav.connections"), nb + nc)
                             }}</span>
                             <button type="button" class="settings-add-btn" on:click=move |_| {
-                                conn_form.set(Some(ConnForm::new_connection()));
+                                conn_form.set(Some(new_conn_form()));
                                 conn_test_msg.set(None);
                             }>{move || t(locale.get(), "conn.add")}</button>
                         </div>

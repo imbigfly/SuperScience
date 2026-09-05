@@ -193,16 +193,43 @@ impl OpenAiProvider {
         if !tools_json.is_empty() {
             body["tools"] = json!(tools_json);
         }
-        if let Some(effort) = &self.cfg.reasoning_effort {
+        if self.cfg.thinking_enabled == Some(false)
+            && crate::provider::is_deepseek_endpoint(&self.cfg.base_url, &self.cfg.model)
+        {
+            body["thinking"] = json!({ "type": "disabled" });
+        } else if let Some(effort) = &self.cfg.reasoning_effort {
             body["reasoning_effort"] = json!(effort);
         }
+        if let Some(tier) = &self.cfg.service_tier {
+            body["service_tier"] = json!(tier);
+        }
         body
+    }
+
+    fn log_dispatch(&self, endpoint: &str, body: &Value, stream: bool) {
+        let included = body.get("service_tier").is_some();
+        let service_tier = body
+            .get("service_tier")
+            .and_then(Value::as_str)
+            .unwrap_or("omitted");
+        tracing::info!(
+            target: "wisp",
+            provider = "openai",
+            model = %self.cfg.model,
+            endpoint_kind = "chat_completions",
+            endpoint_host = %endpoint_host(endpoint),
+            service_tier,
+            service_tier_in_body = included,
+            stream,
+            "llm_request_dispatch"
+        );
     }
 
     async fn request(&self, body: Value) -> Result<Value> {
         let endpoints = self.endpoint_candidates();
         for (index, endpoint) in endpoints.iter().enumerate() {
             let has_next = index + 1 < endpoints.len();
+            self.log_dispatch(endpoint, &body, false);
             let resp = self
                 .client
                 .post(endpoint)
@@ -245,6 +272,7 @@ impl OpenAiProvider {
         let endpoints = self.endpoint_candidates();
         for (index, endpoint) in endpoints.iter().enumerate() {
             let has_next = index + 1 < endpoints.len();
+            self.log_dispatch(endpoint, body, true);
             let resp = self
                 .client
                 .post(endpoint)
@@ -701,6 +729,13 @@ impl Provider for OpenAiProvider {
             usage,
         })
     }
+}
+
+fn endpoint_host(endpoint: &str) -> String {
+    url::Url::parse(endpoint)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+        .unwrap_or_else(|| "unknown".into())
 }
 
 fn parse_usage(val: &Value) -> Usage {
@@ -1236,6 +1271,43 @@ mod tests {
         assert_eq!(out[0]["role"], "user");
     }
 
+    #[test]
+    fn sanitize_survives_empty_ids_invalid_args_and_empty_assistant() {
+        let mut asst = Message::assistant("");
+        asst.tool_calls = vec![
+            call(""),
+            ToolCall {
+                id: "ok".into(),
+                kind: "function".into(),
+                function: FunctionCall {
+                    name: "read".into(),
+                    arguments: "not-json {".into(),
+                },
+            },
+        ];
+        let msgs = vec![
+            Message::user("hi"),
+            asst,
+            Message::tool("ok", "read", "x".repeat(8_000)),
+            Message::assistant(""),
+        ];
+        let out = OpenAiProvider::sanitize(&msgs);
+        assert_eq!(out[0]["role"], "user");
+        assert_eq!(out[1]["role"], "assistant");
+        let kept = out[1]["tool_calls"].as_array().unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0]["id"], "ok");
+        assert_eq!(out[2]["role"], "tool");
+        assert!(
+            !out.iter().any(|row| {
+                row["role"] == "assistant"
+                    && row.get("tool_calls").is_none()
+                    && row["content"] == ""
+            }),
+            "empty assistant turns without tool_calls must be dropped"
+        );
+    }
+
     // A well-formed pair passes through untouched.
     #[test]
     fn keeps_matched_pair() {
@@ -1347,6 +1419,53 @@ mod tests {
             }]
         }));
         assert_eq!(calls[0].function.name, "python");
+    }
+
+    #[test]
+    fn fast_service_tier_is_top_level_and_independent_of_effort() {
+        let mut cfg = crate::ProviderConfig::openai("https://example.test/v1", "", "gpt-5.6-sol");
+        cfg.reasoning_effort = Some("high".into());
+        cfg.service_tier = Some("priority".into());
+        let provider = OpenAiProvider::new(cfg);
+        for stream in [false, true] {
+            let body = provider.build_body(&[Message::user("hi")], &[], stream);
+            assert_eq!(body["service_tier"], "priority");
+            assert_eq!(body["reasoning_effort"], "high");
+        }
+    }
+
+    #[test]
+    fn deepseek_reader_disables_thinking_and_omits_effort() {
+        let mut cfg =
+            crate::ProviderConfig::openai("https://api.deepseek.com", "", "deepseek-v4-flash");
+        cfg.thinking_enabled = Some(false);
+        cfg.reasoning_effort = Some("high".into());
+        let provider = OpenAiProvider::new(cfg);
+        let body = provider.build_body(&[Message::user("hi")], &[], false);
+        assert_eq!(body["thinking"]["type"], "disabled");
+        assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn thinking_toggle_is_omitted_for_non_deepseek_hosts() {
+        let mut cfg = crate::ProviderConfig::openai("https://api.openai.com/v1", "", "gpt-5.6-sol");
+        cfg.thinking_enabled = Some(false);
+        let provider = OpenAiProvider::new(cfg);
+        let body = provider.build_body(&[Message::user("hi")], &[], false);
+        assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn provider_default_omits_service_tier_from_chat_completions() {
+        let provider = OpenAiProvider::new(crate::ProviderConfig::openai(
+            "https://example.test/v1",
+            "",
+            "gpt-5.6-sol",
+        ));
+        for stream in [false, true] {
+            let body = provider.build_body(&[Message::user("hi")], &[], stream);
+            assert!(body.get("service_tier").is_none());
+        }
     }
 
     // reasoning_content is never replayed — not even for the most recent turn.

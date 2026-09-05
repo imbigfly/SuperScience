@@ -726,9 +726,9 @@ impl Store {
         let now = chrono::Utc::now().timestamp();
         let inserted = sqlx::query(
             "INSERT INTO frames(\
-                id,parent_frame_id,root_frame_id,agent_name,status,project_id,model,exploration_id,\
+                id,parent_frame_id,root_frame_id,agent_name,status,project_id,model,reasoning_effort,service_tier,exploration_id,\
                 input_tokens,output_tokens,created_at,updated_at,completed_at\
-             ) SELECT ?,id,COALESCE(root_frame_id,id),?,'running',project_id,?,exploration_id,0,0,?,?,NULL \
+             ) SELECT ?,id,COALESCE(root_frame_id,id),?,'running',project_id,?,reasoning_effort,service_tier,exploration_id,0,0,?,?,NULL \
              FROM frames WHERE id=? AND project_id=?",
         )
         .bind(id)
@@ -778,6 +778,18 @@ impl Store {
         .flatten())
     }
 
+    /// Per-conversation service-tier override. `None` inherits the bound
+    /// model profile; `Some("")` explicitly selects provider default.
+    pub async fn frame_service_tier(&self, frame_id: &str) -> Result<Option<String>> {
+        Ok(
+            sqlx::query_scalar::<_, Option<String>>("SELECT service_tier FROM frames WHERE id=?")
+                .bind(frame_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .flatten(),
+        )
+    }
+
     /// Overwrite a frame's created/updated timestamps. Used by importers so
     /// external conversations keep their original chronology in the sidebar.
     pub async fn set_frame_timestamps(
@@ -825,6 +837,27 @@ impl Store {
             "UPDATE frames SET reasoning_effort=?,updated_at=? WHERE id=? AND project_id=?",
         )
         .bind(reasoning_effort)
+        .bind(chrono::Utc::now().timestamp())
+        .bind(frame_id)
+        .bind(project_id)
+        .execute(&self.pool)
+        .await?;
+        if updated.rows_affected() != 1 {
+            anyhow::bail!("Session not found");
+        }
+        Ok(())
+    }
+
+    pub async fn set_frame_service_tier(
+        &self,
+        frame_id: &str,
+        project_id: &str,
+        service_tier: Option<&str>,
+    ) -> Result<()> {
+        let updated = sqlx::query(
+            "UPDATE frames SET service_tier=?,updated_at=? WHERE id=? AND project_id=?",
+        )
+        .bind(service_tier)
         .bind(chrono::Utc::now().timestamp())
         .bind(frame_id)
         .bind(project_id)
@@ -953,7 +986,37 @@ impl Store {
     }
 }
 
-async fn insert_message_row<'e, E>(
+fn message_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<(i64, Message)> {
+    let seq: i64 = row.try_get("seq")?;
+    let role: String = row.try_get("role")?;
+    let content_json: String = row.try_get("content")?;
+    let content: superscience_llm::Content =
+        serde_json::from_str(&content_json).unwrap_or(superscience_llm::Content::text(""));
+    let tool_calls_json: Option<String> = row.try_get("tool_calls")?;
+    let tool_calls: Vec<superscience_llm::ToolCall> = tool_calls_json
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    let tool_call_id: Option<String> = row.try_get("tool_call_id")?;
+    let tool_name: Option<String> = row.try_get("tool_name")?;
+    let reasoning: Option<String> = row.try_get("reasoning")?;
+    let ts: i64 = row.try_get("ts")?;
+    let model_name: Option<String> = row.try_get("model_name")?;
+    Ok((
+        seq,
+        Message {
+            role: parse_role(&role),
+            content,
+            tool_calls,
+            tool_call_id,
+            tool_name,
+            reasoning,
+            ts,
+            model_name,
+        },
+    ))
+}
+
+pub(crate) async fn insert_message_row<'e, E>(
     executor: E,
     frame_id: &str,
     seq: i64,
@@ -1251,34 +1314,12 @@ impl Store {
             .fetch_all(&self.pool).await?;
         let mut out = vec![];
         for row in rows {
-            let seq: i64 = row.try_get("seq")?;
-            let role: String = row.try_get("role")?;
-            let content_json: String = row.try_get("content")?;
-            let content: superscience_llm::Content =
-                serde_json::from_str(&content_json).unwrap_or(superscience_llm::Content::text(""));
-            let tool_calls_json: Option<String> = row.try_get("tool_calls")?;
-            let tool_calls: Vec<superscience_llm::ToolCall> = tool_calls_json
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default();
-            let tool_call_id: Option<String> = row.try_get("tool_call_id")?;
-            let tool_name: Option<String> = row.try_get("tool_name")?;
-            let reasoning: Option<String> = row.try_get("reasoning")?;
-            let ts: i64 = row.try_get("ts")?;
-            let model_name: Option<String> = row.try_get("model_name")?;
-            let role = parse_role(&role);
-            out.push((
-                seq,
-                Message {
-                    role,
-                    content,
-                    tool_calls,
-                    tool_call_id,
-                    tool_name,
-                    reasoning,
-                    ts,
-                    model_name,
-                },
-            ));
+            match message_from_row(&row) {
+                Ok(item) => out.push(item),
+                Err(error) => {
+                    tracing::warn!(frame_id, %error, "skipping unreadable message row");
+                }
+            }
         }
         Ok(out)
     }
@@ -1914,7 +1955,7 @@ impl Store {
         }
 
         let source = sqlx::query(
-            "SELECT agent_name,status,model,reasoning_effort,input_tokens,output_tokens,completed_at,title \
+            "SELECT agent_name,status,model,reasoning_effort,service_tier,input_tokens,output_tokens,completed_at,title \
              FROM frames WHERE id=? AND project_id=? AND parent_frame_id=id",
         )
         .bind(frame_id)
@@ -1926,9 +1967,9 @@ impl Store {
         let now = chrono::Utc::now().timestamp();
         sqlx::query(
             "INSERT INTO frames(\
-                id,parent_frame_id,root_frame_id,agent_name,status,project_id,folder_id,model,reasoning_effort,\
+                id,parent_frame_id,root_frame_id,agent_name,status,project_id,folder_id,model,reasoning_effort,service_tier,\
                 input_tokens,output_tokens,created_at,updated_at,completed_at,title\
-             ) VALUES(?,?,?,?,?,?,NULL,?,?,?,?,?,?,?,?)",
+             ) VALUES(?,?,?,?,?,?,NULL,?,?,?,?,?,?,?,?,?)",
         )
         .bind(new_frame_id)
         .bind(new_frame_id)
@@ -1938,6 +1979,7 @@ impl Store {
         .bind(target_project_id)
         .bind(source.try_get::<Option<String>, _>("model")?)
         .bind(source.try_get::<Option<String>, _>("reasoning_effort")?)
+        .bind(source.try_get::<Option<String>, _>("service_tier")?)
         .bind(source.try_get::<Option<i64>, _>("input_tokens")?)
         .bind(source.try_get::<Option<i64>, _>("output_tokens")?)
         .bind(now)

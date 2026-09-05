@@ -1508,19 +1508,24 @@ pub(crate) fn render_item(
                 on_branch=Callback::new(on_branch)
                 on_file=on_file
             />
-        }.into_view(),
+        }
+        .into_view(),
         ChatItem::QueuedUser { .. } => view! {}.into_view(),
         ChatItem::Assistant { text, .. } if text.trim().is_empty() => view! {}.into_view(),
         ChatItem::Assistant { text, .. } if text.starts_with("Error: ") => {
-            let msg = text.strip_prefix("Error: ").unwrap_or(text.as_str()).to_string();
+            let msg = text
+                .strip_prefix("Error: ")
+                .unwrap_or(text.as_str())
+                .to_string();
             let copy = msg.clone();
             let hint_src = msg.clone();
+            let can_resume = can_modify && !msg.starts_with(crate::dto::ACP_TURN_ERROR_PREFIX);
             view! {
                 <div class="finding err">
                     <div class="finding-head">
                         <span class="finding-tag">{move || format!("● {}", t(locale.get(), "chat.error"))}</span>
                         <span class="finding-title">{msg}</span>
-                        {can_modify.then(|| view! {
+                        {can_resume.then(|| view! {
                             <button type="button" class="tool-btn"
                                 disabled=move || busy.get()
                                 on:click=move |_| on_resume.call(ui_index)>
@@ -1560,7 +1565,8 @@ pub(crate) fn render_item(
                         }
                     ></div>
                 </div>
-            }.into_view()
+            }
+            .into_view()
         }
         ChatItem::Assistant { text, model, resources } => {
             let show_review = !session_id.trim().is_empty();
@@ -1614,7 +1620,13 @@ pub(crate) fn render_item(
         }
         ChatItem::Tool { name, .. } if name == "attempt_completion" => view! {}.into_view(),
         ChatItem::FileChanged(_) => view! {}.into_view(),
-        ChatItem::Tool { name, ok, input, output, .. } if is_run_monitor_tool(name) => view! {
+        ChatItem::Tool {
+            name,
+            ok,
+            input,
+            output,
+            ..
+        } if is_run_monitor_tool(name) => view! {
             <RunMonitorCard
                 run_id=input.trim().to_string()
                 runs=runs
@@ -1624,22 +1636,37 @@ pub(crate) fn render_item(
                 dismissed_runs=dismissed_runs
                 auto_review=true
             />
-        }.into_view(),
-        ChatItem::Tool { name, ok, input, output, .. } if is_image_generation_tool(name) => view! {
+        }
+        .into_view(),
+        ChatItem::Tool {
+            name,
+            ok,
+            input,
+            output,
+            ..
+        } if is_image_generation_tool(name) => view! {
             <ImageGenerationCard
                 path=input.trim().to_string()
                 ok=*ok
                 output=output.clone()
                 on_file=on_file
             />
-        }.into_view(),
-        ChatItem::Tool { name, ok, input, output, .. } if is_video_generation_tool(name) => view! {
+        }
+        .into_view(),
+        ChatItem::Tool {
+            name,
+            ok,
+            input,
+            output,
+            ..
+        } if is_video_generation_tool(name) => view! {
             <VideoGenerationCard
                 path=input.trim().to_string()
                 ok=*ok
                 output=output.clone()
             />
-        }.into_view(),
+        }
+        .into_view(),
         ChatItem::Reasoning(s) => {
             // The chat row is fingerprint-keyed, so every streaming delta
             // rebuilds it and a plain `<details>` would snap shut mid-stream.
@@ -1656,11 +1683,19 @@ pub(crate) fn render_item(
                     }>{move || t(locale.get(), "chat.thinking")}</summary>
                     <div class="body">{s.clone()}</div>
                 </details>
-            }.into_view()
+            }
+            .into_view()
         }
-        ChatItem::Tool { name, ok, input, output, .. } => view! {
+        ChatItem::Tool {
+            name,
+            ok,
+            input,
+            output,
+            ..
+        } => view! {
             <ToolBlock name=name.clone() ok=*ok input=input.clone() output=output.clone() />
-        }.into_view(),
+        }
+        .into_view(),
         ChatItem::Usage {
             input,
             output,
@@ -1705,7 +1740,8 @@ pub(crate) fn render_item(
                             &[("count", count.as_str()), ("limit", limit.as_str())],
                         )}</span>
                     </div>
-                }.into_view()
+                }
+                .into_view()
             } else {
                 let automatic = strategy == "auto";
                 let counts = format!(
@@ -1729,17 +1765,35 @@ pub(crate) fn render_item(
                 }.into_view()
             }
         }
-        ChatItem::AcpTool { title, status, content, locations, .. } => view! {
+        ChatItem::AcpTool {
+            title,
+            status,
+            content,
+            locations,
+            ..
+        } => view! {
             <article class="tool-card" data-testid="acp-tool" data-status=status.clone()>
                 <header><strong>{title.clone()}</strong><span>{status.clone()}</span></header>
                 {(!content.is_empty()).then(|| view! { <pre>{content.clone()}</pre> })}
                 {(!locations.is_empty()).then(|| view! { <pre>{locations.clone()}</pre> })}
             </article>
-        }.into_view(),
-        ChatItem::ApprovalPending { tool, preview, message } => view! {
-            <ApprovalCard tool=tool.clone() preview=preview.clone() message=message.clone() session_id=session_id.clone() on_decide=on_approval />
-        }.into_view(),
-        ChatItem::AcpPermission { request_id, tool, options } => {
+        }
+        .into_view(),
+        ChatItem::ApprovalPending {
+            tool,
+            preview,
+            message,
+        } => view! {
+            <ApprovalCard tool=tool.clone() preview=preview.clone() message=message.clone()
+                session_id=session_id.clone() on_decide=on_approval
+                on_artifact=on_artifact.clone() on_file=on_file.clone() />
+        }
+        .into_view(),
+        ChatItem::AcpPermission {
+            request_id,
+            tool,
+            options,
+        } => {
             let request_id = request_id.clone();
             view! {
                 <article class="approval-card" data-testid="acp-permission-card">
@@ -1772,9 +1826,7 @@ pub(crate) fn render_item(
                 ReviewTransitionPhase::Correcting => {
                     ("↩", "review.transition_to_agent", "correcting")
                 }
-                ReviewTransitionPhase::Passed => {
-                    ("✓", "review.transition_passed", "passed")
-                }
+                ReviewTransitionPhase::Passed => ("✓", "review.transition_passed", "passed"),
             };
             let model = model.clone();
             view! {
@@ -1790,6 +1842,8 @@ pub(crate) fn render_item(
         ChatItem::Plan(plan) => {
             let streaming = plan.state == PlanState::Streaming;
             let entries = plan.entries.clone();
+            let project_root = use_context::<ReadSignal<Option<ProjectInfo>>>()
+                .and_then(|project| project.get().map(|project| project.root));
             view! {
                 <article class="plan-card" class:streaming=streaming
                     class:compat=move || plan_compat.get() data-testid="plan-card">
@@ -1820,11 +1874,23 @@ pub(crate) fn render_item(
                                 PlanStatus::Pending => ("pending", "", "plan.status.pending"),
                             };
                             let high = entry.priority == PlanPriority::High;
+                            let html = enrich_md_html(
+                                md_to_html(&entry.content),
+                                &[],
+                                &[],
+                                locale.get(),
+                                project_root.as_deref(),
+                            );
+                            let entry_artifact = on_artifact.clone();
+                            let entry_file = on_file.clone();
                             view! {
                                 <li data-status=status>
                                     <span class="plan-entry-mark" role="img"
                                         aria-label=move || t(locale.get(), label)>{mark}</span>
-                                    <span class="plan-entry-text">{entry.content}</span>
+                                    <div class="plan-entry-text md" inner_html=html
+                                        on:click=move |ev: web_sys::MouseEvent| {
+                                            handle_md_click(&ev, &[], &[], &entry_artifact, &entry_file)
+                                        }></div>
                                     {high.then(|| view! {
                                         <span class="plan-entry-priority" role="img"
                                             aria-label=move || t(locale.get(), "plan.priority_high")>"!"</span>
@@ -1866,13 +1932,27 @@ pub(crate) fn render_item(
             };
             let request_id_keydown = request_id.clone();
             let request_id_click = request_id.clone();
+            let project_root = use_context::<ReadSignal<Option<ProjectInfo>>>()
+                .and_then(|project| project.get().map(|project| project.root));
+            let question_html = enrich_md_html(
+                md_to_html(&question.question),
+                &[],
+                &[],
+                locale.get(),
+                project_root.as_deref(),
+            );
             view! {
                 <section class="plan-question-card" data-testid="question-card" data-state=data_state>
                     <div class="plan-question-head">
                         <span class="plan-question-icon">{compose_icon("chat")}</span>
                         <strong>{move || t(locale.get(), "plan.question.title")}</strong>
                     </div>
-                    <p class="plan-question-text">{question.question.clone()}</p>
+                    <div class="plan-question-text md"
+                        inner_html=question_html
+                        on:click=move |ev: web_sys::MouseEvent| {
+                            handle_md_click(&ev, &[], &[], &on_artifact, &on_file)
+                        }
+                    ></div>
                     {(pending && !options.is_empty()).then(|| view! {
                         <div class="plan-question-options">{options.into_iter().map(|option| {
                             let request_id = request_id.clone();

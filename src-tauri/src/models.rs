@@ -22,8 +22,10 @@ pub struct ModelProfile {
     #[serde(default)]
     pub label: String,
     pub provider: String,
-    /// Shared credential root. Protocol-specific paths live in
-    /// `endpoint_suffix` so profiles on one service can reuse a key.
+    /// Shared credential root for one API access. Protocol-specific paths
+    /// live in `endpoint_suffix`. Profiles on the same root share a key only
+    /// when they currently hold the same stored secret; a second access on
+    /// this URL can keep a different key.
     pub api_url: String,
     #[serde(default)]
     pub endpoint_suffix: String,
@@ -42,6 +44,10 @@ pub struct ModelProfile {
     pub context_window: u64,
     #[serde(default)]
     pub reasoning_effort: String,
+    /// OpenAI-compatible HTTP `service_tier`. Empty = omit (provider default);
+    /// `priority` = Fast. Ignored for unsupported providers.
+    #[serde(default)]
+    pub service_tier: String,
     /// Capability marker: this API model can accept image input.
     #[serde(default)]
     pub supports_vision: bool,
@@ -161,10 +167,11 @@ fn effective_api_url(profile: &ModelProfile) -> String {
     join_api_url(&profile.api_url, &profile.endpoint_suffix)
 }
 
-/// Identity of an LLM credential: the API origin, not the provider enum and
-/// not the model id. `openai` covers DeepSeek, official OpenAI, and local
-/// gateways; those must not share a key. OpenAI Chat and Responses on the
-/// same host should.
+/// Identity of an LLM host: the API origin, not the provider enum and not the
+/// model id. `openai` covers DeepSeek, official OpenAI, and local gateways;
+/// those must not inherit a key from each other. OpenAI Chat and Responses on
+/// the same host may share a key, but a second pasted key on that host stays
+/// on its own batch.
 pub(crate) fn normalize_endpoint(url: &str) -> String {
     let url = url.trim();
     if url.is_empty() {
@@ -220,7 +227,13 @@ fn sibling_key(profiles: &[ModelProfile], api_url: &str, exclude_id: &str) -> St
         .unwrap_or_default()
 }
 
-/// Write a pasted key to this profile and every sibling on the same endpoint.
+/// Write a pasted key to this profile.
+///
+/// If this profile already had a key, also rotate every same-endpoint sibling
+/// that currently shares that previous key. A pasted key on a new profile
+/// (no previous key) stays on this profile, so a second credential can live
+/// on the same Base URL without overwriting an existing batch.
+///
 /// If no key is pasted and this profile has none, copy a sibling's key so
 /// adding another model on the same URL does not require pasting again.
 fn store_profile_key(
@@ -230,10 +243,16 @@ fn store_profile_key(
     profiles: &[ModelProfile],
 ) -> Result<(), String> {
     if let Some(key) = key.map(str::trim).filter(|key| !key.is_empty()) {
+        let previous = key_for(id);
         secret_set(&secret_name(id), key)?;
-        for profile in profiles {
-            if profile.id != id && same_endpoint(&profile.api_url, api_url) {
-                secret_set(&secret_name(&profile.id), key)?;
+        if !previous.is_empty() && previous != key {
+            for profile in profiles {
+                if profile.id != id
+                    && same_endpoint(&profile.api_url, api_url)
+                    && key_for(&profile.id) == previous
+                {
+                    secret_set(&secret_name(&profile.id), key)?;
+                }
             }
         }
         return Ok(());
@@ -626,6 +645,7 @@ fn tctoken_profile() -> ModelProfile {
         max_tokens: 8192,
         context_window: DEFAULT_CONTEXT_WINDOW,
         reasoning_effort: String::new(),
+        service_tier: String::new(),
         supports_vision: false,
         use_for_vision: false,
         use_for_image_generation: false,
@@ -692,35 +712,36 @@ async fn ensure(store: &superscience_store::Store) -> Vec<ModelProfile> {
         .unwrap_or_default();
     let has_legacy =
         !provider.trim().is_empty() || !api_url.trim().is_empty() || !model.trim().is_empty();
+    let default = ModelProfile {
+        id: "default".into(),
+        label: if model.trim().is_empty() {
+            "Default".into()
+        } else {
+            model.clone()
+        },
+        provider,
+        api_url,
+        endpoint_suffix: String::new(),
+        model,
+        has_api_key: false,
+        active: false,
+        max_tokens,
+        context_window: DEFAULT_CONTEXT_WINDOW,
+        reasoning_effort,
+        service_tier: String::new(),
+        supports_vision: false,
+        use_for_vision: false,
+        use_for_image_generation: false,
+        image_size: String::new(),
+        image_quality: String::new(),
+        image_aspect_ratio: String::new(),
+        image_resolution: String::new(),
+        use_for_video_generation: false,
+        video_duration_secs: None,
+        video_aspect_ratio: None,
+        video_resolution: None,
+    };
     let profiles = if has_legacy {
-        let default = ModelProfile {
-            id: "default".into(),
-            label: if model.trim().is_empty() {
-                "Default".into()
-            } else {
-                model.clone()
-            },
-            provider,
-            api_url,
-            endpoint_suffix: String::new(),
-            model,
-            has_api_key: false,
-            active: false,
-            max_tokens,
-            context_window: DEFAULT_CONTEXT_WINDOW,
-            reasoning_effort,
-            supports_vision: false,
-            use_for_vision: false,
-            use_for_image_generation: false,
-            image_size: String::new(),
-            image_quality: String::new(),
-            image_aspect_ratio: String::new(),
-            image_resolution: String::new(),
-            use_for_video_generation: false,
-            video_duration_secs: None,
-            video_aspect_ratio: None,
-            video_resolution: None,
-        };
         let profiles = vec![tctoken_profile(), default];
         let _ = save_raw(store, &profiles).await;
         let _ = store.set_setting(ACTIVE_KEY, "default").await;
@@ -763,6 +784,13 @@ pub async fn active_profile_id(store: &superscience_store::Store) -> String {
 }
 
 pub async fn session_profile_id(store: &superscience_store::Store, frame_id: &str) -> String {
+    resolve_session_profile(store, frame_id).await.0
+}
+
+/// Chat profile for `frame_id`. A leftover id (deleted LM Studio profile, etc.)
+/// falls back to the active chat model and is rewritten on the frame so later
+/// turns do not keep resolving a dead binding (#1070).
+pub async fn resolve_session_profile(store: &superscience_store::Store, frame_id: &str) -> (String, bool) {
     let profiles = ensure(store).await;
     let bound = store
         .frame_model(frame_id)
@@ -774,10 +802,33 @@ pub async fn session_profile_id(store: &superscience_store::Store, frame_id: &st
         .iter()
         .any(|profile| profile.id == bound && is_chat_model(profile))
     {
-        bound
-    } else {
-        active_id(store, &profiles).await
+        return (bound, false);
     }
+    let fallback = active_id(store, &profiles).await;
+    let rebound = !bound.is_empty() && !fallback.is_empty() && bound != fallback;
+    if rebound {
+        if let Ok(Some(project_id)) = store.frame_project_id(frame_id).await {
+            if let Err(error) = store
+                .set_frame_model(frame_id, &project_id, &fallback)
+                .await
+            {
+                tracing::warn!(
+                    frame_id,
+                    bound,
+                    fallback,
+                    "session model {bound} is gone; could not persist fallback {fallback}: {error}"
+                );
+            } else {
+                tracing::warn!(
+                    frame_id,
+                    bound,
+                    fallback,
+                    "session model {bound} is gone; rebound to {fallback}"
+                );
+            }
+        }
+    }
+    (fallback, rebound)
 }
 
 pub async fn session_label(store: &superscience_store::Store, frame_id: &str) -> String {
@@ -807,6 +858,26 @@ pub async fn session_reasoning_effort(
     profile_default.to_string()
 }
 
+fn normalize_service_tier(raw: &str) -> String {
+    match raw.trim() {
+        "priority" | "fast" => "priority".into(),
+        _ => String::new(),
+    }
+}
+
+/// Effective service tier for a conversation. Unlike reasoning effort, an
+/// empty frame value is an explicit Fast-off override; NULL inherits.
+pub async fn session_service_tier(
+    store: &superscience_store::Store,
+    frame_id: &str,
+    profile_default: &str,
+) -> String {
+    match store.frame_service_tier(frame_id).await {
+        Ok(Some(value)) => normalize_service_tier(&value),
+        _ => normalize_service_tier(profile_default),
+    }
+}
+
 /// Key for a profile, falling back to the legacy `api_key` secret for the
 /// migrated "default" profile (so a not-yet-re-saved default still works).
 fn key_for(id: &str) -> String {
@@ -830,11 +901,14 @@ fn key_for_profile(profiles: &[ModelProfile], profile: &ModelProfile) -> String 
 pub async fn active_config(store: &superscience_store::Store) -> (String, String, String, String) {
     let profiles = ensure(store).await;
     let id = active_id(store, &profiles).await;
-    let p = profiles
+    let Some(p) = profiles
         .iter()
         .find(|p| p.id == id)
         .cloned()
-        .unwrap_or_else(|| profiles[0].clone());
+        .or_else(|| profiles.first().cloned())
+    else {
+        return ("openai".into(), String::new(), String::new(), String::new());
+    };
     let api_url = effective_api_url(&p);
     let api_key = key_for_profile(&profiles, &p);
     (p.provider, api_url, p.model, api_key)
@@ -1175,7 +1249,7 @@ pub async fn assigned_vision_config(
 /// max_tokens, reasoning_effort)`, if the user configured one.
 pub async fn vision_config(
     store: &superscience_store::Store,
-) -> Option<(String, String, String, String, u64, String)> {
+) -> Option<(String, String, String, String, u64, String, String)> {
     let profiles = ensure(store).await;
     let id = vision_id(store, &profiles).await?;
     let p = profiles.iter().find(|p| p.id == id)?.clone();
@@ -1188,6 +1262,7 @@ pub async fn vision_config(
         api_key,
         p.max_tokens,
         p.reasoning_effort,
+        p.service_tier,
     ))
 }
 
@@ -1313,7 +1388,7 @@ pub async fn active_label(store: &superscience_store::Store) -> String {
 
 /// Per-model advanced LLM options for the active profile, falling back to
 /// legacy global store keys when a profile has no values yet.
-pub async fn active_llm_advanced(store: &superscience_store::Store) -> (u64, String) {
+pub async fn active_llm_advanced(store: &superscience_store::Store) -> (u64, String, String) {
     let profiles = ensure(store).await;
     let id = active_id(store, &profiles).await;
     if let Some(p) = profiles.iter().find(|p| p.id == id) {
@@ -1336,7 +1411,7 @@ pub async fn active_llm_advanced(store: &superscience_store::Store) -> (u64, Str
                 .flatten()
                 .unwrap_or_default();
         }
-        return (max_tokens, reasoning_effort);
+        return (max_tokens, reasoning_effort, p.service_tier.clone());
     }
     let max_tokens = store
         .get_setting("max_tokens")
@@ -1351,7 +1426,7 @@ pub async fn active_llm_advanced(store: &superscience_store::Store) -> (u64, Str
         .ok()
         .flatten()
         .unwrap_or_default();
-    (max_tokens, reasoning_effort)
+    (max_tokens, reasoning_effort, String::new())
 }
 
 fn effective_context_window(profile: &ModelProfile) -> u64 {
@@ -1400,11 +1475,11 @@ pub async fn profile_context_window(store: &superscience_store::Store, id: &str)
 }
 
 /// Full LLM config for one profile id: (provider, api_url, model, api_key,
-/// max_tokens, reasoning_effort). None when the id doesn't exist.
+/// max_tokens, reasoning_effort, service_tier). None when the id doesn't exist.
 pub async fn profile_llm(
     store: &superscience_store::Store,
     id: &str,
-) -> Option<(String, String, String, String, u64, String)> {
+) -> Option<(String, String, String, String, u64, String, String)> {
     let profiles = ensure(store).await;
     let p = profiles.iter().find(|p| p.id == id)?;
     if !is_chat_model(p) {
@@ -1417,6 +1492,7 @@ pub async fn profile_llm(
         key_for_profile(&profiles, p),
         p.max_tokens,
         p.reasoning_effort.clone(),
+        p.service_tier.clone(),
     ))
 }
 
@@ -1501,7 +1577,7 @@ pub async fn get_session_model(
     window: tauri::WebviewWindow,
     session_id: String,
 ) -> Result<String, String> {
-    let project = state.active(window.label());
+    let project = state.require_active(window.label())?;
     if state
         .store
         .frame_project_id(&session_id)
@@ -1530,7 +1606,7 @@ pub async fn get_session_reasoning_effort(
     window: tauri::WebviewWindow,
     session_id: String,
 ) -> Result<Option<String>, String> {
-    let project = state.active(window.label());
+    let project = state.require_active(window.label())?;
     if state
         .store
         .frame_project_id(&session_id)
@@ -1544,6 +1620,30 @@ pub async fn get_session_reasoning_effort(
     state
         .store
         .frame_reasoning_effort(&session_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn get_session_service_tier(
+    state: State<'_, crate::AppState>,
+    window: tauri::WebviewWindow,
+    session_id: String,
+) -> Result<Option<String>, String> {
+    let project = state.require_active(window.label())?;
+    if state
+        .store
+        .frame_project_id(&session_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .as_deref()
+        != Some(project.id.as_str())
+    {
+        return Err("Session not found".into());
+    }
+    state
+        .store
+        .frame_service_tier(&session_id)
         .await
         .map_err(|error| error.to_string())
 }
@@ -1579,6 +1679,7 @@ pub async fn save_model(
     }
     profile.api_url = profile.api_url.trim().trim_end_matches('/').to_string();
     profile.endpoint_suffix = normalize_endpoint_suffix(&profile.endpoint_suffix)?;
+    profile.service_tier = normalize_service_tier(&profile.service_tier);
     if assign_vision && !can_describe_images(&profile) {
         return Err("Image analysis requires an API model marked as vision-capable.".into());
     }
@@ -1837,6 +1938,36 @@ pub async fn set_session_reasoning_effort(
     Ok(())
 }
 
+#[tauri::command]
+pub async fn set_session_service_tier(
+    state: State<'_, crate::AppState>,
+    service_tier: Option<String>,
+    session_id: String,
+) -> Result<(), String> {
+    let normalized = match service_tier.as_deref().map(str::trim) {
+        None => None,
+        Some("") | Some("default") => Some(String::new()),
+        Some("priority") | Some("fast") => Some("priority".into()),
+        Some(_) => return Err("Unknown service tier.".into()),
+    };
+    let (project, scope) =
+        crate::exploration_commands::working_project_for_frame(&state, &session_id).await?;
+    let _activity = state.begin_project_activity(&project.id)?;
+    let _project_write_locked = crate::exploration_commands::conversation_project_write_locked(
+        &state.store,
+        &scope,
+        Some(&session_id),
+    )
+    .await?;
+    state
+        .store
+        .set_frame_service_tier(&session_id, &project.id, normalized.as_deref())
+        .await
+        .map_err(|error| error.to_string())?;
+    crate::clear_session_agent(&state, &session_id).await;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1854,6 +1985,7 @@ mod tests {
             max_tokens: 0,
             context_window: DEFAULT_CONTEXT_WINDOW,
             reasoning_effort: String::new(),
+            service_tier: String::new(),
             supports_vision: false,
             use_for_vision: false,
             use_for_image_generation: false,
@@ -1981,6 +2113,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dangling_session_model_rebinds_to_active_chat_profile() {
+        let tmp = std::env::temp_dir().join(format!(
+            "wisp_session_model_rebind_{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
+        store.create_project("p", "project", "").await.unwrap();
+        save_raw(
+            &store,
+            &[
+                test_profile("m1", "first", "model-1"),
+                test_profile("m2", "second", "model-2"),
+            ],
+        )
+        .await
+        .unwrap();
+        store.set_setting(ACTIVE_KEY, "m2").await.unwrap();
+        store
+            .create_frame("lmstudio", "p", "OPERON", "m3")
+            .await
+            .unwrap();
+        store.create_frame("ok", "p", "OPERON", "m1").await.unwrap();
+
+        let (id, rebound) = resolve_session_profile(&store, "lmstudio").await;
+        assert_eq!(id, "m2");
+        assert!(rebound);
+        assert_eq!(
+            store.frame_model("lmstudio").await.unwrap().as_deref(),
+            Some("m2")
+        );
+        assert_eq!(session_profile_id(&store, "ok").await, "m1");
+        assert_eq!(
+            store.frame_model("ok").await.unwrap().as_deref(),
+            Some("m1")
+        );
+        drop(store);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[tokio::test]
     async fn session_reasoning_override_does_not_change_profile_or_sibling() {
         let tmp = std::env::temp_dir().join(format!(
             "wisp_session_reasoning_{}.sqlite",
@@ -2003,6 +2175,7 @@ mod tests {
         assert_eq!(session_reasoning_effort(&store, "a", "max").await, "high");
         assert_eq!(session_reasoning_effort(&store, "b", "max").await, "max");
         assert_eq!(profile_llm(&store, "m1").await.unwrap().5, "max");
+        assert_eq!(profile_llm(&store, "m1").await.unwrap().6, "");
         drop(store);
         let _ = std::fs::remove_file(&tmp);
     }
@@ -2037,6 +2210,46 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(session_reasoning_effort(&store, "b", "max").await, "max");
+        drop(store);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[tokio::test]
+    async fn session_service_tier_is_tristate_and_session_scoped() {
+        let tmp = std::env::temp_dir().join(format!(
+            "wisp_session_service_tier_{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let store = superscience_store::Store::open(&tmp).await.unwrap();
+        store.create_project("p", "project", "").await.unwrap();
+        store.create_frame("a", "p", "OPERON", "m1").await.unwrap();
+        store.create_frame("b", "p", "OPERON", "m1").await.unwrap();
+
+        assert_eq!(
+            session_service_tier(&store, "a", "priority").await,
+            "priority"
+        );
+        assert_eq!(session_service_tier(&store, "b", "").await, "");
+        store
+            .set_frame_service_tier("a", "p", Some(""))
+            .await
+            .unwrap();
+        assert_eq!(session_service_tier(&store, "a", "priority").await, "");
+        assert_eq!(
+            session_service_tier(&store, "b", "priority").await,
+            "priority"
+        );
+        store
+            .set_frame_service_tier("a", "p", Some("fast"))
+            .await
+            .unwrap();
+        assert_eq!(session_service_tier(&store, "a", "").await, "priority");
+        store.set_frame_service_tier("a", "p", None).await.unwrap();
+        assert_eq!(
+            session_service_tier(&store, "a", "priority").await,
+            "priority"
+        );
+
         drop(store);
         let _ = std::fs::remove_file(&tmp);
     }
@@ -2186,6 +2399,22 @@ mod tests {
             "use_for_image_generation dropped on deserialize"
         );
         assert_eq!(p.context_window, DEFAULT_CONTEXT_WINDOW);
+        assert!(
+            p.service_tier.is_empty(),
+            "missing service_tier should default empty"
+        );
+    }
+
+    #[test]
+    fn service_tier_roundtrips_on_model_profile() {
+        let mut profile = test_profile("m1", "codex", "gpt-5.6-sol");
+        profile.provider = "openai_responses".into();
+        profile.service_tier = "priority".into();
+        profile.reasoning_effort = "high".into();
+        let json = serde_json::to_string(&profile).unwrap();
+        let restored: ModelProfile = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.service_tier, "priority");
+        assert_eq!(restored.reasoning_effort, "high");
     }
 
     #[test]
@@ -2698,13 +2927,14 @@ mod tests {
     }
 
     #[test]
-    fn pasted_key_rotates_every_sibling_on_the_same_endpoint() {
+    fn pasted_key_on_existing_profile_rotates_siblings_that_share_that_key() {
         let prefix = uuid::Uuid::new_v4();
         let first_id = format!("{prefix}-a");
         let second_id = format!("{prefix}-b");
         let _ = secret_del(&secret_name(&first_id));
         let _ = secret_del(&secret_name(&second_id));
         secret_set(&secret_name(&first_id), "sk-old").unwrap();
+        secret_set(&secret_name(&second_id), "sk-old").unwrap();
         let mut first = test_profile(&first_id, "flash", "deepseek-v4-flash");
         first.api_url = "https://api.deepseek.com".into();
         let mut second = test_profile(&second_id, "pro", "deepseek-v4-pro");
@@ -2715,6 +2945,60 @@ mod tests {
         assert_eq!(key_for(&second_id), "sk-new");
         let _ = secret_del(&secret_name(&first_id));
         let _ = secret_del(&secret_name(&second_id));
+    }
+
+    #[test]
+    fn pasted_key_on_new_profile_does_not_overwrite_an_existing_batch() {
+        let prefix = uuid::Uuid::new_v4();
+        let existing_id = format!("{prefix}-a");
+        let new_id = format!("{prefix}-b");
+        let _ = secret_del(&secret_name(&existing_id));
+        let _ = secret_del(&secret_name(&new_id));
+        secret_set(&secret_name(&existing_id), "sk-one").unwrap();
+        let mut existing = test_profile(&existing_id, "flash", "deepseek-v4-flash");
+        existing.api_url = "https://api.deepseek.com".into();
+        let mut added = test_profile(&new_id, "pro", "deepseek-v4-pro");
+        added.api_url = "https://api.deepseek.com".into();
+        let added_url = added.api_url.clone();
+        store_profile_key(&new_id, Some("sk-two"), &added_url, &[existing, added]).unwrap();
+        assert_eq!(key_for(&existing_id), "sk-one");
+        assert_eq!(key_for(&new_id), "sk-two");
+        let _ = secret_del(&secret_name(&existing_id));
+        let _ = secret_del(&secret_name(&new_id));
+    }
+
+    #[test]
+    fn rotating_one_key_leaves_a_different_key_on_the_same_endpoint() {
+        let prefix = uuid::Uuid::new_v4();
+        let one_a = format!("{prefix}-a");
+        let one_b = format!("{prefix}-b");
+        let two_id = format!("{prefix}-c");
+        for id in [&one_a, &one_b, &two_id] {
+            let _ = secret_del(&secret_name(id));
+        }
+        secret_set(&secret_name(&one_a), "sk-one").unwrap();
+        secret_set(&secret_name(&one_b), "sk-one").unwrap();
+        secret_set(&secret_name(&two_id), "sk-two").unwrap();
+        let mut first = test_profile(&one_a, "flash", "deepseek-v4-flash");
+        first.api_url = "https://api.deepseek.com".into();
+        let mut second = test_profile(&one_b, "pro", "deepseek-v4-pro");
+        second.api_url = "https://api.deepseek.com".into();
+        let mut other = test_profile(&two_id, "other", "deepseek-v4-flash");
+        other.api_url = "https://api.deepseek.com".into();
+        let first_url = first.api_url.clone();
+        store_profile_key(
+            &one_a,
+            Some("sk-one-rotated"),
+            &first_url,
+            &[first, second, other],
+        )
+        .unwrap();
+        assert_eq!(key_for(&one_a), "sk-one-rotated");
+        assert_eq!(key_for(&one_b), "sk-one-rotated");
+        assert_eq!(key_for(&two_id), "sk-two");
+        for id in [&one_a, &one_b, &two_id] {
+            let _ = secret_del(&secret_name(id));
+        }
     }
 
     /// Restores each captured secret on drop (even when an assert panics), so

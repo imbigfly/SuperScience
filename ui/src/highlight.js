@@ -65,3 +65,28 @@ export async function highlight_by_id(id) {
   const root = document.getElementById(id);
   if (root) await highlight_root(root);
 }
+
+/** Wait until a just-mounted node is queryable, or give up after a few frames. */
+async function waitForId(id) {
+  let node = document.getElementById(id);
+  for (let i = 0; !node && i < 8; i++) {
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    node = document.getElementById(id);
+  }
+  return node;
+}
+
+/** Replace one editable code node's text and re-highlight it. The editor owns
+ * this node's children (not the reactive renderer), so swapping textContent
+ * and clearing the markers is safe on every keystroke.
+ * @param {string} id @param {string} text */
+export async function highlight_set_code(id, text) {
+  const node = await waitForId(id);
+  if (!node) return;
+  node.textContent = text;
+  delete node.dataset.hl;
+  delete node.dataset.highlighted;
+  const hljs = await ensure();
+  hljs.highlightElement(node);
+  node.dataset.hl = "1";
+}

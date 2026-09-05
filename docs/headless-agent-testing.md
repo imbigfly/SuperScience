@@ -5,10 +5,17 @@ SuperScience has two complementary headless interfaces:
 - `superscience eval` runs repeatable agent conformance and regression suites.
 - `superscience rpc` runs a long-lived agent over a versioned JSONL stdin/stdout protocol.
 
-Both exercise the production `Agent` loop and tool registry. The default eval
-suite uses a deterministic scripted provider, temporary workspaces, and fixture
-MCP/subagent boundaries, so it requires no API key, network, SSH host, GPU,
-scheduler, Python, or R installation.
+Both exercise the production `Agent` loop and tool registry, including the Run
+control plane (`run_in_context`, `monitor_run`, `get_run`, `cancel_run`,
+harvest/cleanup/transfer). Interactive/`run`/`rpc` open `.wisp/wisp.sqlite` in
+the project (override with `WISP_STORE`) so long jobs wait through
+`monitor_run` instead of shell `sleep` polling. SSH/WSL contexts in that store
+are used when present; the desktop app's host registry is a separate database
+unless `WISP_STORE` points at it.
+
+The default eval suite uses a deterministic scripted provider, temporary
+workspaces, and fixture MCP/subagent boundaries, so it requires no API key,
+network, SSH host, GPU, scheduler, Python, or R installation.
 
 ## Offline evaluation
 
@@ -20,11 +27,12 @@ cargo run -p superscience-cli -- eval \
   --save target/headless-agent-eval/report.json
 ```
 
-The suite covers reads and exact edits, shell execution, persistent Python and
-R runtime cells, approval denial, skills, deferred MCP discovery, read-only
-subagent delegation, resume without tool replay, session restart, queued
-guidance, cancellation, vision fallback, manual compaction, plan-mode gating,
-and project path containment.
+The suite covers reads and exact edits, shell execution, persisted local Runs
+(`run_in_context` / `monitor_run` instead of shell `sleep` polling), persistent
+Python and R runtime cells, approval denial, skills, deferred MCP discovery,
+read-only subagent delegation, resume without tool replay, session restart,
+queued guidance, cancellation, vision fallback, manual compaction, plan-mode
+gating, and project path containment.
 
 Useful selection and stress controls:
 
@@ -72,9 +80,13 @@ Cost rates are explicit integer micro-USD per million tokens; offline defaults
 are zero. Cached input is excluded from the billable input estimate.
 
 Use `--mode live` to run the same declarative suite against the configured
-provider. Live mode requires the normal `SUPERSCIENCE_API_KEY`, `SUPERSCIENCE_PROVIDER`, and
-`SUPERSCIENCE_MODEL` environment variables. Scripted steps are ignored in live mode;
-live suites should use tolerant semantic assertions rather than exact prose.
+provider. Live mode requires the normal `WISP_API_KEY`, `WISP_PROVIDER`, and
+`WISP_MODEL` environment variables. For a text-only primary model, set
+`WISP_VISION_MODEL` (and optionally `WISP_VISION_PROVIDER`,
+`WISP_VISION_API_URL`, `WISP_VISION_API_KEY`) so `view_image` is described by
+a dedicated vision model instead of being sent to the chat model. Scripted
+steps are ignored in live mode; live suites should use tolerant semantic
+assertions rather than exact prose.
 
 ### Memory and compaction dataset
 

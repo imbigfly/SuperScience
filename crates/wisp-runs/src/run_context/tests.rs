@@ -6,6 +6,32 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 
+#[tokio::test]
+async fn run_tool_schemas_keep_waiting_updates_in_the_live_card() {
+    use superscience_tools::Tool;
+
+    let tmp = std::env::temp_dir().join(format!("wisp_quiet_run_schema_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let store = superscience_store::Store::open(&tmp.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    let run = RunInContextTool::new(store.clone(), RunManager::new(), "project".into(), None)
+        .schema()
+        .function
+        .description;
+    let monitor = MonitorRunTool::new(store, "project".into())
+        .schema()
+        .function
+        .description;
+
+    assert!(run.contains("call monitor_run directly without announcing"));
+    assert!(run.contains("the Run card communicates that state"));
+    assert!(monitor.contains("without a user-facing preamble"));
+    assert!(monitor.contains("do not say that you are waiting or monitoring"));
+
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
 #[test]
 fn dirty_patch_secret_filter_rejects_high_signal_credentials() {
     assert!(contains_obvious_secret(
@@ -1557,7 +1583,7 @@ fn remote_control_payloads_are_valid_posix_shell() {
 
 #[test]
 fn remote_compute_skill_uses_the_real_wisp_run_contract() {
-    let skill = include_str!("../../../skills/remote-compute-ssh/SKILL.md");
+    let skill = include_str!("../../../../skills/remote-compute-ssh/SKILL.md");
     for tool in [
         "run_in_context",
         "get_run",
@@ -3045,12 +3071,17 @@ impl RunCommandRunner for RefuseCollectRunner {
 async fn ssh_harvest_collect_renews_parent_lease_past_expiry() {
     let tmp = std::env::temp_dir().join(format!("wisp_ssh_harvest_lease_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp).unwrap();
-    let store = seed_active_harvest_run(&tmp, "run-lease", "test-owner", 1).await;
+    // `lifecycle_lease_until` is a unix-second timestamp. A 1s lease can
+    // expire in 1ms if activation lands at the end of a second, so harvest
+    // startup on a loaded CI runner loses it before the renewer runs.
+    // Two seconds always covers startup; collect is held longer so the
+    // original lease would expire without renewal.
+    let store = seed_active_harvest_run(&tmp, "run-lease", "test-owner", 2).await;
     let runner = HarvestFakeRunner {
         manifest: remote_only_manifest("run-lease"),
         files: Vec::new(),
         commands: StdMutex::new(Vec::new()),
-        collect_hold: Some(Duration::from_millis(1500)),
+        collect_hold: Some(Duration::from_millis(2500)),
     };
     let remote = harvest_test_remote("run-lease", &tmp, remote_only_harvest_spec());
 
