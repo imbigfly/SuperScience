@@ -123,6 +123,7 @@ pub(crate) fn intro_for(id: &str) -> Option<&'static CapabilityIntro> {
         "browser" => &BROWSER,
         "playwright" => &PLAYWRIGHT,
         "plugins" => &PLUGINS,
+        "skills" => &SKILLS,
         _ => return None,
     })
 }
@@ -1609,5 +1610,32 @@ const PLUGINS: CapabilityIntro = intro(
     help(
         "After the pack is installed in plugin settings I will parse that directory with the new tool and report its structure.",
         "在插件设置完成安装后，用新工具解析该目录并回报结构。",
+    ),
+);
+
+const SKILLS: CapabilityIntro = intro(
+    help(
+        "You already have bundled skills, but you need to see what is installed, turn one off, or add a project Skill before chat can load it.\nClick the card to open skill settings, then return to chat and say something as specific as: “Enable academic-paper, then outline a PD-1 review for Nature Reviews Immunology”.",
+        "默认技能已经在，但你要先看装了哪些、关掉不用的，或给项目加一个技能，对话才能加载它。\n点卡片打开技能设置，再回对话，第一句尽量写具体，例如：「打开 academic-paper，按 Nature Reviews Immunology 给一篇 PD-1 综述列大纲」。",
+    ),
+    help(
+        "You cannot tell which Skills the agent is allowed to load.\nA noisy or unused Skill stays on and crowds the next turn.\nA project-only Skill never appears until you add it in settings.\nChat cannot follow a SKILL.md that is disabled or missing.",
+        "看不清助手现在能加载哪些技能。\n用不到的技能一直开着，下一轮会被挤乱。\n项目专用技能不进设置就出不来。\n技能关掉或缺失时，对话跟不上 SKILL.md。",
+    ),
+    help(
+        "One place to browse and toggle Skills | Installed Skills are listed with enable switches in settings.\nAdd a file, folder, or ZIP | Project or extra Skills enter the catalog from this settings page.\nChat loads only what you left on | Disabled Skills stay out of the next agent turn.\nSettings, then a real writing task | The card opens the catalog; the next message can name a Skill.",
+        "在同一处浏览和开关技能 | 已装技能在设置页里带开关列出来。\n可添加文件、文件夹或 ZIP | 项目技能或额外技能从这页设置进入目录。\n对话只加载你还开着的 | 关掉的技能不会挤进下一轮对话。\n先设置再做真任务 | 卡片打开技能目录，下一句就可以点名一个技能。",
+    ),
+    help(
+        "Click the card to open skill settings\nBrowse or add the Skill you need, then enable it\nReturn to chat and start with the actual task, for example: “Enable academic-paper, then outline a PD-1 review for Nature Reviews Immunology.”",
+        "点卡片打开技能设置\n浏览或添加要用的技能，并打开开关\n回到对话后直接进入任务，可参考：「打开 academic-paper，按 Nature Reviews Immunology 给一篇 PD-1 综述列大纲。」",
+    ),
+    help(
+        "Enable academic-paper, then outline a PD-1 review for Nature Reviews Immunology.",
+        "打开 academic-paper，按 Nature Reviews Immunology 给一篇 PD-1 综述列大纲。",
+    ),
+    help(
+        "I will confirm academic-paper is enabled, then give a one-page outline aimed at that journal.",
+        "先确认 academic-paper 已打开，再按该期刊给一页大纲。",
     ),
 );

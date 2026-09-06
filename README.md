@@ -1,213 +1,220 @@
-<div align="center">
+# 天成科研助手
 
-# SuperScience Science
+**本地优先的 AI 科研工作台。** 把文献、数据、算力、绘图、写作和决策放在同一个项目里。
 
-**The open-source, local-first AI research workbench.**
+当前版本 **v1.9.0**。桌面应用支持 Windows / macOS / Linux；也提供无界面 CLI。
 
-WISP — *Workspace for Intelligent Scientific Practice*
+- 下载安装包：[tctoken.cn/downloads](https://www.tctoken.cn/downloads/)
+- GitHub：[imbigfly/SuperScience](https://github.com/imbigfly/SuperScience)
+- 本仓库 GitLab：<http://119.96.147.4:8081/huangfei/SuperScience>
+- 上游开源项目：[xuzhougeng/wisp-science](https://github.com/xuzhougeng/wisp-science)
 
-<a href="https://www.tctoken.cn/downloads/"><img src="https://img.shields.io/github/v/release/imbigfly/SuperScience" alt="Release"></a>
-<a href="https://www.tctoken.cn/downloads/"><img src="https://img.shields.io/github/downloads/imbigfly/SuperScience/total" alt="Downloads"></a>
-<a href="https://doi.org/10.5281/zenodo.21869520"><img src="https://zenodo.org/badge/1285857639.svg" alt="DOI"></a>
-<a href="https://github.com/imbigfly/SuperScience/blob/main/LICENSE"><img src="https://img.shields.io/github/license/imbigfly/SuperScience" alt="License"></a>
-<a href="https://github.com/imbigfly/SuperScience/stargazers"><img src="https://img.shields.io/github/stars/imbigfly/SuperScience?style=social" alt="Stars"></a>
-<br>
-<a href="https://www.tctoken.cn/downloads/"><img src="https://img.shields.io/badge/Windows-supported-0078D4" alt="Windows supported"></a>
-<a href="https://www.tctoken.cn/downloads/"><img src="https://img.shields.io/badge/macOS-supported-000000" alt="macOS supported"></a>
-<a href="https://www.tctoken.cn/downloads/"><img src="https://img.shields.io/badge/Linux-supported-FCC624" alt="Linux supported"></a>
+数据、会话和项目文件默认留在本机。模型 API Key 进系统钥匙串，不写入 SQLite。
 
-[English](README.md) · [简体中文](README_zh.md) · [Website](https://xuzhougeng.github.io/SuperScience/) · [Downloads](https://www.tctoken.cn/downloads/)
+---
 
-</div>
+## 它解决什么问题
 
-Search the literature, run Python and R, query ~80 scientific databases, and
-keep the trail — figures, runs, decisions, and drafts — in one project. Your
-data, conversations, and credentials stay on your machines.
+科研过程通常散落在浏览器、终端、网盘和 Word 里：检索一篇、分析一份、出一张图、再另开窗口写稿。天成科研助手把这些步骤收进一个 **Project**：
 
-Bring your own model. Keep your science.
+| 概念 | 含义 |
+|------|------|
+| Project | 一个课题的工作区（文件、会话、产物） |
+| ExecutionContext | 本机 / WSL / SSH 等执行环境 |
+| Run | 可跟踪的长任务（日志、状态、收获） |
+| Artifact | 带版本与来源的产物 |
+| Paper / Decision | 文献与研究决策，可挂到研究图谱 |
 
-## What you can do
+助手能读写项目文件、跑 Python / R、调用 Skills 与 MCP 工具。默认走审批门控，需要时再开完整权限。
 
-**An agent that does the work**
+---
 
-Bring OpenAI-compatible or Anthropic models, or drive Codex / Claude Code over
-ACP. The agent reads and writes project files, runs shell, and loads reusable
-Skills (`SKILL.md`) without flooding the prompt. Approval gates stay on unless
-you opt into Full Permission.
+## 我能做什么
 
-**Compute from laptop to remote servers**
+首页和设置里的「能力」是同一套卡片，按科研阶段分类。点卡片会开引导对话、打开设置，或进入对应工作面。
 
-Persistent Python and R kernels keep variables across cells, conversations, and
-restarts. Register local, WSL, and SSH hosts once; probe hardware; submit
-long **Runs** with live logs. Secrets live in a local secrets file (never SQLite).
+### 选题与立项
 
-**Built for science**
+- **深度学术调研**：带引用的领域简报，而不是搜索链接堆
+- **基金 / 开题写作**：立项依据、创新点、任务书提纲
+- **文本知识图谱**：从文本抽出实体与关系
+- **生物数据库**：PubMed / GEO / UniProt / PDB 等（经内置 MCP）
+- **文献矩阵检索 / 引用审计检索 / 文献流水线**
+- **合法全文获取**：只走开放获取路径，不绕过付费墙
+- **深读论文卡片 / 中英对照阅读器**：精读后留下可打开的对照报告
 
-PubMed, GEO, and ~80 other databases through bundled MCP servers. Offline
-previews for notebooks, PDFs, Office files, and images. Isolated
-[explorations](docs/exploration-branches.md) to try a direction without
-touching the mainline. A [Publication Workspace](docs/publication-evidence.md)
-that freezes manuscript revisions into verifiable Evidence Capsules.
+### 研究设计与规划
 
-**A workbench that remembers**
+- **研究图谱**：数据、文献、产物和决策的关系图
+- **文件与收藏库**：项目文件，以及跨会话收藏的代码格 / 图
 
-Restart and the full history is back. Undo a turn's file edits. Attach
-artifacts, files, and runtimes with `@`; search saved sessions with `#`; apply
-a skill with `/`. Encrypted [manual sync](docs/project-sync.md) and
-[project transfer](docs/project-transfer.md) — nothing syncs in the background.
+### 研究实施与数据分析
 
-## Get started
+- **统计报告审核 / 统计建模与检验**
+- **Python / R 分析**：持久 REPL，变量可跨 cell 保留
+- **远程算力与长任务**：注册 SSH / WSL，提交带日志的 Run
+- **结构预测与分子设计 / 单细胞与分析流程**
+- **实验日志**：照片、语音或随手记录整理成 Markdown 日志
 
-1. Download from the [official download page](https://www.tctoken.cn/downloads/).
-2. Open a bundled demo — no API key needed — to see a full RNA-seq trajectory.
-3. Add a model in **Settings → Models** and start a project.
+### 论文写作与发表
 
-| Platform | Package |
-|----------|---------|
-| Windows  | Signed MSI / NSIS |
-| macOS    | Signed, notarized `.dmg` (Apple Silicon + Intel) |
-| Linux    | `.deb` / AppImage (x86_64 + aarch64) |
+- **学术论文写作 / 研究到成稿流水线**
+- **国际期刊审稿 / Nature 审稿**
+- **Nature 风格起草与润色 / 去除 AI 痕迹**
+- **引用补全 / 参考文献核验 / 数据可用性（FAIR）**
+- **修回信 / 答复信**
+- **论文转专利初稿**
+- **Word / Excel / PPT**（OfficeCLI）
 
-Setup walkthrough: [basic configuration](docs/basic-configuration.md) ·
-[model profiles](docs/model-configuration.md) ·
-[ACP agents](docs/acp-agents.md)
+侧栏仍可打开论文证据工作区：为某一稿某一版冻结证据并打成可核查胶囊。
 
-Build from source, CLI, and architecture: [development](docs/development.md).
+### AI 画图
 
-## Documentation
+- **投稿级科研作图 / R 语言生信图**
+- **论文转组会 PPT / 图片转可编辑 PPT**
+- **PPT Master**（首次使用会先安装技能）
+- **AI 插图生成**；部分机制图 / 布局入口仍在建设中
 
-| | |
-|---|---|
-| **Start** | [Basic setup](docs/basic-configuration.md) · [Models](docs/model-configuration.md) · [ACP agents](docs/acp-agents.md) |
-| **Research** | [Explorations](docs/exploration-branches.md) · [Evidence capsules](docs/publication-evidence.md) · [Case studies](docs/case-studies.zh-CN.md) |
-| **Projects** | [Transfer](docs/project-transfer.md) · [Sync](docs/project-sync.md) · [Global library](docs/global-library.md) |
-| **Compute** | [Terminals](docs/terminal-sessions.md) · [Remote files](docs/remote-file-browser.md) · [Transfers](docs/server-transfers.md) |
-| **Extend** | [Skills](docs/skills.md) · [Plugins](docs/feature-plugins.md) · [Delegation](docs/agent-delegation.md) · [Channels](docs/channels.md) · [Browser](docs/real-browser-automation.md) |
-| **Develop** | [Development](docs/development.md) · [Headless eval](docs/headless-agent-testing.md) |
+### 数据清洗
 
-## Community
+- **数据清洗与整形**
+- **配置本机环境**：Python / R / 依赖探测与准备
 
-Thanks to everyone who filed issues, sent PRs, and used SuperScience on real projects.
+### 效率工具
 
-<p>
-  <a href="https://github.com/Yu-Qiao-sjtu"><img src="https://avatars.githubusercontent.com/u/88706761?v=4&amp;s=96" width="64" height="64" alt="@Yu-Qiao-sjtu" title="@Yu-Qiao-sjtu"></a>
-  <a href="https://github.com/lfz0924"><img src="https://avatars.githubusercontent.com/u/82395287?v=4&amp;s=96" width="64" height="64" alt="@lfz0924" title="@lfz0924"></a>
-  <a href="https://github.com/jarxunlai"><img src="https://avatars.githubusercontent.com/u/199478724?v=4&amp;s=96" width="64" height="64" alt="@jarxunlai" title="@jarxunlai"></a>
-  <a href="https://github.com/OrigamiSheep"><img src="https://avatars.githubusercontent.com/u/48906039?v=4&amp;s=96" width="64" height="64" alt="@OrigamiSheep" title="@OrigamiSheep"></a>
-  <a href="https://github.com/LeeJyee"><img src="https://avatars.githubusercontent.com/u/166231040?v=4&amp;s=96" width="64" height="64" alt="@LeeJyee" title="@LeeJyee"></a>
-  <a href="https://github.com/stardustFFF"><img src="https://avatars.githubusercontent.com/u/306053694?v=4&amp;s=96" width="64" height="64" alt="@stardustFFF" title="@stardustFFF"></a>
-  <a href="https://github.com/Doctorluka"><img src="https://avatars.githubusercontent.com/u/101385826?v=4&amp;s=96" width="64" height="64" alt="@Doctorluka" title="@Doctorluka"></a>
-  <a href="https://github.com/Charlesyu153"><img src="https://avatars.githubusercontent.com/u/232734740?v=4&amp;s=96" width="64" height="64" alt="@Charlesyu153" title="@Charlesyu153"></a>
-  <a href="https://github.com/xiaowen621"><img src="https://avatars.githubusercontent.com/u/241900839?v=4&amp;s=96" width="64" height="64" alt="@xiaowen621" title="@xiaowen621"></a>
-  <a href="https://github.com/liaoyuan919"><img src="https://avatars.githubusercontent.com/u/240658511?v=4&amp;s=96" width="64" height="64" alt="@liaoyuan919" title="@liaoyuan919"></a>
-  <a href="https://github.com/mayunyu925"><img src="https://avatars.githubusercontent.com/u/256124565?v=4&amp;s=96" width="64" height="64" alt="@mayunyu925" title="@mayunyu925"></a>
-  <a href="https://github.com/lhx-JIPS"><img src="https://avatars.githubusercontent.com/u/33241642?v=4&amp;s=96" width="64" height="64" alt="@lhx-JIPS" title="@lhx-JIPS"></a>
-  <a href="https://github.com/chenzhiyu48"><img src="https://avatars.githubusercontent.com/u/65606400?v=4&amp;s=96" width="64" height="64" alt="@chenzhiyu48" title="@chenzhiyu48"></a>
-  <a href="https://github.com/liuyc414"><img src="https://avatars.githubusercontent.com/u/190511200?v=4&amp;s=96" width="64" height="64" alt="@liuyc414" title="@liuyc414"></a>
-  <a href="https://github.com/kevinzzzhang76-dot"><img src="https://avatars.githubusercontent.com/u/251931886?v=4&amp;s=96" width="64" height="64" alt="@kevinzzzhang76-dot" title="@kevinzzzhang76-dot"></a>
-  <a href="https://github.com/Shawn-Gua"><img src="https://avatars.githubusercontent.com/u/110019576?v=4&amp;s=96" width="64" height="64" alt="@Shawn-Gua" title="@Shawn-Gua"></a>
-  <a href="https://github.com/Hayesss"><img src="https://avatars.githubusercontent.com/u/66942436?v=4&amp;s=96" width="64" height="64" alt="@Hayesss" title="@Hayesss"></a>
-  <a href="https://github.com/hufanglq"><img src="https://avatars.githubusercontent.com/u/10824450?v=4&amp;s=96" width="64" height="64" alt="@hufanglq" title="@hufanglq"></a>
-  <a href="https://github.com/Az-Fan"><img src="https://avatars.githubusercontent.com/u/189823792?v=4&amp;s=96" width="64" height="64" alt="@Az-Fan" title="@Az-Fan"></a>
-  <a href="https://github.com/19951219asd"><img src="https://avatars.githubusercontent.com/u/118892832?v=4&amp;s=96" width="64" height="64" alt="@19951219asd" title="@19951219asd"></a>
-  <a href="https://github.com/yeshubiao2017-source"><img src="https://avatars.githubusercontent.com/u/233231577?v=4&amp;s=96" width="64" height="64" alt="@yeshubiao2017-source" title="@yeshubiao2017-source"></a>
-  <a href="https://github.com/xuxh95"><img src="https://avatars.githubusercontent.com/u/299415390?v=4&amp;s=96" width="64" height="64" alt="@xuxh95" title="@xuxh95"></a>
-  <a href="https://github.com/xiaoshen19930901"><img src="https://avatars.githubusercontent.com/u/24424905?v=4&amp;s=96" width="64" height="64" alt="@xiaoshen19930901" title="@xiaoshen19930901"></a>
-  <a href="https://github.com/scsksprings"><img src="https://avatars.githubusercontent.com/u/60927616?v=4&amp;s=96" width="64" height="64" alt="@scsksprings" title="@scsksprings"></a>
-  <a href="https://github.com/lpc520"><img src="https://avatars.githubusercontent.com/u/61644087?v=4&amp;s=96" width="64" height="64" alt="@lpc520" title="@lpc520"></a>
-  <a href="https://github.com/lijianchunChina"><img src="https://avatars.githubusercontent.com/u/42370856?v=4&amp;s=96" width="64" height="64" alt="@lijianchunChina" title="@lijianchunChina"></a>
-  <a href="https://github.com/kjiojio"><img src="https://avatars.githubusercontent.com/u/118580250?v=4&amp;s=96" width="64" height="64" alt="@kjiojio" title="@kjiojio"></a>
-  <a href="https://github.com/Kururu1799"><img src="https://avatars.githubusercontent.com/u/64822570?v=4&amp;s=96" width="64" height="64" alt="@Kururu1799" title="@Kururu1799"></a>
-  <a href="https://github.com/dmh-git-cop"><img src="https://avatars.githubusercontent.com/u/270353192?v=4&amp;s=96" width="64" height="64" alt="@dmh-git-cop" title="@dmh-git-cop"></a>
-  <a href="https://github.com/ZZRSCAR"><img src="https://avatars.githubusercontent.com/u/255126066?v=4&amp;s=96" width="64" height="64" alt="@ZZRSCAR" title="@ZZRSCAR"></a>
-  <a href="https://github.com/Toomi0124"><img src="https://avatars.githubusercontent.com/u/300393761?v=4&amp;s=96" width="64" height="64" alt="@Toomi0124" title="@Toomi0124"></a>
-  <a href="https://github.com/Lezhao0226"><img src="https://avatars.githubusercontent.com/u/72743280?v=4&amp;s=96" width="64" height="64" alt="@Lezhao0226" title="@Lezhao0226"></a>
-  <a href="https://github.com/HSsnano"><img src="https://avatars.githubusercontent.com/u/87816341?v=4&amp;s=96" width="64" height="64" alt="@HSsnano" title="@HSsnano"></a>
-  <a href="https://github.com/zhuifeng1991"><img src="https://avatars.githubusercontent.com/u/186464554?v=4&amp;s=96" width="64" height="64" alt="@zhuifeng1991" title="@zhuifeng1991"></a>
-  <a href="https://github.com/zwbao"><img src="https://avatars.githubusercontent.com/u/24564677?v=4&amp;s=96" width="64" height="64" alt="@zwbao" title="@zwbao"></a>
-  <a href="https://github.com/yuzhenpeng"><img src="https://avatars.githubusercontent.com/u/31943277?v=4&amp;s=96" width="64" height="64" alt="@yuzhenpeng" title="@yuzhenpeng"></a>
-  <a href="https://github.com/youxiudongdong-lang"><img src="https://avatars.githubusercontent.com/u/306058340?v=4&amp;s=96" width="64" height="64" alt="@youxiudongdong-lang" title="@youxiudongdong-lang"></a>
-  <a href="https://github.com/ying-ge"><img src="https://avatars.githubusercontent.com/u/45988974?v=4&amp;s=96" width="64" height="64" alt="@ying-ge" title="@ying-ge"></a>
-  <a href="https://github.com/yemiaoyong"><img src="https://avatars.githubusercontent.com/u/61010663?v=4&amp;s=96" width="64" height="64" alt="@yemiaoyong" title="@yemiaoyong"></a>
-  <a href="https://github.com/yejia1988"><img src="https://avatars.githubusercontent.com/u/164177661?v=4&amp;s=96" width="64" height="64" alt="@yejia1988" title="@yejia1988"></a>
-  <a href="https://github.com/xingzhuo123"><img src="https://avatars.githubusercontent.com/u/167210517?v=4&amp;s=96" width="64" height="64" alt="@xingzhuo123" title="@xingzhuo123"></a>
-  <a href="https://github.com/xiaochuheying19901216"><img src="https://avatars.githubusercontent.com/u/304343377?v=4&amp;s=96" width="64" height="64" alt="@xiaochuheying19901216" title="@xiaochuheying19901216"></a>
-  <a href="https://github.com/xiahouzuoying"><img src="https://avatars.githubusercontent.com/u/57342415?v=4&amp;s=96" width="64" height="64" alt="@xiahouzuoying" title="@xiahouzuoying"></a>
-  <a href="https://github.com/likemoonriver"><img src="https://avatars.githubusercontent.com/u/157043962?v=4&amp;s=96" width="64" height="64" alt="@likemoonriver" title="@likemoonriver"></a>
-  <a href="https://github.com/lijianguoa"><img src="https://avatars.githubusercontent.com/u/52228119?v=4&amp;s=96" width="64" height="64" alt="@lijianguoa" title="@lijianguoa"></a>
-  <a href="https://github.com/k1600639239"><img src="https://avatars.githubusercontent.com/u/301947158?v=4&amp;s=96" width="64" height="64" alt="@k1600639239" title="@k1600639239"></a>
-  <a href="https://github.com/gongmeiyuan"><img src="https://avatars.githubusercontent.com/u/75189860?v=4&amp;s=96" width="64" height="64" alt="@gongmeiyuan" title="@gongmeiyuan"></a>
-  <a href="https://github.com/chhhhai"><img src="https://avatars.githubusercontent.com/u/99796066?v=4&amp;s=96" width="64" height="64" alt="@chhhhai" title="@chhhhai"></a>
-  <a href="https://github.com/chenchen199401-cmyk"><img src="https://avatars.githubusercontent.com/u/236738705?v=4&amp;s=96" width="64" height="64" alt="@chenchen199401-cmyk" title="@chenchen199401-cmyk"></a>
-  <a href="https://github.com/chenhd3"><img src="https://avatars.githubusercontent.com/u/52345106?v=4&amp;s=96" width="64" height="64" alt="@chenhd3" title="@chenhd3"></a>
-  <a href="https://github.com/btzheng"><img src="https://avatars.githubusercontent.com/u/15546828?v=4&amp;s=96" width="64" height="64" alt="@btzheng" title="@btzheng"></a>
-  <a href="https://github.com/Winteric123"><img src="https://avatars.githubusercontent.com/u/122366825?v=4&amp;s=96" width="64" height="64" alt="@Winteric123" title="@Winteric123"></a>
-  <a href="https://github.com/ShixiangWang"><img src="https://avatars.githubusercontent.com/u/25057508?v=4&amp;s=96" width="64" height="64" alt="@ShixiangWang" title="@ShixiangWang"></a>
-  <a href="https://github.com/ScholarlyLuck"><img src="https://avatars.githubusercontent.com/u/267531500?v=4&amp;s=96" width="64" height="64" alt="@ScholarlyLuck" title="@ScholarlyLuck"></a>
-  <a href="https://github.com/Junweichengang"><img src="https://avatars.githubusercontent.com/u/41681007?v=4&amp;s=96" width="64" height="64" alt="@Junweichengang" title="@Junweichengang"></a>
-  <a href="https://github.com/JarningGau"><img src="https://avatars.githubusercontent.com/u/22016330?v=4&amp;s=96" width="64" height="64" alt="@JarningGau" title="@JarningGau"></a>
-  <a href="https://github.com/Cloudy-Zhuang"><img src="https://avatars.githubusercontent.com/u/85553170?v=4&amp;s=96" width="64" height="64" alt="@Cloudy-Zhuang" title="@Cloudy-Zhuang"></a>
-  <a href="https://github.com/245429488zc-svg"><img src="https://avatars.githubusercontent.com/u/250579619?v=4&amp;s=96" width="64" height="64" alt="@245429488zc-svg" title="@245429488zc-svg"></a>
-  <a href="https://github.com/entpyf"><img src="https://avatars.githubusercontent.com/u/125380093?v=4&amp;s=96" width="64" height="64" alt="@entpyf" title="@entpyf"></a>
-  <a href="https://github.com/jymtop"><img src="https://avatars.githubusercontent.com/u/248790276?v=4&amp;s=96" width="64" height="64" alt="@jymtop" title="@jymtop"></a>
-  <a href="https://github.com/MenghanLi-lab"><img src="https://avatars.githubusercontent.com/u/309669757?v=4&amp;s=96" width="64" height="64" alt="@MenghanLi-lab" title="@MenghanLi-lab"></a>
-  <a href="https://github.com/knifer510"><img src="https://avatars.githubusercontent.com/u/37789525?v=4&amp;s=96" width="64" height="64" alt="@knifer510" title="@knifer510"></a>
-  <a href="https://github.com/pilaobanmust-sketch"><img src="https://avatars.githubusercontent.com/u/269459169?v=4&amp;s=96" width="64" height="64" alt="@pilaobanmust-sketch" title="@pilaobanmust-sketch"></a>
-  <a href="https://github.com/JohnnyChen1113"><img src="https://avatars.githubusercontent.com/u/30077595?v=4&amp;s=96" width="64" height="64" alt="@JohnnyChen1113" title="@JohnnyChen1113"></a>
-  <a href="https://github.com/chewice"><img src="https://avatars.githubusercontent.com/u/244145152?v=4&amp;s=96" width="64" height="64" alt="@chewice" title="@chewice"></a>
-  <a href="https://github.com/XuuChen"><img src="https://avatars.githubusercontent.com/u/99383234?v=4&amp;s=96" width="64" height="64" alt="@XuuChen" title="@XuuChen"></a>
-  <a href="https://github.com/fei0810"><img src="https://avatars.githubusercontent.com/u/17489298?v=4&amp;s=96" width="64" height="64" alt="@fei0810" title="@fei0810"></a>
-  <a href="https://github.com/Zac-lzh"><img src="https://avatars.githubusercontent.com/u/223252975?v=4&amp;s=96" width="64" height="64" alt="@Zac-lzh" title="@Zac-lzh"></a>
-  <a href="https://github.com/mugpeng"><img src="https://avatars.githubusercontent.com/u/52995448?v=4&amp;s=96" width="64" height="64" alt="@mugpeng" title="@mugpeng"></a>
-  <a href="https://github.com/ChrisLou-bioinfo"><img src="https://avatars.githubusercontent.com/u/34942834?v=4&amp;s=96" width="64" height="64" alt="@ChrisLou-bioinfo" title="@ChrisLou-bioinfo"></a>
-  <a href="https://github.com/georgeatparallel"><img src="https://avatars.githubusercontent.com/u/297992784?v=4&amp;s=96" width="64" height="64" alt="@georgeatparallel" title="@georgeatparallel"></a>
-  <a href="https://github.com/liufahui005"><img src="https://avatars.githubusercontent.com/u/188657823?v=4&amp;s=96" width="64" height="64" alt="@liufahui005" title="@liufahui005"></a>
-  <a href="https://github.com/portos-wang"><img src="https://avatars.githubusercontent.com/u/246403081?v=4&amp;s=96" width="64" height="64" alt="@portos-wang" title="@portos-wang"></a>
-  <a href="https://github.com/shengxinzhuan"><img src="https://avatars.githubusercontent.com/u/54225560?v=4&amp;s=96" width="64" height="64" alt="@shengxinzhuan" title="@shengxinzhuan"></a>
-  <a href="https://github.com/c020627"><img src="https://avatars.githubusercontent.com/u/251123242?v=4&amp;s=96" width="64" height="64" alt="@c020627" title="@c020627"></a>
-  <a href="https://github.com/Emberwhirl"><img src="https://avatars.githubusercontent.com/u/5317953?v=4&amp;s=96" width="64" height="64" alt="@Emberwhirl" title="@Emberwhirl"></a>
-  <a href="https://github.com/HanWang-kui"><img src="https://avatars.githubusercontent.com/u/306124623?v=4&amp;s=96" width="64" height="64" alt="@HanWang-kui" title="@HanWang-kui"></a>
-  <a href="https://github.com/hero199409"><img src="https://avatars.githubusercontent.com/u/296349483?v=4&amp;s=96" width="64" height="64" alt="@hero199409" title="@hero199409"></a>
-  <a href="https://github.com/hi-fei-cool"><img src="https://avatars.githubusercontent.com/u/167007368?v=4&amp;s=96" width="64" height="64" alt="@hi-fei-cool" title="@hi-fei-cool"></a>
-  <a href="https://github.com/Hongweili0424"><img src="https://avatars.githubusercontent.com/u/139341349?v=4&amp;s=96" width="64" height="64" alt="@Hongweili0424" title="@Hongweili0424"></a>
-  <a href="https://github.com/jxshi"><img src="https://avatars.githubusercontent.com/u/28937112?v=4&amp;s=96" width="64" height="64" alt="@jxshi" title="@jxshi"></a>
-  <a href="https://github.com/Lin-medical"><img src="https://avatars.githubusercontent.com/u/309001021?v=4&amp;s=96" width="64" height="64" alt="@Lin-medical" title="@Lin-medical"></a>
-  <a href="https://github.com/LiuXiao-888"><img src="https://avatars.githubusercontent.com/u/286878566?v=4&amp;s=96" width="64" height="64" alt="@LiuXiao-888" title="@LiuXiao-888"></a>
-  <a href="https://github.com/qneurolab"><img src="https://avatars.githubusercontent.com/u/69098252?v=4&amp;s=96" width="64" height="64" alt="@qneurolab" title="@qneurolab"></a>
-  <a href="https://github.com/ryys1122"><img src="https://avatars.githubusercontent.com/u/8609374?v=4&amp;s=96" width="64" height="64" alt="@ryys1122" title="@ryys1122"></a>
-  <a href="https://github.com/Sanhang-learn"><img src="https://avatars.githubusercontent.com/u/175394997?v=4&amp;s=96" width="64" height="64" alt="@Sanhang-learn" title="@Sanhang-learn"></a>
-  <a href="https://github.com/shevenlee"><img src="https://avatars.githubusercontent.com/u/49136350?v=4&amp;s=96" width="64" height="64" alt="@shevenlee" title="@shevenlee"></a>
-  <a href="https://github.com/Shipeng-Guo"><img src="https://avatars.githubusercontent.com/u/16771195?v=4&amp;s=96" width="64" height="64" alt="@Shipeng-Guo" title="@Shipeng-Guo"></a>
-  <a href="https://github.com/xiaochuheying"><img src="https://avatars.githubusercontent.com/u/304300062?v=4&amp;s=96" width="64" height="64" alt="@xiaochuheying" title="@xiaochuheying"></a>
-  <a href="https://github.com/xwttracy-source"><img src="https://avatars.githubusercontent.com/u/243696678?v=4&amp;s=96" width="64" height="64" alt="@xwttracy-source" title="@xwttracy-source"></a>
-  <a href="https://github.com/yeungyuenming"><img src="https://avatars.githubusercontent.com/u/231188244?v=4&amp;s=96" width="64" height="64" alt="@yeungyuenming" title="@yeungyuenming"></a>
-  <a href="https://github.com/yikeshu0611"><img src="https://avatars.githubusercontent.com/u/33260177?v=4&amp;s=96" width="64" height="64" alt="@yikeshu0611" title="@yikeshu0611"></a>
-  <a href="https://github.com/zhaoliang0302"><img src="https://avatars.githubusercontent.com/u/42333702?v=4&amp;s=96" width="64" height="64" alt="@zhaoliang0302" title="@zhaoliang0302"></a>
-  <a href="https://github.com/Zulity"><img src="https://avatars.githubusercontent.com/u/33241990?v=4&amp;s=96" width="64" height="64" alt="@Zulity" title="@Zulity"></a>
-  <a href="https://github.com/zuolan1999-jpg"><img src="https://avatars.githubusercontent.com/u/293331524?v=4&amp;s=96" width="64" height="64" alt="@zuolan1999-jpg" title="@zuolan1999-jpg"></a>
-</p>
+- **出站隐私脱敏**：发往云端模型前假名化邮箱、手机号、身份证和自定义关键词；占位词可编辑，保存时检查格式
+- **论文预审 / 选题引导**
+- **图片查重**：审核图块是否重复、复用或变换后再用
+- **手写数据提取**：识别手写表格，可分别指定识图模型与校准模型
+- **知识库**：检索本机 WeKnora 并引用片段
 
-Windows code signing by [SignPath.io](https://signpath.io), certificate by the
-[SignPath Foundation](https://signpath.org). Third-party notices live in
-[development](docs/development.md).
+### 协作扩展
 
-## License
+- **飞书 / 微信接入**：用 IM 驱动同一桌面会话，工具审批仍在本机
+- **真实浏览器**：通过本机 Chrome 扩展操作已登录网页
+- **Playwright 无头浏览器**
+- **插件扩展**：安装 Skill + MCP 功能包
+- **技能扩展**：打开技能目录，浏览、开关或添加 `SKILL.md`
 
-[AGPL-3.0-only](LICENSE), except where a directory notes otherwise. Earlier
-releases keep the license published with them.
+---
 
-## Citation
+## 工作台能力
 
-[![DOI](https://zenodo.org/badge/1285857639.svg)](https://doi.org/10.5281/zenodo.22009273)
+这些不全部做成首页卡片，但构成日常科研闭环。
 
-```bibtex
-@software{xu2026wisp,
-  author    = {Xu, Zhou-Geng},
-  title     = {SuperScience Science: a local-first AI research workbench},
-  version   = {v1.7.1},
-  year      = {2026},
-  publisher = {Zenodo},
-  doi       = {10.5281/zenodo.22009273},
-  url       = {https://doi.org/10.5281/zenodo.22009273}
-}
+**对话与 Agent**
+
+- 流式思考、工具调用、停止与上下文压缩
+- `@` 附加文件 / 产物 / 环境，`#` 引用历史会话，`/` 指定 Skill 或 Workflow
+- 会话持久化、导出导入、撤销某一轮文件改动
+- 可接入 OpenAI 兼容、Anthropic，或通过 ACP 驱动 Codex / Claude Code
+
+**算力与运行**
+
+- 本机始终可用；SSH 主机注册一次即可探测硬件并提交 Run
+- 密钥存在系统钥匙串 / secrets 文件，不进项目数据库
+- 大文件优先用远程引用，不默认同步到本机
+
+**研究资产**
+
+- Artifact 版本与血缘（代码、日志、输入、环境）
+- 探索分支：试一条方向而不改主线
+- 全局收藏库、加密手动同步、项目 ZIP 迁移
+
+**扩展**
+
+- Skills：bundled / 项目 / 全局 / 插件，按需 `use_skill`
+- MCP：内置约 80 个科学数据库，也可加本地或远程服务
+- 专家（Specialists）、多 Agent 委派、可视化 Workflow
+
+上手说明见 [基础配置](docs/basic-configuration.md)。
+
+---
+
+## 开始使用
+
+1. 从 [官网下载页](https://www.tctoken.cn/downloads/) 安装桌面版。
+2. 在 **设置 → 模型** 添加 API 与模型。
+3. 新建或打开一个项目，从首页「我能做什么」进入课题。
+
+| 平台 | 安装包 |
+|------|--------|
+| Windows | 已签名 MSI / NSIS |
+| macOS | 已签名并公证的 `.dmg`（Apple Silicon + Intel） |
+| Linux | `.deb` / AppImage（x86_64 + aarch64） |
+
+示例项目仍可从项目列表进入，用于回看只读演示轨迹。
+
+---
+
+## 从源码运行
+
+需要 Rust 1.88+（含 `wasm32-unknown-unknown`）、[uv](https://docs.astral.sh/uv/)、Trunk、Tauri CLI v2。详见 [开发指南](docs/development.md)。
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo install --locked trunk
+cargo install tauri-cli --version "^2"
+
+cargo tauri dev      # 热重载
+cargo tauri build    # 安装包在 target/release/bundle
 ```
+
+无界面 CLI：
+
+```bash
+export SUPERSCIENCE_API_KEY=<your-key>
+export SUPERSCIENCE_PROVIDER=openai
+export SUPERSCIENCE_MODEL=deepseek-v4-flash
+cargo run -p superscience-cli
+cargo run -p superscience-cli -- run "Summarize the files in this project"
+```
+
+桌面端认 `SUPERSCIENCE_*`，并继续兼容上游 `WISP_*` 环境变量。远程协议头（如 `__WISP_HANDLE__`）保持原名，以便跟上游合并。
+
+---
+
+## 仓库结构
+
+```text
+crates/superscience-core/      Agent 循环、上下文、记忆
+crates/superscience-tools/     读改搜、shell 等内置工具
+crates/superscience-store/     SQLite 与迁移
+crates/superscience-runtime/   持久 Python / R REPL
+crates/superscience-skills/    SKILL.md 发现与 use_skill
+crates/superscience-llm/       模型调用与出站隐私脱敏
+crates/superscience-mcp/       MCP 客户端
+crates/superscience-acp/       ACP 外部 Agent
+crates/superscience-cli/       无界面命令行
+crates/superscience-dto/       UI ⇄ 桌面契约
+crates/wisp-runs/              Run 控制面（本地 / SSH）
+src-tauri/                     桌面壳、命令、SSH 主机登记
+ui/                            Leptos 前端
+ui-tests/                      Playwright（模拟 Tauri 桥）
+skills/                        预装科研工作流
+docs/                          使用与架构文档
+report/                        本 fork 上游同步记录
+```
+
+---
+
+## 文档
+
+| 主题 | 文档 |
+|------|------|
+| 上手 | [基础配置](docs/basic-configuration.md) · [模型](docs/model-configuration.md) · [ACP](docs/acp-agents.md) |
+| 科研 | [探索分支](docs/exploration-branches.zh-CN.md) · [证据胶囊](docs/publication-evidence.md) · [选题库](docs/case-studies.zh-CN.md) |
+| 项目 | [迁移](docs/project-transfer.md) · [同步](docs/project-sync.zh-CN.md) · [全局库](docs/global-library.md) |
+| 算力 | [终端](docs/terminal-sessions.md) · [远程文件](docs/remote-file-browser.md) · [传输](docs/server-transfers.md) |
+| 扩展 | [Skills](docs/skills.md) · [插件](docs/feature-plugins.md) · [委派](docs/agent-delegation.md) · [IM](docs/channels.md) · [浏览器](docs/real-browser-automation.md) |
+| 开发 | [开发指南](docs/development.md) · [更新与发版](docs/app-updates.md) · [功能总览](docs/天成科研助手-完整功能思维导图.md) |
+
+---
+
+## 许可证与来源
+
+除另有说明外，采用 [AGPL-3.0-only](LICENSE)。
+
+本仓库是 [wisp-science](https://github.com/xuzhougeng/wisp-science) 的产品 fork：用户可见品牌为「天成科研助手 / SuperScience」，上游协议字符串与 `WISP_*` 环境变量保持原名，避免下次合入大面积冲突。预装 Skills 的第三方声明见 [skills/THIRD_PARTY_LICENSES.md](skills/THIRD_PARTY_LICENSES.md)。
+
+反馈：应用内 **帮助 → 反馈问题**。会自动附带版本、系统和当前模型。

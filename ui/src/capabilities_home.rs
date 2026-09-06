@@ -382,6 +382,9 @@ pub(crate) fn save_capability_scene(group: CapabilityGroup) {
 pub(crate) enum CapabilityPanel {
     Files,
     Graph,
+    /// Sidebar / programmatic entry still opens this workspace; the home
+    /// catalog no longer ships a tile for it.
+    #[allow(dead_code)]
     Publication,
     /// Kept so the right-tab Agents / Workflow Studio surface can still be opened
     /// programmatically. Home catalog no longer ships a tile for it.
@@ -410,6 +413,9 @@ pub(crate) enum CapabilityAction {
         section: &'static str,
     },
     OpenPanel(CapabilityPanel),
+    /// Example-project demo remains available from the projects list; the home
+    /// catalog no longer ships a tile for it.
+    #[allow(dead_code)]
     OpenDemo,
     /// Preview tile: click shows an in-progress notice instead of starting work.
     ComingSoon,
@@ -1289,20 +1295,6 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
             card_settings: None,
         },
         CapabilityTile {
-            id: "publication",
-            group: CapabilityGroup::Writing,
-            title_key: "caps.tile.publication.title",
-            blurb_key: "caps.tile.publication.blurb",
-            help: help(
-                "Opens the publication workspace. Pick the exact evidence for one manuscript version, freeze it, and pack it for checking later.",
-                "打开论文证据工作区。给某一稿某一版挑出要用的证据、冻住，以后还能核对。",
-            ),
-            icon: "doc",
-            action: CapabilityAction::OpenPanel(CapabilityPanel::Publication),
-            toggle: None,
-            card_settings: None,
-        },
-        CapabilityTile {
             id: "files-library",
             group: CapabilityGroup::Design,
             title_key: "caps.tile.files_library.title",
@@ -1313,20 +1305,6 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
             ),
             icon: "folder",
             action: CapabilityAction::OpenPanel(CapabilityPanel::Files),
-            toggle: None,
-            card_settings: None,
-        },
-        CapabilityTile {
-            id: "demo",
-            group: CapabilityGroup::Design,
-            title_key: "caps.tile.demo.title",
-            blurb_key: "caps.tile.demo.blurb",
-            help: help(
-                "Opens the Example project. You can replay bundled research demos without sending a new request or needing an API key.",
-                "打开示例项目。可以回看系统自带的研究演示，不用发新请求，也不用 API Key。",
-            ),
-            icon: "star",
-            action: CapabilityAction::OpenDemo,
             toggle: None,
             card_settings: None,
         },
@@ -1386,6 +1364,20 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
             toggle: None,
             card_settings: None,
         },
+        CapabilityTile {
+            id: "skills",
+            group: CapabilityGroup::Collab,
+            title_key: "caps.tile.skills.title",
+            blurb_key: "caps.tile.skills.blurb",
+            help: help(
+                "Opens skill settings. You can browse, enable, or add Skills that the agent can load in chat.",
+                "打开技能设置。可以浏览、开关或添加技能，让助手在对话里调用。",
+            ),
+            icon: "skill",
+            action: CapabilityAction::OpenSettings { section: "skills" },
+            toggle: None,
+            card_settings: None,
+        },
     ];
     CATALOG
 }
@@ -1397,7 +1389,7 @@ pub(crate) fn tiles_for_group(group: CapabilityGroup) -> Vec<&'static Capability
         .collect()
 }
 
-/// Project workspace surfaces (graph / evidence / files / demo). These sit on a
+/// Project workspace surfaces (graph / files). These sit on a
 /// separate row under literature skills so a 5-column grid does not mix them in.
 pub(crate) fn is_workspace_surface_tile(tile: &CapabilityTile) -> bool {
     matches!(
@@ -2206,9 +2198,12 @@ mod tests {
             "topic-coach",
             "knowledge",
             "env-setup",
+            "skills",
         ] {
             assert!(ids.contains(&id), "missing capability tile {id}");
         }
+        assert!(!ids.contains(&"demo"));
+        assert!(!ids.contains(&"publication"));
         let pii = capability_catalog()
             .iter()
             .find(|t| t.id == "pii-firewall")
@@ -2509,16 +2504,10 @@ mod tests {
                 .iter()
                 .map(|tile| tile.id)
                 .collect::<Vec<_>>(),
-            vec!["research-graph", "files-library", "demo"]
+            vec!["research-graph", "files-library"]
         );
         assert!(tiles_for_group_footer(CapabilityGroup::Design).is_empty());
-        assert_eq!(
-            tiles_for_group_footer(CapabilityGroup::Writing)
-                .iter()
-                .map(|tile| tile.id)
-                .collect::<Vec<_>>(),
-            vec!["publication"]
-        );
+        assert!(tiles_for_group_footer(CapabilityGroup::Writing).is_empty());
         let topic_main: Vec<_> = tiles_for_group_main(CapabilityGroup::Topic)
             .iter()
             .map(|tile| tile.id)
@@ -2528,13 +2517,10 @@ mod tests {
         assert!(!topic_main.iter().any(|id| {
             matches!(
                 *id,
-                "research-graph" | "publication" | "files-library" | "demo"
+                "research-graph" | "publication" | "files-library" | "demo" | "skills"
             )
         }));
         for group in CapabilityGroup::all() {
-            if *group == CapabilityGroup::Writing {
-                continue;
-            }
             assert!(
                 tiles_for_group_footer(*group).is_empty(),
                 "unexpected workspace footer tiles in {:?}",
@@ -2568,7 +2554,7 @@ mod tests {
         );
         assert_eq!(
             ids(CapabilityGroup::Design),
-            vec!["research-graph", "files-library", "demo"]
+            vec!["research-graph", "files-library"]
         );
         assert_eq!(
             ids(CapabilityGroup::Implement),
@@ -2598,7 +2584,6 @@ mod tests {
                 "nature-ref-verifier",
                 "nature-paper-to-patent",
                 "officecli",
-                "publication",
             ]
         );
         assert_eq!(
@@ -2615,6 +2600,18 @@ mod tests {
                 "topic-coach",
                 "knowledge",
             ]
+        );
+        assert_eq!(
+            ids(CapabilityGroup::Collab),
+            vec!["channels", "browser", "playwright", "plugins", "skills"]
+        );
+        let skills = capability_catalog()
+            .iter()
+            .find(|tile| tile.id == "skills")
+            .expect("skills tile");
+        assert_eq!(
+            skills.action,
+            CapabilityAction::OpenSettings { section: "skills" }
         );
     }
 

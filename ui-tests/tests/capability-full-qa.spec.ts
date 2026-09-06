@@ -42,6 +42,7 @@ const CATALOG: Cap[] = [
   { id: "nature-figure", group: "AI画图", title: "投稿级科研作图", kind: "guided", skill: "nature-figure", turns: ["画一张 PD-1 通路机制示意图。", "先给图注和面板结构。", "用文字描述 Figure 1A。"] },
   { id: "r-bioinfo-figure", group: "AI画图", title: "R语言生信图", kind: "guided", skill: "nature-figure", specialist: "r_bioinformatics_figure", turns: ["用 R 画火山图，数据是 DEG 表。", "先给 ggplot 代码骨架。", "补上 padj 与 log2FC 阈值。"] },
   { id: "nature-paper2ppt", group: "AI画图", title: "论文转组会 PPT", kind: "guided", skill: "nature-paper2ppt", turns: ["把一篇方法论文转成 8 页组会 PPT。", "先给 8 页目录。", "写出第 2 页要点。"] },
+  { id: "nature-image2ppt", group: "AI画图", title: "图片转可编辑 PPT", kind: "guided", skill: "nature-image2ppt", turns: ["把这组组会截图还原成可编辑 PPT。", "先说明输入是图片还是扫描 PDF。", "列出还原后的交付物。"] },
   { id: "ppt-master", group: "AI画图", title: "PPT Master", kind: "install", skill: "ppt-master", turns: ["做一份 6 页可编辑 PPT，主题单细胞注释。", "先确认是否已安装技能。", "给出 6 页标题。"] },
   { id: "ai-drawing", group: "AI画图", title: "AI 插图生成", kind: "guided", turns: ["生成一张肿瘤免疫微环境概念图。", "先问模型与比例，但不要超过一个问题。", "给出英文生图提示词。"] },
   { id: "ai-mechanism-figure", group: "AI画图", title: "AI机制图", kind: "none", turns: ["点击入口", "确认未误开对话", "确认仍停留在能力页"] },
@@ -50,6 +51,7 @@ const CATALOG: Cap[] = [
   { id: "data-cleaning", group: "数据清洗", title: "数据清洗与整形", kind: "guided", specialist: "data_cleaning", turns: ["清洗一份临床随访 CSV，路径 data/followup.csv。", "先说明你会检查哪些问题。", "给出清洗后的列清单。"] },
   { id: "pii-firewall", group: "效率工具", title: "出站隐私脱敏", kind: "toggle", turns: ["查看开关与说明", "切换一次开关", "再切回并确认卡片仍在"] },
   { id: "journal-prescreen", group: "效率工具", title: "论文预审", kind: "guided", skill: "journal-prescreen", turns: ["预审一篇临床论著，目标《中华内科杂志》。", "先列你会对照的须知条目。", "标出 2 个格式问题并给改法。"] },
+  { id: "figure-duplicate-audit", group: "效率工具", title: "图片查重", kind: "guided", skill: "figure-duplicate-audit", specialist: "figure_duplicate_audit", turns: ["查这份 PDF 的 Figure 2–5，看有没有复用或翻转后再用的图块。", "先说明不会自行扫描项目找图。", "说明哈希匹配只是候选。"] },
   { id: "handwriting-extract", group: "效率工具", title: "手写数据提取", kind: "guided", skill: "handwriting-extract", specialist: "handwriting_extract", turns: ["识别两张手写 CRF 照片成 CSV。", "先说明如何标存疑格子。", "给出输出路径约定。"] },
   { id: "topic-coach", group: "效率工具", title: "选题引导", kind: "guided", skill: "topic-coach", turns: ["我有一份回顾性队列，想投中华系列。", "先列资料盘点要问什么。", "给 3 个选题候选的评分维度。"] },
   { id: "knowledge", group: "效率工具", title: "知识库", kind: "guided", turns: ["查本机知识库里关于 PD-1 耐药的笔记。", "先说明你会怎么检索。", "引用一条片段并标出来源。"] },
@@ -70,13 +72,12 @@ const CATALOG: Cap[] = [
   { id: "nature-reader", group: "选题与立项", title: "中英对照阅读器", kind: "guided", skill: "nature-reader", turns: ["精读 Methods，关注统计是否充分。", "先给阅读清单。", "列出 3 个要核对的数字。"] },
   { id: "nature-experiment-log", group: "研究实施与数据分析", title: "实验日志", kind: "guided", skill: "nature-experiment-log", turns: ["记录今天的 Western blot，抗体 PD-1。", "先给记录模板。", "补上对照和批次字段。"] },
   { id: "research-graph", group: "研究设计与规划", title: "研究图谱", kind: "panel", turns: ["打开研究图谱面板", "确认面板可见", "关闭后回到能力页"] },
-  { id: "publication", group: "论文写作与发表", title: "论文证据工作区", kind: "panel", turns: ["打开发表面板", "确认面板可见", "关闭后回到能力页"] },
   { id: "files-library", group: "研究设计与规划", title: "文件与收藏库", kind: "panel", turns: ["打开文件面板", "确认面板可见", "关闭后回到能力页"] },
-  { id: "demo", group: "研究设计与规划", title: "打开演示", kind: "demo", turns: ["打开演示项目", "确认只读演示可见", "返回项目页"] },
   { id: "channels", group: "协作扩展", title: "飞书 / 微信接入", kind: "settings", turns: ["打开频道设置", "确认设置分区可见", "关闭设置"] },
   { id: "browser", group: "协作扩展", title: "真实浏览器", kind: "guided", turns: ["列出当前可做的浏览器自动化边界。", "不要尝试绕过验证码。", "给一个只读标签页的示例请求。"] },
   { id: "playwright", group: "协作扩展", title: "Playwright 无头浏览器", kind: "guided", skill: "playwright", turns: ["写一个打开 example.com 并取标题的脚本提纲。", "先说明本机如何安装运行时。", "给出 5 行伪代码。"] },
   { id: "plugins", group: "协作扩展", title: "插件扩展", kind: "settings", turns: ["打开插件设置", "确认设置分区可见", "关闭设置"] },
+  { id: "skills", group: "协作扩展", title: "技能扩展", kind: "settings", turns: ["打开技能设置", "确认技能目录可见", "关闭设置"] },
 ];
 
 test.use({ locale: "zh-CN" });

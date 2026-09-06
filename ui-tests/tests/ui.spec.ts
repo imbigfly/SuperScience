@@ -10422,6 +10422,24 @@ test("capability card opens a new chat while another session is still streaming"
   await expect(page.locator(".msg.user").first()).toContainText("Inventory the data and materials");
 });
 
+test("capability catalog drops demo and publication tiles and opens skill settings", async ({ page }) => {
+  await page.goto("/?mockLocale=zh");
+  await expect(page.getByTestId("capability-scene")).toBeVisible();
+  await page.getByRole("tab", { name: "研究设计与规划" }).click();
+  await expect(page.getByTestId("cap-tile-research-graph")).toBeVisible();
+  await expect(page.getByTestId("cap-tile-demo")).toHaveCount(0);
+  await page.getByRole("tab", { name: "论文写作与发表" }).click();
+  await expect(page.getByTestId("cap-tile-academic-paper")).toBeVisible();
+  await expect(page.getByTestId("cap-tile-publication")).toHaveCount(0);
+  await page.getByRole("tab", { name: "协作扩展" }).click();
+  const skills = page.getByTestId("cap-tile-skills");
+  await expect(skills).toBeVisible();
+  await expect(skills).toContainText("技能扩展");
+  await skills.click();
+  await expect(page.locator(".skills-pane")).toBeVisible();
+  await expect(page.locator(".settings-nav button.active")).toContainText("技能");
+});
+
 test("figure duplicate audit tile starts a specialist skill chat", async ({ page }) => {
   await page.goto("/?mockLocale=zh");
   await expect(page.getByTestId("capability-scene")).toBeVisible();

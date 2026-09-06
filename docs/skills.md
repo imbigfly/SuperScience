@@ -52,6 +52,9 @@ upstream archive (repo-root `shared/`, or an older per-skill copy) and then lift
 Agents should author project Skills under `<project>/.superscience/skills`, not
 rewrite the global auto-update overlay directory.
 
+The home / Capabilities **Collaboration** tab includes a **Skill extensions**
+card that opens this same Skills settings page.
+
 The Skills settings catalog defaults to a **card** grid. A view switcher in the
 filter bar toggles **card** and **list** layouts; the choice is remembered in
 the local browser. Card and list descriptions are truncated; clicking a skill
