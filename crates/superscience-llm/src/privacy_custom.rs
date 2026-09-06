@@ -90,7 +90,8 @@ fn mint_custom_token(
     next_n: &mut u32,
 ) -> String {
     if let Some(preferred) = term.placeholder.as_deref() {
-        if is_delimited_custom_token(preferred)
+        let preferred = preferred.trim();
+        if !preferred.is_empty()
             && !occupied.contains(preferred)
             && !vault.token_taken(preferred)
             && !assigned.values().any(|token| token == preferred)
@@ -214,7 +215,15 @@ pub fn apply_custom_terms(vault: &PiiVault, text: &str, terms: &[CustomTerm]) ->
         return text.to_string();
     }
 
-    let occupied = occupied_custom_tokens(text, terms.iter().map(|term| term.original.as_str()));
+    let mut occupied = occupied_custom_tokens(text, terms.iter().map(|term| term.original.as_str()));
+    for term in terms {
+        if let Some(preferred) = term.placeholder.as_deref() {
+            let preferred = preferred.trim();
+            if !preferred.is_empty() && text.contains(preferred) {
+                occupied.insert(preferred.to_string());
+            }
+        }
+    }
     let mut assigned = HashMap::<String, String>::new();
     let mut next_n = 0_u32;
     for term in terms {
@@ -299,16 +308,30 @@ mod tests {
     }
 
     #[test]
-    fn remints_legacy_undelimited_placeholder() {
+    fn honors_user_placeholder_when_free() {
+        let vault = PiiVault::new();
+        let terms =
+            vec![
+                CustomTerm::new("协和医院", CustomCategory::Hospital, Some("{词1}".into()))
+                    .unwrap(),
+            ];
+        let out = apply_custom_terms(&vault, "协和医院入院", &terms);
+        assert_eq!(out, "{词1}入院");
+        assert_eq!(vault.rehydrate(&out), "协和医院入院");
+    }
+
+    #[test]
+    fn remints_user_placeholder_when_already_in_source() {
         let vault = PiiVault::new();
         let terms =
             vec![
                 CustomTerm::new("协和医院", CustomCategory::Hospital, Some("医院A".into()))
                     .unwrap(),
             ];
-        let out = apply_custom_terms(&vault, "协和医院入院", &terms);
-        assert_eq!(out, "〔词1〕入院");
-        assert_eq!(vault.rehydrate(&out), "协和医院入院");
+        let src = "医院A见协和医院";
+        let out = apply_custom_terms(&vault, src, &terms);
+        assert_eq!(out, "医院A见〔词1〕");
+        assert_eq!(vault.rehydrate(&out), src);
     }
 
     #[test]

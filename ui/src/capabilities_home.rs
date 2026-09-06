@@ -4,8 +4,11 @@
 use crate::ability_cards::{ability_card_by_id, spawn_report_ability_card_usage};
 use crate::app_support::{compose_icon, save_view_pref};
 use crate::bindings::{invoke, invoke_checked};
+use crate::capability_intros::{
+    help, intro_for, intro_lines, intro_value_parts, CapabilityHelp, CapabilityIntro,
+};
 use crate::dto::ModelProfile;
-use crate::i18n::{t, Locale};
+use crate::i18n::{t, tf, Locale};
 use crate::knowledge_settings::{probe_knowledge_ready, KnowledgeSettingsOverlay};
 use crate::text::{event_target_checked, event_target_value};
 use crate::window_capture_escape;
@@ -114,56 +117,250 @@ fn format_pii_token(n: u32) -> String {
     format!("〔词{n}〕")
 }
 
-fn parse_pii_keyword_lines(raw: &str) -> Vec<PiiCustomTermView> {
-    let mut originals = Vec::new();
-    let mut seen = std::collections::HashSet::<String>::new();
-    for line in raw.lines() {
-        let original = keyword_from_line(line);
-        if original.is_empty() || !seen.insert(original.clone()) {
-            continue;
-        }
-        originals.push(original);
-    }
-    let blocked: std::collections::HashSet<String> = originals.iter().cloned().collect();
+fn next_pii_token(occupied: &mut std::collections::HashSet<String>) -> String {
     let mut next = 0_u32;
-    originals
-        .into_iter()
-        .map(|original| {
-            let placeholder = loop {
-                next += 1;
-                let token = format_pii_token(next);
-                if !blocked.contains(&token) {
-                    break token;
-                }
-            };
-            PiiCustomTermView {
-                original,
-                category: "custom".into(),
-                placeholder: Some(placeholder),
-            }
-        })
-        .collect()
+    loop {
+        next += 1;
+        let token = format_pii_token(next);
+        if occupied.insert(token.clone()) {
+            return token;
+        }
+    }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
+fn parse_pii_keyword_lines(raw: &str) -> Vec<PiiCustomTermView> {
+    review_pii_placeholders(raw, "").terms
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
 fn preview_pii_placeholders(raw: &str) -> String {
-    let map: std::collections::HashMap<_, _> = parse_pii_keyword_lines(raw)
-        .into_iter()
-        .filter_map(|term| {
-            term.placeholder
-                .map(|placeholder| (term.original, placeholder))
-        })
-        .collect();
-    raw.lines()
+    align_placeholder_lines(raw, "")
+}
+
+fn placeholders_from_terms(terms: &[PiiCustomTermView]) -> String {
+    let keywords = format_pii_keyword_lines(terms);
+    let raw = terms
+        .iter()
+        .map(|term| term.placeholder.clone().unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\n");
+    align_placeholder_lines(&keywords, &raw)
+}
+
+fn align_placeholder_lines(keywords: &str, placeholders: &str) -> String {
+    let keyword_lines: Vec<&str> = keywords.lines().collect();
+    let placeholder_lines: Vec<&str> = placeholders.lines().collect();
+    let mut occupied = std::collections::HashSet::<String>::new();
+    for line in &keyword_lines {
+        let original = keyword_from_line(line);
+        if !original.is_empty() {
+            occupied.insert(original);
+        }
+    }
+    let mut assigned = std::collections::HashMap::<String, String>::new();
+    for (index, line) in keyword_lines.iter().enumerate() {
+        let original = keyword_from_line(line);
+        if original.is_empty() || assigned.contains_key(&original) {
+            continue;
+        }
+        let existing = placeholder_lines
+            .get(index)
+            .map(|value| value.trim())
+            .unwrap_or("");
+        if !existing.is_empty() {
+            assigned.insert(original, existing.to_string());
+            occupied.insert(existing.to_string());
+        }
+    }
+    keyword_lines
+        .iter()
         .map(|line| {
             let original = keyword_from_line(line);
             if original.is_empty() {
-                String::new()
-            } else {
-                map.get(&original).cloned().unwrap_or_default()
+                return String::new();
             }
+            if let Some(token) = assigned.get(&original) {
+                return token.clone();
+            }
+            let token = next_pii_token(&mut occupied);
+            assigned.insert(original, token.clone());
+            token
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn wrapped_placeholder(token: &str) -> bool {
+    const PAIRS: [(char, char); 6] = [
+        ('〔', '〕'),
+        ('{', '}'),
+        ('[', ']'),
+        ('【', '】'),
+        ('「', '」'),
+        ('(', ')'),
+    ];
+    let mut chars = token.chars();
+    let Some(open) = chars.next() else {
+        return false;
+    };
+    let Some(close) = token.chars().last() else {
+        return false;
+    };
+    token.chars().count() >= 3 && PAIRS.iter().any(|(left, right)| *left == open && *right == close)
+}
+
+fn code_placeholder(token: &str) -> bool {
+    let mut chars = token.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    first.is_ascii_alphabetic()
+        && token.len() >= 2
+        && token
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        && token.chars().any(|ch| ch.is_ascii_digit())
+}
+
+fn safe_placeholder(token: &str) -> bool {
+    wrapped_placeholder(token) || code_placeholder(token)
+}
+
+fn placeholder_looks_like_pii(token: &str) -> bool {
+    token.contains('@')
+        || token.chars().filter(|ch| ch.is_ascii_digit()).count() >= 8
+}
+
+fn unbalanced_placeholder_marks(token: &str) -> bool {
+    const PAIRS: [(char, char); 5] = [
+        ('〔', '〕'),
+        ('{', '}'),
+        ('[', ']'),
+        ('【', '】'),
+        ('「', '」'),
+    ];
+    PAIRS.iter().any(|(open, close)| {
+        token.chars().filter(|ch| *ch == *open).count()
+            != token.chars().filter(|ch| *ch == *close).count()
+    })
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PiiPlaceholderIssue {
+    line: usize,
+    keyword: String,
+    current: String,
+    suggested: String,
+    reason_key: &'static str,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PiiPlaceholderReview {
+    terms: Vec<PiiCustomTermView>,
+    suggested_terms: Vec<PiiCustomTermView>,
+    suggested_text: String,
+    issues: Vec<PiiPlaceholderIssue>,
+}
+
+fn review_pii_placeholders(keywords: &str, placeholders: &str) -> PiiPlaceholderReview {
+    let keyword_lines: Vec<&str> = keywords.lines().collect();
+    let placeholder_lines: Vec<&str> = placeholders.lines().collect();
+    let mut occupied = std::collections::HashSet::<String>::new();
+    for line in &keyword_lines {
+        let original = keyword_from_line(line);
+        if !original.is_empty() {
+            occupied.insert(original);
+        }
+    }
+    let mut seen = std::collections::HashSet::<String>::new();
+    let mut used = std::collections::HashSet::<String>::new();
+    let mut terms: Vec<PiiCustomTermView> = Vec::new();
+    let mut suggested_terms: Vec<PiiCustomTermView> = Vec::new();
+    let mut suggested_lines = Vec::new();
+    let mut issues: Vec<PiiPlaceholderIssue> = Vec::new();
+    for (index, line) in keyword_lines.iter().enumerate() {
+        let original = keyword_from_line(line);
+        let current = placeholder_lines
+            .get(index)
+            .map(|value| value.trim().to_string())
+            .unwrap_or_default();
+        if original.is_empty() {
+            suggested_lines.push(String::new());
+            continue;
+        }
+        if !seen.insert(original.clone()) {
+            suggested_lines.push(
+                suggested_terms
+                    .iter()
+                    .find(|term| term.original == original)
+                    .and_then(|term| term.placeholder.clone())
+                    .unwrap_or_else(|| current.clone()),
+            );
+            continue;
+        }
+        let reason_key = if current.is_empty() {
+            Some("empty")
+        } else if current == original {
+            Some("same")
+        } else if current.contains('|') {
+            Some("pipe")
+        } else if current.chars().count() > 40 {
+            Some("long")
+        } else if current.chars().count() < 2 {
+            Some("short")
+        } else if placeholder_looks_like_pii(&current) {
+            Some("pii")
+        } else if occupied.contains(&current) {
+            Some("collides")
+        } else if used.contains(&current) {
+            Some("duplicate")
+        } else if unbalanced_placeholder_marks(&current) {
+            Some("unbalanced")
+        } else if !safe_placeholder(&current) {
+            Some("undelimited")
+        } else {
+            None
+        };
+        let suggested = if reason_key.is_some() {
+            next_pii_token(&mut occupied)
+        } else {
+            occupied.insert(current.clone());
+            current.clone()
+        };
+        used.insert(suggested.clone());
+        if let Some(reason_key) = reason_key {
+            issues.push(PiiPlaceholderIssue {
+                line: index + 1,
+                keyword: original.clone(),
+                current: current.clone(),
+                suggested: suggested.clone(),
+                reason_key,
+            });
+        }
+        let kept = if current.is_empty() {
+            suggested.clone()
+        } else {
+            current
+        };
+        terms.push(PiiCustomTermView {
+            original: original.clone(),
+            category: "custom".into(),
+            placeholder: Some(kept),
+        });
+        suggested_terms.push(PiiCustomTermView {
+            original,
+            category: "custom".into(),
+            placeholder: Some(suggested.clone()),
+        });
+        suggested_lines.push(suggested);
+    }
+    PiiPlaceholderReview {
+        terms,
+        suggested_terms,
+        suggested_text: suggested_lines.join("\n"),
+        issues,
+    }
 }
 
 fn load_capability_scene_pref() -> Option<CapabilityGroup> {
@@ -296,25 +493,7 @@ pub(crate) enum CapabilityToggle {
 pub(crate) enum CapabilityCardSettings {
     HandwritingModels,
     Knowledge,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct CapabilityHelp {
-    en: &'static str,
-    zh: &'static str,
-}
-
-impl CapabilityHelp {
-    fn get(self, locale: Locale) -> &'static str {
-        match locale {
-            Locale::En => self.en,
-            Locale::Zh => self.zh,
-        }
-    }
-}
-
-const fn help(en: &'static str, zh: &'static str) -> CapabilityHelp {
-    CapabilityHelp { en, zh }
+    PiiFirewall,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -762,6 +941,19 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
                 "把论文给它。它做成中文组会 PPT，顺着论文论点讲，不是把页面截图糊上去。",
             ),
         ),
+        skill_tile(
+            "nature-image2ppt",
+            CapabilityGroup::AiDrawing,
+            "caps.skill.nature_image2ppt.title",
+            "caps.skill.nature_image2ppt.blurb",
+            "caps.skill.nature_image2ppt.prompt",
+            "nature-image2ppt",
+            "copy",
+            help(
+                "Give it slide photos, screenshots, or a scanned PDF. It rebuilds an object-level editable PowerPoint instead of leaving a flattened picture deck.",
+                "把幻灯片照片、截图或扫描 PDF 给它。它还原成对象级可编辑 PPT，而不是一层死图片。",
+            ),
+        ),
         install_then_guided_tile(
             "ppt-master",
             CapabilityGroup::AiDrawing,
@@ -801,7 +993,7 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
             icon: "shield",
             action: CapabilityAction::None,
             toggle: Some(CapabilityToggle::PiiFirewall),
-            card_settings: None,
+            card_settings: Some(CapabilityCardSettings::PiiFirewall),
         },
         skill_tile(
             "journal-prescreen",
@@ -814,6 +1006,20 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
             help(
                 "Give it a manuscript and a target journal. It checks the author guidelines and marks format, ethics, and length problems with fix suggestions.",
                 "把稿子和目标杂志给它。它对照投稿须知，标出格式、伦理、字数等问题，并给出改法。",
+            ),
+        ),
+        specialist_skill_tile(
+            "figure-duplicate-audit",
+            CapabilityGroup::Efficiency,
+            "caps.skill.figure_duplicate_audit.title",
+            "caps.skill.figure_duplicate_audit.blurb",
+            "caps.skill.figure_duplicate_audit.prompt",
+            "figure-duplicate-audit",
+            "figure_duplicate_audit",
+            "copy",
+            help(
+                "Attach one PDF or name one figure folder. It splits panels, scores likely reuse, and writes a cautious integrity report — not a misconduct verdict.",
+                "附一份 PDF 或点名一个图目录。它会拆图块、给可能复用的配对打分，并写出谨慎的完整性报告，而不是不端结论。",
             ),
         ),
         specialist_skill_tile(
@@ -1229,6 +1435,207 @@ fn tiles_for_group_footer(group: CapabilityGroup) -> Vec<&'static CapabilityTile
         .collect()
 }
 
+fn intro_uses_say_label(action: CapabilityAction) -> bool {
+    matches!(
+        action,
+        CapabilityAction::OpenSettings { .. }
+            | CapabilityAction::OpenPanel(_)
+            | CapabilityAction::OpenRuntimeSetup
+            | CapabilityAction::OpenDemo
+            | CapabilityAction::None
+    )
+}
+
+fn capability_intro_overlay(
+    tile: &'static CapabilityTile,
+    locale: RwSignal<Locale>,
+    on_close: Callback<()>,
+) -> impl IntoView {
+    let intro = intro_for(tile.id);
+    let notice = create_rw_signal(None::<&'static str>);
+    let coming_soon = matches!(tile.action, CapabilityAction::ComingSoon);
+    let say_label = intro_uses_say_label(tile.action);
+    let title_key = tile.title_key;
+    let icon = tile.icon;
+    let lead = tile.help;
+    let show_notice = Callback::new(move |key: &'static str| {
+        notice.set(Some(key));
+        set_timeout(
+            move || {
+                if notice.get_untracked() == Some(key) {
+                    notice.set(None);
+                }
+            },
+            std::time::Duration::from_millis(2500),
+        );
+    });
+
+    view! {
+        <div class="overlay caps-fullscreen-overlay" data-testid="cap-help-overlay"
+            on:click=move |_| on_close.call(())>
+            <div class="modal caps-fullscreen cap-intro-page" role="dialog" aria-modal="true"
+                aria-labelledby="cap-help-title"
+                on:click=move |ev| ev.stop_propagation()>
+                <header class="cap-intro-head">
+                    <div class="cap-intro-title-block">
+                        <span class="cap-intro-mark" aria-hidden="true">{compose_icon(icon)}</span>
+                        <div class="cap-intro-title-copy">
+                            <p class="cap-intro-eyebrow">{move || t(locale.get(), "caps.intro.eyebrow")}</p>
+                            <h2 id="cap-help-title">{move || t(locale.get(), title_key)}</h2>
+                            <p class="cap-intro-lead" data-testid="cap-help-body">
+                                {move || lead.get(locale.get())}
+                            </p>
+                        </div>
+                    </div>
+                    <div class="cap-intro-head-actions">
+                        <div class="cap-intro-action-stack">
+                            <div class="cap-intro-action-row">
+                                <button type="button" class="cap-intro-chip"
+                                    data-testid="cap-help-example"
+                                    on:click=move |_| show_notice.call("caps.intro.example_soon")>
+                                    {compose_icon("star")}
+                                    <span>{move || t(locale.get(), "caps.intro.example")}</span>
+                                </button>
+                                <button type="button" class="cap-intro-chip"
+                                    data-testid="cap-help-tutorial"
+                                    on:click=move |_| show_notice.call("caps.intro.tutorial_soon")>
+                                    {compose_icon("book")}
+                                    <span>{move || t(locale.get(), "caps.intro.tutorial")}</span>
+                                </button>
+                                <button type="button" class="ps-close"
+                                    aria-label=move || t(locale.get(), "caps.help.close")
+                                    on:click=move |_| on_close.call(())>
+                                    {compose_icon("close")}
+                                </button>
+                            </div>
+                            {move || notice.get().map(|key| view! {
+                                <p class="cap-intro-notice" data-testid="cap-help-placeholder-notice">
+                                    {t(locale.get(), key)}
+                                </p>
+                            })}
+                        </div>
+                    </div>
+                </header>
+                <div class="cap-intro-body">
+                    <div class="cap-intro-col">
+                        {intro.map(|intro| capability_intro_sections(intro, locale, say_label))}
+                    </div>
+                </div>
+                <footer class="cap-intro-foot">
+                    <p class="cap-intro-foot-note">
+                        {coming_soon.then(|| view! {
+                            <span>{move || t(locale.get(), "caps.intro.coming_soon_note")}</span>
+                        })}
+                    </p>
+                    <button type="button" class="primary"
+                        data-testid="cap-help-close"
+                        on:click=move |_| on_close.call(())>
+                        {move || t(locale.get(), "caps.help.close")}
+                    </button>
+                </footer>
+            </div>
+        </div>
+    }
+}
+
+fn capability_intro_sections(
+    intro: &'static CapabilityIntro,
+    locale: RwSignal<Locale>,
+    say_label: bool,
+) -> impl IntoView {
+    view! {
+        <div class="cap-intro-pair">
+            <section class="cap-intro-block cap-intro-block-scenario" data-testid="cap-intro-scenario" aria-labelledby="cap-intro-scenario-title">
+                <header class="cap-intro-block-head">
+                    <span class="cap-intro-kicker">"01"</span>
+                    <h3 id="cap-intro-scenario-title">{move || t(locale.get(), "caps.intro.scenario")}</h3>
+                </header>
+                <div class="cap-intro-prose-stack">
+                    {move || intro_lines(intro.scenario.get(locale.get())).map(|line| {
+                        view! { <p class="cap-intro-prose">{line.to_string()}</p> }
+                    }).collect_view()}
+                </div>
+            </section>
+            <section class="cap-intro-block cap-intro-block-problems" data-testid="cap-intro-problems" aria-labelledby="cap-intro-problems-title">
+                <header class="cap-intro-block-head">
+                    <span class="cap-intro-kicker">"02"</span>
+                    <h3 id="cap-intro-problems-title">{move || t(locale.get(), "caps.intro.problems")}</h3>
+                </header>
+                <ol class="cap-intro-dots">
+                    {move || intro_lines(intro.problems.get(locale.get())).enumerate().map(|(idx, line)| {
+                        view! {
+                            <li>
+                                <span class="cap-intro-dot-n">{format!("{:02}", idx + 1)}</span>
+                                <p>{line.to_string()}</p>
+                            </li>
+                        }
+                    }).collect_view()}
+                </ol>
+            </section>
+        </div>
+        <section class="cap-intro-block cap-intro-block-value" data-testid="cap-intro-value" aria-labelledby="cap-intro-value-title">
+            <header class="cap-intro-block-head">
+                <span class="cap-intro-kicker">"03"</span>
+                <h3 id="cap-intro-value-title">{move || t(locale.get(), "caps.intro.value")}</h3>
+            </header>
+            {move || {
+                let items: Vec<String> = intro_lines(intro.value.get(locale.get()))
+                    .map(|line| line.to_string())
+                    .collect();
+                view! {
+                    <ol class="cap-intro-value-grid">
+                        {items.into_iter().enumerate().map(|(idx, line)| {
+                            let (title, body) = intro_value_parts(&line);
+                            let title = title.to_string();
+                            let body = body.map(str::to_string);
+                            view! {
+                                <li class="cap-intro-value-item">
+                                    <span class="cap-intro-step-n">{format!("{:02}", idx + 1)}</span>
+                                    <div class="cap-intro-value-copy">
+                                        <strong>{title}</strong>
+                                        {body.map(|text| view! { <p>{text}</p> })}
+                                    </div>
+                                </li>
+                            }
+                        }).collect_view()}
+                    </ol>
+                }
+            }}
+        </section>
+        <section class="cap-intro-block cap-intro-block-how" data-testid="cap-intro-how" aria-labelledby="cap-intro-how-title">
+            <header class="cap-intro-block-head">
+                <span class="cap-intro-kicker">"04"</span>
+                <h3 id="cap-intro-how-title">{move || t(locale.get(), "caps.intro.how")}</h3>
+            </header>
+            <div class="cap-intro-how-grid">
+                <ol class="cap-intro-steps">
+                    {move || intro_lines(intro.how_to.get(locale.get())).enumerate().map(|(idx, line)| {
+                        view! {
+                            <li>
+                                <span class="cap-intro-step-n">{format!("{:02}", idx + 1)}</span>
+                                <p>{line.to_string()}</p>
+                            </li>
+                        }
+                    }).collect_view()}
+                </ol>
+                <div class="cap-intro-dialogue" data-testid="cap-intro-dialogue">
+                    <p class="cap-intro-dialogue-label">
+                        {move || t(locale.get(), if say_label { "caps.intro.say" } else { "caps.intro.dialogue" })}
+                    </p>
+                    <div class="cap-intro-bubble you">
+                        <span class="cap-info-tag">{move || t(locale.get(), "caps.intro.you")}</span>
+                        <p>{move || intro.dialogue_user.get(locale.get())}</p>
+                    </div>
+                    <div class="cap-intro-bubble assistant">
+                        <span class="cap-info-tag muted">{move || t(locale.get(), "caps.intro.assistant")}</span>
+                        <p>{move || intro.dialogue_assistant.get(locale.get())}</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+    }
+}
+
 fn capability_help_button(
     tile: &'static CapabilityTile,
     locale: RwSignal<Locale>,
@@ -1253,6 +1660,7 @@ fn capability_help_button(
 fn capability_settings_aria_key(tile: &CapabilityTile) -> &'static str {
     match tile.card_settings {
         Some(CapabilityCardSettings::Knowledge) => "caps.tile.knowledge.settings.aria",
+        Some(CapabilityCardSettings::PiiFirewall) => "caps.tile.pii_firewall.settings.aria",
         _ => "caps.skill.handwriting_extract.settings.aria",
     }
 }
@@ -1444,6 +1852,136 @@ mod tests {
                     tile.id,
                     locale.code()
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn every_catalog_tile_has_intro_copy() {
+        for tile in capability_catalog() {
+            let intro =
+                intro_for(tile.id).unwrap_or_else(|| panic!("missing intro for {}", tile.id));
+            assert!(intro.example_project.is_none());
+            assert!(intro.tutorial_url.is_none());
+            for locale in [Locale::En, Locale::Zh] {
+                let scenario = intro.scenario.get(locale);
+                assert!(
+                    scenario.chars().count() >= 80,
+                    "scenario too short for {} / {}: {scenario}",
+                    tile.id,
+                    locale.code()
+                );
+                let problems: Vec<&str> = intro_lines(intro.problems.get(locale)).collect();
+                assert!(
+                    problems.len() >= 3,
+                    "problems missing for {} / {}",
+                    tile.id,
+                    locale.code()
+                );
+                for line in &problems {
+                    assert!(
+                        line.chars().count() >= 10,
+                        "problem too thin for {} / {}: {line}",
+                        tile.id,
+                        locale.code()
+                    );
+                }
+                let value: Vec<&str> = intro_lines(intro.value.get(locale)).collect();
+                assert!(
+                    value.len() >= 3,
+                    "value points too few for {} / {}",
+                    tile.id,
+                    locale.code()
+                );
+                for line in &value {
+                    let (title, body) = intro_value_parts(line);
+                    assert!(
+                        !title.is_empty() && body.map(|s| s.chars().count()).unwrap_or(0) >= 12,
+                        "value needs title | explanation for {} / {}: {line}",
+                        tile.id,
+                        locale.code()
+                    );
+                }
+                let how_to: Vec<&str> = intro_lines(intro.how_to.get(locale)).collect();
+                assert!(
+                    how_to.len() >= 3,
+                    "how-to missing for {} / {}",
+                    tile.id,
+                    locale.code()
+                );
+                for field in [
+                    intro.scenario.get(locale),
+                    intro.problems.get(locale),
+                    intro.value.get(locale),
+                    intro.how_to.get(locale),
+                ] {
+                    for banned in [
+                        "waiting until later costs more",
+                        "拖到后面再补",
+                        "Not a compliment",
+                        "不是一句评价",
+                        "Give materials, the goal, and hard limits",
+                        "材料、目标和硬限制一次给齐",
+                        "Handoff breaks when the next person",
+                        "下一手看不到到底用的是哪一版",
+                        "A keepable artifact",
+                        "留得下的产物",
+                        "Together with “",
+                        "一起构成完整收获",
+                        "Without this step, you never get",
+                        "不做这一步，就拿不到",
+                        "this usually only shows up when you write",
+                        "Each point lands as a file",
+                        "每一点都落成",
+                        "You can check the result against",
+                        "做完可以对回原话",
+                    ] {
+                        assert!(
+                            !field.contains(banned),
+                            "boilerplate {banned:?} in {} / {}",
+                            tile.id,
+                            locale.code()
+                        );
+                    }
+                }
+                let user = intro.dialogue_user.get(locale);
+                let assistant = intro.dialogue_assistant.get(locale);
+                assert!(
+                    user.chars().count() >= 20,
+                    "dialogue user too short for {} / {}: {user}",
+                    tile.id,
+                    locale.code()
+                );
+                assert!(
+                    assistant.chars().count() >= 20,
+                    "dialogue assistant too short for {} / {}: {assistant}",
+                    tile.id,
+                    locale.code()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn intro_shell_copy_is_translated() {
+        for locale in [Locale::En, Locale::Zh] {
+            for key in [
+                "caps.intro.eyebrow",
+                "caps.intro.scenario",
+                "caps.intro.problems",
+                "caps.intro.value",
+                "caps.intro.how",
+                "caps.intro.example",
+                "caps.intro.tutorial",
+                "caps.intro.example_soon",
+                "caps.intro.tutorial_soon",
+                "caps.intro.dialogue",
+                "caps.intro.say",
+                "caps.intro.you",
+                "caps.intro.assistant",
+                "caps.intro.coming_soon_note",
+            ] {
+                assert_ne!(t(locale, key), key, "missing {} {key}", locale.code());
             }
         }
     }
@@ -1647,6 +2185,7 @@ mod tests {
             "nature-figure",
             "r-bioinfo-figure",
             "nature-paper2ppt",
+            "nature-image2ppt",
             "ppt-master",
             "nature-statistics",
             "knowledge-graph",
@@ -1662,6 +2201,7 @@ mod tests {
             "data-cleaning",
             "pii-firewall",
             "journal-prescreen",
+            "figure-duplicate-audit",
             "handwriting-extract",
             "topic-coach",
             "knowledge",
@@ -1676,6 +2216,24 @@ mod tests {
         assert_eq!(pii.group, CapabilityGroup::Efficiency);
         assert_eq!(pii.toggle, Some(CapabilityToggle::PiiFirewall));
         assert_eq!(pii.action, CapabilityAction::None);
+        assert_eq!(
+            pii.card_settings,
+            Some(CapabilityCardSettings::PiiFirewall)
+        );
+        let figure_audit = capability_catalog()
+            .iter()
+            .find(|t| t.id == "figure-duplicate-audit")
+            .expect("figure-duplicate-audit tile");
+        assert_eq!(figure_audit.group, CapabilityGroup::Efficiency);
+        assert_eq!(figure_audit.card_settings, None);
+        match figure_audit.action {
+            CapabilityAction::GuidedChat {
+                skill: Some("figure-duplicate-audit"),
+                specialist: Some("figure_duplicate_audit"),
+                ..
+            } => {}
+            other => panic!("expected figure-duplicate-audit specialist+skill tile, got {other:?}"),
+        }
         let handwriting = capability_catalog()
             .iter()
             .find(|t| t.id == "handwriting-extract")
@@ -1728,7 +2286,7 @@ mod tests {
                 .filter(|tile| tile.card_settings.is_some())
                 .map(|tile| tile.id)
                 .collect::<Vec<_>>(),
-            vec!["handwriting-extract", "knowledge"]
+            vec!["pii-firewall", "handwriting-extract", "knowledge"]
         );
         assert!(!ids.contains(&"nature-shared"));
         assert!(!ids.contains(&"academic-research"));
@@ -1848,6 +2406,7 @@ mod tests {
                 "editable-figure",
                 "bioinfo-figure-layout",
                 "nature-paper2ppt",
+                "nature-image2ppt",
                 "ppt-master",
             ]
         );
@@ -2051,6 +2610,7 @@ mod tests {
             vec![
                 "pii-firewall",
                 "journal-prescreen",
+                "figure-duplicate-audit",
                 "handwriting-extract",
                 "topic-coach",
                 "knowledge",
@@ -2083,6 +2643,45 @@ mod tests {
         assert_eq!(
             preview_pii_placeholders("张三\n〔词1〕"),
             "〔词2〕\n〔词3〕"
+        );
+    }
+
+    #[test]
+    fn pii_placeholder_review_accepts_wrapped_and_code_tokens() {
+        let review = review_pii_placeholders("张三\n协和医院", "〔词1〕\n{词2}");
+        assert!(review.issues.is_empty());
+        assert_eq!(review.terms[0].placeholder.as_deref(), Some("〔词1〕"));
+        assert_eq!(review.terms[1].placeholder.as_deref(), Some("{词2}"));
+
+        let codes = review_pii_placeholders("Zhang San", "NAME_1");
+        assert!(codes.issues.is_empty());
+        assert_eq!(codes.terms[0].placeholder.as_deref(), Some("NAME_1"));
+    }
+
+    #[test]
+    fn pii_placeholder_review_flags_format_and_reasonableness() {
+        let review = review_pii_placeholders(
+            "靶蛋白\nZ%蛋白\n协和医院",
+            "靶蛋白\n蛋白\n{词",
+        );
+        let keys: Vec<_> = review.issues.iter().map(|issue| issue.reason_key).collect();
+        assert!(keys.contains(&"same"));
+        assert!(keys.contains(&"undelimited"));
+        assert!(keys.contains(&"unbalanced"));
+        assert_eq!(review.suggested_terms[0].placeholder.as_deref(), Some("〔词1〕"));
+        assert_eq!(review.suggested_terms[1].placeholder.as_deref(), Some("〔词2〕"));
+        assert_eq!(review.suggested_terms[2].placeholder.as_deref(), Some("〔词3〕"));
+    }
+
+    #[test]
+    fn pii_placeholder_align_keeps_user_edits() {
+        assert_eq!(
+            align_placeholder_lines("张三\n协和医院", "〔词1〕\n{词2}"),
+            "〔词1〕\n{词2}"
+        );
+        assert_eq!(
+            align_placeholder_lines("张三\n协和医院\n李四", "〔词1〕\n{词2}"),
+            "〔词1〕\n{词2}\n〔词2〕"
         );
     }
 
@@ -2142,6 +2741,7 @@ mod tests {
         for id in [
             "pii-firewall",
             "journal-prescreen",
+            "figure-duplicate-audit",
             "handwriting-extract",
             "topic-coach",
             "academic-paper-reviewer",
@@ -2193,6 +2793,14 @@ mod tests {
             "Journal prescreen"
         );
         assert_eq!(
+            t(Locale::Zh, "caps.skill.figure_duplicate_audit.title"),
+            "图片查重"
+        );
+        assert_eq!(
+            t(Locale::En, "caps.skill.figure_duplicate_audit.title"),
+            "Figure duplicate audit"
+        );
+        assert_eq!(
             t(Locale::Zh, "caps.tile.pii_firewall.terms_title"),
             "敏感关键词"
         );
@@ -2204,6 +2812,20 @@ mod tests {
             t(Locale::Zh, "caps.tile.pii_firewall.terms_preview_title"),
             "系统占位词"
         );
+        for locale in [Locale::En, Locale::Zh] {
+            for key in [
+                "caps.tile.pii_firewall.terms_review_title",
+                "caps.tile.pii_firewall.terms_review_lead",
+                "caps.tile.pii_firewall.terms_review_apply",
+                "caps.tile.pii_firewall.terms_review_keep",
+                "caps.tile.pii_firewall.terms_review_back",
+                "caps.tile.pii_firewall.terms_issue.empty",
+                "caps.tile.pii_firewall.terms_issue.undelimited",
+                "caps.tile.pii_firewall.settings.aria",
+            ] {
+                assert_ne!(t(locale, key), key, "missing {} {key}", locale.code());
+            }
+        }
         for locale in [Locale::En, Locale::Zh] {
             for key in [
                 "caps.skill.handwriting_extract.settings.aria",
@@ -2295,8 +2917,10 @@ pub(crate) fn CapabilityTileGrid(
     let pii_firewall_enabled = create_rw_signal(true);
     let pii_firewall_info_open = create_rw_signal(false);
     let pii_terms_text = create_rw_signal(String::new());
+    let pii_placeholders_text = create_rw_signal(String::new());
     let pii_terms_notice = create_rw_signal(String::new());
     let pii_terms_dirty = create_rw_signal(false);
+    let pii_terms_review = create_rw_signal(None::<PiiPlaceholderReview>);
     let help_tile = create_rw_signal(None::<&'static CapabilityTile>);
     let coming_soon_tile = create_rw_signal(None::<&'static CapabilityTile>);
     let handwriting_vision_open = create_rw_signal(false);
@@ -2353,6 +2977,9 @@ pub(crate) fn CapabilityTileGrid(
                         handwriting_vision_notice.set(String::new());
                         handwriting_vision_open.set(true);
                     });
+                }
+                Some(CapabilityCardSettings::PiiFirewall) => {
+                    pii_firewall_info_open.set(true);
                 }
                 None => {}
             },
@@ -2424,30 +3051,37 @@ pub(crate) fn CapabilityTileGrid(
         }
         on_activate.call(action);
     });
-    let persist_pii_terms = move || {
-        let terms = parse_pii_keyword_lines(&pii_terms_text.get_untracked());
+    let persist_pii_terms = move |terms: Vec<PiiCustomTermView>| {
         pii_terms_notice.set(String::new());
+        pii_terms_review.set(None);
         spawn_local(async move {
-            if let Ok(v) = invoke_checked(
+            if invoke_checked(
                 "set_pii_custom_terms",
                 to_value(&serde_json::json!({ "terms": terms })).unwrap(),
             )
             .await
+            .is_ok()
             {
-                if let Ok(saved) = serde_wasm_bindgen::from_value::<Vec<PiiCustomTermView>>(v) {
-                    pii_terms_text.set(format_pii_keyword_lines(&saved));
-                    pii_terms_dirty.set(false);
-                    pii_terms_notice.set(t(
-                        locale.get_untracked(),
-                        "caps.tile.pii_firewall.terms_saved",
-                    ));
-                }
+                pii_terms_text.set(format_pii_keyword_lines(&terms));
+                pii_placeholders_text.set(placeholders_from_terms(&terms));
+                pii_terms_dirty.set(false);
+                pii_terms_notice.set(t(
+                    locale.get_untracked(),
+                    "caps.tile.pii_firewall.terms_saved",
+                ));
             }
         });
     };
+    let review_current_pii_terms = move || {
+        review_pii_placeholders(
+            &pii_terms_text.get_untracked(),
+            &pii_placeholders_text.get_untracked(),
+        )
+    };
     let close_pii_info = move || {
+        pii_terms_review.set(None);
         if pii_terms_dirty.get_untracked() {
-            persist_pii_terms();
+            persist_pii_terms(review_current_pii_terms().terms);
         }
         pii_firewall_info_open.set(false);
     };
@@ -2465,10 +3099,12 @@ pub(crate) fn CapabilityTileGrid(
         }
         pii_terms_notice.set(String::new());
         pii_terms_dirty.set(false);
+        pii_terms_review.set(None);
         spawn_local(async move {
             let v = invoke("get_pii_custom_terms", JsValue::UNDEFINED).await;
             if let Ok(terms) = serde_wasm_bindgen::from_value::<Vec<PiiCustomTermView>>(v) {
                 pii_terms_text.set(format_pii_keyword_lines(&terms));
+                pii_placeholders_text.set(placeholders_from_terms(&terms));
                 pii_terms_dirty.set(false);
             }
         });
@@ -2485,6 +3121,9 @@ pub(crate) fn CapabilityTileGrid(
             true
         } else if coming_soon_tile.get_untracked().is_some() {
             coming_soon_tile.set(None);
+            true
+        } else if pii_terms_review.get_untracked().is_some() {
+            pii_terms_review.set(None);
             true
         } else if pii_firewall_info_open.get_untracked() {
             close_pii_info();
@@ -2510,7 +3149,14 @@ pub(crate) fn CapabilityTileGrid(
             }
         });
     };
-    let save_pii_terms = move |_| persist_pii_terms();
+    let save_pii_terms = move |_| {
+        let review = review_current_pii_terms();
+        if review.issues.is_empty() {
+            persist_pii_terms(review.terms);
+        } else {
+            pii_terms_review.set(Some(review));
+        }
+    };
 
     view! {
         <div class="cap-tile-stack">
@@ -2525,6 +3171,7 @@ pub(crate) fn CapabilityTileGrid(
                     if let Some(CapabilityToggle::PiiFirewall) = toggle {
                         view! {
                             <div class="cap-tile-wrap" role="listitem">
+                            {capability_settings_button(tile, locale, on_card_settings)}
                             {capability_help_button(tile, locale, on_help)}
                             <div class="cap-tile cap-tile-toggle"
                                 data-testid=format!("cap-tile-{id}")
@@ -2628,35 +3275,11 @@ pub(crate) fn CapabilityTileGrid(
             }
         })}
         {move || help_tile.get().map(|tile| {
-            let title_key = tile.title_key;
-            let help = tile.help;
-            view! {
-                <div class="overlay" data-testid="cap-help-overlay"
-                    on:click=move |_| help_tile.set(None)>
-                    <div class="modal cap-info-modal" role="dialog" aria-modal="true"
-                        aria-labelledby="cap-help-title"
-                        on:click=move |ev| ev.stop_propagation()>
-                        <div class="ps-head">
-                            <h2 id="cap-help-title">{move || t(locale.get(), title_key)}</h2>
-                            <button type="button" class="ps-close"
-                                aria-label=move || t(locale.get(), "caps.help.close")
-                                on:click=move |_| help_tile.set(None)>
-                                {compose_icon("close")}
-                            </button>
-                        </div>
-                        <p class="cap-info-lead" data-testid="cap-help-body">
-                            {move || help.get(locale.get())}
-                        </p>
-                        <div class="row">
-                            <button type="button" class="primary"
-                                data-testid="cap-help-close"
-                                on:click=move |_| help_tile.set(None)>
-                                {move || t(locale.get(), "caps.help.close")}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            }
+            capability_intro_overlay(
+                tile,
+                locale,
+                Callback::new(move |_| help_tile.set(None)),
+            )
         })}
         {move || knowledge_settings_open.get().then(|| {
             let require_connection = knowledge_pending_launch.get().is_some();
@@ -2910,7 +3533,13 @@ pub(crate) fn CapabilityTileGrid(
                                         prop:value=move || pii_terms_text.get()
                                         placeholder=move || t(locale.get(), "caps.tile.pii_firewall.terms_placeholder")
                                         on:input=move |ev| {
-                                            pii_terms_text.set(event_target_value(&ev));
+                                            let next = event_target_value(&ev);
+                                            let aligned = align_placeholder_lines(
+                                                &next,
+                                                &pii_placeholders_text.get_untracked(),
+                                            );
+                                            pii_terms_text.set(next);
+                                            pii_placeholders_text.set(aligned);
                                             pii_terms_dirty.set(true);
                                             pii_terms_notice.set(String::new());
                                         }>
@@ -2923,9 +3552,13 @@ pub(crate) fn CapabilityTileGrid(
                                     </div>
                                     <textarea class="pii-fw-terms pii-fw-preview"
                                         data-testid="pii-firewall-terms-preview"
-                                        readonly
-                                        prop:value=move || preview_pii_placeholders(&pii_terms_text.get())
-                                        placeholder=move || t(locale.get(), "caps.tile.pii_firewall.terms_preview_empty")>
+                                        prop:value=move || pii_placeholders_text.get()
+                                        placeholder=move || t(locale.get(), "caps.tile.pii_firewall.terms_preview_empty")
+                                        on:input=move |ev| {
+                                            pii_placeholders_text.set(event_target_value(&ev));
+                                            pii_terms_dirty.set(true);
+                                            pii_terms_notice.set(String::new());
+                                        }>
                                     </textarea>
                                 </div>
                             </div>
@@ -2960,6 +3593,77 @@ pub(crate) fn CapabilityTileGrid(
                         </button>
                     </footer>
                 </div>
+                {move || pii_terms_review.get().map(|review| {
+                    let apply_review = review.clone();
+                    let keep_review = review.clone();
+                    view! {
+                        <div class="overlay pii-fw-review-overlay"
+                            data-testid="pii-firewall-terms-review"
+                            on:click=move |_| pii_terms_review.set(None)>
+                            <div class="modal confirm-modal pii-fw-review-modal" role="dialog"
+                                aria-modal="true" aria-labelledby="pii-fw-review-title"
+                                on:click=|ev| ev.stop_propagation()>
+                                <h2 id="pii-fw-review-title">
+                                    {move || t(locale.get(), "caps.tile.pii_firewall.terms_review_title")}
+                                </h2>
+                                <p class="hint">
+                                    {move || t(locale.get(), "caps.tile.pii_firewall.terms_review_lead")}
+                                </p>
+                                <ul class="pii-fw-review-list">
+                                    {review.issues.into_iter().map(|issue| {
+                                        view! {
+                                            <li>
+                                                <strong>{tf(
+                                                    locale.get(),
+                                                    "caps.tile.pii_firewall.terms_issue.row",
+                                                    &[
+                                                        ("line", &issue.line.to_string()),
+                                                        ("keyword", &issue.keyword),
+                                                    ],
+                                                )}</strong>
+                                                <span>{t(
+                                                    locale.get(),
+                                                    &format!(
+                                                        "caps.tile.pii_firewall.terms_issue.{}",
+                                                        issue.reason_key
+                                                    ),
+                                                )}</span>
+                                                <span class="pii-fw-review-suggest">{tf(
+                                                    locale.get(),
+                                                    "caps.tile.pii_firewall.terms_issue.suggest",
+                                                    &[
+                                                        ("current", &issue.current),
+                                                        ("suggested", &issue.suggested),
+                                                    ],
+                                                )}</span>
+                                            </li>
+                                        }
+                                    }).collect_view()}
+                                </ul>
+                                <div class="row">
+                                    <button type="button"
+                                        data-testid="pii-firewall-terms-review-back"
+                                        on:click=move |_| pii_terms_review.set(None)>
+                                        {move || t(locale.get(), "caps.tile.pii_firewall.terms_review_back")}
+                                    </button>
+                                    <button type="button"
+                                        data-testid="pii-firewall-terms-review-keep"
+                                        on:click=move |_| persist_pii_terms(keep_review.terms.clone())>
+                                        {move || t(locale.get(), "caps.tile.pii_firewall.terms_review_keep")}
+                                    </button>
+                                    <button type="button" class="primary"
+                                        data-testid="pii-firewall-terms-review-apply"
+                                        on:click=move |_| {
+                                            pii_placeholders_text.set(apply_review.suggested_text.clone());
+                                            persist_pii_terms(apply_review.suggested_terms.clone());
+                                        }>
+                                        {move || t(locale.get(), "caps.tile.pii_firewall.terms_review_apply")}
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    }
+                })}
             </div>
         })}
     }

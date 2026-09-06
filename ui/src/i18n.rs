@@ -58,14 +58,99 @@ fn fork_lookup(locale: Locale, key: &str) -> Option<&'static str> {
     match (locale, key) {
         (Locale::Zh, "scratch.open") => Some("开始对话"),
         (Locale::En, "scratch.open") => Some("Start conversation"),
+        (Locale::Zh, "home.director_cta_hint") => Some("把你想要做的事情告诉我，我来引导你得到结果"),
+        (Locale::En, "home.director_cta_hint") => {
+            Some("Tell me what you want to do, and I will guide you to the result.")
+        }
         (Locale::Zh, "caps.skill.handwriting_extract.tip") => {
             Some("发送图片同时对每列数据进行格式说明，识别率会显著提高。")
         }
         (Locale::En, "caps.skill.handwriting_extract.tip") => Some(
             "When you send photos, also describe the format of each column — recognition accuracy improves a lot.",
         ),
+        (Locale::Zh, "specialists.builtin.reviewer.name") => Some("审稿专家"),
+        (Locale::En, "specialists.builtin.reviewer.name") => Some("Reviewer"),
+        (Locale::Zh, "specialists.builtin.reviewer.description") => {
+            Some("追踪会话记录，报告捏造、幻觉或偏离计划。")
+        }
+        (Locale::En, "specialists.builtin.reviewer.description") => {
+            Some("Traces a session transcript and reports fabrication, hallucination, or plan deviation.")
+        }
+        (Locale::Zh, "specialists.builtin.reader.name") => Some("阅读专家"),
+        (Locale::En, "specialists.builtin.reader.name") => Some("Reader"),
+        (Locale::Zh, "specialists.builtin.reader.description") => {
+            Some("并行检索项目会话，返回带引用的精简证据。")
+        }
+        (Locale::En, "specialists.builtin.reader.description") => {
+            Some("Searches project sessions in parallel and returns compact, cited evidence.")
+        }
+        (Locale::Zh, "specialists.builtin.scientific_illustrator.name") => Some("科研作图专家"),
+        (Locale::En, "specialists.builtin.scientific_illustrator.name") => {
+            Some("Scientific Illustrator")
+        }
+        (Locale::Zh, "specialists.builtin.scientific_illustrator.description") => {
+            Some("根据请求和项目上下文生成可发表的科研图。")
+        }
+        (Locale::En, "specialists.builtin.scientific_illustrator.description") => {
+            Some("Creates publication-ready scientific figures from the request and project context.")
+        }
+        (Locale::Zh, "specialists.builtin.handwriting_extract.name") => Some("手写提取专家"),
+        (Locale::En, "specialists.builtin.handwriting_extract.name") => Some("Handwriting Extract"),
+        (Locale::Zh, "specialists.builtin.handwriting_extract.description") => {
+            Some("将手写实验记录或 CRF 照片读成带标记的 CSV，并校准不确定单元格。")
+        }
+        (Locale::En, "specialists.builtin.handwriting_extract.description") => {
+            Some("Reads handwritten lab or CRF photos into a flagged CSV, then calibrates uncertain cells.")
+        }
+        (Locale::Zh, "specialists.builtin.figure_duplicate_audit.name") => Some("图片查重"),
+        (Locale::En, "specialists.builtin.figure_duplicate_audit.name") => {
+            Some("Figure Duplicate Audit")
+        }
+        (Locale::Zh, "specialists.builtin.figure_duplicate_audit.description") => {
+            Some("审核论文图是否重复、复用或变换后再用。")
+        }
+        (Locale::En, "specialists.builtin.figure_duplicate_audit.description") => {
+            Some("Audit figures for duplicated or reused panels.")
+        }
+        (Locale::Zh, "specialists.chat_with_prompt") => {
+            Some("请以{name}的身份开始工作。先问我一个短问题，确认这次要完成的事，然后开始做。")
+        }
+        (Locale::En, "specialists.chat_with_prompt") => {
+            Some("Start as {name}. Ask one short question to confirm what I need done, then begin.")
+        }
         _ => None,
     }
+}
+
+/// Localized label for a specialist card/menu. Built-in rows follow the UI
+/// locale; custom rows keep the stored name. Never write this back to settings.
+pub fn specialist_display_name(locale: Locale, id: &str, name: &str, builtin: bool) -> String {
+    if builtin {
+        let key = format!("specialists.builtin.{id}.name");
+        let localized = t(locale, &key);
+        if localized != key {
+            return localized;
+        }
+    }
+    name.to_string()
+}
+
+/// Localized description for a specialist card. Empty custom copy falls through
+/// so callers can show the edit hint.
+pub fn specialist_display_description(
+    locale: Locale,
+    id: &str,
+    description: &str,
+    builtin: bool,
+) -> String {
+    if builtin {
+        let key = format!("specialists.builtin.{id}.description");
+        let localized = t(locale, &key);
+        if localized != key {
+            return localized;
+        }
+    }
+    description.to_string()
 }
 
 /// User-facing GitHub repo. Menu / docs / issue links should use this, not upstream.
@@ -1844,6 +1929,10 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "skills.filter_added") => Some("Added by me"),
         (Locale::En, "skills.filter_tags") => Some("Tags"),
         (Locale::En, "skills.enabled_frac") => Some("{enabled}/{total}"),
+        (Locale::En, "skills.view.cards") => Some("Card view"),
+        (Locale::En, "skills.view.list") => Some("List view"),
+        (Locale::En, "skills.detail.close") => Some("Close"),
+        (Locale::En, "skills.detail.empty") => Some("This skill has no description."),
         (Locale::En, "err.client_updates_config_not_found") => Some("No installer is published for this platform yet."),
         (Locale::En, "memory.off_banner") => Some("Memory is off. The agent won't save new notes or search existing ones, but notes below are kept and stay editable. Turn memory on to resume."),
         (Locale::En, "memory.scope_hint") => Some("Project memory"),
@@ -1975,7 +2064,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "settings.notifications") => Some("Desktop notifications"),
         (Locale::En, "settings.notifications_hint") => Some("Notify when a background task finishes, fails, or waits for approval. Its conversation opens only in the window that started the task."),
         (Locale::En, "settings.update_check") => Some("Check for updates"),
-        (Locale::En, "settings.update_check_hint") => Some("Check TCTOKEN for a newer SuperScience build on startup and show a prompt in the sidebar when one is available."),
+        (Locale::En, "settings.update_check_hint") => Some("About 5 seconds after launch, check TCTOKEN for a newer SuperScience build and open the same update dialog when one is available."),
         (Locale::En, "issue_report.sidebar") => Some("Feedback"),
         (Locale::En, "issue_report.context") => Some("System information"),
         (Locale::En, "issue_report.context_attached") => Some("Attached automatically"),
@@ -2643,18 +2732,41 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "caps.tile.pii_firewall.modal_example_after") => Some("Contact EMAIL_1 or PHONE_1"),
         (Locale::En, "caps.tile.pii_firewall.modal_note") => Some("On by default. Turn it off only if you intentionally need the model to see the raw personal fields. Research IDs like GSE accessions are left alone."),
         (Locale::En, "caps.tile.pii_firewall.terms_title") => Some("Sensitive keywords"),
-        (Locale::En, "caps.tile.pii_firewall.terms_help") => Some("One keyword per line. Paste only the original words. SuperScience assigns delimited placeholders such as 〔词1〕 so they cannot collide with the paper."),
+        (Locale::En, "caps.tile.pii_firewall.terms_help") => Some("One keyword per line. Paste only the original words."),
         (Locale::En, "caps.tile.pii_firewall.terms_placeholder") => Some("Zhang San\nPeking Union Hospital"),
         (Locale::En, "caps.tile.pii_firewall.terms_preview_title") => Some("System placeholders"),
-        (Locale::En, "caps.tile.pii_firewall.terms_preview_help") => Some("Live preview. Tokens look like 〔词1〕. The same original always maps to the same token; replies are restored on this computer."),
-        (Locale::En, "caps.tile.pii_firewall.terms_preview_empty") => Some("Placeholders appear here as you type"),
+        (Locale::En, "caps.tile.pii_firewall.terms_preview_help") => Some("One token per line, freely editable. Saving checks format and whether a token might collide with the paper. If something looks risky, you get a suggestion and choose whether to apply it."),
+        (Locale::En, "caps.tile.pii_firewall.terms_preview_empty") => Some("Edit placeholders here, or leave blank to use 〔词1〕"),
         (Locale::En, "caps.tile.pii_firewall.terms_save") => Some("Save dictionary"),
         (Locale::En, "caps.tile.pii_firewall.terms_saved") => Some("Dictionary saved. New chats will use it."),
+        (Locale::En, "caps.tile.pii_firewall.terms_review_title") => Some("Review placeholders?"),
+        (Locale::En, "caps.tile.pii_firewall.terms_review_lead") => Some("Some placeholders may be unsafe or incorrectly formatted. You can apply the suggested tokens, keep yours, or go back and edit."),
+        (Locale::En, "caps.tile.pii_firewall.terms_review_apply") => Some("Apply suggestions"),
+        (Locale::En, "caps.tile.pii_firewall.terms_review_keep") => Some("Keep mine"),
+        (Locale::En, "caps.tile.pii_firewall.terms_review_back") => Some("Back"),
+        (Locale::En, "caps.tile.pii_firewall.terms_issue.row") => Some("Line {line}: {keyword}"),
+        (Locale::En, "caps.tile.pii_firewall.terms_issue.suggest") => Some("Suggested: {suggested}"),
+        (Locale::En, "caps.tile.pii_firewall.terms_issue.empty") => Some("This line has no placeholder."),
+        (Locale::En, "caps.tile.pii_firewall.terms_issue.same") => Some("The placeholder is the same as the keyword, so nothing would be hidden."),
+        (Locale::En, "caps.tile.pii_firewall.terms_issue.pipe") => Some("A placeholder cannot contain |."),
+        (Locale::En, "caps.tile.pii_firewall.terms_issue.long") => Some("This placeholder is too long to stay readable."),
+        (Locale::En, "caps.tile.pii_firewall.terms_issue.short") => Some("This placeholder is too short and is likely to collide with ordinary text."),
+        (Locale::En, "caps.tile.pii_firewall.terms_issue.pii") => Some("This placeholder still looks like personal information."),
+        (Locale::En, "caps.tile.pii_firewall.terms_issue.collides") => Some("This placeholder matches another keyword."),
+        (Locale::En, "caps.tile.pii_firewall.terms_issue.duplicate") => Some("The same placeholder is used more than once."),
+        (Locale::En, "caps.tile.pii_firewall.terms_issue.unbalanced") => Some("The wrapping marks are unbalanced."),
+        (Locale::En, "caps.tile.pii_firewall.terms_issue.undelimited") => Some("Bare text without wrapping marks can collide with the paper. Use 〔词1〕 or {词1}."),
         (Locale::En, "caps.tile.pii_firewall.close") => Some("Got it"),
+        (Locale::En, "caps.tile.pii_firewall.settings.aria") => Some("PII outbound firewall settings"),
         (Locale::En, "caps.skill.journal_prescreen.title") => Some("Journal prescreen"),
         (Locale::En, "caps.skill.journal_prescreen.blurb") => Some("Check a manuscript against that journal's author guidelines and mark problems with fixes."),
         (Locale::En, "caps.skill.journal_prescreen.prompt") => Some(
             "Prescreen against the target journal's author guidelines. Mark location, severity, and a fix. Do not invent journal rules. First ask for the manuscript and the journal name or pasted guidelines. This is not a multi-role review and not a Nature-style referee report.",
+        ),
+        (Locale::En, "caps.skill.figure_duplicate_audit.title") => Some("Figure duplicate audit"),
+        (Locale::En, "caps.skill.figure_duplicate_audit.blurb") => Some("Audit a PDF or figure folder for duplicated, reused, or transformed panels and produce a cautious evidence report."),
+        (Locale::En, "caps.skill.figure_duplicate_audit.prompt") => Some(
+            "Audit figures for duplicated, reused, or transformed panels. First reply: ask me to attach one PDF or name one image directory in this chat. Do not scan the project for figures. After I provide the input, follow figure-duplicate-audit: prepare, split panels, score pairs, and write a cautious integrity report. Do not treat a hash match as misconduct.",
         ),
         (Locale::En, "caps.skill.handwriting_extract.title") => Some("Handwritten data extract"),
         (Locale::En, "caps.skill.handwriting_extract.blurb") => Some("Read handwritten lab or CRF photos into a CSV, calibrate uncertain cells, and mark doubtful spots."),
@@ -2777,6 +2889,11 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "caps.skill.nature_paper2ppt.prompt") => Some(
             "Turn a paper into a Chinese journal-club deck that follows the argument — not a wall of page screenshots. First ask for the paper. Default to a Chinese group-meeting length. This is not PPT Master's generic native deck.",
         ),
+        (Locale::En, "caps.skill.nature_image2ppt.title") => Some("Images → editable PPT"),
+        (Locale::En, "caps.skill.nature_image2ppt.blurb") => Some("Rebuild screenshots or scanned slides into object-level editable PPTX."),
+        (Locale::En, "caps.skill.nature_image2ppt.prompt") => Some(
+            "Rebuild slide photos, screenshots, or a scanned PDF into an object-level editable PowerPoint. First ask for the images or PDF. This reconstructs existing pages; it does not author a new deck from a paper or notes.",
+        ),
         (Locale::En, "caps.skill.ppt_master.title") => Some("PPT Master"),
         (Locale::En, "caps.skill.ppt_master.blurb") => Some(
             "Turn a topic or document into a native editable .pptx (shapes, masters, charts, animation).",
@@ -2892,6 +3009,20 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         ),
         (Locale::En, "caps.help.aria") => Some("What this can do"),
         (Locale::En, "caps.help.close") => Some("Got it"),
+        (Locale::En, "caps.intro.eyebrow") => Some("About this capability"),
+        (Locale::En, "caps.intro.scenario") => Some("When to use it"),
+        (Locale::En, "caps.intro.problems") => Some("Problems it solves"),
+        (Locale::En, "caps.intro.value") => Some("What you get"),
+        (Locale::En, "caps.intro.how") => Some("How to use it"),
+        (Locale::En, "caps.intro.example") => Some("Example project"),
+        (Locale::En, "caps.intro.tutorial") => Some("Tutorial"),
+        (Locale::En, "caps.intro.example_soon") => Some("Example project coming soon"),
+        (Locale::En, "caps.intro.tutorial_soon") => Some("Tutorial coming soon"),
+        (Locale::En, "caps.intro.dialogue") => Some("Example"),
+        (Locale::En, "caps.intro.say") => Some("You can say"),
+        (Locale::En, "caps.intro.you") => Some("You"),
+        (Locale::En, "caps.intro.assistant") => Some("Assistant"),
+        (Locale::En, "caps.intro.coming_soon_note") => Some("This capability is still in development"),
         (Locale::En, "caps.coming_soon.body") => Some("Coming soon"),
         (Locale::En, "caps.coming_soon.close") => Some("Got it"),
         (Locale::En, "caps.prompt.officecli") => Some(
@@ -4976,6 +5107,10 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "skills.filter_added") => Some("我添加的"),
         (Locale::Zh, "skills.filter_tags") => Some("标签"),
         (Locale::Zh, "skills.enabled_frac") => Some("{enabled}/{total}"),
+        (Locale::Zh, "skills.view.cards") => Some("卡片视图"),
+        (Locale::Zh, "skills.view.list") => Some("列表视图"),
+        (Locale::Zh, "skills.detail.close") => Some("关闭"),
+        (Locale::Zh, "skills.detail.empty") => Some("该技能没有介绍。"),
         (Locale::Zh, "err.client_updates_config_not_found") => Some("该平台还没有发布安装包。"),
         (Locale::Zh, "memory.off_banner") => Some("记忆已关闭。Agent 不会保存或检索新笔记，但下方已有笔记仍会保留且可编辑。开启记忆以恢复。"),
         (Locale::Zh, "memory.scope_hint") => Some("项目记忆"),
@@ -5105,7 +5240,7 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "settings.notifications") => Some("桌面通知"),
         (Locale::Zh, "settings.notifications_hint") => Some("窗口不在前台时，任务完成、失败或等待确认会发送系统通知；对应会话只会在启动任务的窗口打开。"),
         (Locale::Zh, "settings.update_check") => Some("检查更新"),
-        (Locale::Zh, "settings.update_check_hint") => Some("启动时从天成 TCTOKEN 检查更新，有新版本时在侧边栏显示提示。"),
+        (Locale::Zh, "settings.update_check_hint") => Some("启动约 5 秒后从天成 TCTOKEN 检查更新，有新版本时弹出与「检查更新」相同的对话框。"),
         (Locale::Zh, "issue_report.sidebar") => Some("反馈"),
         (Locale::Zh, "issue_report.context") => Some("系统信息"),
         (Locale::Zh, "issue_report.context_attached") => Some("已自动附加"),
@@ -5771,18 +5906,41 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "caps.tile.pii_firewall.modal_example_after") => Some("联系 EMAIL_1 或 PHONE_1"),
         (Locale::Zh, "caps.tile.pii_firewall.modal_note") => Some("默认开启。只有当你确实需要模型看到原始个人信息时，才建议关闭。科研编号（如 GSE 数据集号）不会被误伤。"),
         (Locale::Zh, "caps.tile.pii_firewall.terms_title") => Some("敏感关键词"),
-        (Locale::Zh, "caps.tile.pii_firewall.terms_help") => Some("一行一个词，只需粘贴原文。系统生成〔词1〕这种带起止标记的占位，避免和正文里的「词1」撞车。"),
+        (Locale::Zh, "caps.tile.pii_firewall.terms_help") => Some("一行一个词，只需粘贴原文。"),
         (Locale::Zh, "caps.tile.pii_firewall.terms_placeholder") => Some("张三\n北京协和医院"),
         (Locale::Zh, "caps.tile.pii_firewall.terms_preview_title") => Some("系统占位词"),
-        (Locale::Zh, "caps.tile.pii_firewall.terms_preview_help") => Some("实时对照，形如〔词1〕。同一原文全程同一占位；回复在本机还原。"),
-        (Locale::Zh, "caps.tile.pii_firewall.terms_preview_empty") => Some("输入关键词后，这里会显示对应占位"),
+        (Locale::Zh, "caps.tile.pii_firewall.terms_preview_help") => Some("一行一个，可自由改。保存时会检查格式和是否容易跟正文撞车；有问题会给出建议，由你决定是否改。"),
+        (Locale::Zh, "caps.tile.pii_firewall.terms_preview_empty") => Some("可在这里编辑占位，留空则使用〔词1〕"),
         (Locale::Zh, "caps.tile.pii_firewall.terms_save") => Some("保存词表"),
         (Locale::Zh, "caps.tile.pii_firewall.terms_saved") => Some("词表已保存，之后的新对话会使用。"),
+        (Locale::Zh, "caps.tile.pii_firewall.terms_review_title") => Some("占位词需要确认"),
+        (Locale::Zh, "caps.tile.pii_firewall.terms_review_lead") => Some("有些占位格式不对，或容易和正文撞车。你可以按建议修改、仍用自己的，或返回再改。"),
+        (Locale::Zh, "caps.tile.pii_firewall.terms_review_apply") => Some("按建议修改并保存"),
+        (Locale::Zh, "caps.tile.pii_firewall.terms_review_keep") => Some("仍使用我的占位"),
+        (Locale::Zh, "caps.tile.pii_firewall.terms_review_back") => Some("返回修改"),
+        (Locale::Zh, "caps.tile.pii_firewall.terms_issue.row") => Some("第{line}行：{keyword}"),
+        (Locale::Zh, "caps.tile.pii_firewall.terms_issue.suggest") => Some("建议改为 {suggested}"),
+        (Locale::Zh, "caps.tile.pii_firewall.terms_issue.empty") => Some("这一行还没有占位词。"),
+        (Locale::Zh, "caps.tile.pii_firewall.terms_issue.same") => Some("占位和关键词相同，发出去等于没藏。"),
+        (Locale::Zh, "caps.tile.pii_firewall.terms_issue.pipe") => Some("占位词里不能包含 |。"),
+        (Locale::Zh, "caps.tile.pii_firewall.terms_issue.long") => Some("占位词太长，读起来不像代号。"),
+        (Locale::Zh, "caps.tile.pii_firewall.terms_issue.short") => Some("占位词太短，容易和普通正文撞车。"),
+        (Locale::Zh, "caps.tile.pii_firewall.terms_issue.pii") => Some("这个占位看起来仍像个人信息。"),
+        (Locale::Zh, "caps.tile.pii_firewall.terms_issue.collides") => Some("这个占位和另一个关键词相同。"),
+        (Locale::Zh, "caps.tile.pii_firewall.terms_issue.duplicate") => Some("同一个占位被用了多次。"),
+        (Locale::Zh, "caps.tile.pii_firewall.terms_issue.unbalanced") => Some("起止标记不配对。"),
+        (Locale::Zh, "caps.tile.pii_firewall.terms_issue.undelimited") => Some("没有起止标记的裸词容易和正文撞车。请改用〔词1〕或{词1}。"),
         (Locale::Zh, "caps.tile.pii_firewall.close") => Some("知道了"),
+        (Locale::Zh, "caps.tile.pii_firewall.settings.aria") => Some("出站隐私脱敏设置"),
         (Locale::Zh, "caps.skill.journal_prescreen.title") => Some("论文预审"),
         (Locale::Zh, "caps.skill.journal_prescreen.blurb") => Some("对照目标杂志投稿须知检查稿件，标出问题并给出改法。"),
         (Locale::Zh, "caps.skill.journal_prescreen.prompt") => Some(
             "对照目标杂志投稿须知预审，标位置、严重度和改法，禁止编造规则。请先给稿件，以及杂志名或粘贴的须知。这不是多角色审稿，也不是 Nature 审稿口吻。",
+        ),
+        (Locale::Zh, "caps.skill.figure_duplicate_audit.title") => Some("图片查重"),
+        (Locale::Zh, "caps.skill.figure_duplicate_audit.blurb") => Some("对 PDF 或图目录做图块查重，给出候选、证据和谨慎报告。"),
+        (Locale::Zh, "caps.skill.figure_duplicate_audit.prompt") => Some(
+            "审核论文图是否重复、复用或变换后再用。第一句请只请我在本对话附一份 PDF，或点名一个图片目录；不要自行扫描项目找图。拿到输入后按 figure-duplicate-audit 做准备、拆图块、配对打分，并写出谨慎的完整性报告。哈希匹配不能当成不端结论。",
         ),
         (Locale::Zh, "caps.skill.handwriting_extract.title") => Some("手写数据提取"),
         (Locale::Zh, "caps.skill.handwriting_extract.blurb") => Some("识别手写实验本或 CRF 照片，校准存疑格子，汇总成 CSV 并标出位置。"),
@@ -5905,6 +6063,11 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "caps.skill.nature_paper2ppt.prompt") => Some(
             "把论文做成顺着论点讲的中文组会 PPT，不要页面截图墙。请先给论文。默认中文组会篇幅。这不是 PPT Master 那种通用原生 deck。",
         ),
+        (Locale::Zh, "caps.skill.nature_image2ppt.title") => Some("图片转可编辑 PPT"),
+        (Locale::Zh, "caps.skill.nature_image2ppt.blurb") => Some("把截图或扫描幻灯片还原成对象级可编辑 PPTX。"),
+        (Locale::Zh, "caps.skill.nature_image2ppt.prompt") => Some(
+            "把幻灯片照片、截图或扫描 PDF 还原成对象级可编辑 PPT。请先给图片或 PDF。这是还原已有页面，不是根据论文或提纲新做一副。",
+        ),
         (Locale::Zh, "caps.skill.ppt_master.title") => Some("PPT Master"),
         (Locale::Zh, "caps.skill.ppt_master.blurb") => Some(
             "把选题或文档做成可编辑的原生 .pptx（形状、母版、图表、动画）。",
@@ -6020,6 +6183,20 @@ Do not leave generated files in the project root.",
         ),
         (Locale::Zh, "caps.help.aria") => Some("这个能力能做什么"),
         (Locale::Zh, "caps.help.close") => Some("知道了"),
+        (Locale::Zh, "caps.intro.eyebrow") => Some("能力介绍"),
+        (Locale::Zh, "caps.intro.scenario") => Some("使用场景"),
+        (Locale::Zh, "caps.intro.problems") => Some("解决的问题"),
+        (Locale::Zh, "caps.intro.value") => Some("带来的价值"),
+        (Locale::Zh, "caps.intro.how") => Some("使用方法"),
+        (Locale::Zh, "caps.intro.example") => Some("使用示例"),
+        (Locale::Zh, "caps.intro.tutorial") => Some("使用教程"),
+        (Locale::Zh, "caps.intro.example_soon") => Some("示例项目即将开放"),
+        (Locale::Zh, "caps.intro.tutorial_soon") => Some("使用教程即将开放"),
+        (Locale::Zh, "caps.intro.dialogue") => Some("对话示例"),
+        (Locale::Zh, "caps.intro.say") => Some("可以这样说"),
+        (Locale::Zh, "caps.intro.you") => Some("你"),
+        (Locale::Zh, "caps.intro.assistant") => Some("助手"),
+        (Locale::Zh, "caps.intro.coming_soon_note") => Some("此能力正在开发"),
         (Locale::Zh, "caps.coming_soon.body") => Some("正在开发中"),
         (Locale::Zh, "caps.coming_soon.close") => Some("知道了"),
         (Locale::Zh, "caps.prompt.officecli") => Some(
@@ -7108,13 +7285,79 @@ mod queue_label_tests {
         assert_eq!(t(Locale::Zh, "scratch.open"), "开始对话");
         assert_eq!(t(Locale::En, "scratch.open"), "Start conversation");
         assert_eq!(
+            t(Locale::Zh, "home.director_cta_hint"),
+            "把你想要做的事情告诉我，我来引导你得到结果"
+        );
+        assert_eq!(
+            t(Locale::En, "home.director_cta_hint"),
+            "Tell me what you want to do, and I will guide you to the result."
+        );
+        assert_eq!(
             t(Locale::Zh, "caps.skill.handwriting_extract.tip"),
             "发送图片同时对每列数据进行格式说明，识别率会显著提高。"
         );
-        assert!(t(Locale::En, "caps.skill.handwriting_extract.tip").contains("format of each column"));
+        assert!(
+            t(Locale::En, "caps.skill.handwriting_extract.tip").contains("format of each column")
+        );
         assert_eq!(lookup(Locale::Zh, "scratch.open"), Some("随手一聊"));
         assert_eq!(t(Locale::Zh, "scratch.title"), "随手一聊");
         assert_eq!(t(Locale::En, "command.scratch"), "Scratch chat");
+    }
+
+    #[test]
+    fn builtin_specialist_copy_follows_locale() {
+        assert_eq!(
+            specialist_display_name(Locale::Zh, "reviewer", "Reviewer", true),
+            "审稿专家"
+        );
+        assert_eq!(
+            specialist_display_name(Locale::En, "reviewer", "Reviewer", true),
+            "Reviewer"
+        );
+        assert_eq!(
+            specialist_display_name(Locale::Zh, "reader", "Reader", true),
+            "阅读专家"
+        );
+        assert_eq!(
+            specialist_display_name(
+                Locale::Zh,
+                "scientific_illustrator",
+                "Scientific Illustrator",
+                true
+            ),
+            "科研作图专家"
+        );
+        assert_eq!(
+            specialist_display_name(
+                Locale::Zh,
+                "handwriting_extract",
+                "Handwriting Extract",
+                true
+            ),
+            "手写提取专家"
+        );
+        assert_eq!(
+            specialist_display_name(
+                Locale::Zh,
+                "figure_duplicate_audit",
+                "Figure Duplicate Audit",
+                true
+            ),
+            "图片查重"
+        );
+        assert_eq!(
+            specialist_display_name(Locale::Zh, "mine", "我的专家", false),
+            "我的专家"
+        );
+        assert!(specialist_display_description(Locale::Zh, "reviewer", "", true).contains("幻觉"));
+        assert_eq!(
+            tf(
+                Locale::Zh,
+                "specialists.chat_with_prompt",
+                &[("name", "审稿专家")]
+            ),
+            "请以审稿专家的身份开始工作。先问我一个短问题，确认这次要完成的事，然后开始做。"
+        );
     }
 
     #[test]

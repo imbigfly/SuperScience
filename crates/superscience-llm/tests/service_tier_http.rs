@@ -1,8 +1,8 @@
 use serde_json::Value;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use superscience_llm::openai::OpenAiProvider;
 use superscience_llm::responses::OpenAiResponsesProvider;
 use superscience_llm::{Completion, Message, Provider, ProviderConfig, StreamSink, Usage};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 async fn capture_json_requests(
     responses: Vec<(&'static str, &'static str)>,

@@ -4,6 +4,7 @@ mod agent_workflows;
 mod app_overlays;
 mod bindings;
 mod capabilities_home;
+mod capability_intros;
 mod capability_launch;
 mod channels_view;
 mod chat_render;
@@ -52,7 +53,8 @@ use context_menu::{ContextMenuPortal, CtxMenu};
 use dto::*;
 use i18n::{
     brand_visible_copy, empty_subtitle, empty_title, localize_backend, send_failed,
-    set_document_lang, t, tab_count, tf, Locale, EMPTY_SUBTITLE_COUNT, EMPTY_TITLE_COUNT,
+    set_document_lang, specialist_display_name, t, tab_count, tf, Locale, EMPTY_SUBTITLE_COUNT,
+    EMPTY_TITLE_COUNT,
 };
 use leptos::{ev, window_event_listener, *};
 use library::{refresh_library, refresh_session_library, HighlightsPane, LibraryScreen};
@@ -998,7 +1000,8 @@ fn App() -> impl IntoView {
     let plugins_msg = extensions.plugins_msg;
     let update_check_busy = create_rw_signal(false);
     let update_check_modal = create_rw_signal::<Option<UpdateCheckModal>>(None);
-    // Newer release found by the silent auto-check → sidebar prompt card.
+    let startup_update_check_consumed = create_rw_signal(false);
+    // Newer release found by the delayed auto-check → sidebar prompt card.
     let update_banner = create_rw_signal::<Option<AvailableUpdate>>(None);
     // Live web retrieval failed because the Chrome extension is disconnected.
     // Root-owned so Escape can dismiss it without first focusing the banner.
@@ -1324,7 +1327,8 @@ fn App() -> impl IntoView {
             return;
         };
         if acp_session_modes.with_untracked(|all| all.contains_key(&session_id))
-            && acp_session_configs.with_untracked(|all| all.contains_key(&session_id)) {
+            && acp_session_configs.with_untracked(|all| all.contains_key(&session_id))
+        {
             return;
         }
         spawn_local(async move {
@@ -1332,16 +1336,19 @@ fn App() -> impl IntoView {
             let Ok(value) = invoke_checked("get_acp_session_state", args).await else {
                 return;
             };
-            let Ok(Some(state)) =
-                serde_wasm_bindgen::from_value::<Option<AcpSessionState>>(value)
+            let Ok(Some(state)) = serde_wasm_bindgen::from_value::<Option<AcpSessionState>>(value)
             else {
                 return;
             };
             if let Some(modes) = state.modes {
-                acp_session_modes.update(|all| { all.entry(session_id.clone()).or_insert(modes); });
+                acp_session_modes.update(|all| {
+                    all.entry(session_id.clone()).or_insert(modes);
+                });
             }
             if let Some(options) = state.config_options {
-                acp_session_configs.update(|all| { all.entry(session_id).or_insert(options); });
+                acp_session_configs.update(|all| {
+                    all.entry(session_id).or_insert(options);
+                });
             }
         });
     });
@@ -2399,26 +2406,14 @@ fn App() -> impl IntoView {
         refresh_models();
     });
 
-    // Silent startup update check: respect the "不再提醒更新" opt-out, and only
-    // surface the sidebar prompt when a newer release exists. Never pops a modal.
+    // Load the "不再提醒更新" opt-out immediately. The actual check runs
+    // ~5s after launch so it matches Help → Check for Updates.
     spawn_local(async move {
         let enabled = invoke("get_update_check_enabled", JsValue::UNDEFINED)
             .await
             .as_bool()
             .unwrap_or(true);
         update_check_enabled.set(enabled);
-        if !enabled {
-            return;
-        }
-        if let Ok(update) = serde_wasm_bindgen::from_value::<UpdateCheck>(
-            invoke("check_for_updates", JsValue::UNDEFINED).await,
-        ) {
-            if update.update_available {
-                update_banner.set(Some(AvailableUpdate {
-                    version: update.latest_version,
-                }));
-            }
-        }
     });
 
     // The native shell publishes the result of its one-time Python setup after
@@ -5091,16 +5086,23 @@ fn App() -> impl IntoView {
                 .is_some_and(|id| reviewing.with(|ids| ids.contains(&id)))
     };
 
-    let run_update_check = Rc::new(move || {
+    let run_update_check = Rc::new(move |interactive: bool| {
+        if interactive {
+            startup_update_check_consumed.set(true);
+        }
         if update_check_busy.get() {
-            update_check_modal.set(Some(UpdateCheckModal::Checking));
+            if interactive {
+                update_check_modal.set(Some(UpdateCheckModal::Checking));
+            }
             return;
         }
-        let checking = t(locale.get(), "status.checking_updates").to_string();
         update_check_busy.set(true);
-        update_check_modal.set(Some(UpdateCheckModal::Checking));
-        settings_message.set(Some((true, checking.clone())));
-        status.set(checking);
+        if interactive {
+            let checking = t(locale.get(), "status.checking_updates").to_string();
+            update_check_modal.set(Some(UpdateCheckModal::Checking));
+            settings_message.set(Some((true, checking.clone())));
+            status.set(checking);
+        }
         let msg = settings_message;
         let busy = update_check_busy;
         let loc = locale;
@@ -5119,8 +5121,10 @@ fn App() -> impl IntoView {
                             "status.update_available",
                             &[("version", &update.latest_version)],
                         );
-                        msg.set(Some((true, text.clone())));
-                        status_msg.set(text);
+                        if interactive {
+                            msg.set(Some((true, text.clone())));
+                            status_msg.set(text);
+                        }
                         let next = if update.downloaded {
                             UpdateCheckModal::ReadyToInstall {
                                 version: update.latest_version,
@@ -5135,49 +5139,76 @@ fn App() -> impl IntoView {
                                 force_update: update.force_update,
                             }
                         };
-                        if matches!(modal.get_untracked(), Some(UpdateCheckModal::Checking)) {
+                        let replace = match modal.get_untracked() {
+                            None => !interactive,
+                            Some(UpdateCheckModal::Checking) => true,
+                            _ => false,
+                        };
+                        if replace {
                             modal.set(Some(next));
                         }
                     }
                     Ok(update) => {
                         banner.set(None);
-                        let text = tf(
-                            loc.get(),
-                            "status.up_to_date",
-                            &[("version", &update.current_version)],
-                        );
-                        msg.set(Some((true, text.clone())));
-                        status_msg.set(text);
-                        if matches!(modal.get_untracked(), Some(UpdateCheckModal::Checking)) {
-                            modal.set(Some(UpdateCheckModal::UpToDate {
-                                version: update.current_version,
-                            }));
+                        if interactive {
+                            let text = tf(
+                                loc.get(),
+                                "status.up_to_date",
+                                &[("version", &update.current_version)],
+                            );
+                            msg.set(Some((true, text.clone())));
+                            status_msg.set(text);
+                            if matches!(modal.get_untracked(), Some(UpdateCheckModal::Checking)) {
+                                modal.set(Some(UpdateCheckModal::UpToDate {
+                                    version: update.current_version,
+                                }));
+                            }
                         }
                     }
                     Err(_) => {
-                        let text = t(loc.get(), "status.update_check_complete").to_string();
-                        msg.set(Some((true, text.clone())));
-                        status_msg.set(text.clone());
-                        if matches!(modal.get_untracked(), Some(UpdateCheckModal::Checking)) {
-                            modal.set(Some(UpdateCheckModal::Failed { message: text }));
+                        if interactive {
+                            let text = t(loc.get(), "status.update_check_complete").to_string();
+                            msg.set(Some((true, text.clone())));
+                            status_msg.set(text.clone());
+                            if matches!(modal.get_untracked(), Some(UpdateCheckModal::Checking)) {
+                                modal.set(Some(UpdateCheckModal::Failed { message: text }));
+                            }
                         }
                     }
                 },
                 Err(err) => {
-                    let text = localize_backend(loc.get(), &js_error_text(err));
-                    msg.set(Some((false, text.clone())));
-                    status_msg.set(text.clone());
-                    if matches!(modal.get_untracked(), Some(UpdateCheckModal::Checking)) {
-                        modal.set(Some(UpdateCheckModal::Failed { message: text }));
+                    if interactive {
+                        let text = localize_backend(loc.get(), &js_error_text(err));
+                        msg.set(Some((false, text.clone())));
+                        status_msg.set(text.clone());
+                        if matches!(modal.get_untracked(), Some(UpdateCheckModal::Checking)) {
+                            modal.set(Some(UpdateCheckModal::Failed { message: text }));
+                        }
                     }
                 }
             }
             busy.set(false);
         });
     });
+    {
+        let run_update_check = run_update_check.clone();
+        set_timeout(
+            move || {
+                if startup_update_check_consumed.get_untracked() {
+                    return;
+                }
+                if !update_check_enabled.get_untracked() {
+                    return;
+                }
+                startup_update_check_consumed.set(true);
+                run_update_check(false);
+            },
+            std::time::Duration::from_secs(5),
+        );
+    }
     let check_updates = {
         let run_update_check = run_update_check.clone();
-        move |_| run_update_check()
+        move |_| run_update_check(true)
     };
 
     let refresh_skills = move || extensions.refresh_skills();
@@ -6647,6 +6678,7 @@ fn App() -> impl IntoView {
         }
         close_details_ancestor(&ev);
         show_settings.set(false);
+        show_projects.set(false);
         let loc = locale.get();
         let prompt = t(loc, "specialists.chat_prompt").to_string();
         spawn_local(async move {
@@ -6689,6 +6721,107 @@ fn App() -> impl IntoView {
             finish_pending_turn(pending_turns, running, &id);
         });
     });
+
+    let begin_chat_with_specialist = Callback::new(move |specialist_id: String| {
+        show_settings.set(false);
+        show_projects.set(false);
+        demo_mode.set(false);
+        attachments.set(vec![]);
+        composer_references.set(vec![]);
+        sel_artifact.set(0);
+        right_tab.set(RightTab::Artifacts);
+        let loc = locale.get();
+        let display_name = specialists
+            .get_untracked()
+            .into_iter()
+            .find(|s| s.id == specialist_id)
+            .map(|s| specialist_display_name(loc, &s.id, &s.name, s.builtin))
+            .unwrap_or_else(|| specialist_id.clone());
+        let prompt = tf(
+            loc,
+            "specialists.chat_with_prompt",
+            &[("name", &display_name)],
+        );
+        let turn_model = active_model_label(&models.get());
+        spawn_local(async move {
+            let id = match invoke_new_session().await {
+                Ok(id) => id,
+                Err(error) => {
+                    status.set(send_failed(loc, &error));
+                    return;
+                }
+            };
+            replace_visible_transcript(
+                active_session.get_untracked(),
+                Some(&id),
+                vec![
+                    ChatItem::User(prompt.clone()),
+                    ChatItem::Assistant {
+                        text: String::new(),
+                        model: turn_model,
+                        resources: Vec::new(),
+                    },
+                ],
+                items,
+                transcripts,
+                running,
+            );
+            active_session.set(Some(id.clone()));
+            force_chat_bottom();
+            refresh_session_history();
+            let bind = to_value(&serde_json::json!({
+                "frameId": id,
+                "id": specialist_id,
+            }))
+            .unwrap();
+            if let Err(err) = invoke_checked("set_session_specialist", bind).await {
+                let raw = js_error_text(err);
+                status.set(tf(
+                    loc,
+                    "status.send_failed",
+                    &[("msg", &localize_backend(loc, &raw))],
+                ));
+                return;
+            }
+            let lookup = to_value(&serde_json::json!({ "frameId": id })).unwrap();
+            let v = invoke("get_session_specialist", lookup).await;
+            if active_session.get_untracked().as_deref() == Some(id.as_str()) {
+                session_specialist.set(
+                    serde_wasm_bindgen::from_value::<Option<Specialist>>(v)
+                        .ok()
+                        .flatten(),
+                );
+            }
+            let arg = to_value(&SendMessageArgs {
+                session_id: Some(id.clone()),
+                message: prompt,
+                attachments: vec![],
+                references: vec![],
+                resume: false,
+                acp_agent_id: None,
+                guide: None,
+                replace: None,
+            })
+            .unwrap();
+            begin_pending_turn(pending_turns, running, &id);
+            match invoke_checked("send_message", arg).await {
+                Ok(_) => refresh_session_history(),
+                Err(err) => {
+                    let raw = js_error_text(err);
+                    if raw.contains(NO_API_KEY_MARK) {
+                        needs_api_key.set(true);
+                    }
+                    status.set(tf(
+                        loc,
+                        "status.send_failed",
+                        &[("msg", &localize_backend(loc, &raw))],
+                    ));
+                }
+            }
+            finish_pending_turn(pending_turns, running, &id);
+        });
+    });
+    let pending_specialist_chat = create_rw_signal(None::<String>);
 
     let save_skill_tags =
         Callback::new(move |(name, raw): (String, String)| extensions.save_skill_tags(name, raw));
@@ -9085,6 +9218,43 @@ fn App() -> impl IntoView {
         })
     };
 
+    create_effect(move |_| {
+        if show_projects.get() || project_info.get().is_none() {
+            return;
+        }
+        let Some(specialist_id) = pending_specialist_chat.get_untracked() else {
+            return;
+        };
+        pending_specialist_chat.set(None);
+        begin_chat_with_specialist.call(specialist_id);
+    });
+    let chat_with_specialist = Callback::new(move |specialist_id: String| {
+        if demo_mode.get_untracked() {
+            return;
+        }
+        show_settings.set(false);
+        demo_mode.set(false);
+        if show_projects.get_untracked() && project_info.get_untracked().is_none() {
+            pending_specialist_chat.set(Some(specialist_id));
+            spawn_local(async move {
+                let v = invoke("list_projects", JsValue::UNDEFINED).await;
+                let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ProjectSummary>>(v) else {
+                    pending_specialist_chat.set(None);
+                    status.set(t(locale.get(), "caps.need_project").into());
+                    return;
+                };
+                let Some(project_id) = capability_launch::pick_default_project_id(&list) else {
+                    pending_specialist_chat.set(None);
+                    status.set(t(locale.get(), "caps.need_project").into());
+                    return;
+                };
+                open_project_transition.call((project_id, None));
+            });
+            return;
+        }
+        begin_chat_with_specialist.call(specialist_id);
+    });
+
     let open_runtime_setup = Callback::new(move |_: ()| {
         show_runtime_setup.set(true);
         runtime_setup_collapsed.set(false);
@@ -9733,7 +9903,7 @@ fn App() -> impl IntoView {
             "project-settings" => project_settings.call(()),
             "export-current-project" => export_current_project.call(()),
             "skills" => manage_skills.call(()),
-            "check-updates" => run_update_check(),
+            "check-updates" => run_update_check(true),
             "issues" => start_issue_report.call(()),
             "toggle-sidebar" => show_sidebar.update(|show| *show = !*show),
             "artifacts" => {
@@ -9785,7 +9955,7 @@ fn App() -> impl IntoView {
                 return;
             };
             match action.as_str() {
-                "check-updates" => run_update_check(),
+                "check-updates" => run_update_check(true),
                 "issues" => start_issue_report.call(()),
                 other => {
                     if let Some(action) = match other {
@@ -10313,7 +10483,7 @@ fn App() -> impl IntoView {
                 update_banner, tctoken_session,
             }
             open_update=Callback::new(move |_| {
-                run_update_check();
+                run_update_check(true);
             })
             toggle_proj_menu=Callback::new(toggle_proj_menu)
             open_proj_settings=Callback::new(open_proj_settings)
@@ -10466,8 +10636,11 @@ fn App() -> impl IntoView {
                         }
                     />
                 </div>
-                {move || session_specialist.get().map(|s| view! {
-                    <span class="session-specialist" title=s.name.clone()>{s.name}</span>
+                {move || session_specialist.get().map(|s| {
+                    let name = specialist_display_name(locale.get(), &s.id, &s.name, s.builtin);
+                    view! {
+                        <span class="session-specialist" title=name.clone()>{name}</span>
+                    }
                 })}
                 {move || {
                     if needs_api_key.get() {
@@ -13176,7 +13349,12 @@ fn App() -> impl IntoView {
                                         }>
                                         <span>{move || t(locale.get(), "composer.specialist")}</span>
                                         <span class="agent-menu-value">{move || session_specialist.get()
-                                            .map(|specialist| specialist.name)
+                                            .map(|specialist| specialist_display_name(
+                                                locale.get(),
+                                                &specialist.id,
+                                                &specialist.name,
+                                                specialist.builtin,
+                                            ))
                                             .unwrap_or_else(|| t(locale.get(), "composer.specialist.none"))}</span>
                                         <span class="agent-menu-chevron">{compose_icon("chevron-right")}</span>
                                     </button>
@@ -13273,13 +13451,19 @@ fn App() -> impl IntoView {
                                             {move || specialists.get().into_iter().filter(|specialist| specialist.id != "reviewer" && specialist.id != "reader").map(|specialist| {
                                                 let id = specialist.id.clone();
                                                 let selected_id = id.clone();
+                                                let label = specialist_display_name(
+                                                    locale.get(),
+                                                    &specialist.id,
+                                                    &specialist.name,
+                                                    specialist.builtin,
+                                                );
                                                 view! {
                                                     <button type="button" class="agent-submenu-row" on:click=move |_| {
                                                         agent_menu_open.set(false);
                                                         specialist_menu_open.set(false);
                                                         pick_specialist(id.clone());
                                                     }>
-                                                        <span>{specialist.name}</span>
+                                                        <span>{label}</span>
                                                         {move || session_specialist.get().as_ref().is_some_and(|current| current.id == selected_id)
                                                             .then(|| view! { <span class="agent-menu-check">{compose_icon("check")}</span> })}
                                                     </button>
@@ -16088,6 +16272,7 @@ fn App() -> impl IntoView {
             test_reviewer_form=Callback::new(test_reviewer_form)
             validate_model_form=Callback::new(validate_model_form)
             start_specialist_chat=start_specialist_chat
+            chat_with_specialist=chat_with_specialist
             refresh_conns=Callback::new(move |_: ()| refresh_conns())
             refresh_skills=Callback::new(move |_: ()| refresh_skills())
             reload_skills=reload_skills

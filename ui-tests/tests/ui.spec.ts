@@ -73,7 +73,9 @@ async function openSettingsSection(page: Page, name: string) {
     await page.getByTestId("settings-nav-session").click();
     return;
   }
-  await page.getByRole("button", { name, exact: true }).click();
+  await page.locator(".settings-page .settings-nav-items")
+    .getByRole("button", { name, exact: true })
+    .click();
 }
 
 // The app now boots to the Projects landing screen; open a real project (not
@@ -9828,18 +9830,42 @@ test("check for updates shows an available-update modal without a download-page 
     latest_version: "1.2.3",
     update_available: true,
     release_url: "https://github.com/xuzhougeng/wisp-science/releases/tag/v1.2.3",
+    notes: "<p>1、融入手写图片识别能力</p><p>2、重复图片检测能力</p>",
   });
 
   await page.getByRole("button", { name: "Check for updates" }).click();
   const modal = page.getByTestId("update-check-modal");
   await expect(modal).toBeVisible();
   await expect(modal).toContainText("Update available");
-  await expect(modal).toContainText("Wisp 1.2.3 is available.");
+  await expect(modal).toContainText("SuperScience 1.2.3 is available.");
+  const notes = modal.getByTestId("update-notes");
+  await expect(notes.locator("p")).toHaveCount(2);
+  await expect(notes).toContainText("融入手写图片识别能力");
+  await expect(notes).toContainText("重复图片检测能力");
   await expect(modal.getByTestId("update-check-open-releases")).toHaveCount(0);
   await expect(modal.getByRole("button", { name: "Open Releases" })).toHaveCount(0);
   await expect(await lastInvokeArgs(page, "open_external_url")).toBeNull();
   await modal.getByRole("button", { name: "Later" }).click();
   await expect(modal).toHaveCount(0);
+});
+
+test("startup auto-checks for updates after 5 seconds and renders HTML notes", async ({ page }) => {
+  await page.goto("/");
+  await setMockUpdateCheck(page, {
+    current_version: "0.9.0",
+    latest_version: "1.9.0",
+    update_available: true,
+    notes: "<p>1、融入手写图片识别能力</p><p>2、重复图片检测能力</p>",
+    install_supported: true,
+  });
+  await expect(page.getByTestId("update-check-modal")).toHaveCount(0);
+  const modal = page.getByTestId("update-check-modal");
+  await expect(modal).toBeVisible({ timeout: 7_000 });
+  await expect(modal).toContainText("Update available");
+  await expect(modal).toContainText("SuperScience 1.9.0 is available.");
+  const notes = modal.getByTestId("update-notes");
+  await expect(notes.locator("p")).toHaveCount(2);
+  await expect(notes).toContainText("融入手写图片识别能力");
 });
 
 test("macOS update download is verified before a separate install confirmation", async ({ page }) => {
@@ -10104,6 +10130,24 @@ test("credentials settings include SCIMaster and save its key", async ({ page })
   await expect(field).toContainText("Configured");
 });
 
+test("credentials settings stack built-in services one per row", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Credentials");
+  const cards = page.locator(".cred-block-grid > .cred-block[data-cred-group]");
+  await expect(cards).toHaveCount(4);
+  const ids = ["openalex", "infinisynapse", "scimaster", "ncbi"];
+  const boxes = [];
+  for (const id of ids) {
+    const box = await page.locator(`[data-cred-group="${id}"]`).boundingBox();
+    expect(box).not.toBeNull();
+    boxes.push(box!);
+  }
+  for (let i = 1; i < boxes.length; i++) {
+    expect(boxes[i].y).toBeGreaterThan(boxes[i - 1].y + boxes[i - 1].height - 2);
+    expect(Math.abs(boxes[i].x - boxes[i - 1].x)).toBeLessThan(2);
+  }
+});
+
 test("credentials settings add, replace, clear, and remove a custom credential", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Credentials");
@@ -10138,6 +10182,27 @@ test("credentials settings add, replace, clear, and remove a custom credential",
     .toMatchObject({ id: "custom-1" });
 });
 
+test("capability help overlay is fullscreen with four sections", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByTestId("capability-scene")).toBeVisible();
+  await page.getByTestId("cap-tile-help-deep-research").click();
+  const overlay = page.getByTestId("cap-help-overlay");
+  await expect(overlay).toBeVisible();
+  await expect(overlay.locator(".cap-intro-page")).toBeVisible();
+  await expect(overlay.getByTestId("cap-help-example")).toBeVisible();
+  await expect(overlay.getByTestId("cap-help-tutorial")).toBeVisible();
+  await expect(overlay.getByTestId("cap-intro-scenario")).toBeVisible();
+  await expect(overlay.getByTestId("cap-intro-problems")).toBeVisible();
+  await expect(overlay.getByTestId("cap-intro-value")).toBeVisible();
+  await expect(overlay.getByTestId("cap-intro-how")).toBeVisible();
+  await expect(overlay.getByTestId("cap-intro-dialogue")).toBeVisible();
+  await overlay.getByTestId("cap-help-example").click();
+  await expect(overlay.getByTestId("cap-help-placeholder-notice")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(overlay).toHaveCount(0);
+  await expect(page.getByTestId("capability-scene")).toBeVisible();
+});
+
 test("capability overlay uses the same homepage capability scene", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByTestId("capability-scene")).toBeVisible();
@@ -10152,6 +10217,59 @@ test("capability overlay uses the same homepage capability scene", async ({ page
 
   await dialog.locator(".ps-close").click();
   await expect(dialog).toHaveCount(0);
+});
+
+test("PII firewall gear opens the same settings page as the card", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByTestId("capability-scene")).toBeVisible();
+  await page.getByRole("tab", { name: "Efficiency tools" }).click();
+  const gear = page.getByTestId("cap-tile-settings-pii-firewall");
+  const sw = page.getByTestId("cap-tile-pii-firewall-switch");
+  const [gearBox, switchBox] = await Promise.all([gear.boundingBox(), sw.boundingBox()]);
+  expect(gearBox).not.toBeNull();
+  expect(switchBox).not.toBeNull();
+  expect(switchBox!.x + switchBox!.width).toBeLessThanOrEqual(gearBox!.x);
+  await gear.click();
+  const pii = page.getByTestId("pii-firewall-info-overlay");
+  await expect(pii).toBeVisible();
+  await expect(pii.getByTestId("pii-firewall-terms")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(pii).toHaveCount(0);
+  await expect(page.getByTestId("capability-scene")).toBeVisible();
+});
+
+test("PII firewall placeholders are editable and reviewed on save", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByTestId("capability-scene")).toBeVisible();
+  await page.getByRole("tab", { name: "Efficiency tools" }).click();
+  await page.getByTestId("cap-tile-pii-firewall").click();
+  const pii = page.getByTestId("pii-firewall-info-overlay");
+  await expect(pii).toBeVisible();
+
+  await pii.getByTestId("pii-firewall-terms").fill("靶蛋白\nZ%蛋白");
+  const placeholders = pii.getByTestId("pii-firewall-terms-preview");
+  await expect(placeholders).toHaveValue("〔词1〕\n〔词2〕");
+  await placeholders.fill("蛋白\n{词2}");
+  await pii.getByTestId("pii-firewall-terms-save").click();
+
+  const review = page.getByTestId("pii-firewall-terms-review");
+  await expect(review).toBeVisible();
+  await expect(review).toContainText("靶蛋白");
+  await page.keyboard.press("Escape");
+  await expect(review).toHaveCount(0);
+  await expect(pii).toBeVisible();
+
+  await pii.getByTestId("pii-firewall-terms-save").click();
+  await review.getByTestId("pii-firewall-terms-review-apply").click();
+  await expect(review).toHaveCount(0);
+  await expect.poll(() => lastInvokeArgs(page, "set_pii_custom_terms")).toMatchObject({
+    terms: [
+      { original: "靶蛋白", category: "custom", placeholder: "〔词1〕" },
+      { original: "Z%蛋白", category: "custom", placeholder: "{词2}" },
+    ],
+  });
+  await expect(placeholders).toHaveValue("〔词1〕\n{词2}");
+  await expect(pii.getByTestId("pii-firewall-terms-notice")).toContainText("Dictionary saved");
 });
 
 test("Escape closes the PII firewall page before the capabilities overlay", async ({ page }) => {
@@ -10304,6 +10422,23 @@ test("capability card opens a new chat while another session is still streaming"
   await expect(page.locator(".msg.user").first()).toContainText("Inventory the data and materials");
 });
 
+test("figure duplicate audit tile starts a specialist skill chat", async ({ page }) => {
+  await page.goto("/?mockLocale=zh");
+  await expect(page.getByTestId("capability-scene")).toBeVisible();
+  await page.getByRole("tab", { name: "效率工具" }).click();
+  await expect(page.getByTestId("cap-tile-figure-duplicate-audit")).toBeVisible();
+  await expect(page.getByTestId("cap-tile-figure-duplicate-audit")).toContainText("图片查重");
+  const sendsBefore = await invokeCount(page, "send_message");
+  await page.getByTestId("cap-tile-figure-duplicate-audit").click();
+  await expect.poll(() => invokeCount(page, "send_message"), { timeout: 15_000 }).toBeGreaterThan(sendsBefore);
+  await expect.poll(() => lastInvokeArgs(page, "set_session_specialist")).toMatchObject({
+    id: "figure_duplicate_audit",
+  });
+  const sent = await lastInvokeArgs(page, "send_message");
+  expect(JSON.stringify(sent?.references ?? [])).toContain("figure-duplicate-audit");
+  expect(String(sent?.message ?? "")).toContain("不要自行扫描项目找图");
+});
+
 test("handwriting extract opens settings instead of chat when no calibration model is saved", async ({ page }) => {
   await openHandwritingExtractHome(page, "/?mockHandwritingCalibrationUnset=1");
   const sendsBefore = await invokeCount(page, "send_message");
@@ -10423,6 +10558,58 @@ test("skill manager updates and deletes user-added skills", async ({ page }) => 
   await expect(page.getByText("Skill deleted.")).toBeVisible();
 });
 
+test("skill manager opens a full description dialog from cards and list", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Skills");
+
+  await page.locator('[data-skill-name="social-note"] .settings-list-sub').click();
+  const dialog = page.getByTestId("skill-detail-modal");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator("#skill-detail-title")).toHaveText("social-note");
+  await expect(dialog.getByTestId("skill-detail-body")).toHaveText(
+    "Write paste-ready social copy for Xiaohongshu, WeChat, or Twitter after the user chooses a platform",
+  );
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator(".settings-page")).toBeVisible();
+
+  await page.locator('[data-skill-name="social-note"] label.toggle').click();
+  await expect(page.getByTestId("skill-detail-modal")).toHaveCount(0);
+
+  await page.getByTestId("skill-view-modes").getByRole("button", { name: "List view" }).click();
+  await page.locator('[data-skill-name="literature-review"] .settings-list-title').click();
+  await expect(page.getByTestId("skill-detail-body")).toHaveText("Find and synthesize literature");
+  await page.getByTestId("skill-detail-close").click();
+  await expect(page.getByTestId("skill-detail-modal")).toHaveCount(0);
+  await expect(page.locator(".settings-page")).toBeVisible();
+});
+
+test("skill manager defaults to cards and can switch to list", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Skills");
+
+  const catalog = page.getByTestId("skills-catalog");
+  const modes = page.getByTestId("skill-view-modes");
+  await expect(catalog).toHaveAttribute("data-skill-view", "cards");
+  await expect(catalog).toHaveClass(/skills-card-grid/);
+  await expect(modes.getByRole("button", { name: "Card view" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("[data-skill-name]").first()).toBeVisible();
+
+  await modes.getByRole("button", { name: "List view" }).click();
+  await expect(catalog).toHaveAttribute("data-skill-view", "list");
+  await expect(catalog).not.toHaveClass(/skills-card-grid/);
+  await expect(modes.getByRole("button", { name: "List view" })).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("superscience-skills-view")))
+    .toBe("list");
+
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".settings-page")).toHaveCount(0);
+  await openSettingsSection(page, "Skills");
+  await expect(page.getByTestId("skills-catalog")).toHaveAttribute("data-skill-view", "list");
+  await expect(page.getByTestId("skills-catalog")).not.toHaveClass(/skills-card-grid/);
+});
+
 test("skill manager reports up to date when no packs need an update", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Skills");
@@ -10437,7 +10624,7 @@ test("skill manager installs previewed updates only after confirm", async ({ pag
 
   const auto = page.getByTestId("skill-update-enabled");
   await expect(auto).toBeChecked();
-  await auto.click();
+  await page.locator(".skills-update-actions label.toggle").click();
   await expect.poll(() => lastInvokeArgs(page, "set_skill_update_enabled")).toEqual({
     enabled: false,
   });
@@ -14935,6 +15122,55 @@ test("specialists page configures the builtin Reader and saves a custom speciali
   await page.getByLabel("Name").fill("Paper hunter");
   await page.getByRole("button", { name: "Save" }).click();
   await expect(page.getByText("Paper hunter")).toBeVisible();
+});
+
+test("builtin specialist cards follow the UI locale", async ({ page }) => {
+  await page.goto("/?mockLocale=zh");
+  await page.locator(".proj-card-main").first().click();
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.locator(".settings-nav-items").getByRole("button", { name: "专家", exact: true }).click();
+  await expect(page.getByTestId("specialist-card-reviewer")).toContainText("审稿专家");
+  await expect(page.getByTestId("specialist-card-reviewer")).toContainText("追踪会话记录");
+  await expect(page.getByTestId("specialist-card-reader")).toContainText("阅读专家");
+  await expect(page.getByTestId("specialist-card-scientific_illustrator")).toContainText("科研作图专家");
+  await expect(page.getByTestId("specialist-card-handwriting_extract")).toContainText("手写提取专家");
+  await expect(page.getByTestId("specialist-card-figure_duplicate_audit")).toContainText("图片查重");
+  await expect(page.getByTestId("specialist-chat-reviewer")).toContainText("与此专家对话");
+});
+
+test("specialist card starts a bound conversation", async ({ page }) => {
+  await enterApp(page);
+  await openSettingsSection(page, "Specialists");
+  await page.getByTestId("specialist-chat-scientific_illustrator").click();
+  await expect(page.locator(".settings-page")).toHaveCount(0);
+  await expect(page.locator(".proj-card")).toHaveCount(0);
+  await expect.poll(() => lastInvokeArgs(page, "set_session_specialist")).toMatchObject({
+    id: "scientific_illustrator",
+  });
+  await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
+    message: "Start as Scientific Illustrator. Ask one short question to confirm what I need done, then begin.",
+  });
+  await expect(page.locator(".session-specialist")).toHaveText("Scientific Illustrator");
+});
+
+test("specialist card from the home page opens a bound conversation", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator(".proj-card").first()).toBeVisible();
+  await page.locator(".projects-actions").getByRole("button", { name: "Settings", exact: true }).click();
+  await page.locator(".settings-page .settings-nav-items")
+    .getByRole("button", { name: "Specialists", exact: true })
+    .click();
+  await page.getByTestId("specialist-chat-scientific_illustrator").click();
+  await expect(page.locator(".settings-page")).toHaveCount(0);
+  await expect(page.locator(".proj-card")).toHaveCount(0);
+  await expect.poll(() => lastInvokeArgs(page, "set_session_specialist")).toMatchObject({
+    id: "scientific_illustrator",
+  });
+  await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
+    message: "Start as Scientific Illustrator. Ask one short question to confirm what I need done, then begin.",
+  });
+  await expect(page.locator(".session-specialist")).toHaveText("Scientific Illustrator");
+  await expect(page.locator(".msg.user")).toContainText("Start as Scientific Illustrator");
 });
 
 test("specialist skills whitelist uses a searchable picker instead of a full list", async ({ page }) => {

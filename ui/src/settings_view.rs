@@ -4,20 +4,19 @@ use crate::app_support::{
     bundled_connector_blurb, close_details_ancestor, compose_icon, conn_form_from_row,
     context_capability_summary, cred_group_configured, cred_group_mark, drag_session_id,
     endpoint_has_stored_key, focus_element_soon, format_relative_time, group_models_by_channel,
-    import_custom_css_from_input, join_tags, js_error_text, mcp_tool_brief, model_form_entry,
-    new_acp_form, new_conn_form, new_model_form, profiles_to_edit_form,
-    provider_entries_are_pristine, provider_mark_letter, quick_action_label,
-    reviewer_backend_key, reviewer_backend_label, reviewer_missing_acp_profile_id,
-    select_form_row, set_reviewer_backend, settings_nav_group, settings_section_label,
-    settings_subpage_label, shorten_skill_pin, show_toast, skill_matches_filter,
-    skill_update_result_message, start_session_drag, sync_form_from_selected,
-    DefaultAnalysisSelect, CRED_GROUPS,
+    import_custom_css_from_input, join_tags, js_error_text, load_view_pref, mcp_tool_brief,
+    model_form_entry, new_acp_form, new_conn_form, new_model_form, profiles_to_edit_form,
+    provider_entries_are_pristine, provider_mark_letter, quick_action_label, reviewer_backend_key,
+    reviewer_backend_label, reviewer_missing_acp_profile_id, save_view_pref, select_form_row,
+    set_reviewer_backend, settings_nav_group, settings_section_label, settings_subpage_label,
+    shorten_skill_pin, show_toast, skill_matches_filter, skill_update_result_message,
+    start_session_drag, sync_form_from_selected, DefaultAnalysisSelect, CRED_GROUPS,
 };
 use crate::bindings::{invoke, invoke_checked, is_mac, is_windows};
 use crate::dto::*;
 use crate::i18n::{
-    brand_visible_copy, localize_backend, set_document_lang, t, tf, use_locale, Locale,
-    BRAND_GITHUB_REPO,
+    brand_visible_copy, localize_backend, set_document_lang, specialist_display_description,
+    specialist_display_name, t, tf, use_locale, Locale, BRAND_GITHUB_REPO,
 };
 use crate::knowledge_settings::{
     load_knowledge_settings, persist_knowledge_settings, test_knowledge_settings,
@@ -1982,6 +1981,7 @@ pub(super) fn SettingsView(
     test_reviewer_form: Callback<web_sys::MouseEvent>,
     validate_model_form: Callback<web_sys::MouseEvent>,
     start_specialist_chat: Callback<web_sys::MouseEvent>,
+    chat_with_specialist: Callback<String>,
     refresh_conns: Callback<()>,
     refresh_skills: Callback<()>,
     reload_skills: Callback<()>,
@@ -2105,6 +2105,12 @@ pub(super) fn SettingsView(
     let skill_update_report = create_rw_signal(SkillUpdateReport::default());
     let skill_update_busy = create_rw_signal(false);
     let skill_update_confirm = create_rw_signal(None::<Vec<SkillUpdateCandidate>>);
+    let skill_detail = create_rw_signal(None::<SkillRow>);
+    let skills_view_mode = create_rw_signal(load_view_pref(
+        "superscience-skills-view",
+        "cards",
+        &["cards", "list"],
+    ));
     create_effect(move |_| {
         if show_settings.get() && settings_section.get() == "skills" {
             spawn_local(async move {
@@ -2445,6 +2451,10 @@ pub(super) fn SettingsView(
         }
         if skill_update_confirm.get_untracked().is_some() {
             skill_update_confirm.set(None);
+            return true;
+        }
+        if skill_detail.get_untracked().is_some() {
+            skill_detail.set(None);
             return true;
         }
         if let Some(document) = web_sys::window().and_then(|window| window.document()) {
@@ -5075,21 +5085,11 @@ pub(super) fn SettingsView(
                             let materials = specialist_metric_count(&s.connectors, &inherit);
                             let skills = specialist_metric_count(&s.skills, &inherit);
                             let sop = specialist_sop_count(&s.instructions);
-                            let desc = if s.description.trim().is_empty() {
-                                t(locale.get(), "specialists.edit_hint")
-                            } else {
-                                s.description.clone()
-                            };
-                            let handle = if builtin {
-                                t(locale.get(), "specialists.handle.builtin")
-                            } else {
-                                t(locale.get(), "specialists.handle.custom")
-                            };
-                            let role = if builtin {
-                                t(locale.get(), "specialists.role.builtin")
-                            } else {
-                                t(locale.get(), "specialists.role.custom")
-                            };
+                            let name_id = s.id.clone();
+                            let name_stored = s.name.clone();
+                            let desc_id = s.id.clone();
+                            let desc_stored = s.description.clone();
+                            let chat_id = s.id.clone();
                             view! {
                                 <article class="specialist-card" data-testid=format!("specialist-card-{}", s.id)
                                     title=move || t(locale.get(), "specialists.edit_hint")
@@ -5105,10 +5105,29 @@ pub(super) fn SettingsView(
                                         </span>
                                         <div class="specialist-card-meta">
                                             <strong class="specialist-card-title">
-                                                <span>{s.name.clone()}</span>
-                                                <span class="specialist-card-handle">{handle}</span>
+                                                <span>{move || specialist_display_name(
+                                                    locale.get(),
+                                                    &name_id,
+                                                    &name_stored,
+                                                    builtin,
+                                                )}</span>
+                                                <span class="specialist-card-handle">{move || t(
+                                                    locale.get(),
+                                                    if builtin {
+                                                        "specialists.handle.builtin"
+                                                    } else {
+                                                        "specialists.handle.custom"
+                                                    },
+                                                )}</span>
                                             </strong>
-                                            <span class="specialist-card-role">{role}</span>
+                                            <span class="specialist-card-role">{move || t(
+                                                locale.get(),
+                                                if builtin {
+                                                    "specialists.role.builtin"
+                                                } else {
+                                                    "specialists.role.custom"
+                                                },
+                                            )}</span>
                                             <span class="specialist-card-status">
                                                 <i aria-hidden="true"></i>
                                                 {move || t(locale.get(), "specialists.status.ready")}
@@ -5132,7 +5151,29 @@ pub(super) fn SettingsView(
                                             })}
                                         </div>
                                     </header>
-                                    <p class="specialist-card-desc">{desc}</p>
+                                    <p class="specialist-card-desc">{move || {
+                                        let loc = locale.get();
+                                        let localized = specialist_display_description(
+                                            loc,
+                                            &desc_id,
+                                            &desc_stored,
+                                            builtin,
+                                        );
+                                        if localized.trim().is_empty() {
+                                            t(loc, "specialists.edit_hint")
+                                        } else {
+                                            localized
+                                        }
+                                    }}</p>
+                                    <button type="button" class="specialist-card-chat"
+                                        data-testid=format!("specialist-chat-{}", chat_id)
+                                        on:click=move |ev| {
+                                            ev.stop_propagation();
+                                            chat_with_specialist.call(chat_id.clone());
+                                        }>
+                                        {compose_icon("chat")}
+                                        {move || t(locale.get(), "specialists.chat_with")}
+                                    </button>
                                     <footer class="specialist-card-metrics">
                                         <div>
                                             <b>{materials}</b>
@@ -6249,6 +6290,30 @@ pub(super) fn SettingsView(
                                     </details>
                                 })
                             }}
+                            <div class="skill-view-modes" role="group" data-testid="skill-view-modes">
+                                <button type="button" class="skill-view-mode"
+                                    class:active=move || skills_view_mode.get() == "cards"
+                                    title=move || t(locale.get(), "skills.view.cards")
+                                    aria-label=move || t(locale.get(), "skills.view.cards")
+                                    aria-pressed=move || (skills_view_mode.get() == "cards").to_string()
+                                    on:click=move |_| {
+                                        skills_view_mode.set("cards".into());
+                                        save_view_pref("superscience-skills-view", "cards");
+                                    }>
+                                    {compose_icon("grid")}
+                                </button>
+                                <button type="button" class="skill-view-mode"
+                                    class:active=move || skills_view_mode.get() == "list"
+                                    title=move || t(locale.get(), "skills.view.list")
+                                    aria-label=move || t(locale.get(), "skills.view.list")
+                                    aria-pressed=move || (skills_view_mode.get() == "list").to_string()
+                                    on:click=move |_| {
+                                        skills_view_mode.set("list".into());
+                                        save_view_pref("superscience-skills-view", "list");
+                                    }>
+                                    {compose_icon("list")}
+                                </button>
+                            </div>
                         </div>
                         <p class="settings-note">{move || t(locale.get(), "settings.auto_saved_new_session")}</p>
                         {move || skills_msg.get().map(|(ok, text)| view! {
@@ -6261,7 +6326,10 @@ pub(super) fn SettingsView(
                                 <p class="skill-filter-empty">{move || t(locale.get(), "skills.empty")}</p>
                             })
                         }}
-                        <div class="settings-list">
+                        <div class="settings-list"
+                            class:skills-card-grid=move || skills_view_mode.get() == "cards"
+                            data-testid="skills-catalog"
+                            attr:data-skill-view=move || skills_view_mode.get()>
                             <For each=move || {
                                 let q = skills_search.get().trim().to_lowercase();
                                 let tag = skill_filter_tag.get();
@@ -6284,8 +6352,10 @@ pub(super) fn SettingsView(
                                     let tags_cb = save_skill_tags.clone();
                                     let can_remove = scope == "global" && !builtin;
                                     let show_row_menu = !managed;
+                                    let open_skill = s.clone();
                                     view! {
-                                        <div class="settings-list-row skill-row" data-skill-name=s.name.clone()>
+                                        <div class="settings-list-row skill-row" data-skill-name=s.name.clone()
+                                            on:click=move |_| skill_detail.set(Some(open_skill.clone()))>
                                             <div class="settings-list-main">
                                                 <span class="settings-list-title">
                                                     {s.name.clone()}
@@ -6296,7 +6366,8 @@ pub(super) fn SettingsView(
                                                     view! { <span class="settings-list-sub">{desc}</span> }
                                                 })}
                                             </div>
-                                            <div class="settings-list-actions">
+                                            <div class="settings-list-actions"
+                                                on:click=|ev| ev.stop_propagation()>
                                                 {if managed {
                                                     let provider = managed_by.unwrap_or_else(|| t(locale.get(), "settings.nav.plugins").to_string());
                                                     view! {
@@ -7452,6 +7523,49 @@ pub(super) fn SettingsView(
                                         }
                                     });
                                 }>{move || t(locale.get(), action_key)}</button>
+                            </div>
+                        </div>
+                    </div>
+                }
+            })}
+            {move || skill_detail.get().map(|skill| {
+                let title = skill.name.clone();
+                let scope_key = format!("skills.scope.{}", skill.scope);
+                let source_path = skill.dir.clone();
+                let description = skill.description.clone();
+                let has_description = !description.trim().is_empty() && description.trim() != ">";
+                view! {
+                    <div class="overlay" data-testid="skill-detail-modal"
+                        on:click=move |_| skill_detail.set(None)>
+                        <div class="modal skill-detail-modal" role="dialog" aria-modal="true"
+                            aria-labelledby="skill-detail-title"
+                            on:click=|ev| ev.stop_propagation()>
+                            <div class="ps-head">
+                                <h2 id="skill-detail-title">{title.clone()}</h2>
+                                <button type="button" class="ps-close"
+                                    data-testid="skill-detail-close"
+                                    aria-label=move || t(locale.get(), "skills.detail.close")
+                                    on:click=move |_| skill_detail.set(None)>
+                                    {compose_icon("close")}
+                                </button>
+                            </div>
+                            <div class="skill-detail-meta">
+                                <span class="skill-scope-badge" title=source_path.clone()>
+                                    {move || t(locale.get(), &scope_key)}
+                                </span>
+                            </div>
+                            <div class="skill-detail-body" data-testid="skill-detail-body">
+                                {if has_description {
+                                    description
+                                } else {
+                                    t(locale.get(), "skills.detail.empty")
+                                }}
+                            </div>
+                            <div class="row">
+                                <button type="button" class="primary"
+                                    on:click=move |_| skill_detail.set(None)>
+                                    {move || t(locale.get(), "skills.detail.close")}
+                                </button>
                             </div>
                         </div>
                     </div>

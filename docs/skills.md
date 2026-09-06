@@ -48,9 +48,15 @@ The signed bundled tree is never rewritten. Failures are logged; the UI stays
 quiet on startup. Semver overlays that fall behind a newer bundled pin are
 dropped so an app upgrade is not pinned by a stale overlay. Academic research
 skills share one `academic-shared` package; auto-update still downloads the
-upstream archive (which embeds `shared/` in each skill) and then lifts it.
+upstream archive (repo-root `shared/`, or an older per-skill copy) and then lifts it.
 Agents should author project Skills under `<project>/.superscience/skills`, not
 rewrite the global auto-update overlay directory.
+
+The Skills settings catalog defaults to a **card** grid. A view switcher in the
+filter bar toggles **card** and **list** layouts; the choice is remembered in
+the local browser. Card and list descriptions are truncated; clicking a skill
+row opens a dialog with the full description. Enable/disable and the overflow
+menu stay on the row and do not open that dialog.
 
 The **Add skill** action installs or updates a global Skill from a `SKILL.md`
 file, a Skill folder, or a ZIP archive. A ZIP may contain `SKILL.md` directly or
