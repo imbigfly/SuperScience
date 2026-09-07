@@ -215,7 +215,8 @@ pub fn apply_custom_terms(vault: &PiiVault, text: &str, terms: &[CustomTerm]) ->
         return text.to_string();
     }
 
-    let mut occupied = occupied_custom_tokens(text, terms.iter().map(|term| term.original.as_str()));
+    let mut occupied =
+        occupied_custom_tokens(text, terms.iter().map(|term| term.original.as_str()));
     for term in terms {
         if let Some(preferred) = term.placeholder.as_deref() {
             let preferred = preferred.trim();

@@ -562,13 +562,7 @@ pub fn session_menu(
     CtxMenu { x, y, items }
 }
 
-pub fn demo_menu(
-    x: f64,
-    y: f64,
-    demo_id: &str,
-    title: &str,
-    locale: Locale,
-) -> CtxMenu {
+pub fn demo_menu(x: f64, y: f64, demo_id: &str, title: &str, locale: Locale) -> CtxMenu {
     CtxMenu {
         x,
         y,
@@ -1126,7 +1120,9 @@ mod session_branch_action_tests {
             super::demo_action("deleteUserDemo", "manifest_user_20260818_session"),
             Some(super::DemoAction::Delete(id)) if id == "manifest_user_20260818_session"
         ));
-        assert!(super::demo_action("exportDemoToSeed", "manifest_user_x\u{1e}Two-way ANOVA").is_none());
+        assert!(
+            super::demo_action("exportDemoToSeed", "manifest_user_x\u{1e}Two-way ANOVA").is_none()
+        );
     }
 }
 

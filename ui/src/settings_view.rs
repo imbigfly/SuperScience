@@ -869,6 +869,7 @@ pub(super) struct SettingsViewState {
     pub(super) runtime_interpreter_form: RwSignal<Option<RuntimeInterpreterForm>>,
     pub(super) probing_context_id: RwSignal<Option<String>>,
     pub(super) delete_confirm: RwSignal<Option<DeleteConfirm>>,
+    pub(super) tctoken_session: RwSignal<crate::user_center::TctokenSession>,
 }
 
 fn selected_entry_advanced_fields(
@@ -1968,6 +1969,281 @@ fn ConnSecretRows(
     }
 }
 
+#[derive(Debug, Clone)]
+struct TctokenKeyRow {
+    id: i64,
+    name: String,
+    key_mask: String,
+    is_default: bool,
+}
+
+fn is_tctoken_endpoint(api_url: &str) -> bool {
+    let host = endpoint_host(api_url);
+    !host.is_empty() && host.eq_ignore_ascii_case("www.tctoken.cn")
+}
+
+/// TCTOKEN key selector for the provider-form API key field. Shows a dropdown
+/// of the user's TCTOKEN keys (loaded from the user center) and resolves the
+/// selected entry's plaintext key into `model_form_key`. When the user is not
+/// logged in, the list is empty, or the request fails, the password input
+/// below remains available so the form is never blocked.
+#[component]
+fn TctokenApiKeySelector(
+    model_form: RwSignal<Option<ModelForm>>,
+    model_form_key: RwSignal<String>,
+    tctoken_session: RwSignal<crate::user_center::TctokenSession>,
+    locale: RwSignal<Locale>,
+) -> impl IntoView {
+    let tokens = create_rw_signal::<Vec<TctokenKeyRow>>(Vec::new());
+    let loading = create_rw_signal(false);
+    let selected_id = create_rw_signal::<Option<i64>>(None);
+    let last_key: RwSignal<(String, bool)> = create_rw_signal((String::new(), false));
+
+    let fetch_plaintext = move |id: i64, persist_default: bool| {
+        spawn_local(async move {
+            let args = to_value(&serde_json::json!({ "id": id })).unwrap();
+            let key_res = invoke_checked("tctoken_token_key", args).await;
+            if let Ok(value) = key_res {
+                if let Ok(data) = serde_wasm_bindgen::from_value::<serde_json::Value>(value) {
+                    if let Some(key) = data
+                        .get("key")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                    {
+                        model_form_key.set(key.to_string());
+                    }
+                }
+            }
+            if persist_default {
+                let args = to_value(&serde_json::json!({ "id": id })).unwrap();
+                let _ = invoke_checked("tctoken_set_default_token", args).await;
+                tokens.update(|rows| {
+                    for row in rows.iter_mut() {
+                        row.is_default = row.id == id;
+                    }
+                });
+            }
+        });
+    };
+
+    // Re-fetch the token list whenever the form's API URL host flips to/from
+    // TCTOKEN, or the user signs in/out of the user center. Tracking both
+    // signals inside one memo keeps us from re-hitting the API on every
+    // keystroke inside the API URL field.
+    create_effect(move |prev: Option<(String, bool)>| {
+        let url = model_form.with(|f| f.as_ref().map(|f| f.api_url.clone()).unwrap_or_default());
+        let host = endpoint_host(&url);
+        let on_tctoken = host.eq_ignore_ascii_case("www.tctoken.cn");
+        let logged_in = tctoken_session.get().logged_in;
+        let key = (host, on_tctoken && logged_in);
+        let prev_matches = prev.as_ref() == Some(&key);
+        if !prev_matches {
+            last_key.set(key.clone());
+            if !on_tctoken {
+                tokens.set(Vec::new());
+                selected_id.set(None);
+            } else if !logged_in {
+                tokens.set(Vec::new());
+                selected_id.set(None);
+            } else {
+                loading.set(true);
+                spawn_local(async move {
+                    let tokens_args =
+                        to_value(&serde_json::json!({ "p": 1, "pageSize": 100 })).unwrap();
+                    let tokens_res = invoke_checked("tctoken_tokens", tokens_args).await;
+                    let default_res = invoke_checked(
+                        "tctoken_get_default_token_id",
+                        JsValue::UNDEFINED,
+                    )
+                    .await;
+                    let mut rows: Vec<TctokenKeyRow> = Vec::new();
+                    if let Ok(value) = tokens_res {
+                        if let Ok(data) =
+                            serde_wasm_bindgen::from_value::<serde_json::Value>(value)
+                        {
+                            if let Some(items) =
+                                data.get("items").and_then(|v| v.as_array())
+                            {
+                                for item in items {
+                                    let id = item
+                                        .get("id")
+                                        .and_then(|v| v.as_i64())
+                                        .unwrap_or(0);
+                                    if id <= 0 {
+                                        continue;
+                                    }
+                                    let name = item
+                                        .get("name")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("Token")
+                                        .to_string();
+                                    let key_mask = item
+                                        .get("key")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("sk-***")
+                                        .to_string();
+                                    rows.push(TctokenKeyRow {
+                                        id,
+                                        name,
+                                        key_mask,
+                                        is_default: false,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    let saved_default = match default_res {
+                        Ok(value) => serde_wasm_bindgen::from_value::<Option<i64>>(value)
+                            .ok()
+                            .flatten(),
+                        Err(_) => None,
+                    };
+                    if let Some(default_id) = saved_default {
+                        for row in rows.iter_mut() {
+                            if row.id == default_id {
+                                row.is_default = true;
+                            }
+                        }
+                    }
+                    tokens.set(rows.clone());
+                    let initial = saved_default
+                        .filter(|id| rows.iter().any(|r| r.id == *id))
+                        .or_else(|| rows.first().map(|r| r.id));
+                    if let Some(id) = initial {
+                        let was_empty = model_form_key.get_untracked().is_empty();
+                        selected_id.set(Some(id));
+                        if was_empty {
+                            fetch_plaintext(id, false);
+                        }
+                    } else {
+                        selected_id.set(None);
+                    }
+                    loading.set(false);
+                });
+            }
+        }
+        key
+    });
+
+    let host = move || {
+        let url = model_form.with(|f| f.as_ref().map(|f| f.api_url.clone()).unwrap_or_default());
+        endpoint_host(&url)
+    };
+    let show_selector = move || host().eq_ignore_ascii_case("www.tctoken.cn");
+    let logged_in = move || tctoken_session.get().logged_in;
+
+    view! {
+        {move || {
+            if !show_selector() {
+                return None;
+            }
+            let default_suffix =
+                t(locale.get(), "models.tctoken_key_default_suffix").to_string();
+            let hint = t(locale.get(), "models.tctoken_key_hint").to_string();
+            let label = t(locale.get(), "models.tctoken_key_label").to_string();
+            let save_default_label =
+                t(locale.get(), "models.tctoken_key_save_default").to_string();
+            let loading_label =
+                t(locale.get(), "models.tctoken_key_loading").to_string();
+            let login_required =
+                t(locale.get(), "models.tctoken_key_login_required").to_string();
+            let empty_label =
+                t(locale.get(), "models.tctoken_key_empty").to_string();
+            Some(view! {
+                <label class="span-2 tctoken-key-field">
+                    <span class="tctoken-key-label">{label}</span>
+                    {move || {
+                        if !logged_in() {
+                            return Some(view! {
+                                <span class="hint" data-testid="tctoken-key-hint">
+                                    {login_required.clone()}
+                                </span>
+                            });
+                        }
+                        if loading.get() && tokens.get().is_empty() {
+                            return Some(view! {
+                                <span class="hint" data-testid="tctoken-key-loading">
+                                    {loading_label.clone()}
+                                </span>
+                            });
+                        }
+                        if tokens.get().is_empty() {
+                            return Some(view! {
+                                <span class="hint" data-testid="tctoken-key-empty">
+                                    {empty_label.clone()}
+                                </span>
+                            });
+                        }
+                        None
+                    }}
+                    {move || {
+                        if !logged_in() || tokens.get().is_empty() {
+                            return None;
+                        }
+                        let rows = tokens.get();
+                        Some(view! {
+                            <select class="tctoken-key-select" data-testid="tctoken-key-select"
+                                on:change=move |ev| {
+                                    let raw = event_target_value(&ev);
+                                    if let Ok(id) = raw.parse::<i64>() {
+                                        if id > 0 {
+                                            selected_id.set(Some(id));
+                                            fetch_plaintext(id, false);
+                                        }
+                                    }
+                                }>
+                                {rows.into_iter().map(|row| {
+                                    let label = if row.is_default {
+                                        format!("{} ({})", row.name, default_suffix)
+                                    } else {
+                                        row.name.clone()
+                                    };
+                                    let value = row.id.to_string();
+                                    let row_id = row.id;
+                                    view! {
+                                        <option value=value
+                                            selected=move || selected_id.get() == Some(row_id)>
+                                            {label}
+                                        </option>
+                                    }
+                                }).collect_view()}
+                            </select>
+                            <div class="tctoken-key-row">
+                                <span class="tctoken-key-mask">{move || {
+                                    let id = selected_id.get();
+                                    tokens.get().iter()
+                                        .find(|r| Some(r.id) == id)
+                                        .map(|r| r.key_mask.clone())
+                                        .unwrap_or_default()
+                                }}</span>
+                                <label class="tctoken-key-save-default">
+                                    <input type="checkbox"
+                                        prop:checked=move || {
+                                            selected_id.get()
+                                                .and_then(|id| tokens.get().iter().find(|r| r.id == id).map(|r| r.is_default))
+                                                .unwrap_or(false)
+                                        }
+                                        on:change=move |ev| {
+                                            let checked = event_target_checked(&ev);
+                                            if checked {
+                                                if let Some(id) = selected_id.get() {
+                                                    fetch_plaintext(id, true);
+                                                }
+                                            }
+                                        } />
+                                    <span>{save_default_label.clone()}</span>
+                                </label>
+                            </div>
+                        })
+                    }}
+                    <span class="hint" data-testid="tctoken-key-hint">{hint}</span>
+                </label>
+            })
+        }}
+    }
+}
+
 #[component]
 pub(super) fn SettingsView(
     state: SettingsViewState,
@@ -2078,6 +2354,7 @@ pub(super) fn SettingsView(
         runtime_interpreter_form,
         probing_context_id,
         delete_confirm,
+        tctoken_session,
     } = state;
     let acp_form_open = create_memo(move |_| acp_form.get().is_some());
     // Keep the edit/add branch stable while fields update. Reading the whole
@@ -4037,6 +4314,12 @@ pub(super) fn SettingsView(
                                         <span id="model-api-url-hint" class="hint span-2" data-testid="model-api-url-hint">
                                             {move || t(locale.get(), "settings.tip")}
                                         </span>
+                                        <TctokenApiKeySelector
+                                            model_form=model_form
+                                            model_form_key=model_form_key
+                                            tctoken_session=tctoken_session
+                                            locale=locale
+                                        />
                                         <label class="span-2">{move || t(locale.get(), "settings.api_key")}
                                             <input type="password" id="model-form-api-key" data-testid="provider-api-key"
                                                 prop:value=move || model_form_key.get()

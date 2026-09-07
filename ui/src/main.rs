@@ -16259,7 +16259,7 @@ fn App() -> impl IntoView {
                 conn_form_kind, conn_test_msg, custom_conn_tools, custom_conn_tools_loading,
                 custom_conn_tool_errors, pet_status, ssh_hosts, execution_contexts,
                 default_execution_context, runtime_interpreter_form, probing_context_id,
-                delete_confirm,
+                delete_confirm, tctoken_session,
             }
             open_project=switch_project
             go_settings_section=Callback::new(move |section: String| go_settings_section(&section))

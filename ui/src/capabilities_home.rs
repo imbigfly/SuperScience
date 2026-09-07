@@ -207,7 +207,10 @@ fn wrapped_placeholder(token: &str) -> bool {
     let Some(close) = token.chars().last() else {
         return false;
     };
-    token.chars().count() >= 3 && PAIRS.iter().any(|(left, right)| *left == open && *right == close)
+    token.chars().count() >= 3
+        && PAIRS
+            .iter()
+            .any(|(left, right)| *left == open && *right == close)
 }
 
 fn code_placeholder(token: &str) -> bool {
@@ -228,8 +231,7 @@ fn safe_placeholder(token: &str) -> bool {
 }
 
 fn placeholder_looks_like_pii(token: &str) -> bool {
-    token.contains('@')
-        || token.chars().filter(|ch| ch.is_ascii_digit()).count() >= 8
+    token.contains('@') || token.chars().filter(|ch| ch.is_ascii_digit()).count() >= 8
 }
 
 fn unbalanced_placeholder_marks(token: &str) -> bool {
@@ -2225,10 +2227,7 @@ mod tests {
         assert_eq!(pii.group, CapabilityGroup::Efficiency);
         assert_eq!(pii.toggle, Some(CapabilityToggle::PiiFirewall));
         assert_eq!(pii.action, CapabilityAction::None);
-        assert_eq!(
-            pii.card_settings,
-            Some(CapabilityCardSettings::PiiFirewall)
-        );
+        assert_eq!(pii.card_settings, Some(CapabilityCardSettings::PiiFirewall));
         let figure_audit = capability_catalog()
             .iter()
             .find(|t| t.id == "figure-duplicate-audit")
@@ -2692,17 +2691,23 @@ mod tests {
 
     #[test]
     fn pii_placeholder_review_flags_format_and_reasonableness() {
-        let review = review_pii_placeholders(
-            "靶蛋白\nZ%蛋白\n协和医院",
-            "靶蛋白\n蛋白\n{词",
-        );
+        let review = review_pii_placeholders("靶蛋白\nZ%蛋白\n协和医院", "靶蛋白\n蛋白\n{词");
         let keys: Vec<_> = review.issues.iter().map(|issue| issue.reason_key).collect();
         assert!(keys.contains(&"same"));
         assert!(keys.contains(&"undelimited"));
         assert!(keys.contains(&"unbalanced"));
-        assert_eq!(review.suggested_terms[0].placeholder.as_deref(), Some("〔词1〕"));
-        assert_eq!(review.suggested_terms[1].placeholder.as_deref(), Some("〔词2〕"));
-        assert_eq!(review.suggested_terms[2].placeholder.as_deref(), Some("〔词3〕"));
+        assert_eq!(
+            review.suggested_terms[0].placeholder.as_deref(),
+            Some("〔词1〕")
+        );
+        assert_eq!(
+            review.suggested_terms[1].placeholder.as_deref(),
+            Some("〔词2〕")
+        );
+        assert_eq!(
+            review.suggested_terms[2].placeholder.as_deref(),
+            Some("〔词3〕")
+        );
     }
 
     #[test]

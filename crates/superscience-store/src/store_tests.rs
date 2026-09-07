@@ -2838,14 +2838,8 @@ async fn list_all_used_sessions_spans_projects_and_skips_scratch_and_empty() {
         uuid::Uuid::new_v4()
     ));
     let store = Store::open(&tmp).await.unwrap();
-    store
-        .create_project("p1", "课题A", "/tmp/a")
-        .await
-        .unwrap();
-    store
-        .create_project("p2", "课题B", "/tmp/b")
-        .await
-        .unwrap();
+    store.create_project("p1", "课题A", "/tmp/a").await.unwrap();
+    store.create_project("p2", "课题B", "/tmp/b").await.unwrap();
     store
         .create_project("scratch:chat", "随手一聊", "")
         .await
