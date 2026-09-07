@@ -1,7 +1,8 @@
 ---
+
 name: nature-proposal-writer
 description: |
-  Proposal-first scientific writing pipeline (also triggered as researchwrite). Use for composing, revising, or auditing research proposals, opening reports, research plans, and evidence-grounded scientific writing. Three modes (compose/revise/hybrid) with a four-layer QA pipeline. Enforces evidence-before-prose, argument-before-sections, and contracts-before-paragraphs. Triggers: nature-proposal-writer, researchwrite, research proposal, 开题报告, 基金申请.
+  Proposal-first scientific writing pipeline, installed under the compatibility trigger researchwrite and the repository package name nature-proposal-writer. Use for composing, revising, or auditing research proposals, opening reports, research plans, and evidence-grounded scientific writing. Three modes (compose/revise/hybrid) with a four-layer QA pipeline. Enforces evidence-before-prose, argument-before-sections, and contracts-before-paragraphs.
 license: MIT
 metadata:
   hermes:
@@ -9,12 +10,12 @@ metadata:
     related_skills: [brainstorming, professor, avoid-ai-writing, docx]
 ---
 
-# nature-proposal-writer — proposal-first 科研写作 pipeline
+# researchwrite — proposal-first 科研写作 pipeline
 
 受 autonovel（状态机+打分）、professor（动态专家）、brainstorming（入口追问）、anti-AI-writing（语言清理）启发的科研写作状态机。**不是通用"帮我写论文"prompt。**
 
-兼容触发名 `researchwrite` 仍写在 description 中；本仓库以目录名
-`nature-proposal-writer` 作为 skill `name`，以便 SuperScience 发现。需要初始化模板、
+`researchwrite` 是为兼容既有安装保留的触发名称，仓库目录名仍为
+`nature-proposal-writer`。不要在没有迁移方案时修改 frontmatter 名称。需要初始化模板、
 按条件加载参考资料或执行导出脚本时，先读取 `manifest.yaml`，只加载与当前条件匹配的路径。
 
 ## 核心原则

@@ -1265,7 +1265,8 @@ mod tests {
 
     #[test]
     fn wsl_worker_commands_feed_quoted_scripts_on_stdin() {
-        let mut context = superscience_store::ExecutionContext::new("wsl:Ubuntu-22.04", "WSL").unwrap();
+        let mut context =
+            superscience_store::ExecutionContext::new("wsl:Ubuntu-22.04", "WSL").unwrap();
         context.config_json = serde_json::json!({ "distro": "Ubuntu-22.04" }).to_string();
         let wsl_args = vec![
             "-d".to_string(),

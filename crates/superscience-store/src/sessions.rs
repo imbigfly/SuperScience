@@ -640,6 +640,44 @@ impl Store {
         Ok(out)
     }
 
+    /// Every used root session across projects, excluding scratch and
+    /// explorations. Untitled empty drafts are omitted.
+    pub async fn list_all_used_sessions(&self) -> Result<Vec<SessionSearchResult>> {
+        let sql = format!(
+            "SELECT f.id AS id, f.project_id AS project_id, COALESCE(p.name,'') AS project_name, \
+                f.created_at AS created_at, f.title AS custom_title, \
+                (SELECT content FROM messages m WHERE m.frame_id=f.id AND m.role='user' ORDER BY m.seq ASC LIMIT 1) AS first_user, \
+                (SELECT role FROM messages m WHERE m.frame_id=f.id ORDER BY m.seq DESC LIMIT 1) AS last_role, \
+                (SELECT COALESCE(MAX(ts), f.updated_at) FROM messages m WHERE m.frame_id=f.id) AS activity_at, \
+                (SELECT COALESCE(MAX(ts), f.updated_at) FROM messages m WHERE m.frame_id=f.id) > f.seen_at AS unseen \
+             FROM frames f LEFT JOIN projects p ON p.id=f.project_id \
+             WHERE f.parent_frame_id=f.id \
+               AND f.exploration_id IS NULL \
+               AND f.project_id NOT LIKE 'scratch:%' \
+               AND {used} \
+             ORDER BY activity_at DESC, f.rowid DESC",
+            used = SESSION_HAS_USER_TURN_SQL,
+        );
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            out.push(SessionSearchResult {
+                id: row.try_get("id")?,
+                project_id: row.try_get("project_id")?,
+                project_name: row.try_get("project_name")?,
+                title: session_display_title(
+                    row.try_get::<Option<String>, _>("custom_title")?,
+                    row.try_get::<Option<String>, _>("first_user")?,
+                ),
+                created_at: row.try_get("created_at")?,
+                activity_at: row.try_get("activity_at")?,
+                last_role: row.try_get("last_role")?,
+                unseen: row.try_get("unseen")?,
+            });
+        }
+        Ok(out)
+    }
+
     /// Last message role and unseen flag per saved session in a project (for
     /// dashboard counts).
     ///

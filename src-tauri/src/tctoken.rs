@@ -907,7 +907,12 @@ mod tests {
         assert_eq!(body["card_name"], "选题引导");
         assert!(body.get("date").is_none());
 
-        let dated = ability_card_usage_request_body(1, "handwriting-extract", "手写数据提取", Some("2026-09-02"));
+        let dated = ability_card_usage_request_body(
+            1,
+            "handwriting-extract",
+            "手写数据提取",
+            Some("2026-09-02"),
+        );
         assert_eq!(dated["date"], "2026-09-02");
     }
 

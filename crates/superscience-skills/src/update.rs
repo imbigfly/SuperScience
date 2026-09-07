@@ -38,6 +38,7 @@ const NATURE_SKILLS: &[&str] = &[
     "nature-downloader",
     "nature-experiment-log",
     "nature-figure",
+    "nature-image2ppt",
     "nature-literature-pipeline",
     "nature-paper-card",
     "nature-paper-to-patent",
@@ -61,7 +62,8 @@ const ACADEMIC_SKILLS: &[&str] = &[
 ];
 
 /// Shared contracts package produced by [`normalize_academic_shared_layout`].
-/// Upstream archives still ship a duplicated `shared/` inside each consumer.
+/// Newer upstream tags keep one repo-root `shared/`; older archives still
+/// embed a copy inside each consumer.
 pub const ACADEMIC_SHARED_NAME: &str = "academic-shared";
 
 const ACADEMIC_SHARED_SKILL_MD: &str = r#"---
@@ -87,7 +89,7 @@ pub const VENDOR_PACKS: &[VendorPackSpec] = &[
         repo: "nature-skills",
         pin_kind: PinKind::Commit,
         pin_source: PinSource::DefaultBranch,
-        bundled_pin: "c171989db699bd601d4373912b3fb8db96ecc95b",
+        bundled_pin: "b1a37a2bf881feb6d71e2587c70f0e4e70b72548",
         skills: NATURE_SKILLS,
         vendor_dir: "nature-skills",
     },
@@ -97,7 +99,7 @@ pub const VENDOR_PACKS: &[VendorPackSpec] = &[
         repo: "academic-research-skills",
         pin_kind: PinKind::Semver,
         pin_source: PinSource::LatestSemverTag,
-        bundled_pin: "v3.20.1",
+        bundled_pin: "v3.21.2",
         skills: ACADEMIC_SKILLS,
         vendor_dir: "academic-research-skills",
     },
@@ -107,7 +109,7 @@ pub const VENDOR_PACKS: &[VendorPackSpec] = &[
         repo: "Humanizer-zh",
         pin_kind: PinKind::Commit,
         pin_source: PinSource::DefaultBranch,
-        bundled_pin: "",
+        bundled_pin: "91f3d394db8419c20d67ebe22a96cf8fee0a404b",
         skills: &["humanizer-zh"],
         vendor_dir: "humanizer-zh",
     },
@@ -202,6 +204,18 @@ pub struct SelectedSkills {
     pub missing: Vec<String>,
 }
 
+/// GitHub archives may place skill folders at the repo root or under `skills/`.
+pub fn declared_skill_search_root(root: &Path, names: &[&str]) -> PathBuf {
+    if names.iter().any(|name| root.join(name).is_dir()) {
+        return root.to_path_buf();
+    }
+    let nested = root.join("skills");
+    if nested.is_dir() && names.iter().any(|name| nested.join(name).is_dir()) {
+        return nested;
+    }
+    root.to_path_buf()
+}
+
 /// Keep only the skill directories declared by the pack spec.
 pub fn collect_declared_skill_dirs(root: &Path, names: &[&str]) -> Result<SelectedSkills, String> {
     let root_canon = root
@@ -223,6 +237,12 @@ pub fn collect_declared_skill_dirs(root: &Path, names: &[&str]) -> Result<Select
             return Err(format!("skill path escapes archive: {name}"));
         }
         dirs.push(((*name).to_string(), path));
+    }
+    if dirs.is_empty() && names.len() == 1 && root.join("SKILL.md").is_file() {
+        let name = names[0];
+        validate_skill_dir_name(name)?;
+        dirs.push(((*name).to_string(), root.to_path_buf()));
+        missing.clear();
     }
     if dirs.is_empty() {
         return Err("archive contained none of the expected skill directories".into());
@@ -436,13 +456,27 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), String> {
 
 /// Collapse duplicated per-skill `shared/` trees from an upstream academic
 /// archive into one `academic-shared` package and retarget consumer refs.
+///
+/// Newer upstream tags keep a single repo-root `shared/` instead of embedding
+/// a copy inside each skill. Pass that directory as `extra_donor`.
 pub fn normalize_academic_shared_layout(skills_dir: &Path) -> Result<bool, String> {
-    let mut donor: Option<PathBuf> = None;
-    for name in ACADEMIC_SKILLS {
-        let shared = skills_dir.join(name).join("shared");
-        if shared.is_dir() {
-            donor = Some(shared);
-            break;
+    normalize_academic_shared_layout_with_donor(skills_dir, None)
+}
+
+pub fn normalize_academic_shared_layout_with_donor(
+    skills_dir: &Path,
+    extra_donor: Option<&Path>,
+) -> Result<bool, String> {
+    let mut donor: Option<PathBuf> = extra_donor
+        .filter(|path| path.is_dir())
+        .map(|path| path.to_path_buf());
+    if donor.is_none() {
+        for name in ACADEMIC_SKILLS {
+            let shared = skills_dir.join(name).join("shared");
+            if shared.is_dir() {
+                donor = Some(shared);
+                break;
+            }
         }
     }
     let Some(donor) = donor else {
@@ -584,8 +618,9 @@ mod tests {
 
         let inner = archive_inner_root(&root).unwrap();
         assert_eq!(inner, wrapper);
+        let search = declared_skill_search_root(&inner, &["nature-writing", "nature-shared"]);
         let selected =
-            collect_declared_skill_dirs(&inner, &["nature-writing", "nature-shared"]).unwrap();
+            collect_declared_skill_dirs(&search, &["nature-writing", "nature-shared"]).unwrap();
         assert_eq!(selected.dirs.len(), 1);
         assert_eq!(selected.dirs[0].0, "nature-writing");
         assert_eq!(selected.missing, vec!["nature-shared".to_string()]);
@@ -676,6 +711,47 @@ mod tests {
         assert!(paper.contains("`../academic-shared/raise_framework.md`"));
         assert!(paper.contains("../academic-shared/keep.md"));
         assert!(!paper.contains("`shared/"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn collect_treats_root_skill_md_as_single_pack() {
+        let root = temp_dir("root-skill-md");
+        fs::write(root.join("SKILL.md"), "---\nname: humanizer-zh\n---\n").unwrap();
+        let selected = collect_declared_skill_dirs(&root, &["humanizer-zh"]).unwrap();
+        assert_eq!(selected.dirs.len(), 1);
+        assert_eq!(selected.dirs[0].0, "humanizer-zh");
+        assert_eq!(selected.dirs[0].1, root);
+        assert!(selected.missing.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn declared_skill_search_root_uses_nested_skills_dir() {
+        let root = temp_dir("nested-skills");
+        fs::create_dir_all(root.join("skills/nature-writing")).unwrap();
+        let search = declared_skill_search_root(&root, &["nature-writing"]);
+        assert_eq!(search, root.join("skills"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn normalize_lifts_repo_root_shared_tree() {
+        let root = temp_dir("academic-root-shared");
+        fs::create_dir_all(root.join("academic-paper")).unwrap();
+        fs::write(
+            root.join("academic-paper/SKILL.md"),
+            "---\nname: demo\n---\nSee `shared/raise_framework.md`\n",
+        )
+        .unwrap();
+        let shared = root.join("upstream-shared");
+        fs::create_dir_all(&shared).unwrap();
+        fs::write(shared.join("raise_framework.md"), "# raise\n").unwrap();
+
+        assert!(normalize_academic_shared_layout_with_donor(&root, Some(&shared)).unwrap());
+        assert!(root.join("academic-shared/raise_framework.md").is_file());
+        let paper = fs::read_to_string(root.join("academic-paper/SKILL.md")).unwrap();
+        assert!(paper.contains("`../academic-shared/raise_framework.md`"));
         let _ = fs::remove_dir_all(root);
     }
 }

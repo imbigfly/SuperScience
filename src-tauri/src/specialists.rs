@@ -76,6 +76,105 @@ firewall in user-facing replies.\n\
 - If calibrate_handwriting is unavailable or the calibration model is unset, \
 stop and point to the capability card settings.";
 
+pub const FIGURE_DUPLICATE_AUDIT_ID: &str = "figure_duplicate_audit";
+pub const FIGURE_DUPLICATE_AUDIT_RUBRIC: &str = "\
+You are the Figure Duplicate Audit specialist. Audit scientific figures for \
+duplicated, reused, transformed, or uninformative image panels. Hashes and \
+feature matches find candidates; they do not establish misconduct or even \
+duplication on their own.\n\n\
+Workflow:\n\
+1. First reply: confirm one PDF or one directory of manuscript images. Use \
+attachments or a path the user named. Do not list, glob, or scan the project \
+for inputs. Ask for a page range only when the user did not specify one and \
+scanning the whole PDF would materially change scope.\n\
+2. Load `figure-duplicate-audit` and follow its prepare / panel-split / \
+all-pairs / visual-evidence / coverage / cautious-report protocol. Create a \
+new analysis directory; never modify source images or overwrite a prior audit.\n\
+3. If the audit scripts cannot import their required packages, load \
+`local-env-setup` and install the skill compatibility list. Do not continue \
+with a hash-only fallback when the user asked for a strict or exhaustive \
+review.\n\
+4. Deliver the reviewed panel manifest, candidate table, visual evidence, \
+coverage accounting, and a cautious integrity report. Say what is a candidate \
+and what is not proven.\n\n\
+Hard rules:\n\
+- Do not invent a PDF or figure directory.\n\
+- Do not call a hash or feature match misconduct.\n\
+- Do not skip coverage accounting or silently omit unreadable files.";
+
+pub const CONVERSATION_ANALYSIS_ID: &str = "conversation_analysis";
+pub const CONVERSATION_ANALYSIS_NAME: &str = "对话分析";
+pub const CONVERSATION_ANALYSIS_DESCRIPTION: &str =
+    "分析系统内全部项目的全部会话，提取每个会话中用户发送的所有消息，以及模型在每一轮对话中最终回复的结论性内容，并以对话聊天的形式生成一个 HTML 报告。";
+pub const CONVERSATION_ANALYSIS_RUBRIC: &str = r#"# 对话分析 Agent 提示词
+
+## 任务目标
+分析系统内全部项目的全部会话，提取每个会话中用户发送的所有消息，以及模型在每一轮对话中最终回复的结论性内容，并以对话聊天的形式生成一个 HTML 报告。
+
+## 输入数据
+- 数据源是应用里已保存的全部会话，不限项目
+- 排除当前这场对话分析会话、无用户消息的空草稿、以及随手一聊（scratch）会话
+- 必须通过 `export_conversation_analysis` 读取；不要让用户粘贴记录，不要用 read/glob/find 扫项目文件
+
+## 工作流程
+1. 第一轮先调用 `export_conversation_analysis`（不要传 confirmed，或 confirmed=false），拿到会话清单。
+2. 向用户确认：将分析全部项目的全部会话，共多少场、来自哪些项目。未确认前禁止导出报告。
+3. 用户明确确认后，再调用 `export_conversation_analysis`，参数 confirmed=true。工具会按下方分析要求写出 `对话分析报告.html`。
+4. 不要自己手写 HTML。报告写好后告诉用户文件路径。
+
+## 分析要求
+1. **识别会话**：按会话标识（如会话 ID、标题或时间分隔）将对话划分为独立单元。
+2. **提取用户消息**：在每个会话中，提取所有由用户发送的文本内容（包括提问、指令、补充说明等）。
+3. **提取模型结论**：针对每一轮用户消息，提取模型在该轮对话中**最后一条回复的完整内容**作为“模型结论”。若模型回复包含多条消息，仅保留最后一条；若回复中明确有“总结”“结论”等部分，优先提取该部分。
+4. **忽略中间过程**：不展示模型在最终结论之前产生的任何中间思考、追问或分段回复（除非它们是该轮最后一条）。
+5. **保持对话顺序**：按照时间顺序，将用户消息与对应的模型结论配对，形成一组对话记录。
+
+## 输出格式
+- **文件类型**：单个 HTML 文件，命名为 `对话分析报告.html`
+- **展示方式**：以聊天对话风格呈现，用户消息靠右（或标注“用户”），模型结论靠左（或标注“模型”），并用不同背景色区分。
+- **会话导航（必须）**：会话很多时，禁止把所有会话纵向堆成一长页让人滚动查找。必须做成「左侧选会话、右侧看对话」：
+  - 左侧固定会话列表，每项显示序号、标题或起始时间、轮次数
+  - 列表顶部提供搜索框，按标题或时间即时过滤
+  - 点击列表项后，右侧只显示该会话；默认显示第 1 个会话
+  - 所有会话仍写在同一 HTML 里，不得省略；未选中的会话用 CSS 隐藏
+  - 单个文件，只用 HTML + CSS + 少量 JS，不引用外链
+- **会话区分**：每个独立会话使用稳定 `id`（如 `session-1`），标题形如“会话 1：<标题或起始时间>”。
+- **可读性**：使用简洁的 CSS 样式，保证文字清晰、排版整齐，适合直接查看。
+- **完整性**：报告中必须包含所有会话、所有轮次的对话，不得省略。
+
+## 示例格式（HTML 片段）
+```html
+<div class="layout">
+  <aside class="nav">
+    <input id="q" placeholder="搜索会话…" oninput="filterSessions(this.value)">
+    <button type="button" class="nav-item active" data-target="session-1" onclick="showSession('session-1')">会话 1：春天的诗 · 1 轮</button>
+    <button type="button" class="nav-item" data-target="session-2" onclick="showSession('session-2')">会话 2：…</button>
+  </aside>
+  <main class="main">
+    <section id="session-1" class="session active">
+      <h2>会话 1：春天的诗</h2>
+      <div class="chat">
+        <div class="user-msg">用户：帮我写一首关于春天的诗</div>
+        <div class="model-msg">模型：春风轻拂绿柳梢，桃花朵朵笑迎朝。燕归梁上呢喃语，一片生机满野郊。</div>
+      </div>
+    </section>
+    <section id="session-2" class="session">…</section>
+  </main>
+</div>
+<script>
+function showSession(id) {
+  document.querySelectorAll('.session').forEach(el => el.classList.toggle('active', el.id === id));
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.target === id));
+}
+function filterSessions(q) {
+  const needle = (q || '').trim().toLowerCase();
+  document.querySelectorAll('.nav-item').forEach(el => {
+    el.hidden = needle !== '' && !el.textContent.toLowerCase().includes(needle);
+  });
+}
+</script>
+```"#;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Specialist {
     pub id: String,
@@ -175,6 +274,41 @@ pub fn builtin_handwriting_extract() -> Specialist {
     }
 }
 
+pub fn builtin_figure_duplicate_audit() -> Specialist {
+    Specialist {
+        id: FIGURE_DUPLICATE_AUDIT_ID.into(),
+        name: "Figure Duplicate Audit".into(),
+        icon: "copy".into(),
+        color: "clay".into(),
+        description: "Audit figures for duplicated, reused, or transformed panels.".into(),
+        instructions: FIGURE_DUPLICATE_AUDIT_RUBRIC.into(),
+        model_id: String::new(),
+        review_backend: None,
+        skills: Some(vec![
+            "figure-duplicate-audit".into(),
+            "local-env-setup".into(),
+        ]),
+        connectors: Some(vec![]),
+        builtin: true,
+    }
+}
+
+pub fn builtin_conversation_analysis() -> Specialist {
+    Specialist {
+        id: CONVERSATION_ANALYSIS_ID.into(),
+        name: CONVERSATION_ANALYSIS_NAME.into(),
+        icon: "chat".into(),
+        color: "clay".into(),
+        description: CONVERSATION_ANALYSIS_DESCRIPTION.into(),
+        instructions: CONVERSATION_ANALYSIS_RUBRIC.into(),
+        model_id: String::new(),
+        review_backend: None,
+        skills: Some(vec![]),
+        connectors: Some(vec![]),
+        builtin: true,
+    }
+}
+
 fn pin_handwriting_extract(spec: &mut Specialist) {
     spec.builtin = true;
     spec.instructions = HANDWRITING_EXTRACT_RUBRIC.into();
@@ -184,6 +318,27 @@ fn pin_handwriting_extract(spec: &mut Specialist) {
     // Chat follows the session model from Settings → Models. Analysis and
     // calibration are separate profile picks, not a second API-key store.
     spec.model_id.clear();
+}
+
+fn pin_figure_duplicate_audit(spec: &mut Specialist) {
+    spec.builtin = true;
+    spec.instructions = FIGURE_DUPLICATE_AUDIT_RUBRIC.into();
+    spec.review_backend = None;
+    spec.skills = Some(vec![
+        "figure-duplicate-audit".into(),
+        "local-env-setup".into(),
+    ]);
+    spec.connectors = Some(vec![]);
+}
+
+fn pin_conversation_analysis(spec: &mut Specialist) {
+    spec.builtin = true;
+    spec.name = CONVERSATION_ANALYSIS_NAME.into();
+    spec.description = CONVERSATION_ANALYSIS_DESCRIPTION.into();
+    spec.instructions = CONVERSATION_ANALYSIS_RUBRIC.into();
+    spec.review_backend = None;
+    spec.skills = Some(vec![]);
+    spec.connectors = Some(vec![]);
 }
 
 async fn load_raw(store: &Store) -> Vec<Specialist> {
@@ -239,6 +394,14 @@ pub async fn ensure(store: &Store) -> Vec<Specialist> {
     match list.iter_mut().find(|s| s.id == HANDWRITING_EXTRACT_ID) {
         Some(extractor) => pin_handwriting_extract(extractor),
         None => list.insert(3.min(list.len()), builtin_handwriting_extract()),
+    }
+    match list.iter_mut().find(|s| s.id == FIGURE_DUPLICATE_AUDIT_ID) {
+        Some(auditor) => pin_figure_duplicate_audit(auditor),
+        None => list.insert(4.min(list.len()), builtin_figure_duplicate_audit()),
+    }
+    match list.iter_mut().find(|s| s.id == CONVERSATION_ANALYSIS_ID) {
+        Some(analyst) => pin_conversation_analysis(analyst),
+        None => list.insert(5.min(list.len()), builtin_conversation_analysis()),
     }
     list
 }
@@ -303,6 +466,19 @@ pub async fn upsert(store: &Store, mut spec: Specialist) -> Result<Vec<Specialis
             spec.skills = Some(vec!["handwriting-extract".into()]);
             spec.connectors = Some(vec![]);
             spec.model_id.clear();
+        } else if spec.id == FIGURE_DUPLICATE_AUDIT_ID {
+            spec.review_backend = None;
+            spec.skills = Some(vec![
+                "figure-duplicate-audit".into(),
+                "local-env-setup".into(),
+            ]);
+            spec.connectors = Some(vec![]);
+        } else if spec.id == CONVERSATION_ANALYSIS_ID {
+            spec.name = CONVERSATION_ANALYSIS_NAME.into();
+            spec.description = CONVERSATION_ANALYSIS_DESCRIPTION.into();
+            spec.review_backend = None;
+            spec.skills = Some(vec![]);
+            spec.connectors = Some(vec![]);
         }
         *existing = spec;
     } else {
@@ -441,6 +617,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn conversation_analysis_rubric_requires_html_report() {
+        let rubric = CONVERSATION_ANALYSIS_RUBRIC;
+        assert!(rubric.starts_with("# 对话分析 Agent 提示词"));
+        assert!(rubric.contains("## 任务目标"));
+        assert!(rubric.contains("## 输入数据"));
+        assert!(rubric.contains("## 分析要求"));
+        assert!(rubric.contains("提取模型结论"));
+        assert!(rubric.contains("忽略中间过程"));
+        assert!(rubric.contains("对话分析报告.html"));
+        assert!(rubric.contains("export_conversation_analysis"));
+        assert!(rubric.contains("全部项目"));
+        assert!(rubric.contains("未确认前禁止导出报告"));
+        assert!(rubric.contains("会话导航（必须）"));
+        assert!(rubric.contains("左侧选会话、右侧看对话"));
+        assert!(rubric.contains("function showSession"));
+        assert!(rubric.contains("<div class=\"user-msg\">用户：帮我写一首关于春天的诗</div>"));
+        assert_eq!(CONVERSATION_ANALYSIS_NAME, "对话分析");
+        assert_eq!(CONVERSATION_ANALYSIS_DESCRIPTION, "分析系统内全部项目的全部会话，提取每个会话中用户发送的所有消息，以及模型在每一轮对话中最终回复的结论性内容，并以对话聊天的形式生成一个 HTML 报告。");
+    }
+
+    #[test]
     fn handwriting_rubric_requires_calibrate_tool() {
         let rubric = HANDWRITING_EXTRACT_RUBRIC;
         assert!(rubric.contains("calibrate_handwriting"));
@@ -482,7 +679,7 @@ mod tests {
     async fn ensure_materializes_builtin_specialists_once() {
         let (store, tmp) = test_store().await;
         let list = ensure(&store).await;
-        assert_eq!(list.len(), 4);
+        assert_eq!(list.len(), 6);
         let r = &list[0];
         assert_eq!(r.id, "reviewer");
         assert!(r.builtin);
@@ -509,8 +706,28 @@ mod tests {
         );
         assert!(extractor.model_id.is_empty());
         assert!(handwriting_extract_calibration_id(&store).await.is_none());
+        let auditor = &list[4];
+        assert_eq!(auditor.id, FIGURE_DUPLICATE_AUDIT_ID);
+        assert!(auditor.builtin);
+        assert_eq!(auditor.instructions, FIGURE_DUPLICATE_AUDIT_RUBRIC);
+        assert_eq!(
+            auditor.skills.as_deref(),
+            Some(
+                &[
+                    "figure-duplicate-audit".to_string(),
+                    "local-env-setup".to_string()
+                ][..]
+            )
+        );
+        let analyst = &list[5];
+        assert_eq!(analyst.id, CONVERSATION_ANALYSIS_ID);
+        assert!(analyst.builtin);
+        assert_eq!(analyst.name, CONVERSATION_ANALYSIS_NAME);
+        assert_eq!(analyst.description, CONVERSATION_ANALYSIS_DESCRIPTION);
+        assert_eq!(analyst.instructions, CONVERSATION_ANALYSIS_RUBRIC);
+        assert_eq!(analyst.skills.as_deref(), Some(&[][..]));
         // Second read does not duplicate the built-ins.
-        assert_eq!(ensure(&store).await.len(), 4);
+        assert_eq!(ensure(&store).await.len(), 6);
 
         let mut leftover = get(&store, HANDWRITING_EXTRACT_ID).await.unwrap();
         leftover.model_id = "m5".into();
@@ -569,6 +786,8 @@ mod tests {
         assert!(remove(&store, "reader").await.is_err());
         assert!(remove(&store, "scientific_illustrator").await.is_err());
         assert!(remove(&store, HANDWRITING_EXTRACT_ID).await.is_err());
+        assert!(remove(&store, FIGURE_DUPLICATE_AUDIT_ID).await.is_err());
+        assert!(remove(&store, CONVERSATION_ANALYSIS_ID).await.is_err());
         // Editing the builtin keeps instructions but accepts a model change.
         let mut r = get(&store, "reviewer").await.unwrap();
         r.instructions = "haha".into();
@@ -615,8 +834,40 @@ mod tests {
             .find(|specialist| specialist.id == HANDWRITING_EXTRACT_ID)
             .unwrap();
         assert_eq!(extractor.instructions, HANDWRITING_EXTRACT_RUBRIC);
-        assert_eq!(extractor.model_id, "vl");
+        assert!(extractor.model_id.is_empty());
         assert_eq!(extractor.skills, Some(vec!["handwriting-extract".into()]));
+
+        let mut auditor = get(&store, FIGURE_DUPLICATE_AUDIT_ID).await.unwrap();
+        auditor.instructions = "replace rubric".into();
+        auditor.skills = None;
+        let list = upsert(&store, auditor).await.unwrap();
+        let auditor = list
+            .iter()
+            .find(|specialist| specialist.id == FIGURE_DUPLICATE_AUDIT_ID)
+            .unwrap();
+        assert_eq!(auditor.instructions, FIGURE_DUPLICATE_AUDIT_RUBRIC);
+        assert_eq!(
+            auditor.skills,
+            Some(vec![
+                "figure-duplicate-audit".into(),
+                "local-env-setup".into()
+            ])
+        );
+
+        let mut analyst = get(&store, CONVERSATION_ANALYSIS_ID).await.unwrap();
+        analyst.name = "Conversation Analysis".into();
+        analyst.description = "replace description".into();
+        analyst.instructions = "replace rubric".into();
+        analyst.skills = None;
+        let list = upsert(&store, analyst).await.unwrap();
+        let analyst = list
+            .iter()
+            .find(|specialist| specialist.id == CONVERSATION_ANALYSIS_ID)
+            .unwrap();
+        assert_eq!(analyst.name, CONVERSATION_ANALYSIS_NAME);
+        assert_eq!(analyst.description, CONVERSATION_ANALYSIS_DESCRIPTION);
+        assert_eq!(analyst.instructions, CONVERSATION_ANALYSIS_RUBRIC);
+        assert_eq!(analyst.skills, Some(vec![]));
         let _ = std::fs::remove_file(&tmp);
     }
 

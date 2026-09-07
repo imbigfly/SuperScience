@@ -10,10 +10,10 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use tauri::State;
 use superscience_dto::{WorkspaceSessionRecoveryPreview, WorkspaceSessionRecoveryResult};
 use superscience_llm::{Message, Role};
 use superscience_store::{RecoveredWorkspaceSession, Store};
+use tauri::State;
 
 const HISTORY_RELATIVE: &str = ".wisp/history";
 const MAX_ARCHIVE_FILES: usize = 1_000;

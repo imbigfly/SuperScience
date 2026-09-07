@@ -81,9 +81,7 @@ pub fn ability_card_for_action(action: &CapabilityAction) -> Option<AbilityCardM
                     prompt_key: tile_prompt,
                     skill: tile_skill,
                 } => {
-                    tile_prompt == *prompt_key
-                        && Some(tile_skill) == *skill
-                        && specialist.is_none()
+                    tile_prompt == *prompt_key && Some(tile_skill) == *skill && specialist.is_none()
                 }
                 _ => false,
             })
@@ -212,6 +210,14 @@ mod tests {
         })
         .expect("topic coach");
         assert_eq!(topic.id, "topic-coach");
+
+        let conversation = ability_card_for_action(&CapabilityAction::GuidedChat {
+            prompt_key: "caps.skill.conversation_analysis.prompt",
+            skill: None,
+            specialist: Some("conversation_analysis"),
+        })
+        .expect("conversation analysis");
+        assert_eq!(conversation.id, "conversation-analysis");
     }
 
     #[test]

@@ -790,7 +790,10 @@ pub async fn session_profile_id(store: &superscience_store::Store, frame_id: &st
 /// Chat profile for `frame_id`. A leftover id (deleted LM Studio profile, etc.)
 /// falls back to the active chat model and is rewritten on the frame so later
 /// turns do not keep resolving a dead binding (#1070).
-pub async fn resolve_session_profile(store: &superscience_store::Store, frame_id: &str) -> (String, bool) {
+pub async fn resolve_session_profile(
+    store: &superscience_store::Store,
+    frame_id: &str,
+) -> (String, bool) {
     let profiles = ensure(store).await;
     let bound = store
         .frame_model(frame_id)
@@ -1500,7 +1503,10 @@ pub async fn profile_llm(
 /// exist. The returned string may still be empty when the profile has no key.
 pub async fn profile_key(store: &superscience_store::Store, id: &str) -> Option<String> {
     let profiles = ensure(store).await;
-    profiles.iter().find(|p| p.id == id).map(|p| key_for_profile(&profiles, p))
+    profiles
+        .iter()
+        .find(|p| p.id == id)
+        .map(|p| key_for_profile(&profiles, p))
 }
 
 /// Whether the active profile has a key stored (for `get_settings`).

@@ -249,8 +249,9 @@ mod start_user_turn_tests {
         is_image_generation_tool, is_tool_activity, is_video_generation_tool,
         message_with_attachments, message_with_composer_context, message_with_quotes,
         message_with_read_only_quotes, process_item_insert_index, runtime_object_quote,
-        selection_targets_center_file, start_user_turn, trailing_queue_start, user_turn_match_body,
-        user_message_has_transcript_suffix, ComposerQuote, ComposerReferenceChip,
+        selection_targets_center_file, start_user_turn, trailing_queue_start,
+        user_message_has_transcript_suffix, user_turn_match_body, ComposerQuote,
+        ComposerReferenceChip,
     };
     use crate::dto::{ChatItem, ContextUsage};
     use leptos::*;
@@ -456,9 +457,7 @@ mod start_user_turn_tests {
     #[test]
     fn does_not_duplicate_capability_launch_ack() {
         let visible = "把手写实验本或 CRF 照片抽成 CSV，并标出存疑格子。".to_string();
-        let sent = format!(
-            "能力引导规则（本对话全程有效）。\n1. 最多五个问题。\n\n{visible}"
-        );
+        let sent = format!("能力引导规则（本对话全程有效）。\n1. 最多五个问题。\n\n{visible}");
         let mut items = vec![
             ChatItem::User(visible.clone()),
             ChatItem::Assistant {

@@ -159,7 +159,7 @@ This document defines all legal states, transition conditions, transition action
 | checkpoint | Stage 2 | User confirms | handoff RQ Brief + Methodology Blueprint + Bibliography + Synthesis |
 | Stage 2 | **checkpoint** | Stage 2 completed, Paper Draft produced | Wait for user confirmation |
 | checkpoint | Stage 2.5 | User confirms | Pass Paper Draft to integrity agent |
-| Stage 2.5 | **checkpoint** | PASS | Wait for user confirmation |
+| Stage 2.5 | **checkpoint** | PASS, or recorded Integrity Check FAIL Loop resolution (§ below) | Wait for user confirmation |
 | Stage 2.5 | Stage 2.5 (retry) | FAIL | Fix issues, re-verify (max 3 rounds) |
 | checkpoint | Stage 3 | User confirms | Pass verified paper to reviewer |
 | Stage 3 | **checkpoint** | Decision produced | Wait for user confirmation |
@@ -172,7 +172,7 @@ This document defines all legal states, transition conditions, transition action
 | checkpoint | Stage 4' | Decision = Major, user confirms | Pass new Revision Roadmap |
 | Stage 4' | **checkpoint** | Stage 4' completed | Wait for user confirmation |
 | checkpoint | Stage 4.5 | User confirms | Pass revised draft to final verification |
-| Stage 4.5 | **checkpoint** | PASS (zero issues) | Wait for user confirmation |
+| Stage 4.5 | **checkpoint** | PASS (zero issues), or recorded Integrity Check FAIL Loop resolution (§ below) | Wait for user confirmation |
 | Stage 4.5 | Stage 4.5 (retry) | FAIL | Fix issues, re-verify (max 3 rounds) |
 | checkpoint | Stage 5 | User confirms (MANDATORY — the Stage 5 entry gate; see § Stage 5 boundary semantics) | Pass final accepted draft; record the finalization-format decision (citation style) |
 | Stage 5 | **checkpoint** | Stage 5 completed, Final Paper delivered | Wait for user confirmation (FULL — never SLIM; see § Stage 5 boundary semantics) |
@@ -246,6 +246,10 @@ When Stage 6 runs, its completion is the pipeline's **terminal checkpoint**:
 2. Terminal acknowledgement vocabulary: `finish` / `end` / `done` / `confirm`, or an unambiguous natural-language equivalent that accepts the deliverables. Change requests (the other language version, content corrections) keep Stage 6 `in_progress` — they are not acknowledgements.
 3. On acknowledgement: state_tracker marks Stage 6 `completed` and sets the pipeline global state to `completed`. This is the terminal transition — there is no next stage.
 4. After `completed`, no stage transition is legal (see Prohibited Transitions). New requests start a new pipeline run or a targeted single-skill invocation (mid-entry).
+
+### Checkpoint decision provenance
+
+Every checkpoint decision, terminal acknowledgement, override, consent grant, and authorization input in this state machine exists only when it appears in a user turn. A subagent report, a hook or tool result, a template's default branch, an orchestrator-written checkpoint summary, or a paraphrase of an earlier turn is never the user's decision; a checkpoint whose decision has not appeared in a user turn is still open. Re-transmission to a subagent quotes the user's words (or the exact deterministic authorization artifact) and never widens them. Where a deterministic authorization artifact exists (the #670 integrity-correction authorization, the `/ars-mark-read` scope) it is the enforced form of this rule; elsewhere the rule is prompt-level. Mirrored operationally in `pipeline_orchestrator_agent.md` § Checkpoint authority fidelity; the risk is indexed as R11 in `docs/RISK_REGISTER.md`.
 
 ### Post-terminal adjudication-activity side channel (#673)
 

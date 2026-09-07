@@ -27,16 +27,12 @@ impl Store {
         Ok(())
     }
 
-    pub async fn frame_ability_card(
-        &self,
-        frame_id: &str,
-    ) -> Result<Option<(String, String)>> {
-        let row = sqlx::query(
-            "SELECT card_id, card_name FROM frame_ability_cards WHERE frame_id=?",
-        )
-        .bind(frame_id)
-        .fetch_optional(&self.pool)
-        .await?;
+    pub async fn frame_ability_card(&self, frame_id: &str) -> Result<Option<(String, String)>> {
+        let row =
+            sqlx::query("SELECT card_id, card_name FROM frame_ability_cards WHERE frame_id=?")
+                .bind(frame_id)
+                .fetch_optional(&self.pool)
+                .await?;
         Ok(row.map(|row| {
             (
                 row.try_get("card_id").unwrap_or_default(),
@@ -77,10 +73,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let store = Store::open(&root.join("store.sqlite")).await.unwrap();
         store.create_project("p1", "P", "").await.unwrap();
-        store
-            .create_frame("f1", "p1", "OPERON", "m")
-            .await
-            .unwrap();
+        store.create_frame("f1", "p1", "OPERON", "m").await.unwrap();
 
         store
             .set_frame_ability_card("f1", "topic-coach", "选题引导", 10)

@@ -678,6 +678,8 @@ button.browser-needs-human-row .browser-tab-cleanup-body { opacity: 1; }
   background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius-xs);
   font-size: 13px; line-height: 1.55; white-space: normal;
 }
+.update-notes img { max-width: 100%; height: auto; }
+.update-notes p:last-child { margin-bottom: 0; }
 .update-download-progress {
   display: flex; flex-direction: column; gap: 7px; margin: 6px 0 2px;
   color: var(--text-faint); font: 11.5px var(--font-mono);

@@ -627,6 +627,7 @@ mod tests {
         assert!(idx.get("humanizer-zh").is_some());
         assert!(idx.get("academic-search-pro").is_some());
         assert!(idx.get("nature-figure").is_some());
+        assert!(idx.get("nature-image2ppt").is_some());
         assert!(idx.get("nature-statistics").is_some());
         assert!(idx.get("knowledge-graph").is_some());
         assert!(idx.get("playwright").is_some());

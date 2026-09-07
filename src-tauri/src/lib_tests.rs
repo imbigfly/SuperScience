@@ -1533,7 +1533,9 @@ async fn create_session_frame_snapshots_the_global_default() {
         .await
         .unwrap();
     store
-        .upsert_execution_context(&superscience_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap())
+        .upsert_execution_context(
+            &superscience_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap(),
+        )
         .await
         .unwrap();
     store

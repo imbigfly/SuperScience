@@ -1325,6 +1325,19 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
             toggle: None,
             card_settings: None,
         },
+        specialist_tile(
+            "conversation-analysis",
+            CapabilityGroup::Collab,
+            "caps.skill.conversation_analysis.title",
+            "caps.skill.conversation_analysis.blurb",
+            "caps.skill.conversation_analysis.prompt",
+            "conversation_analysis",
+            "chat",
+            help(
+                "It previews every saved conversation across all projects, waits for your confirmation, then writes an HTML report with a session list: click a session to jump to that chat.",
+                "先列出全部项目里的全部会话，等你确认后再生成 HTML 报告：左侧选会话，右侧看对话。",
+            ),
+        ),
         guided_tile(
             "browser",
             CapabilityGroup::Collab,
@@ -2195,6 +2208,7 @@ mod tests {
             "journal-prescreen",
             "figure-duplicate-audit",
             "handwriting-extract",
+            "conversation-analysis",
             "topic-coach",
             "knowledge",
             "env-setup",
@@ -2244,6 +2258,20 @@ mod tests {
                 ..
             } => {}
             other => panic!("expected handwriting specialist+skill tile, got {other:?}"),
+        }
+        let conversation = capability_catalog()
+            .iter()
+            .find(|t| t.id == "conversation-analysis")
+            .expect("conversation-analysis tile");
+        assert_eq!(conversation.group, CapabilityGroup::Collab);
+        assert_eq!(conversation.card_settings, None);
+        match conversation.action {
+            CapabilityAction::GuidedChat {
+                skill: None,
+                specialist: Some("conversation_analysis"),
+                prompt_key: "caps.skill.conversation_analysis.prompt",
+            } => {}
+            other => panic!("expected conversation-analysis specialist tile, got {other:?}"),
         }
         assert!(
             handwriting
@@ -2603,7 +2631,14 @@ mod tests {
         );
         assert_eq!(
             ids(CapabilityGroup::Collab),
-            vec!["channels", "browser", "playwright", "plugins", "skills"]
+            vec![
+                "channels",
+                "conversation-analysis",
+                "browser",
+                "playwright",
+                "plugins",
+                "skills",
+            ]
         );
         let skills = capability_catalog()
             .iter()
@@ -2740,6 +2775,7 @@ mod tests {
             "journal-prescreen",
             "figure-duplicate-audit",
             "handwriting-extract",
+            "conversation-analysis",
             "topic-coach",
             "academic-paper-reviewer",
             "nature-reviewer",
@@ -2796,6 +2832,14 @@ mod tests {
         assert_eq!(
             t(Locale::En, "caps.skill.figure_duplicate_audit.title"),
             "Figure duplicate audit"
+        );
+        assert_eq!(
+            t(Locale::Zh, "caps.skill.conversation_analysis.title"),
+            "对话分析"
+        );
+        assert_eq!(
+            t(Locale::En, "caps.skill.conversation_analysis.title"),
+            "Conversation analysis"
         );
         assert_eq!(
             t(Locale::Zh, "caps.tile.pii_firewall.terms_title"),

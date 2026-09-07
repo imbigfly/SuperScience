@@ -962,7 +962,8 @@ async fn main() -> Result<()> {
     if let Some(vision) = &vision_cfg {
         setup_message(jsonl, format_args!("vision model wired ({})", vision.model));
     }
-    let run_store = superscience_runs::open_project_store(&root, runs::CLI_PROJECT_ID, "CLI").await?;
+    let run_store =
+        superscience_runs::open_project_store(&root, runs::CLI_PROJECT_ID, "CLI").await?;
     let run_manager = superscience_runs::RunManager::new();
     runs::register_run_tools(
         &mut agent.tools,
@@ -1454,7 +1455,10 @@ mod tests {
         assert_eq!(cfg.model, "gpt-4o-mini");
         assert_eq!(cfg.base_url, "https://api.openai.com/v1");
         assert_eq!(cfg.api_key, "vision-key");
-        assert!(matches!(cfg.kind, superscience_llm::ProviderKind::OpenAiResponses));
+        assert!(matches!(
+            cfg.kind,
+            superscience_llm::ProviderKind::OpenAiResponses
+        ));
     }
 
     #[test]
@@ -1471,7 +1475,10 @@ mod tests {
         .unwrap()
         .expect("vision config");
         assert_eq!(cfg.base_url, "https://api.anthropic.com");
-        assert!(matches!(cfg.kind, superscience_llm::ProviderKind::Anthropic));
+        assert!(matches!(
+            cfg.kind,
+            superscience_llm::ProviderKind::Anthropic
+        ));
     }
 
     #[test]

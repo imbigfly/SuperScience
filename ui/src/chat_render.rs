@@ -518,14 +518,7 @@ mod steps_title_tests {
             "AI is hard at work…"
         );
         assert_eq!(
-            steps_title(
-                Locale::Zh,
-                false,
-                true,
-                Some("AI正在努力工作…"),
-                1,
-                None
-            ),
+            steps_title(Locale::Zh, false, true, Some("AI正在努力工作…"), 1, None),
             "AI正在努力工作…"
         );
     }
@@ -1568,38 +1561,45 @@ pub(crate) fn render_item(
             }
             .into_view()
         }
-        ChatItem::Assistant { text, model, resources } => {
+        ChatItem::Assistant {
+            text,
+            model,
+            resources,
+        } => {
             let show_review = !session_id.trim().is_empty();
             view! {
-            <AssistantMessage
-                text=text.clone()
-                model=model.clone()
-                timestamp=timestamp
-                resources=resources.clone()
-                artifacts=artifacts
-                source_item=ui_index
-                on_artifact=on_artifact
-                on_file=on_file
-                on_copy=Callback::new(copy_text)
-                on_memory=Callback::new({
-                    let session_id = session_id.clone();
-                    move |_| on_memory.call((session_id.clone(), explore_turn_index))
-                })
-                on_review=Callback::new(move |_| on_review.call(session_id.clone()))
-                on_branch=Callback::new(on_branch)
-                can_branch=can_branch
-                show_actions=show_actions
-                show_review=show_review
-                can_undo=can_undo
-                on_undo=on_undo
-                show_explore=show_explore
-                can_explore=can_explore
-                explore_turn_index=explore_turn_index
-                on_explore=on_explore
-            />
-        }.into_view()
+                <AssistantMessage
+                    text=text.clone()
+                    model=model.clone()
+                    timestamp=timestamp
+                    resources=resources.clone()
+                    artifacts=artifacts
+                    source_item=ui_index
+                    on_artifact=on_artifact
+                    on_file=on_file
+                    on_copy=Callback::new(copy_text)
+                    on_memory=Callback::new({
+                        let session_id = session_id.clone();
+                        move |_| on_memory.call((session_id.clone(), explore_turn_index))
+                    })
+                    on_review=Callback::new(move |_| on_review.call(session_id.clone()))
+                    on_branch=Callback::new(on_branch)
+                    can_branch=can_branch
+                    show_actions=show_actions
+                    show_review=show_review
+                    can_undo=can_undo
+                    on_undo=on_undo
+                    show_explore=show_explore
+                    can_explore=can_explore
+                    explore_turn_index=explore_turn_index
+                    on_explore=on_explore
+                />
+            }
+            .into_view()
         }
-        ChatItem::BranchMerge { text, branch_title, .. } => {
+        ChatItem::BranchMerge {
+            text, branch_title, ..
+        } => {
             let open_text = text.clone();
             let title = if branch_title.trim().is_empty() {
                 t(locale.get(), "branch.merged_result")

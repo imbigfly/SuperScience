@@ -3,7 +3,7 @@
 use crate::app_support::compose_icon;
 use crate::bindings::invoke_checked;
 use crate::dto::*;
-use crate::i18n::{t, tf, Locale};
+use crate::i18n::{specialist_display_name, t, tf, Locale};
 use crate::text::{dom_value, event_target_checked, event_target_value, md_to_html};
 use crate::window_capture_escape;
 use leptos::{ev, *};
@@ -1210,7 +1210,12 @@ fn roundtable_assignment_editor(
                                         assignment,
                                         |target| target.specialist_id.clone(),
                                     ) == selected_id
-                                }>{specialist.name}</option>
+                                }>{specialist_display_name(
+                                    locale.get(),
+                                    &specialist.id,
+                                    &specialist.name,
+                                    specialist.builtin,
+                                )}</option>
                             }
                         }
                     />
@@ -1888,7 +1893,12 @@ fn dynamic_task_editor(
                             view! {
                                 <option value=id prop:selected=move || {
                                     task_value(state.dynamic_form, key, |task| task.specialist_id.clone()) == selected_id
-                                }>{specialist.name}</option>
+                                }>{specialist_display_name(
+                                    locale.get(),
+                                    &specialist.id,
+                                    &specialist.name,
+                                    specialist.builtin,
+                                )}</option>
                             }
                         }
                     />

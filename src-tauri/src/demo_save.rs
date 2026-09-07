@@ -139,26 +139,6 @@ pub(super) fn delete_user_demo_cmd(state: State<'_, AppState>, id: String) -> Re
     delete_demo(&state.app_data, &id)
 }
 
-#[tauri::command(rename = "export_demo_to_seed")]
-pub(super) fn export_demo_to_seed_cmd(
-    state: State<'_, AppState>,
-    id: String,
-    dest_suffix: String,
-) -> Result<SavedDemo, String> {
-    let dest = seed::bundled_dir().ok_or_else(|| {
-        "Bundled example library (seed/) was not found on this install.".to_string()
-    })?;
-    let saved = export_demo_to_dir(
-        &find_demo_dir(&id, Some(&state.app_data))
-            .ok_or_else(|| format!("demo '{id}' not found"))?,
-        &dest,
-        &id,
-        &dest_suffix,
-    )?;
-    seed::unhide_demo(&state.app_data, &saved.id);
-    Ok(saved)
-}
-
 pub(crate) fn delete_demo(app_data: &Path, id: &str) -> Result<(), String> {
     validate_demo_id(id)?;
     let user_dir = seed::user_demos_dir(app_data);
@@ -267,12 +247,6 @@ pub(crate) fn export_demo_to_dir(
         title,
         user_saved: false,
     })
-}
-
-fn find_demo_dir(id: &str, app_data: Option<&Path>) -> Option<PathBuf> {
-    seed::demo_search_dirs(app_data)
-        .into_iter()
-        .find(|dir| dir.join(format!("{id}.json")).is_file())
 }
 
 fn validate_demo_id(id: &str) -> Result<(), String> {

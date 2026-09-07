@@ -13,8 +13,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use superscience_skills::update::{
     apply_pack_local_patches, archive_inner_root, collect_declared_skill_dirs,
-    needs_remote_install, normalize_academic_shared_layout, overlay_stale_vs_bundled,
-    pack_overlay_skill_names, PinSource, VendorPackSpec, VENDOR_PACKS,
+    declared_skill_search_root, needs_remote_install, normalize_academic_shared_layout_with_donor,
+    overlay_stale_vs_bundled, pack_overlay_skill_names, PinSource, VendorPackSpec, VENDOR_PACKS,
 };
 use tauri::{AppHandle, State, WebviewWindow};
 
@@ -388,7 +388,8 @@ fn install_pack_from_archive(
     std::fs::create_dir_all(&unpack_root).map_err(|error| error.to_string())?;
     crate::plugins::extract_zip(archive, &unpack_root)?;
     let inner = archive_inner_root(&unpack_root)?;
-    let selected = collect_declared_skill_dirs(&inner, pack.skills)?;
+    let search = declared_skill_search_root(&inner, pack.skills);
+    let selected = collect_declared_skill_dirs(&search, pack.skills)?;
     let mut installed = Vec::new();
     for (name, source) in selected.dirs {
         let dest = skills_dir.join(&name);
@@ -396,8 +397,12 @@ fn install_pack_from_archive(
         apply_pack_local_patches(&name, &dest)?;
         installed.push(name);
     }
-    if pack.id == "academic-research-skills" && normalize_academic_shared_layout(skills_dir)? {
-        installed.push(superscience_skills::update::ACADEMIC_SHARED_NAME.to_string());
+    if pack.id == "academic-research-skills" {
+        let archive_shared = inner.join("shared");
+        let extra_donor = archive_shared.is_dir().then_some(archive_shared.as_path());
+        if normalize_academic_shared_layout_with_donor(skills_dir, extra_donor)? {
+            installed.push(superscience_skills::update::ACADEMIC_SHARED_NAME.to_string());
+        }
     }
     let archive_sha256 = sha256_file(archive).unwrap_or_default();
     write_pack_state(

@@ -71,10 +71,53 @@ After the backend is resolved, Read the mapped fragment (`static/fragments/backe
 Apply the loaded material in this order:
 
 1. Figure contract (`core/contract.md`) — write the core conclusion, map the evidence chain, classify the archetype, set the journal/export contract, before any code.
-2. Default stance (`core/stance.md`) — archetype-first composition, hero panel, restrained palette, statistics/integrity as part of the figure.
-3. Backend fragment — the exclusive Python or R quick-start and execution rule.
-4. Template adaptation — when reusing built-in original examples, licensed external material, or user-provided plotting code, load `references/asset-adaptation.md` before mapping data or changing the script.
-5. Delivery preflight — before final delivery, load `references/qa-contract.md`, run `scripts/validate_figure.py` on the plotting source, run `scripts/audit_pdf_text.py` on the exported PDF, then inspect every panel and the complete figure at final physical size. Automated checks do not replace the panel-by-panel uncertainty, salience, spacing, and collision audit.
+2. Multi-panel evidence architecture — when planning, restructuring, or auditing a labelled multi-panel figure, load `references/multipanel-evidence-architecture.md`. Make the figure answer one Results-level scientific question; assign panels different inferential roles, not merely different metrics. When figure order must follow the manuscript argument, also load `../nature-shared/core/nature-results-discussion.md`.
+3. Default stance (`core/stance.md`) — archetype-first composition, hero panel, restrained palette, statistics/integrity as part of the figure.
+4. Backend fragment — the exclusive Python or R quick-start and execution rule.
+5. Template adaptation — when reusing built-in original examples, licensed external material, or user-provided plotting code, load `references/asset-adaptation.md` before mapping data or changing the script.
+6. Rendered QA and delivery preflight — load `references/qa-contract.md`, run the render-time panel-alignment gate for every multi-panel figure, `scripts/validate_figure.py` on the plotting source, `scripts/audit_pdf_text.py` on the exported PDF, and `scripts/audit_figure_collisions.py` on the same final PDF. Then inspect every panel and the complete figure at final physical size. Automated checks do not replace the panel-by-panel uncertainty, salience, spacing, and ambiguity audit.
+
+For every figure containing two or more comparable panels, measure the **final
+rendered plot-area rectangles** before export and preserve the alignment JSON.
+Python figures must call `require_matplotlib_panel_alignment()` from
+`scripts/audit_panel_alignment.py` after the final layout draw. R/patchwork
+figures must source `scripts/panel_alignment.R`, write the patchwork layout
+manifest at the final export dimensions, and run the same backend-neutral JSON
+auditor. Use a default physical tolerance of `1.5 pt` for shared edges, widths,
+heights, panel-label anchors and repeated gutters. `FIX BEFORE DELIVERY` or exit
+code `1` blocks export; `NOT AUDITABLE` or exit code `2` blocks any claim that
+alignment passed. A horizontal row of three or four equal-grid-span panels must
+have equal final plot-area widths as well as equal heights and gutters; an
+intentional unequal-width design requires a recorded `panel-width` exemption.
+Structured unequal-span grids—including two stacked panels
+beside one panel spanning both rows, in either column—must be inferred from
+shared grid start/stop boundaries and checked automatically. Nested grids,
+free-positioned hero panels, insets and colorbars may be excluded only through
+explicit comparable groups or a recorded exemption with a reason. Do not
+weaken the global tolerance to hide one intentional exception.
+
+After every generated or revised Python/R scientific figure, export the final
+PDF and run the collision audit again; this is mandatory after any change to
+data geometry, text, fonts, legends, annotations, axes, error bars, panel size
+or layout, not only at final submission. Use:
+
+```bash
+python skills/nature-figure/scripts/audit_figure_collisions.py figure.pdf \
+  --json-out figure.collision-audit.json \
+  --overlay-pdf figure.collision-audit.pdf
+```
+
+- `FIX BEFORE DELIVERY` or exit code `1`: repair the figure, re-export with the
+  selected plotting backend, and rerun all rendered QA.
+- `REVIEW REQUIRED`: inspect every WARN at final physical size; record why an
+  intentional overlay is acceptable. Use `--strict` when WARN must block.
+- `NOT AUDITABLE` or exit code `2`: report the dependency/PDF blocker and do not
+  claim collision validation. Install `requirements.txt` when PyMuPDF is absent.
+
+The collision audit reads PDF geometry for both Python and R output. It does not redraw
+the scientific figure or authorize cross-backend plotting. Its optional marked
+PDF is a QA-only diagnostic artifact and must never replace the selected
+backend's source or submission files.
 
 When the target is the flagship journal Nature, also load
 `references/nature-article-requirements.md`. It separates initial-review files
@@ -96,7 +139,7 @@ The chart serves the scientific logic; aesthetic polish is subordinate to making
 
 ### 5. Reach for references only when needed
 
-The files under `references/` are deep references, not defaults. Open them on demand per the `references.on_demand` table in the manifest — for example `references/figure-contract.md` to build the contract, `references/asset-adaptation.md` to reuse a plotting template safely, `references/template-catalog.md` for validated Python CSV templates, `references/api.md` for the Python palette and numerical/layout safety helpers, `references/r-workflow.md` for R, `references/design-theory.md` for color/typography/export rationale, `references/common-patterns.md` and `references/chart-types.md` for layout/chart recipes, `references/nature-2026-observations.md` for real Nature page archetypes, `references/qa-contract.md` before final delivery, `references/nature-article-requirements.md` for exact flagship Nature stage and upload rules, `../nature-shared/journal-formats/nature-machine-intelligence.md` for exact NMI figure rules, `references/ai-graphical-abstract-workflow.md` for AI-assisted graphical-abstract planning, policy gating, human verification, and provenance, and `references/tutorials.md` / `references/demos.md` for worked examples.
+The files under `references/` are deep references, not defaults. Open them on demand per the `references.on_demand` table in the manifest — for example `references/figure-contract.md` to build the contract, `references/multipanel-evidence-architecture.md` to turn one Results-level question into complementary panel roles and a claim-escalating figure sequence, `references/asset-adaptation.md` to reuse a plotting template safely, `references/template-catalog.md` for validated Python CSV templates, `references/api.md` for the Python palette and numerical/layout safety helpers, `references/r-workflow.md` for R, `references/design-theory.md` for color/typography/export rationale, `references/common-patterns.md` and `references/chart-types.md` for layout/chart recipes, `references/nature-2026-observations.md` for real Nature page archetypes, `references/qa-contract.md` before final delivery, `references/nature-article-requirements.md` for exact flagship Nature stage and upload rules, `../nature-shared/journal-formats/nature-machine-intelligence.md` for exact NMI figure rules, `references/ai-graphical-abstract-workflow.md` for AI-assisted graphical-abstract planning, policy gating, human verification, and provenance, and `references/tutorials.md` / `references/demos.md` for worked examples.
 
 Do not infer flagship Nature or NMI requirements from a Nature Communications
 corpus or from the visual-style examples in this skill.

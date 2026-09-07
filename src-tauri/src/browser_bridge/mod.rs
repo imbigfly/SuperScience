@@ -21,6 +21,10 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
+use superscience_dto::{
+    BrowserExtensionSetup, BrowserExtensionStatus, BrowserExtensionUpdateResult,
+    BrowserNeedsHumanConfirmResult, BrowserNeedsHumanPrompt, BrowserNeedsHumanTab,
+};
 use superscience_dto::{BrowserTabCleanupItem, BrowserTabCleanupPrompt};
 use superscience_llm::ToolSchema;
 use superscience_store::Store;
@@ -32,10 +36,6 @@ use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{accept_hdr_async, WebSocketStream};
 use uuid::Uuid;
-use superscience_dto::{
-    BrowserExtensionSetup, BrowserExtensionStatus, BrowserExtensionUpdateResult,
-    BrowserNeedsHumanConfirmResult, BrowserNeedsHumanPrompt, BrowserNeedsHumanTab,
-};
 
 use crate::browser_url_filters::{self, BrowserUrlFilters};
 

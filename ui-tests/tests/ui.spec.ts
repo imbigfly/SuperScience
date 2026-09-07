@@ -10457,6 +10457,22 @@ test("figure duplicate audit tile starts a specialist skill chat", async ({ page
   expect(String(sent?.message ?? "")).toContain("不要自行扫描项目找图");
 });
 
+test("conversation analysis tile starts a specialist chat", async ({ page }) => {
+  await page.goto("/?mockLocale=zh");
+  await expect(page.getByTestId("capability-scene")).toBeVisible();
+  await page.getByRole("tab", { name: "协作扩展" }).click();
+  await expect(page.getByTestId("cap-tile-conversation-analysis")).toBeVisible();
+  await expect(page.getByTestId("cap-tile-conversation-analysis")).toContainText("对话分析");
+  const sendsBefore = await invokeCount(page, "send_message");
+  await page.getByTestId("cap-tile-conversation-analysis").click();
+  await expect.poll(() => invokeCount(page, "send_message"), { timeout: 15_000 }).toBeGreaterThan(sendsBefore);
+  await expect.poll(() => lastInvokeArgs(page, "set_session_specialist")).toMatchObject({
+    id: "conversation_analysis",
+  });
+  const sent = await lastInvokeArgs(page, "send_message");
+  expect(String(sent?.message ?? "")).toContain("向我确认范围后再导出");
+});
+
 test("handwriting extract opens settings instead of chat when no calibration model is saved", async ({ page }) => {
   await openHandwritingExtractHome(page, "/?mockHandwritingCalibrationUnset=1");
   const sendsBefore = await invokeCount(page, "send_message");
@@ -15153,6 +15169,7 @@ test("builtin specialist cards follow the UI locale", async ({ page }) => {
   await expect(page.getByTestId("specialist-card-scientific_illustrator")).toContainText("科研作图专家");
   await expect(page.getByTestId("specialist-card-handwriting_extract")).toContainText("手写提取专家");
   await expect(page.getByTestId("specialist-card-figure_duplicate_audit")).toContainText("图片查重");
+  await expect(page.getByTestId("specialist-card-conversation_analysis")).toContainText("对话分析");
   await expect(page.getByTestId("specialist-chat-reviewer")).toContainText("与此专家对话");
 });
 

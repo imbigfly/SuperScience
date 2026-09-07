@@ -346,7 +346,6 @@ pub(super) async fn remove_skill(
     Ok(())
 }
 
-
 const CATALOG_SKILL_MAX_BYTES: u64 = 256 * 1024 * 1024;
 const CATALOG_SKILL_PROGRESS_EVENT: &str = "catalog-skill-install-progress";
 

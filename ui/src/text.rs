@@ -807,6 +807,249 @@ pub(crate) fn html_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// Render TCTOKEN `release_notes` for `inner_html`.
+///
+/// The check API stores the admin rich-text editor as HTML (`<p>`, `<br>`,
+/// lists). Older payloads may still be plain text; those keep their newlines.
+pub(crate) fn release_notes_to_html(src: &str) -> String {
+    let trimmed = src.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if looks_like_html(trimmed) {
+        sanitize_release_notes_html(trimmed)
+    } else {
+        let escaped = html_escape(trimmed)
+            .replace("\r\n", "\n")
+            .replace('\n', "<br>");
+        format!("<p>{escaped}</p>")
+    }
+}
+
+fn looks_like_html(src: &str) -> bool {
+    let bytes = src.as_bytes();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'<' {
+            let next = bytes[i + 1];
+            if next.is_ascii_alphabetic() || next == b'/' || next == b'!' {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+const RELEASE_NOTES_TAGS: &[&str] = &[
+    "a",
+    "b",
+    "blockquote",
+    "br",
+    "code",
+    "del",
+    "div",
+    "em",
+    "font",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "hr",
+    "i",
+    "img",
+    "li",
+    "ol",
+    "p",
+    "pre",
+    "s",
+    "span",
+    "strike",
+    "strong",
+    "sub",
+    "sup",
+    "table",
+    "tbody",
+    "td",
+    "th",
+    "thead",
+    "tr",
+    "u",
+    "ul",
+];
+
+fn sanitize_release_notes_html(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut rest = src;
+    while let Some(start) = rest.find('<') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        if after.starts_with("!--") {
+            rest = after.find("-->").map(|end| &after[end + 3..]).unwrap_or("");
+            continue;
+        }
+        let Some(end) = after.find('>') else {
+            out.push_str(rest);
+            break;
+        };
+        let raw = after[..end].trim();
+        rest = &after[end + 1..];
+        let (closing, body) = match raw.strip_prefix('/') {
+            Some(body) => (true, body.trim()),
+            None => (false, raw),
+        };
+        let self_closing = body.ends_with('/');
+        let body = body.trim_end_matches('/').trim();
+        let name_end = body.find(char::is_whitespace).unwrap_or(body.len());
+        let name = body[..name_end].to_ascii_lowercase();
+        if name == "script" || name == "style" || name == "iframe" {
+            if !closing {
+                let needle = format!("</{name}");
+                let lower = rest.to_ascii_lowercase();
+                if let Some(idx) = lower.find(&needle) {
+                    if let Some(gt) = rest[idx..].find('>') {
+                        rest = &rest[idx + gt + 1..];
+                    }
+                } else {
+                    rest = "";
+                }
+            }
+            continue;
+        }
+        if !RELEASE_NOTES_TAGS.contains(&name.as_str()) {
+            continue;
+        }
+        if closing {
+            out.push_str("</");
+            out.push_str(&name);
+            out.push('>');
+            continue;
+        }
+        let attrs = sanitize_release_notes_attrs(&name, &body[name_end..]);
+        out.push('<');
+        out.push_str(&name);
+        out.push_str(&attrs);
+        if self_closing || matches!(name.as_str(), "br" | "hr" | "img") {
+            out.push_str(" />");
+        } else {
+            out.push('>');
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn sanitize_release_notes_attrs(tag: &str, raw: &str) -> String {
+    let mut out = String::new();
+    let mut rest = raw.trim();
+    while !rest.is_empty() {
+        let Some(eq) = rest.find('=') else {
+            break;
+        };
+        let name = rest[..eq].trim().to_ascii_lowercase();
+        rest = rest[eq + 1..].trim_start();
+        let (value, next) = split_html_attr_value(rest);
+        rest = next;
+        if name.starts_with("on") {
+            continue;
+        }
+        let keep = match (tag, name.as_str()) {
+            ("a", "href") => safe_release_notes_url(&value, true),
+            ("img", "src") => safe_release_notes_url(&value, false),
+            ("img", "alt") | (_, "title") => true,
+            ("td" | "th", "colspan" | "rowspan") => value.chars().all(|c| c.is_ascii_digit()),
+            ("font", "color" | "size") => !value.contains('<'),
+            (_, "style") => sanitize_release_notes_style(&value).is_some(),
+            _ => false,
+        };
+        if !keep {
+            continue;
+        }
+        let rendered = if name == "style" {
+            sanitize_release_notes_style(&value).unwrap_or_default()
+        } else {
+            value
+        };
+        if rendered.is_empty() {
+            continue;
+        }
+        out.push(' ');
+        out.push_str(&name);
+        out.push_str("=\"");
+        out.push_str(&html_escape(&rendered));
+        out.push('"');
+    }
+    out
+}
+
+fn split_html_attr_value(src: &str) -> (String, &str) {
+    let Some(first) = src.chars().next() else {
+        return (String::new(), src);
+    };
+    if first == '"' || first == '\'' {
+        let rest = &src[first.len_utf8()..];
+        return match rest.find(first) {
+            Some(end) => (
+                rest[..end].to_string(),
+                rest[end + first.len_utf8()..].trim_start(),
+            ),
+            None => (rest.to_string(), ""),
+        };
+    }
+    let end = src.find(char::is_whitespace).unwrap_or(src.len());
+    (src[..end].to_string(), src[end..].trim_start())
+}
+
+fn safe_release_notes_url(value: &str, allow_mailto: bool) -> bool {
+    let trimmed = value.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    lower.starts_with("https://")
+        || lower.starts_with("http://")
+        || (allow_mailto && lower.starts_with("mailto:"))
+}
+
+fn sanitize_release_notes_style(value: &str) -> Option<String> {
+    let lower = value.to_ascii_lowercase();
+    if lower.contains("url(")
+        || lower.contains("expression")
+        || lower.contains("javascript")
+        || lower.contains('@')
+    {
+        return None;
+    }
+    const ALLOWED: &[&str] = &[
+        "background-color",
+        "color",
+        "font-size",
+        "font-style",
+        "font-weight",
+        "line-height",
+        "text-align",
+        "text-decoration",
+    ];
+    let mut kept = Vec::new();
+    for part in value.split(';') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let Some((prop, val)) = part.split_once(':') else {
+            continue;
+        };
+        let prop = prop.trim().to_ascii_lowercase();
+        if ALLOWED.contains(&prop.as_str()) {
+            kept.push(format!("{prop}: {}", val.trim()));
+        }
+    }
+    if kept.is_empty() {
+        None
+    } else {
+        Some(kept.join("; "))
+    }
+}
+
 /// Best-effort JSON pretty-printer for file previews. Invalid JSON falls back
 /// to the original text so previews stay usable even for malformed output.
 pub(crate) fn pretty_json(text: &str) -> String {
@@ -2859,6 +3102,46 @@ mod md_catalog_tests {
             (Some("tool.badge.skill"), "use_skill".to_string())
         );
         assert_eq!(tool_card_label("shell", "ls"), (None, "shell".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod release_notes_html_tests {
+    use super::release_notes_to_html;
+
+    #[test]
+    fn html_paragraphs_keep_rich_text_structure() {
+        let html =
+            release_notes_to_html("<p>1、融入手写图片识别能力</p><p>2、重复图片检测能力</p>");
+        assert_eq!(
+            html,
+            "<p>1、融入手写图片识别能力</p><p>2、重复图片检测能力</p>"
+        );
+    }
+
+    #[test]
+    fn plain_text_keeps_newlines() {
+        let html = release_notes_to_html("1、融入手写图片识别能力\n2、重复图片检测能力");
+        assert_eq!(
+            html,
+            "<p>1、融入手写图片识别能力<br>2、重复图片检测能力</p>"
+        );
+    }
+
+    #[test]
+    fn script_and_javascript_urls_are_stripped() {
+        let html = release_notes_to_html(
+            "<p>safe</p><script>alert(1)</script><p><a href=\"javascript:alert(1)\">x</a></p>",
+        );
+        assert_eq!(html, "<p>safe</p><p><a>x</a></p>");
+        assert!(!html.contains("script"));
+        assert!(!html.contains("javascript"));
+    }
+
+    #[test]
+    fn safe_inline_styles_are_kept() {
+        let html = release_notes_to_html("<p style=\"color: #c00; text-align: left;\">note</p>");
+        assert_eq!(html, "<p style=\"color: #c00; text-align: left\">note</p>");
     }
 }
 

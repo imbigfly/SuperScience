@@ -602,6 +602,7 @@
 }
 .empty h1 { margin: var(--space-1) 0 0; font-family: var(--font-serif); font-size: var(--text-xl); font-weight: 500; letter-spacing: -0.02em; color: var(--text); }
 .empty p { margin: 0; font-size: var(--text-md); max-width: 420px; line-height: 1.55; font-weight: 400; }
+.empty p.empty-intro { font-family: var(--font-serif); font-size: var(--text-xl); font-weight: 500; letter-spacing: -0.02em; color: var(--text); max-width: 420px; line-height: 1.55; margin: 0 0 var(--space-2); white-space: nowrap; }
 
 .msg { width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box; }
 .msg .role { font-size: 11px; color: var(--text-faint); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }

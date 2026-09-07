@@ -117,6 +117,7 @@ pub(crate) fn intro_for(id: &str) -> Option<&'static CapabilityIntro> {
         "journal-prescreen" => &JOURNAL_PRESCREEN,
         "figure-duplicate-audit" => &FIGURE_DUPLICATE_AUDIT,
         "handwriting-extract" => &HANDWRITING_EXTRACT,
+        "conversation-analysis" => &CONVERSATION_ANALYSIS,
         "topic-coach" => &TOPIC_COACH,
         "knowledge" => &KNOWLEDGE,
         "channels" => &CHANNELS,
@@ -1448,6 +1449,33 @@ const HANDWRITING_EXTRACT: CapabilityIntro = intro(
     help(
         "I will extract and calibrate with both models, output a table, and list low-confidence cells separately.",
         "用双模型提取并校准，输出表，低置信格单独列出。",
+    ),
+);
+
+const CONVERSATION_ANALYSIS: CapabilityIntro = intro(
+    help(
+        "You want a readable report of what you asked and what the model finally concluded across every saved chat, not just this project.\nClick the card. It first lists the sessions, waits for your confirmation, then writes 对话分析报告.html.",
+        "要把系统里全部项目的全部对话整理成可读报告：用户问了什么、模型每轮最后的结论是什么，中间过程不要。\n点卡片。它先列出将要分析的会话，等你确认后再写成对话分析报告.html。",
+    ),
+    help(
+        "Raw transcripts mix user questions with model thinking, follow-ups, and partial replies, so the final answer is hard to find.\nSessions live in many projects and nobody gathered them before reviewing.\nA verbal recap drops turns, so later readers cannot see the full exchange.\nSixty chats stacked into one long page cannot be opened usefully.",
+        "原始记录把用户提问、模型思考、追问和分段回复搅在一起，最后结论不好找。\n会话散在多个项目里，没人先汇总再看。\n口头复述会漏轮次，后来的人看不到完整往来。\n六十多场堆成一长页，没法快速打开。",
+    ),
+    help(
+        "User plus conclusion only | Each turn keeps the user message and the model's last reply; earlier thinking is dropped.\nPick a session to jump | A left-hand list with search opens one session at a time, so 60 chats are not one long page.\nNothing omitted | Every session and every turn is in the report, not a sample.\nA file you can reopen | The deliverable is 对话分析报告.html, styled as a chat you can view.",
+        "只要用户和结论 | 每一轮只留用户消息和模型最后一条回复，前面的思考丢掉。\n点选会话即可跳转 | 左侧列表可搜索，点一项只看该会话，六十多段不会堆成一长页。\n一轮不漏 | 全部会话和全部轮次都进报告，不是抽样。\n留下能打开的文件 | 交付物是对话分析报告.html，做成可点选的聊天页。",
+    ),
+    help(
+        "Click the card to start a guided chat with the Conversation Analysis specialist\nRead the preview of every project’s sessions, then confirm before it exports\nDo not paste records; the specialist reads saved chats after you confirm\nStart with the actual task, for example: “Analyze all sessions and write 对话分析报告.html.”",
+        "点卡片，打开一场由「对话分析」专家引导的对话\n先看全部项目的会话清单，确认后再导出\n不要粘贴记录；确认后由专家读取已保存会话\n第一句直接进入任务，可参考：「分析全部会话，写成对话分析报告.html。」",
+    ),
+    help(
+        "Analyze all sessions and write 对话分析报告.html.",
+        "分析全部会话，写成对话分析报告.html。",
+    ),
+    help(
+        "I will list every saved session across projects, wait for your confirmation, then write 对话分析报告.html with a left session list so you can jump to any chat. Intermediate thinking will not appear.",
+        "会先列出全部项目的会话，等你确认后再写成带左侧会话列表的对话分析报告.html，点选即可跳转。中间思考不会出现。",
     ),
 );
 

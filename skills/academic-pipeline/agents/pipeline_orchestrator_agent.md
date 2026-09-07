@@ -51,7 +51,7 @@ derive or refresh it from a clock, path, artifact contents, or transcript.
 **Contract:** full spec in [`../references/passport_as_reset_boundary.md`](../references/passport_as_reset_boundary.md) §"`resume_from_passport` mode contract".
 
 **Orchestrator obligations:**
-1. **Acquire passport lock.** Before reading the ledger or checking for a prior consuming entry, acquire an exclusive advisory lock on the passport file (see `references/passport_as_reset_boundary.md` §"Concurrency model"). Hold the lock across the read, the no-prior-resume check, and the append. Release after the append is durable on disk. Do NOT release between steps.
+1. **Acquire passport lock.** Before reading the ledger or checking for a prior consuming entry, acquire an exclusive advisory lock on the adjacent stable `.<passport-basename>.lock` sidecar (see `references/passport_as_reset_boundary.md` §"Concurrency model"). Every passport writer uses this same sidecar; never lock the replaceable passport inode. Hold the lock across the read, the no-prior-resume check, and the append. Release after the append is durable on disk. Do NOT release between steps.
 2. Parse `<hash>` from user input. Validate `^[0-9a-f]{12}$`.
 3. Locate passport file: prefer explicit path in user input; else look in `./passports/` or `./material_passport*.yaml` relative to CWD; else ask the user for the path.
 4. Load `reset_boundary[]`. Find the entry with `kind: boundary` and matching `hash`. No match → hard error: "Passport hash `<hash>` not found in `<path>`. Cannot resume."
@@ -209,9 +209,63 @@ SLIM checkpoints never reset. MANDATORY checkpoints co-occur with reset when app
 6. A `boundary` is consumed only by appending a `kind: resume` entry with matching `consumes_hash`. Double-resume (second resume of an already-consumed boundary) is a hard error.
 7. MANDATORY checkpoints (Stage 2.5 / 4.5, review decisions, the Stage 5 entry gate) remain MANDATORY even when reset co-occurs. Integrity gates are never diluted. If the boundary carries `pending_decision`, resume must re-prompt the user; `next` is advisory. Actual routing comes from the matched option's `next_stage`/`next_mode`, not from the boundary `next` field.
 8. `collaboration_depth_agent` observer fires on FULL checkpoints as before; its output is included in the checkpoint notification regardless of reset state. Observer state does NOT cross reset boundaries.
-9. Resume consumption MUST hold an exclusive advisory lock on the passport file for the entire read-check-append sequence (acquire the lock on the "Acquire passport lock" obligation, hold across the read-ledger, no-prior-resume check, and resume-entry append steps, release only after the append is durable). Releasing the lock between the no-prior-resume check and the resume-entry append reopens the double-resume race this rule exists to prevent. Non-POSIX implementations that cannot provide OS-level exclusion MUST refuse to resume rather than degrade silently (fail with an explicit error surfaced to the user). See §"Concurrency model" in the protocol doc.
+9. Resume consumption MUST hold an exclusive advisory lock on the adjacent
+   stable `.<passport-basename>.lock` sidecar for the entire
+   read-check-append sequence. Acquire it at the "Acquire passport lock"
+   obligation, hold it across the read-ledger, no-prior-resume check, and
+   resume-entry append, and release only after the append is durable. Every
+   other passport read-modify-write uses the same sidecar; locking the
+   replaceable passport inode is non-conforming. Releasing the sidecar lock
+   between the check and append reopens the double-resume race. A non-POSIX
+   implementation without OS-level exclusion MUST refuse to resume and
+   surface an explicit error. See §"Concurrency model" in the protocol doc.
 
 Full protocol: [`../references/passport_as_reset_boundary.md`](../references/passport_as_reset_boundary.md).
+
+#### Inquiry Branch Ledger (#743, opt-in alpha)
+
+**Flag:** `ARS_INQUIRY_LEDGER=1`. Unset or `0` means the entire sequence below
+is omitted: no ledger read/write, no pointer, no summary, and no user-facing
+branch interaction. With the flag on, an in-memory first branch still follows
+the linear path; do not publish a ledger or `inquiry_ledger_ref` until a second
+branch has been explicitly recorded.
+
+**Authority and replay:** use `scripts/inquiry_branch_ledger.py` for every
+load, append, replay, summary, and ledger/passport commit. Supply the explicit
+workspace root, expected `project_ref`, and the exact canonical profile files
+matching the initial binding and every `profile_rebound`. An unresolved profile
+binding, invalid event chain, over-budget post-state, missing stale event, or
+broken pointer is a visible hard error. Never infer a profile or repair ledger
+bytes in the model context. The runtime's stable sidecar lock (the same
+`.<passport-basename>.lock` required by the reset-boundary protocol) and
+recovery journal are the only authorized two-file publication path.
+
+**Author/AI boundary:** an AI-surfaced facet is appended with actor `ai`, enters
+`parked`, and is never rendered as the author's position. Activation requires
+an explicit author adoption receipt retaining its source event and original
+text. Park, reject, reopen, merge, archive, profile correction, and stale-cause
+resolution are likewise explicit author actions. A reopen-condition signal
+records only that evidence may match a stored condition; it never reopens a
+branch without the author.
+
+**Summary moments:** ask the runtime for a compact summary at exactly:
+
+1. the Stage 1 design-freeze checkpoint;
+2. the Stage 2.5 MANDATORY checkpoint;
+3. the Stage 4.5 MANDATORY checkpoint; or
+4. immediately after a recorded `reopen_condition_signal` (pass its event id).
+
+If the runtime emits an empty string (flag off or no more than one introduced
+branch), insert nothing and ask nothing. Otherwise place its complete
+`### Inquiry Branch Summary` block after ordinary checkpoint state and before
+the checkpoint response prompt. Do not add a graph, ranking, recommendation,
+or extra branch question. The block's `skip`, `off`, and reset-to-simple-path
+choices affect future display only and never delete scholar-owned events.
+
+The ledger is a memory surface, not a gate: it cannot change an integrity
+PASS/FAIL, satisfy a mandatory checkpoint, establish novelty/correctness/value,
+or silently regenerate a stale artifact. Author-recorded first-degree stale
+causes remain visible until individually reconfirmed or superseded.
 
 #### FULL Checkpoint Template (with Decision Dashboard)
 
@@ -639,13 +693,13 @@ consumer.
 |-----------|----------------------|-----------------|----------------|
 | Stage 1 -> 2 | RQ Brief, Methodology Blueprint, Annotated Bibliography, Synthesis Report | Schema 1 (RQ Brief), Schema 2 (Bibliography), Schema 3 (Synthesis) | deep-research handoff protocol; when active, separately carry the #683 context/#684 binding pointer named by the preceding lifecycle |
 | Stage 2 -> 2.5 | Complete Paper Draft + #547 scope context for Phase E4 (RQ Brief `scope` — the required E4 input; `sub_question_bindings` + outline section→sub-question map when present) + the Schema 2 Annotated Bibliography (#548 — `search_strategy` is the E5 comparison basis; `sources[].relevance` + `relevance_score` ground the nearest-prior-work check), when one exists + unchanged #684 binding pointer/receipts when active | Schema 4 (Paper Draft) + Schema 1 scope fields + Schema 2 (search_strategy + source relevance metadata) + review-target contracts | Pass to integrity_verification_agent; integrity does not consume criteria as a verdict input |
-| Stage 2.5 -> 3 | Verified Paper Draft + Integrity Report + E6 finding-set companion and, when findings exist, `authorized_to_continue` disposition sidecar + unchanged #684 manifest/context/brief when active | Schema 4 + Schema 5 + `claim-strength-drift-findings/1.0` + conditional `claim-strength-drift-disposition/1.0` + review-target contracts | Pass only after E6 has no findings or every reported row has explicit authorization; restoration/pause does not transfer the current draft. Carry forward `experiment_provenance[]` + `experiment_alignment_results[]` + `experiment_intake_declaration` (#260); the integrity verdict never consumes criteria binding |
+| Stage 2.5 -> 3 | Stage 2.5 Paper Draft (verified, or carrying the recorded Integrity Check FAIL Loop partially-unverified warning) + Integrity Report + E6 finding-set companion and, when findings exist, `authorized_to_continue` disposition sidecar + unchanged #684 manifest/context/brief when active | Schema 4 + Schema 5 + `claim-strength-drift-findings/1.0` + conditional `claim-strength-drift-disposition/1.0` + review-target contracts | Pass only after E6 has no findings or every reported row has explicit authorization; restoration/pause does not transfer the current draft. Carry forward `experiment_provenance[]` + `experiment_alignment_results[]` + `experiment_intake_declaration` (#260); the integrity verdict never consumes criteria binding |
 | Stage 3 -> **coaching** -> 4 | Editorial Decision, immutable Revision Roadmap, exact claim surfaces, 5 Review Reports, and the Schema 6 closed `review_panel_provenance` carrier; coaching adds the complete explicit author sidecar without mutating the Roadmap | Schema 6 + `revision-roadmap/1.0` + `claim-surface-manifest/1.0` + `author-adjudication/1.0` | For `reviewer_full`, verify the provenance artifact raw digest and deterministic replay before transfer; preserve its valid/invalid carrier byte-for-byte. Source-ordered dialogue records one explicit author choice per item, exact targets, and any exact claim/collateral authority -> revision mode |
 | Stage 4 -> 3' | Revised Draft, hard-required Original (pre-revision) Draft (the #576 1.1 §3.1 Phase 2A input; the required bundle already carries the exact matched round's pre draft, so declaring it absent is `manifest_incomplete`, never a `first_link_not_run` degradation), Response to Reviewers + Editorial Decision Letter (display only) + the Round-1 Schema 6 `review_panel_provenance` carrier and exact artifact bytes + the Round-1 review findings (the Schema 6 review reports the roadmap items trace to — the #576 §4 level-3 criterion layer; absent → transported Schema 7 fields alone, `[ROUND1-FINDINGS-ABSENT]`) + the Round-1 Revision Roadmap being verified + every ordered apply report and paired revision patch/diff file (`<output>.apply-report.json`, the sidecar beside each revised draft, #390; the manifest pair list must exactly equal the fully replayed bundle's ordered write-round projection, the FIRST report's `base_draft_hash` must equal the Original Draft hash prefix, every inner link must join, and only the LAST output hash may equal the Revised Draft hash prefix; any omission, substitution, reorder, or broken link → `manifest_hash_mismatch`) + the Round-1 Reviewer Configuration Cards (yardstick continuity — field_analyst is NOT re-run at Stage 3'; `re_review_mode_protocol.md` § Yardstick Continuity) + unchanged #684 target-review authority when active | Schema 4 (revised + original) + Schema 8 (Response to Reviewers) + Schema 6 (letter + Round-1 review reports + provenance carrier) + raw provenance artifact + Schema 7 (Roadmap, machine-form JSON — § Stage 3' Re-Review Contract Dispatch producer obligations) + apply-report sidecar JSON + revision patch JSON + configuration cards (no numbered schema) + review-target contracts | Before re-review, verify the carrier's raw artifact digest and deterministic replay; on any absent/unreachable/digest/schema/replay failure use the closed invalid state with six unknown axes, never letter reconstruction. Pass to reviewer (marked as verification round) under § Stage 3' Re-Review Contract Dispatch. This row is the re-review-mode transfer — the default Stage 3'. When the user explicitly requests a fresh full review at 3' instead (mid-entry quick→full path: no Schema 7 Roadmap or Round-1 cards exist), transfer the Revised Draft + available context only, dispatch full mode (field_analyst runs by definition), and do NOT mark it a verification round. A changed target requires a new non-comparable target review id |
 | Stage 3' -> **coaching** -> 4' | New Revision Roadmap (if Major) | #670 authority family + `../academic-shared/contracts/re_review/traceability.schema.json` | Pass the immutable roadmap, exact claim surfaces, traceability sidecar, and new complete author sidecar to revision mode; coaching uses a source-ordered explicit author checkpoint, and prior-round choices are never inferred or carried forward |
 | Stage 3' -> 4.5 | (Accept/Minor direct path — no Stage 4' between) Verified Revised Draft + the traceability sidecar with its frozen `previously_missed`/`indeterminate` new-issue records (#576 §8 — Material Passport cargo consumed by the Stage 4.5 gate) | Schema 4 (revised) + traceability sidecar | Pass to integrity_verification_agent (final verification); the frozen records are gate INPUT, not just cargo |
 | Stage 4/4' -> 4.5 | Revised/Re-Revised Draft + #547/#548 context + complete validated `revision-evidence-bundle/1.0` from exact integrity PASS through every review write/no-op/integrity round + (Major-via-4' path) the Stage 3' traceability sidecar with its frozen `previously_missed`/`indeterminate` new-issue records | Schema 4 + #670 bundle + traceability sidecar | Pass to integrity_verification_agent; registered surfaces are replayed, while the explicit unregistered-claim boundary remains mandatory E6 review input |
-| Stage 4.5 -> 5 | Final Verified Draft + Final Integrity Report + E6 finding-set companion and, when findings exist, `authorized_to_continue` disposition sidecar + exact preregistration sidecar/companion + independent #660/#672 results | Schema 4 + Schema 5 + E6 finding/disposition contracts + `preregistration-artifact/1.0`; independent advisory schemas | Refuse transfer while E6 derives `restore_required` or `paused`. After E6 closure, at the one mandatory entry checkpoint run #660 then #672 on identical accepted-draft ID/SHA and surface both without changing routing. On confirmation: Produce MD -> DOCX via Pandoc when available (otherwise instructions) -> ask about LaTeX -> confirm -> PDF. Carry forward `experiment_alignment_results[]` + `experiment_intake_declaration` (#260) to formatter surface + Stage 6 histogram |
+| Stage 4.5 -> 5 | Final Accepted Draft (verified, or carrying the recorded Integrity Check FAIL Loop partially-unverified warning) + Final Integrity Report + E6 finding-set companion and, when findings exist, `authorized_to_continue` disposition sidecar + exact preregistration sidecar/companion + independent #660/#672 results | Schema 4 + Schema 5 + E6 finding/disposition contracts + `preregistration-artifact/1.0`; independent advisory schemas | Refuse transfer while E6 derives `restore_required` or `paused`. After E6 closure, at the one mandatory entry checkpoint run #660 then #672 on identical accepted-draft ID/SHA and surface both without changing routing. On confirmation: Produce MD -> DOCX via Pandoc when available (otherwise instructions) -> ask about LaTeX -> confirm -> PDF. Carry forward `experiment_alignment_results[]` + `experiment_intake_declaration` (#260) to formatter surface + Stage 6 histogram |
 | Stage 5 -> 6 | Final deliverables list + Process-Summary projection of pipeline state history and agent logs, explicitly omitting the #673 activity projection of terminal root `run_id`, pending/sealed activity fields, selected-store data, renderer output, and diagnostics | — (Process Record; no numbered schema) | Dispatched only after the user confirms the Stage 5 completion checkpoint (FULL). User may decline Stage 6 there: mark it `skipped`, set pipeline state `completed`. Protocol: `../references/process_summary_protocol.md`; terminal semantics: `../references/pipeline_state_machine.md` § Stage 6 terminal semantics |
 
 **#672 sidecar continuity:** At Stage 1, this shell-capable orchestrator alone
@@ -704,6 +758,19 @@ Documents in an agent's context that are not its working target measurably worse
 - The aggregate carry-forward obligations stay intact: everything the passport-enumeration rules require (claim/audit aggregates, `experiment_intake_declaration`, `slr_lineage`) is part of the passport, not a distractor — trimming applies to loose materials outside the passport, never to passport fields.
 
 *Epistemic status: this is a dispatch-assembly discipline, not a runtime guarantee — the orchestrator controls what it assembles into each dispatch and must not assemble distractors; it cannot strip context the platform itself injects.*
+
+---
+
+## Checkpoint authority fidelity
+
+Every MANDATORY and FULL checkpoint in this pipeline is a decision the researcher makes in their own turn — the authority is `references/pipeline_state_machine.md` § Checkpoint decision provenance; this section is the orchestrator's operational mirror. Current frontier models are vendor-documented to fabricate or overstate a user's approval to pass a gate, to distort user intent when instructing a subagent, and to treat an automated message as the permission they asked for (evidence mapped in `audits/harness-retirement-2026-09-model-update.md` G-1). The orchestrator is the single point that both receives decisions and re-transmits them, so the fidelity discipline lives here:
+
+- **Only a user turn is a decision.** A subagent report, a hook or tool result, a template's default branch, a checkpoint summary the orchestrator wrote, or a prior-turn paraphrase is never the user's choice. If the decision has not appeared in a user turn, the checkpoint is still open — ask again; never proceed on an inferred, assumed, or "obviously intended" answer. The Stage 6 terminal acknowledgement (vocabulary per the state machine's § Stage 6 terminal semantics, mirrored under Collaboration with state_tracker_agent below) counts only when the user gave it.
+- **Re-transmit decisions verbatim.** When a dispatch carries a checkpoint decision, a consent grant, an override, or an authorization to a subagent, quote the user's words (or the exact deterministic authorization artifact) and label them as the user's. Never restate a narrow decision as a broader one, never write a first-person user statement into a dispatch, and never summarize a "no" or a scoped "yes" into an unscoped "yes".
+- **Never assert consent or approval you did not receive.** Cross-model uploads, override-ladder rounds, integrity-correction authorizations, and read attestations require the user's explicit input at the surface that asks for it.
+- **Report the same way.** Completion, checkpoint, and Process Record surfaces state what the user actually decided, in the user's words where the decision is quoted; a step the user did not confirm is reported as unconfirmed.
+
+*Epistemic status: a decision-handling and reporting discipline, not a runtime guarantee. The deterministic authorization inputs (#670's `integrity-correction-authorization-input/1.0`, `/ars-mark-read`'s explicit scope) are the enforced layer where they exist; everywhere else this rule is prompt-level and is indexed as risk R11 in `docs/RISK_REGISTER.md`.*
 
 ---
 
@@ -877,7 +944,7 @@ AI/author origin, paper-mill production, misconduct, contextual validity,
 precision/recall, false-positive/false-negative rate, list coverage, or
 publisher acceptance.
 
-This advisory does not alter Stage 4.5 PASS, the mandatory Stage-5 checkpoint,
+This advisory does not alter the Stage 4.5 verdict, the mandatory Stage-5 checkpoint,
 or any terminal-policy state. It never edits the draft or suggests replacement
 text. Surface the validated report and let the user preserve, revise, or
 proceed. A revision changes the input bytes, invalidates the current advisory,
@@ -901,7 +968,8 @@ and never authorizes this read-only orchestrator to mutate a passport in place.
 ## Cross-Document Consistency Advisory Dispatch (#672)
 
 At the same single mandatory Stage-5 entry checkpoint, after the same exact
-Stage 4.5 PASS, run #660 first and #672 second. Both use the identical designated
+Stage 4.5 terminal resolution (PASS, or a recorded Integrity Check FAIL Loop
+continuation), run #660 first and #672 second. Both use the identical designated
 accepted draft. Enforce this exact machine join before either carrier is shown:
 
 ```text
@@ -941,8 +1009,9 @@ redacted `ADVISORY_UNAVAILABLE:<CODE>` diagnostic. Neither result blocks or
 delays the checkpoint or requires remediation before Stage 5.
 
 Any manuscript revision stales both carriers. Return through existing integrity
-review to a fresh exact Stage 4.5 PASS, then rerun #660 followed by #672 on the
-new accepted bytes. Reusing either old carrier or rerunning only one is invalid
+review to a fresh exact Stage 4.5 terminal resolution (PASS, or a recorded
+FAIL-loop continuation), then rerun #660 followed by #672 on the new accepted
+bytes. Reusing either old carrier or rerunning only one is invalid
 handoff cargo. Rendering is replay-first, one explicit page of at most 25, with
 no `--all`. See
 `../academic-shared/references/cross_document_consistency_advisory_protocol.md`.

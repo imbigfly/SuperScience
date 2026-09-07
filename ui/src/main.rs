@@ -8192,7 +8192,6 @@ fn App() -> impl IntoView {
                     context_menu::DemoAction::Delete(id) => {
                         ui_confirm.set(Some(UiConfirm::DeleteUserDemo(id)));
                     }
-                    context_menu::DemoAction::ExportToSeed { .. } => {}
                 }
                 return;
             }
@@ -10508,13 +10507,12 @@ fn App() -> impl IntoView {
             })
             open_library=Callback::new(move |_| show_library.set(true))
             load_demo=Callback::new(load_demo)
-            open_demo_actions=Callback::new(move |(ev, id, title, user_saved): (web_sys::MouseEvent, String, String, bool)| {
+            open_demo_actions=Callback::new(move |(ev, id, title): (web_sys::MouseEvent, String, String)| {
                 ctx_menu.set(Some(context_menu::demo_menu(
                     ev.client_x() as f64,
                     ev.client_y() as f64,
                     &id,
                     &title,
-                    user_saved,
                     locale.get(),
                 )));
             })
@@ -11555,6 +11553,7 @@ fn App() -> impl IntoView {
                     })}
                     {move || items.with(|l| l.is_empty()).then(|| view! {
                         <div class="empty">
+                            <p class="empty-intro">{move || t(locale.get(), "home.director_cta_hint")}</p>
                             <span class="empty-logo"></span>
                             <h1>{move || empty_title(locale.get(), empty_title_idx.get())}</h1>
                             <p>{move || empty_subtitle(locale.get(), empty_subtitle_idx.get())}</p>

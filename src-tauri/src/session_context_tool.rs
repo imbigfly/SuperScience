@@ -241,7 +241,9 @@ mod tests {
     async fn omitted_context_id_prefers_session_snapshot_over_global() {
         let (store, path) = default_test_store().await;
         store
-            .upsert_execution_context(&superscience_store::ExecutionContext::new("ssh:cpu", "CPU").unwrap())
+            .upsert_execution_context(
+                &superscience_store::ExecutionContext::new("ssh:cpu", "CPU").unwrap(),
+            )
             .await
             .unwrap();
         store

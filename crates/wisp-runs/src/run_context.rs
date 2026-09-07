@@ -157,7 +157,9 @@ pub struct RunOutputUpdate {
 
 pub const PUBLICATION_REPRODUCTION_CONTEXT_ID: &str = "publication-reproduction";
 
-pub fn run_environment_snapshot(context: &superscience_store::ExecutionContext) -> serde_json::Value {
+pub fn run_environment_snapshot(
+    context: &superscience_store::ExecutionContext,
+) -> serde_json::Value {
     let process = ["LANG", "LC_ALL", "TZ"]
         .into_iter()
         .filter_map(|name| std::env::var(name).ok().map(|value| (name, value)))

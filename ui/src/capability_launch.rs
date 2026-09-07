@@ -4,7 +4,8 @@
 //! a future merge that rewrites `main.rs` cannot drop the handler body.
 
 use crate::ability_cards::{
-    ability_card_api_name, ability_card_for_action, ability_card_for_guided, spawn_report_ability_card_usage,
+    ability_card_api_name, ability_card_for_action, ability_card_for_guided,
+    spawn_report_ability_card_usage,
 };
 use crate::app_support::{
     ensure_right_tab, focus_composer, invoke_new_session, js_error_text,
@@ -405,13 +406,7 @@ fn start_guided_capability_chat(
                 );
                 ctx.active_session.set(Some(id.clone()));
                 force_chat_bottom();
-                bind_and_report_guided_capability_session(
-                    &id,
-                    prompt_key,
-                    skill,
-                    specialist,
-                )
-                .await;
+                bind_and_report_guided_capability_session(&id, prompt_key, skill, specialist).await;
                 if let Some(title) = session_title {
                     let arg = to_value(&serde_json::json!({
                         "id": id,
@@ -817,6 +812,12 @@ mod tests {
         let handwriting = t(Locale::Zh, "caps.skill.handwriting_extract.prompt");
         assert!(handwriting.contains("不要自行扫描项目目录找图"));
         assert!(handwriting.contains("上传或粘贴手写照片"));
+        let conversation = t(Locale::Zh, "caps.skill.conversation_analysis.prompt");
+        assert!(conversation.contains("全部项目"));
+        assert!(conversation.contains("向我确认范围后再导出"));
+        assert!(conversation.contains("未确认不要生成报告"));
+        assert!(conversation.contains("不要让我粘贴记录"));
+        assert!(conversation.contains("export_conversation_analysis"));
     }
 
     #[test]

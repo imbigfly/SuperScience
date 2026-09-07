@@ -10,9 +10,6 @@ use std::{
     },
     time::Duration,
 };
-use tauri::{AppHandle, State};
-use tokio::sync::Mutex;
-use uuid::Uuid;
 use superscience_acp::{
     acp::schema::v1::{
         ContentBlock, McpServer, McpServerStdio, ResourceLink, SessionId, TextContent,
@@ -21,6 +18,9 @@ use superscience_acp::{
     AcpPermissionRequest, AcpSessionEvent, AcpSessionHandle, AcpStopReason, AcpUpdateKind,
 };
 use superscience_llm::Message;
+use tauri::{AppHandle, State};
+use tokio::sync::Mutex;
+use uuid::Uuid;
 
 const PROFILES_KEY: &str = "acp_agent_profiles";
 const ACP_READ_ONLY_TIMEOUT: Duration = Duration::from_secs(90);
@@ -2096,7 +2096,10 @@ mod tests {
 
     #[tokio::test]
     async fn config_options_survive_restart_without_crossing_session_or_profile() {
-        let tmp = std::env::temp_dir().join(format!("superscience_acp_configs_{}.sqlite", Uuid::new_v4()));
+        let tmp = std::env::temp_dir().join(format!(
+            "superscience_acp_configs_{}.sqlite",
+            Uuid::new_v4()
+        ));
         let store = superscience_store::Store::open(&tmp).await.unwrap();
         let options = serde_json::json!([{ "id": "model", "name": "Model", "type": "select", "currentValue": "fast", "options": [{"value":"fast","name":"Fast"}, {"value":"smart","name":"Smart"}] }]);
         let mut fresh = superscience_acp::AcpSessionState {

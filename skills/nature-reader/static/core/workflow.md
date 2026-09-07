@@ -50,9 +50,9 @@ If a sentence contains multiple claims, keep the translation readable but do not
 
 Crop each figure/table into `assets/` and place it near its first substantive mention, keeping the caption attached with both original and Chinese caption text. For the full placement and tight-crop rules, and the figure/table block shape, open `references/figure-extraction.md`.
 
-## 5. Generate the reading files
+## 5. Generate the Markdown file
 
-Write `source_map.json`, `assets/`, `translation_notes.md`, and `paper.md` first. `paper.md` stays the machine-readable companion for other skills and must include:
+Default output is a single full-paper `paper.md` file. It must include:
 
 - metadata header
 - a short page/section index
@@ -66,15 +66,7 @@ Write `source_map.json`, `assets/`, `translation_notes.md`, and `paper.md` first
 - a short `阅读提示` / `critical reading notes` section only after the bilingual body, not as a replacement for it
 - short uncertainty notes only when extraction is weak
 
-Then **always** build the user-facing report:
-
-```bash
-python <skill-dir>/scripts/build_reader_html.py \
-  --source-map source_map.json \
-  --output reader.html
-```
-
-Do not hand-write `reader.html`. Do not add an interactive Q&A panel. The chat reply should name `reader.html` and any draft gaps; do not paste the full bilingual body.
+Do not add an interactive Q&A panel or follow-up widget in the Markdown deliverable. If a browser preview is explicitly requested, a companion `reader.html` can be generated as a secondary artifact, but the Markdown file remains the primary output.
 
 Before delivery, run `scripts/validate_reader_math.py paper.md --source-map source_map.json`. Resolve every failure. Use `--strict` when preparing a reusable or published artifact.
 

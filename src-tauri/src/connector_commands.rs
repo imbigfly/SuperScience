@@ -731,7 +731,8 @@ mod tests {
 
     #[test]
     fn schema_and_python_docstrings_fill_tool_briefs() {
-        let dir = std::env::temp_dir().join(format!("superscience_mcp_briefs_{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("superscience_mcp_briefs_{}", uuid::Uuid::new_v4()));
         let pkg = dir.join("mcp_demo");
         std::fs::create_dir_all(&pkg).unwrap();
         std::fs::write(

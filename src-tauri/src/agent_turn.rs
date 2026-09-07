@@ -568,6 +568,12 @@ pub(crate) async fn send_message_inner(
             state.store.clone(),
             specialist.as_ref().map(|spec| spec.id.as_str()),
         );
+        crate::conversation_analysis::add_configured_conversation_analysis_tool(
+            &mut agent,
+            state.store.clone(),
+            &frame_id,
+            specialist.as_ref().map(|spec| spec.id.as_str()),
+        );
         add_configured_video_generation_tool(
             &mut agent,
             models::video_generation_config(&state.store).await,

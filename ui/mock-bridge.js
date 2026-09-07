@@ -48,7 +48,7 @@
     update_available: true,
     release_url: "https://www.tctoken.cn/app/tiancheng.dmg",
     force_update: false,
-    notes: "## What's new\n\n- Sidebar update prompt with changelog\n- Fixed streaming thinking bounce\n- **Breaking:** renamed `foo` to `bar`",
+    notes: "<p>融入手写图片识别能力</p><p>重复图片检测能力</p>",
   };
   let mockUpdateCheckEnabled = true;
   // Category = file-name prefix before "--"; plain date files sit in the

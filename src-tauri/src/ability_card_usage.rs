@@ -29,13 +29,8 @@ pub async fn report_ability_card_usage_cmd(
     let Some(user_id) = logged_in_user_id(&state.store).await else {
         return Ok(());
     };
-    if let Err(error) = tctoken::report_ability_card_usage(
-        user_id,
-        card_id,
-        card_name,
-        date.as_deref(),
-    )
-    .await
+    if let Err(error) =
+        tctoken::report_ability_card_usage(user_id, card_id, card_name, date.as_deref()).await
     {
         tracing::warn!(%error, card_id, "ability card usage report failed");
     }
@@ -58,12 +53,7 @@ pub async fn set_frame_ability_card_cmd(
     }
     state
         .store
-        .set_frame_ability_card(
-            frame_id,
-            card_id,
-            card_name,
-            chrono::Utc::now().timestamp(),
-        )
+        .set_frame_ability_card(frame_id, card_id, card_name, chrono::Utc::now().timestamp())
         .await
         .map_err(|e| e.to_string())
 }

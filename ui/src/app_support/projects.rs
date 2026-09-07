@@ -1,5 +1,7 @@
 use super::*;
-use crate::ability_cards::{ability_card_by_id, spawn_report_ability_card_usage, RESEARCH_DIRECTOR_ID};
+use crate::ability_cards::{
+    ability_card_by_id, spawn_report_ability_card_usage, RESEARCH_DIRECTOR_ID,
+};
 
 #[component]
 pub(crate) fn ProjectsScreen(

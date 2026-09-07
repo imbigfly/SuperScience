@@ -1645,7 +1645,7 @@ pub(crate) fn settings_subpage_label(
             if s.id.is_empty() {
                 t(loc, "specialists.add")
             } else {
-                s.name.clone()
+                crate::i18n::specialist_display_name(loc, &s.id, &s.name, s.builtin)
             }
         }),
         "connections" => conn_form
@@ -1765,7 +1765,10 @@ pub(crate) fn conn_form_from_row(row: &ConnRow) -> ConnForm {
 
 #[cfg(test)]
 mod mcp_secret_form_tests {
-    use super::{blank_conn_secret_field, build_conn_json, conn_form_from_row, new_conn_form, provider_mark_letter};
+    use super::{
+        blank_conn_secret_field, build_conn_json, conn_form_from_row, new_conn_form,
+        provider_mark_letter,
+    };
     use crate::dto::{ConnForm, ConnRow, ConnSecretField, ConnTransport, McpSecretEntry};
 
     #[test]

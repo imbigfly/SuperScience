@@ -7,7 +7,7 @@ use crate::app_support::{
 use crate::bindings::{download_app_update, invoke, invoke_checked, open_external_url};
 use crate::dto::*;
 use crate::i18n::{localize_backend, t, tf, Locale};
-use crate::text::{event_target_checked, event_target_value, format_bytes, md_to_html};
+use crate::text::{event_target_checked, event_target_value, format_bytes, release_notes_to_html};
 use leptos::*;
 use serde_wasm_bindgen::to_value;
 use std::collections::HashSet;
@@ -668,7 +668,7 @@ pub(crate) fn UpdateCheckOverlay(state: UpdateCheckOverlayState) -> impl IntoVie
                 force_update,
             } => {
                 let body = tf(locale.get(), "update_modal.available_body", &[("version", &version)]);
-                let notes_html = (!notes.trim().is_empty()).then(|| md_to_html(&notes));
+                let notes_html = (!notes.trim().is_empty()).then(|| release_notes_to_html(&notes));
                 let version_for_download = version.clone();
                 let force_for_download = force_update;
                 view! {
@@ -677,7 +677,7 @@ pub(crate) fn UpdateCheckOverlay(state: UpdateCheckOverlayState) -> impl IntoVie
                             <h2>{move || t(locale.get(), "update_modal.available_title")}</h2>
                             <div class="hint">{body}</div>
                             {notes_html.map(|html| view! {
-                                <div class="update-notes md markdown" inner_html=html></div>
+                                <div class="update-notes md" data-testid="update-notes" inner_html=html></div>
                             })}
                             <div class="row">
                                 {(!force_update).then(|| view! {

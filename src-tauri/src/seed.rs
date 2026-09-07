@@ -78,15 +78,6 @@ pub(crate) fn hide_bundled_demo(app_data: &Path, id: &str) -> Result<(), String>
     Ok(())
 }
 
-pub(crate) fn unhide_demo(app_data: &Path, id: &str) {
-    let mut hidden = load_hidden_ids(app_data);
-    let before = hidden.len();
-    hidden.retain(|existing| existing != id);
-    if hidden.len() != before {
-        let _ = save_hidden_ids(app_data, &hidden);
-    }
-}
-
 pub(crate) fn demo_search_dirs(app_data: Option<&Path>) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(app_data) = app_data {
@@ -718,8 +709,8 @@ mod tests {
         let demos = list_demos(Some("en"));
         assert_eq!(
             demos.len(),
-            7,
-            "bundled seed should ship the stats two-way demo, five ESR1 demos, and the long-context memory demo"
+            8,
+            "bundled seed should ship the stats two-way demo, five ESR1 demos, the figure duplicate audit demo, and the long-context memory demo"
         );
         assert_eq!(
             demos.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(),
@@ -730,6 +721,7 @@ mod tests {
                 "manifest_esr1_03_rnaseq",
                 "manifest_esr1_04_downstream",
                 "manifest_esr1_05_hypotheses",
+                "manifest_figure_duplicate_audit",
                 "manifest_memory_01_long_context",
             ]
         );

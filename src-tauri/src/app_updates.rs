@@ -529,6 +529,17 @@ mod tests {
     }
 
     #[test]
+    fn html_release_notes_pass_through_unchanged() {
+        let mut data = sample_data();
+        data.release_notes = "<p>1、融入手写图片识别能力</p><p>2、重复图片检测能力</p>".into();
+        let check = update_check_from_api("1.1.0", data).unwrap();
+        assert_eq!(
+            check.notes,
+            "<p>1、融入手写图片识别能力</p><p>2、重复图片检测能力</p>"
+        );
+    }
+
+    #[test]
     fn api_envelope_json_maps_to_update_check() {
         let envelope: ApiEnvelope<ClientUpdateData> = serde_json::from_str(
             r#"{

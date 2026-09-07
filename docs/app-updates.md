@@ -35,11 +35,14 @@ Platform and architecture are mapped as:
 
 ## User flow
 
-1. Startup, Settings, the menu, and the command palette all call the same
-   check. Startup is silent: a newer version only shows the sidebar card, never
-   a modal.
-2. When the user checks manually, the dialog shows release notes. Nothing
-   downloads until they choose **Download update**.
+1. About 5 seconds after launch, Settings, the menu, and the command palette
+   all call the same check. The delayed startup check opens the same
+   “update available” dialog as **Help → Check for Updates** (and the sidebar
+   card). It stays silent when the build is already current, the check fails,
+   or the user chose **Don't remind me**.
+2. The dialog renders `release_notes` as HTML from the admin rich-text editor
+   (`<p>`, lists, emphasis). Older plain-text notes keep their line breaks.
+   Nothing downloads until they choose **Download update**.
 3. **Download update** calls the check API again and uses the latest
    `download_url`. A stale URL from an earlier check is not used. If that
    lookup fails and a previous URL is still cached, in-app download falls back

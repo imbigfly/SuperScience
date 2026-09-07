@@ -87,7 +87,10 @@ async fn create_running_nested_test_root(
 
 #[tokio::test]
 async fn roundtrip() {
-    let tmp = std::env::temp_dir().join(format!("superscience_store_test_{}.sqlite", uuid::Uuid::new_v4()));
+    let tmp = std::env::temp_dir().join(format!(
+        "superscience_store_test_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p1", "proj", "").await.unwrap();
     store
@@ -297,8 +300,10 @@ async fn named_draft_is_listable_but_not_resumable() {
 
 #[tokio::test]
 async fn duplicate_seq_in_a_frame_is_rejected_and_leaves_rows_unchanged() {
-    let tmp =
-        std::env::temp_dir().join(format!("superscience_store_dupseq_{}.sqlite", uuid::Uuid::new_v4()));
+    let tmp = std::env::temp_dir().join(format!(
+        "superscience_store_dupseq_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p1", "proj", "").await.unwrap();
     store.create_frame("f1", "p1", "OPERON", "m").await.unwrap();
@@ -2827,9 +2832,66 @@ async fn session_search_prefers_current_project_then_title_then_body() {
 }
 
 #[tokio::test]
+async fn list_all_used_sessions_spans_projects_and_skips_scratch_and_empty() {
+    let tmp = std::env::temp_dir().join(format!(
+        "superscience_store_all_used_sessions_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let store = Store::open(&tmp).await.unwrap();
+    store
+        .create_project("p1", "课题A", "/tmp/a")
+        .await
+        .unwrap();
+    store
+        .create_project("p2", "课题B", "/tmp/b")
+        .await
+        .unwrap();
+    store
+        .create_project("scratch:chat", "随手一聊", "")
+        .await
+        .unwrap();
+
+    store.create_frame("a", "p1", "OPERON", "m").await.unwrap();
+    store.create_frame("b", "p2", "OPERON", "m").await.unwrap();
+    store
+        .create_frame("empty", "p1", "OPERON", "m")
+        .await
+        .unwrap();
+    store
+        .create_frame("scratch", "scratch:chat", "OPERON", "m")
+        .await
+        .unwrap();
+
+    store
+        .append_message("a", 1, &Message::user("问A"))
+        .await
+        .unwrap();
+    store
+        .append_message("b", 1, &Message::user("问B"))
+        .await
+        .unwrap();
+    store
+        .append_message("scratch", 1, &Message::user("随手问"))
+        .await
+        .unwrap();
+
+    let rows = store.list_all_used_sessions().await.unwrap();
+    assert_eq!(
+        rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+        vec!["b", "a"]
+    );
+    assert_eq!(rows[0].project_name, "课题B");
+    assert_eq!(rows[1].project_name, "课题A");
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[tokio::test]
 async fn truncate_messages() {
-    let tmp =
-        std::env::temp_dir().join(format!("superscience_store_trunc_{}.sqlite", uuid::Uuid::new_v4()));
+    let tmp = std::env::temp_dir().join(format!(
+        "superscience_store_trunc_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
     store.create_frame("f", "p", "OPERON", "m").await.unwrap();
@@ -3160,7 +3222,10 @@ async fn side_chat_snapshot_survives_compaction_and_stops_at_completed_boundary(
 
 #[tokio::test]
 async fn project_crud_and_listing() {
-    let tmp = std::env::temp_dir().join(format!("superscience_store_proj_{}.sqlite", uuid::Uuid::new_v4()));
+    let tmp = std::env::temp_dir().join(format!(
+        "superscience_store_proj_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
     let store = Store::open(&tmp).await.unwrap();
 
     // create + get roundtrips workspace_dir
@@ -3858,8 +3923,10 @@ async fn delete_session_clears_later_frame_tables() {
 
 #[tokio::test]
 async fn recent_sessions_detail_last_role() {
-    let tmp =
-        std::env::temp_dir().join(format!("superscience_store_recent_{}.sqlite", uuid::Uuid::new_v4()));
+    let tmp = std::env::temp_dir().join(format!(
+        "superscience_store_recent_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
 
@@ -3889,7 +3956,10 @@ async fn recent_sessions_detail_last_role() {
 
 #[tokio::test]
 async fn mark_frame_seen_clears_unseen_until_new_activity() {
-    let tmp = std::env::temp_dir().join(format!("superscience_store_seen_{}.sqlite", uuid::Uuid::new_v4()));
+    let tmp = std::env::temp_dir().join(format!(
+        "superscience_store_seen_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
     store.create_frame("f1", "p", "OPERON", "m").await.unwrap();
@@ -3954,8 +4024,10 @@ async fn recent_sessions_detail_respects_limit() {
 
 #[tokio::test]
 async fn migrate_adds_folder_id_on_legacy_db() {
-    let tmp =
-        std::env::temp_dir().join(format!("superscience_store_legacy_{}.sqlite", uuid::Uuid::new_v4()));
+    let tmp = std::env::temp_dir().join(format!(
+        "superscience_store_legacy_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
     {
         let opts = SqliteConnectOptions::from_str(&format!("sqlite://{}", tmp.display()))
             .unwrap()
@@ -4014,7 +4086,10 @@ async fn migrate_adds_folder_id_on_legacy_db() {
 /// after jumping to HEAD must still list sessions and folders.
 #[tokio::test]
 async fn upgrade_from_recorded_initial_schema_can_list_sessions() {
-    let tmp = std::env::temp_dir().join(format!("superscience_store_jump_{}.sqlite", uuid::Uuid::new_v4()));
+    let tmp = std::env::temp_dir().join(format!(
+        "superscience_store_jump_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
     {
         let opts = SqliteConnectOptions::from_str(&format!("sqlite://{}", tmp.display()))
             .unwrap()
@@ -4091,8 +4166,10 @@ async fn upgrade_from_recorded_initial_schema_can_list_sessions() {
 
 #[tokio::test]
 async fn folder_crud_and_move() {
-    let tmp =
-        std::env::temp_dir().join(format!("superscience_store_folder_{}.sqlite", uuid::Uuid::new_v4()));
+    let tmp = std::env::temp_dir().join(format!(
+        "superscience_store_folder_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
     store.create_frame("f1", "p", "OPERON", "m").await.unwrap();
@@ -5943,7 +6020,10 @@ async fn migrate_adds_ssh_run_control_columns_to_existing_runs() {
 
 #[tokio::test]
 async fn run_manager_roundtrip_and_lifecycle() {
-    let tmp = std::env::temp_dir().join(format!("superscience_store_runs_{}.sqlite", uuid::Uuid::new_v4()));
+    let tmp = std::env::temp_dir().join(format!(
+        "superscience_store_runs_{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
     let store = Store::open(&tmp).await.unwrap();
     store.create_project("p", "proj", "").await.unwrap();
     store.create_frame("f1", "p", "OPERON", "m").await.unwrap();

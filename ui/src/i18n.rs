@@ -58,6 +58,8 @@ fn fork_lookup(locale: Locale, key: &str) -> Option<&'static str> {
     match (locale, key) {
         (Locale::Zh, "scratch.open") => Some("开始对话"),
         (Locale::En, "scratch.open") => Some("Start conversation"),
+        (Locale::Zh, "scratch.title") => Some("开始对话"),
+        (Locale::En, "scratch.title") => Some("Start conversation"),
         (Locale::Zh, "home.director_cta_hint") => Some("把你想要做的事情告诉我，我来引导你得到结果"),
         (Locale::En, "home.director_cta_hint") => {
             Some("Tell me what you want to do, and I will guide you to the result.")
@@ -111,6 +113,16 @@ fn fork_lookup(locale: Locale, key: &str) -> Option<&'static str> {
         }
         (Locale::En, "specialists.builtin.figure_duplicate_audit.description") => {
             Some("Audit figures for duplicated or reused panels.")
+        }
+        (Locale::Zh, "specialists.builtin.conversation_analysis.name") => Some("对话分析"),
+        (Locale::En, "specialists.builtin.conversation_analysis.name") => {
+            Some("Conversation Analysis")
+        }
+        (Locale::Zh, "specialists.builtin.conversation_analysis.description") => {
+            Some("分析系统内全部项目的全部会话，提取每个会话中用户发送的所有消息，以及模型在每一轮对话中最终回复的结论性内容，并以对话聊天的形式生成一个 HTML 报告。")
+        }
+        (Locale::En, "specialists.builtin.conversation_analysis.description") => {
+            Some("Analyzes every saved conversation across all projects and writes an HTML chat report of user messages and model conclusions.")
         }
         (Locale::Zh, "specialists.chat_with_prompt") => {
             Some("请以{name}的身份开始工作。先问我一个短问题，确认这次要完成的事，然后开始做。")
@@ -2772,6 +2784,13 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "caps.skill.handwriting_extract.blurb") => Some("Read handwritten lab or CRF photos into a CSV, calibrate uncertain cells, and mark doubtful spots."),
         (Locale::En, "caps.skill.handwriting_extract.prompt") => Some(
             "Read handwritten lab or CRF photos into a CSV and flag uncertain cells. First reply: ask me to upload or paste the photos in this chat. Do not scan the project for images. Only after I attach photos or name a folder path, start recognition. Do not ask for headers you can read from the images.",
+        ),
+        (Locale::En, "caps.skill.conversation_analysis.title") => Some("Conversation analysis"),
+        (Locale::En, "caps.skill.conversation_analysis.blurb") => Some(
+            "Analyze every saved conversation across all projects, then write a chat-style HTML report with a session list you can search and click.",
+        ),
+        (Locale::En, "caps.skill.conversation_analysis.prompt") => Some(
+            "Analyze every saved conversation across all projects. First call export_conversation_analysis to preview the list, then ask me to confirm the scope. After I confirm, call it again with confirmed=true and write 对话分析报告.html. The report must have a left session list with search. Do not ask me to paste records.",
         ),
         (Locale::En, "caps.skill.handwriting_extract.settings.aria") => Some("Handwritten extract settings"),
         (Locale::En, "caps.skill.handwriting_extract.settings.title") => Some("Handwritten extract models"),
@@ -5949,6 +5968,13 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "caps.skill.handwriting_extract.prompt") => Some(
             "把手写实验本或 CRF 照片抽成 CSV，并标出存疑格子。第一句请只请我在本对话上传或粘贴手写照片；不要自行扫描项目目录找图。等我附上图片或明确给出文件夹路径后再识别。表头能从图片读就不要问。",
         ),
+        (Locale::Zh, "caps.skill.conversation_analysis.title") => Some("对话分析"),
+        (Locale::Zh, "caps.skill.conversation_analysis.blurb") => {
+            Some("分析全部项目里的全部会话，生成可点选、可搜索的 HTML 报告，左侧选会话，右侧看用户消息和模型结论。")
+        }
+        (Locale::Zh, "caps.skill.conversation_analysis.prompt") => Some(
+            "分析系统内全部项目的全部会话。先调用 export_conversation_analysis 预览清单，向我确认范围后再导出。未确认不要生成报告。确认后写成带左侧会话列表的对话分析报告.html。不要让我粘贴记录。",
+        ),
         (Locale::Zh, "caps.skill.handwriting_extract.settings.aria") => Some("手写数据提取设置"),
         (Locale::Zh, "caps.skill.handwriting_extract.settings.title") => Some("手写提取模型"),
         (Locale::Zh, "caps.skill.handwriting_extract.settings.lead") => Some("必须指定图片分析模型和校准模型。分析模型负责识图；校准模型只对存疑格子二次看图。不会改用当前对话主模型去读图。"),
@@ -7304,7 +7330,7 @@ mod queue_label_tests {
             t(Locale::En, "caps.skill.handwriting_extract.tip").contains("format of each column")
         );
         assert_eq!(lookup(Locale::Zh, "scratch.open"), Some("随手一聊"));
-        assert_eq!(t(Locale::Zh, "scratch.title"), "随手一聊");
+        assert_eq!(t(Locale::Zh, "scratch.title"), "开始对话");
         assert_eq!(t(Locale::En, "command.scratch"), "Scratch chat");
     }
 
@@ -7348,6 +7374,15 @@ mod queue_label_tests {
                 true
             ),
             "图片查重"
+        );
+        assert_eq!(
+            specialist_display_name(
+                Locale::Zh,
+                "conversation_analysis",
+                "Conversation Analysis",
+                true
+            ),
+            "对话分析"
         );
         assert_eq!(
             specialist_display_name(Locale::Zh, "mine", "我的专家", false),

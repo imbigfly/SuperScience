@@ -105,7 +105,9 @@ pub fn decorate_host(mut host: SshHost) -> SshHost {
 }
 
 impl SshConnection {
-    pub fn from_execution_context(context: &superscience_store::ExecutionContext) -> Result<Self, String> {
+    pub fn from_execution_context(
+        context: &superscience_store::ExecutionContext,
+    ) -> Result<Self, String> {
         if context.kind != superscience_store::ExecutionContextKind::Ssh {
             return Err(format!("Execution context is not SSH: {}", context.id));
         }
@@ -623,7 +625,8 @@ pub fn render_contexts_section(
         .filter(|c| {
             matches!(
                 c.kind,
-                superscience_store::ExecutionContextKind::Ssh | superscience_store::ExecutionContextKind::Wsl
+                superscience_store::ExecutionContextKind::Ssh
+                    | superscience_store::ExecutionContextKind::Wsl
             )
         })
         .collect();
@@ -984,7 +987,10 @@ fn preserve_interpreter_config(existing: &str, replacement: &str) -> Result<Stri
     serde_json::to_string(&replacement).map_err(|error| error.to_string())
 }
 
-async fn upsert_context_for_host(store: &superscience_store::Store, host: &SshHost) -> Result<(), String> {
+async fn upsert_context_for_host(
+    store: &superscience_store::Store,
+    host: &SshHost,
+) -> Result<(), String> {
     SshConnection::from_host(host)?;
     let id = ssh_context_id(&host.alias)?;
     let now = chrono::Utc::now().timestamp();
@@ -994,9 +1000,8 @@ async fn upsert_context_for_host(store: &superscience_store::Store, host: &SshHo
         .map_err(|e| e.to_string())?
     {
         Some(ctx) => ctx,
-        None => {
-            superscience_store::ExecutionContext::new(&id, host.alias.trim()).map_err(|e| e.to_string())?
-        }
+        None => superscience_store::ExecutionContext::new(&id, host.alias.trim())
+            .map_err(|e| e.to_string())?,
     };
     ctx.kind = superscience_store::ExecutionContextKind::Ssh;
     ctx.label = host.alias.trim().into();
@@ -1201,7 +1206,10 @@ pub async fn snapshot_session_default_from_global(
     Ok(())
 }
 
-pub async fn stored_compute_section(store: &superscience_store::Store, frame_id: &str) -> Option<String> {
+pub async fn stored_compute_section(
+    store: &superscience_store::Store,
+    frame_id: &str,
+) -> Option<String> {
     let hosts = load(store).await;
     for host in &hosts {
         if let Err(e) = upsert_context_for_host(store, host).await {
@@ -1867,7 +1875,9 @@ Host -unsafe bad/name !negated
             std::env::temp_dir().join(format!("wisp_default_ctx_{}.sqlite", uuid::Uuid::new_v4()));
         let store = superscience_store::Store::open(&path).await.unwrap();
         store
-            .upsert_execution_context(&superscience_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap())
+            .upsert_execution_context(
+                &superscience_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap(),
+            )
             .await
             .unwrap();
 
@@ -1905,11 +1915,15 @@ Host -unsafe bad/name !negated
         store.create_project("p", "Project", "").await.unwrap();
         store.create_frame("f", "p", "OPERON", "m").await.unwrap();
         store
-            .upsert_execution_context(&superscience_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap())
+            .upsert_execution_context(
+                &superscience_store::ExecutionContext::new("ssh:gpu", "GPU").unwrap(),
+            )
             .await
             .unwrap();
         store
-            .upsert_execution_context(&superscience_store::ExecutionContext::new("ssh:cpu", "CPU").unwrap())
+            .upsert_execution_context(
+                &superscience_store::ExecutionContext::new("ssh:cpu", "CPU").unwrap(),
+            )
             .await
             .unwrap();
         (store, path)

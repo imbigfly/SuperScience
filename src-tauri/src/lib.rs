@@ -51,6 +51,7 @@ mod exploration_promotion;
 mod exploration_workspace;
 mod feedback;
 mod file_browser;
+mod conversation_analysis;
 mod handwriting_calibrate;
 pub(crate) use superscience_runs::harvest;
 mod image_generation_tool;

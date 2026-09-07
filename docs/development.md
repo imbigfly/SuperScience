@@ -144,7 +144,6 @@ SuperScience/
 ├─ mcp-servers/     Bundled MCP servers (bio-tools: ~80 DB clients)
 └─ seed/            Bundled demo session recordings (stats two-way ANOVA + ESR1 / GSE153250 ×5 + memory)
                     User-saved examples live in app data `user-demos/` and appear first.
-                    Right-click → Export as bundled example copies a saved demo into `seed/`.
                     Removing a bundled demo hides it for this install (`user-demos/hidden_ids.json`).
 ```
 
