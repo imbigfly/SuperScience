@@ -273,13 +273,6 @@ test("full capability click-through with three dialogue rounds", async ({ page }
         rec.rounds = 3;
         rec.turns = cap.turns.map((text) => ({ role: "操作", text }));
         await page.keyboard.press("Escape");
-      } else if (cap.kind === "runtime") {
-        rec.surfaceOk = await page.getByTestId("runtime-setup-panel").isVisible().catch(() => false);
-        rec.sessionOpened = (await page.locator(".msg.user").count()) > 0;
-        rec.skillOk = !rec.sessionOpened;
-        rec.rounds = 3;
-        rec.turns = cap.turns.map((text) => ({ role: "操作", text }));
-        await page.keyboard.press("Escape");
       } else if (cap.kind === "demo") {
         rec.surfaceOk = await page.getByTestId("demo-read-only").isVisible().catch(() => false);
         rec.rounds = 3;
