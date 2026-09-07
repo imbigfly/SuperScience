@@ -82,7 +82,10 @@ Do not invent sessions. The current analysis chat is excluded.",
     }
 
     async fn run(&self, args: &Value, env: &dyn ToolEnv) -> ToolResult {
-        let confirmed = args.get("confirmed").and_then(Value::as_bool).unwrap_or(false);
+        let confirmed = args
+            .get("confirmed")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         match collect_analyzed_sessions(&self.store, &self.exclude_frame_id).await {
             Ok(sessions) => {
                 if confirmed {
@@ -364,7 +367,11 @@ fn format_activity(ts: i64) -> String {
     if ts <= 0 {
         return String::new();
     }
-    let seconds = if ts > 1_000_000_000_000 { ts / 1000 } else { ts };
+    let seconds = if ts > 1_000_000_000_000 {
+        ts / 1000
+    } else {
+        ts
+    };
     format!("最近活动：{seconds}")
 }
 
@@ -425,16 +432,16 @@ mod tests {
 
     #[tokio::test]
     async fn preview_excludes_current_frame_and_export_writes_html() {
-        let tmp = std::env::temp_dir().join(format!(
-            "wisp_conv_{}.sqlite",
-            uuid::Uuid::new_v4()
-        ));
+        let tmp = std::env::temp_dir().join(format!("wisp_conv_{}.sqlite", uuid::Uuid::new_v4()));
         let store = Store::open(&tmp).await.unwrap();
         store.create_project("p1", "课题A", "").await.unwrap();
         store.create_project("p2", "课题B", "").await.unwrap();
         store.create_frame("a", "p1", "OPERON", "m").await.unwrap();
         store.create_frame("b", "p2", "OPERON", "m").await.unwrap();
-        store.create_frame("cur", "p1", "OPERON", "m").await.unwrap();
+        store
+            .create_frame("cur", "p1", "OPERON", "m")
+            .await
+            .unwrap();
         store
             .append_message("a", 1, &Message::user("问A"))
             .await
