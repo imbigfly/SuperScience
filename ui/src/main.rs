@@ -61,8 +61,7 @@ use library::{refresh_library, refresh_session_library, HighlightsPane, LibraryS
 use notebook::{collect_notebook_cells, NotebookCache, NotebookView};
 use overlays::{
     AddHostOverlay, CapabilitiesOverlay, FeedbackOverlay, OnboardingOverlay, RunReviewModal,
-    RunReviewOverlay, RuntimeInterpreterOverlay, RuntimeSetupPanel, ShareOverlay,
-    StoragePrefsOverlay,
+    RunReviewOverlay, RuntimeInterpreterOverlay, ShareOverlay, StoragePrefsOverlay,
 };
 use pet::{PetDesktop, PetOverlay};
 use project_landing::{ProjectLanding, ProjectLandingState};
@@ -1771,10 +1770,6 @@ fn App() -> impl IntoView {
     let caps = create_rw_signal::<Option<Capabilities>>(None);
     let bootstrap = create_rw_signal::<Option<BootstrapStatus>>(None);
     let show_onboarding = create_rw_signal(false);
-    let show_runtime_setup = create_rw_signal(false);
-    let runtime_setup_collapsed = create_rw_signal(false);
-    let runtime_provision = create_rw_signal::<Option<RuntimeProvisionState>>(None);
-    let runtime_setup_sci_key = create_rw_signal(String::new());
 
     create_effect(move |_| {
         if file_source.get() != "local" {
@@ -2391,12 +2386,6 @@ fn App() -> impl IntoView {
         if let Ok(s) = serde_wasm_bindgen::from_value::<OnboardingState>(v) {
             if s.show {
                 show_onboarding.set(true);
-            } else if let Ok(provision) = serde_wasm_bindgen::from_value::<RuntimeProvisionState>(
-                invoke("get_runtime_provision_state", JsValue::UNDEFINED).await,
-            ) {
-                // Later launches never auto-open this panel. First-run still
-                // opens it after welcome; the env-setup capability opens it anytime.
-                runtime_provision.set(Some(provision));
             }
         }
         let b = invoke("get_bootstrap_status", JsValue::UNDEFINED).await;
@@ -2434,45 +2423,6 @@ fn App() -> impl IntoView {
         bootstrap_js.forget();
         spawn_local(async move {
             let _ = listen("bootstrap-status", &bootstrap_fn).await;
-        });
-    }
-    {
-        let provision_js = Closure::<dyn Fn(JsValue)>::new(move |event: JsValue| {
-            if let Ok(payload) = js_sys::Reflect::get(&event, &JsValue::from_str("payload")) {
-                if let Ok(progress) =
-                    serde_wasm_bindgen::from_value::<RuntimeProvisionProgress>(payload)
-                {
-                    runtime_provision.update(|current| {
-                        let mut next = current.clone().unwrap_or(RuntimeProvisionState {
-                            first_run: true,
-                            done: false,
-                            running: progress.running,
-                            items: vec![],
-                        });
-                        next.running = progress.running;
-                        next.items = progress.items.clone();
-                        if !progress.running
-                            && progress
-                                .items
-                                .iter()
-                                .filter(|item| item.id != "sci_key")
-                                .all(|item| matches!(item.status.as_str(), "ready" | "passed"))
-                        {
-                            next.done = true;
-                            next.first_run = false;
-                        }
-                        *current = Some(next);
-                    });
-                }
-            }
-        });
-        let provision_fn = provision_js
-            .as_ref()
-            .unchecked_ref::<js_sys::Function>()
-            .clone();
-        provision_js.forget();
-        spawn_local(async move {
-            let _ = listen("runtime-provision-progress", &provision_fn).await;
         });
     }
 
@@ -6833,15 +6783,6 @@ fn App() -> impl IntoView {
         show_onboarding.set(false);
         spawn_local(async move {
             let _ = invoke("dismiss_onboarding", JsValue::UNDEFINED).await;
-            if let Ok(provision) = serde_wasm_bindgen::from_value::<RuntimeProvisionState>(
-                invoke("get_runtime_provision_state", JsValue::UNDEFINED).await,
-            ) {
-                runtime_provision.set(Some(provision.clone()));
-                if provision.first_run {
-                    show_runtime_setup.set(true);
-                    runtime_setup_collapsed.set(false);
-                }
-            }
         });
     });
     let dismiss_onboard = move |_| dismiss_onboarding.call(());
@@ -8604,11 +8545,6 @@ fn App() -> impl IntoView {
             dismiss_onboarding.call(());
             return;
         }
-        if show_runtime_setup.get() && !runtime_setup_collapsed.get() {
-            ev.prevent_default();
-            runtime_setup_collapsed.set(true);
-            return;
-        }
         if show_library.get() {
             ev.prevent_default();
             show_library.set(false);
@@ -9254,18 +9190,6 @@ fn App() -> impl IntoView {
         begin_chat_with_specialist.call(specialist_id);
     });
 
-    let open_runtime_setup = Callback::new(move |_: ()| {
-        show_runtime_setup.set(true);
-        runtime_setup_collapsed.set(false);
-        spawn_local(async move {
-            if let Ok(next) = serde_wasm_bindgen::from_value::<RuntimeProvisionState>(
-                invoke("get_runtime_provision_state", JsValue::UNDEFINED).await,
-            ) {
-                runtime_provision.set(Some(next));
-            }
-        });
-    });
-
     let on_capability_action = capability_launch::install(capability_launch::CapabilityLaunchCtx {
         locale,
         show_projects,
@@ -9294,7 +9218,6 @@ fn App() -> impl IntoView {
         refresh_session_history: Callback::new(move |_| refresh_session_history()),
         open_settings: Callback::new(move |section| open_settings_fn(section)),
         open_project: open_project_transition,
-        open_runtime_setup,
     });
 
     // Dedicated project window (#52): enter through the same serialized,
@@ -16468,14 +16391,6 @@ fn App() -> impl IntoView {
         <CapabilitiesOverlay
             locale=locale show_capabilities=show_capabilities
             bootstrap=bootstrap caps=caps busy=busy open_settings_section=open_capability_settings
-            open_runtime_setup=Callback::new(move |_| open_runtime_setup.call(()))
-        />
-        <RuntimeSetupPanel
-            locale=locale
-            visible=show_runtime_setup
-            collapsed=runtime_setup_collapsed
-            state=runtime_provision
-            sci_key=runtime_setup_sci_key
         />
         <OnboardingOverlay
             locale=locale show_onboarding=show_onboarding

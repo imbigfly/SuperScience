@@ -176,7 +176,6 @@ pub(crate) struct CapabilityLaunchCtx {
     pub refresh_session_history: Callback<()>,
     pub open_settings: Callback<Option<String>>,
     pub open_project: Callback<(String, Option<String>)>,
-    pub open_runtime_setup: Callback<()>,
 }
 
 pub(crate) fn capability_needs_project(action: &CapabilityAction) -> bool {
@@ -597,10 +596,6 @@ fn dispatch_capability_action(
                 dispatch_report_usage(&action);
             }
             CapabilityAction::ComingSoon | CapabilityAction::None => {}
-            CapabilityAction::OpenRuntimeSetup => {
-                ctx.open_runtime_setup.call(());
-                dispatch_report_usage(&action);
-            }
         }
     })
 }
@@ -857,13 +852,7 @@ mod tests {
         }));
         assert!(!capability_needs_project(&CapabilityAction::ComingSoon));
         assert!(!capability_needs_project(&CapabilityAction::OpenDemo));
-        assert!(!capability_needs_project(
-            &CapabilityAction::OpenRuntimeSetup
-        ));
         assert!(capability_needs_project(&CapabilityAction::NewChat));
-        assert!(!capability_needs_project(
-            &CapabilityAction::OpenRuntimeSetup
-        ));
         assert!(capability_needs_project(&CapabilityAction::GuidedChat {
             prompt_key: "caps.prompt.other",
             skill: None,

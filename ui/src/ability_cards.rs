@@ -88,7 +88,6 @@ pub fn ability_card_for_action(action: &CapabilityAction) -> Option<AbilityCardM
             .map(AbilityCardMeta::from),
         CapabilityAction::InstallThenGuided { .. }
         | CapabilityAction::NewChat
-        | CapabilityAction::OpenRuntimeSetup
         | CapabilityAction::OpenSettings { .. }
         | CapabilityAction::OpenPanel(_)
         | CapabilityAction::OpenDemo => capability_catalog()

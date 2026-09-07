@@ -423,8 +423,6 @@ pub(crate) enum CapabilityAction {
     ComingSoon,
     /// Switch-primary tile: no click-to-activate chat/settings action.
     None,
-    /// Open the non-modal local environment setup panel.
-    OpenRuntimeSetup,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1077,11 +1075,15 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
             title_key: "caps.tile.env_setup.title",
             blurb_key: "caps.tile.env_setup.blurb",
             help: help(
-                "It checks this computer for Python, R, Node, sci, pixi, and officecli, then installs what is missing in the background.",
-                "检查这台电脑有没有 Python、R、Node、sci、pixi、officecli，缺的在后台装好。",
+                "Ask the agent to set up Python, R, Node, sci, pixi, and officecli on this computer. It will check what's missing, propose a plan, and only install after you approve.",
+                "把这台电脑配置 Python、R、Node、sci、pixi、officecli 的需求直接跟助手说：先排查缺什么、再出方案，经你同意后再装。",
             ),
             icon: "gear",
-            action: CapabilityAction::OpenRuntimeSetup,
+            action: CapabilityAction::GuidedChat {
+                prompt_key: "caps.prompt.env_setup",
+                skill: None,
+                specialist: None,
+            },
             toggle: None,
             card_settings: None,
         },
@@ -1447,7 +1449,6 @@ fn intro_uses_say_label(action: CapabilityAction) -> bool {
         action,
         CapabilityAction::OpenSettings { .. }
             | CapabilityAction::OpenPanel(_)
-            | CapabilityAction::OpenRuntimeSetup
             | CapabilityAction::OpenDemo
             | CapabilityAction::None
     )
@@ -1820,12 +1821,12 @@ pub(crate) fn title_key_for_capability_action(action: &CapabilityAction) -> Opti
                 _ => false,
             })
             .map(|tile| tile.title_key),
-        CapabilityAction::InstallThenGuided { .. }
-        | CapabilityAction::NewChat
-        | CapabilityAction::OpenRuntimeSetup => capability_catalog()
-            .iter()
-            .find(|tile| tile.action == *action)
-            .map(|tile| tile.title_key),
+        CapabilityAction::InstallThenGuided { .. } | CapabilityAction::NewChat => {
+            capability_catalog()
+                .iter()
+                .find(|tile| tile.action == *action)
+                .map(|tile| tile.title_key)
+        }
         _ => None,
     }
 }
@@ -2349,8 +2350,12 @@ mod tests {
             .find(|t| t.id == "env-setup")
             .expect("env-setup tile");
         match env.action {
-            CapabilityAction::OpenRuntimeSetup => {}
-            other => panic!("expected OpenRuntimeSetup, got {other:?}"),
+            CapabilityAction::GuidedChat {
+                prompt_key: "caps.prompt.env_setup",
+                skill: None,
+                specialist: None,
+            } => {}
+            other => panic!("expected GuidedChat env_setup, got {other:?}"),
         }
         assert_eq!(env.group, CapabilityGroup::DataCleaning);
         assert_eq!(env_setup_capability_action(), env.action);

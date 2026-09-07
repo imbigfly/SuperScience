@@ -3035,6 +3035,9 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "caps.prompt.knowledge.spec") => Some(
             "Capability tool spec.\nUse the `knowledge_search` tool to retrieve excerpts from the configured WeKnora knowledge base. Quote or cite titles/filenames. Do not treat this as a chat/answer API — write the reply yourself. If the tool is missing, say the knowledge base is not connected. Default IDs come from settings; pass knowledge_base_id only when the user names a specific base. If nothing matches, say so — do not invent excerpts.",
         ),
+        (Locale::En, "caps.prompt.env_setup") => Some(
+            "Please set up this computer for scientific computing: check whether Python, R, Node, sci, pixi, and officecli are installed (and at the right versions), give me a short checklist of what is missing or needs upgrading, and only run the install after I confirm. Paste the output of every step so I can follow along.",
+        ),
         (Locale::En, "caps.help.aria") => Some("What this can do"),
         (Locale::En, "caps.help.close") => Some("Got it"),
         (Locale::En, "caps.intro.eyebrow") => Some("About this capability"),
@@ -6224,6 +6227,9 @@ Do not leave generated files in the project root.",
         ),
         (Locale::Zh, "caps.prompt.knowledge.spec") => Some(
             "能力工具规格。\n用 `knowledge_search` 检索已接入的 WeKnora 知识库，返回片段后由你写回答并引用标题/文件名。不要把它当成聊天 API。若工具不存在，说明知识库未接通。默认用设置里的知识库 ID；用户点名某个库时再传 knowledge_base_id。查不到就直说，不要编造片段。",
+        ),
+        (Locale::Zh, "caps.prompt.env_setup") => Some(
+            "请帮我把这台电脑配置成可用的科学计算环境：检查 Python、R、Node、sci、pixi、officecli 各自是否已安装、版本是否够用，把缺失或需要升级的项列成清单，经我同意后再实际安装，过程中请把每一步的输出贴给我。",
         ),
         (Locale::Zh, "caps.help.aria") => Some("这个能力能做什么"),
         (Locale::Zh, "caps.help.close") => Some("知道了"),
