@@ -1281,7 +1281,9 @@ pub async fn image_generation_config(
     Some((
         effective_api_url(p),
         p.model.clone(),
-        key_for(&p.id),
+        // 与对话/视觉角色一致：本 profile 没存 key 时回退到同 endpoint 的兄弟密钥，
+        // 避免「同一 Base URL 只在一行填过 key」的生图 profile 误报无密钥。
+        key_for_profile(&profiles, p),
         ImageGenerationOptions {
             size: p.image_size.clone(),
             quality: p.image_quality.clone(),

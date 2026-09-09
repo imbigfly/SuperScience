@@ -1178,7 +1178,7 @@ impl BrowserBridge {
         format!("{setup} {BROWSER_DISCONNECTED_MARKER}. {DISCONNECTED_ASSISTANT_INSTRUCTION}")
     }
 
-    fn verified_extension_path(&self) -> Option<String> {
+    pub(crate) fn verified_extension_path(&self) -> Option<String> {
         if !self.extension_integrity_verified() {
             return None;
         }

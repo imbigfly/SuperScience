@@ -131,6 +131,19 @@ pub(crate) fn artifact_version_id_path(path: &str) -> Option<&str> {
         .filter(|id| !id.is_empty())
 }
 
+/// The knowledge-base preview path spelling: `knowledge:<knowledge_id>:<filename>`.
+/// The id never contains `:`; the filename may, so only the first separator is
+/// split (same rule as `remote_file_path`).
+pub(crate) fn knowledge_file_path(path: &str) -> Option<(&str, &str)> {
+    let rest = path.strip_prefix("knowledge:")?;
+    let (knowledge_id, filename) = rest.split_once(':')?;
+    let knowledge_id = knowledge_id.trim();
+    if knowledge_id.is_empty() {
+        return None;
+    }
+    Some((knowledge_id, filename.trim()))
+}
+
 /// The remote-preview path spelling: `remote:ssh:<alias>:<path>`. Returns the
 /// execution-context id (`ssh:<alias>`) and the path on that host. SSH aliases
 /// never contain `:` (see `remote_file_download_uri`), so the split after the
@@ -194,6 +207,12 @@ pub(crate) async fn load_file_content(
             args["maxBytes"] = serde_json::json!(n);
         }
         invoke_checked("read_remote_file", to_value(&args).unwrap()).await
+    } else if let Some((knowledge_id, filename)) = knowledge_file_path(path) {
+        let mut args = serde_json::json!({ "knowledgeId": knowledge_id, "filename": filename });
+        if let Some(n) = max_bytes {
+            args["maxBytes"] = serde_json::json!(n);
+        }
+        invoke_checked("read_knowledge_file", to_value(&args).unwrap()).await
     } else if let Some(version_id) = artifact_version_id_path(path) {
         invoke_checked(
             "read_artifact_version",
@@ -1216,11 +1235,12 @@ pub(crate) fn FilePreview(dom_id: String, path: String, kind: String) -> impl In
                     serde_json::json!({ "b64": fc.base64, "mime": fc.mime }).to_string(),
                 ),
                 "html" => {
-                    // A remote file's path would resolve as a local file:// base
-                    // href; better no base at all than the wrong machine's.
-                    let base = remote_file_path(&path)
-                        .is_none()
-                        .then_some(fc.path.as_str());
+                    // A remote or knowledge-base file's path would resolve as a
+                    // local file:// base href; better no base at all than the
+                    // wrong machine's.
+                    let base = (remote_file_path(&path).is_none()
+                        && knowledge_file_path(&path).is_none())
+                    .then_some(fc.path.as_str());
                     (
                         "html",
                         serde_json::json!({ "text": fc.text, "path": base }).to_string(),
@@ -1286,7 +1306,9 @@ pub(crate) fn center_preview_heading(
         return workspace_path.to_string();
     }
     if !name.is_empty()
-        && (artifact_id_path(path).is_some() || artifact_version_id_path(path).is_some())
+        && (artifact_id_path(path).is_some()
+            || artifact_version_id_path(path).is_some()
+            || knowledge_file_path(path).is_some())
     {
         name.to_string()
     } else {
@@ -1847,6 +1869,12 @@ pub(crate) fn download_invocation(path: &str) -> Option<(&'static str, serde_jso
             serde_json::json!({ "versionId": id }),
         ));
     }
+    if let Some((knowledge_id, filename)) = knowledge_file_path(path) {
+        return Some((
+            "download_knowledge_file",
+            serde_json::json!({ "knowledgeId": knowledge_id, "filename": filename }),
+        ));
+    }
     let path = match remote_file_path(path) {
         Some((context_id, remote_path)) => {
             crate::context_menu::remote_file_download_uri(context_id, remote_path)?
@@ -1909,8 +1937,8 @@ mod download_invocation_tests {
 }
 
 pub(crate) fn reveal_in_file_manager(path: String) {
-    // Remote files have no local location to reveal in the OS file manager.
-    if remote_file_path(&path).is_some() {
+    // Remote files and knowledge-base files have no local location to reveal.
+    if remote_file_path(&path).is_some() || knowledge_file_path(&path).is_some() {
         return;
     }
     spawn_local(async move {
@@ -1922,8 +1950,10 @@ pub(crate) fn reveal_in_file_manager(path: String) {
 }
 
 pub(crate) fn open_workspace_path_in_system(path: String) {
-    // Remote and snapshot-only resources have no OS-visible workspace path.
+    // Remote, knowledge-base, and snapshot-only resources have no OS-visible
+    // workspace path.
     if remote_file_path(&path).is_some()
+        || knowledge_file_path(&path).is_some()
         || path.starts_with("artifact:")
         || path.starts_with("artifact-version:")
     {

@@ -10,7 +10,7 @@ SuperScience supports three deliberately different ways to bring a project onto 
   The Projects screen exports a project as `superscience-project-<name>.zip`. The
   ZIP contains the workspace's regular files plus project-owned conversations,
   artifacts, runs, plans, provenance, and research-graph records.
-- **Recover conversations from a workspace** scans `.wisp/history` in an
+- **Recover conversations from a workspace** scans `.superscience/history` in an
   orphaned folder whose application database and SuperScience project ZIP are no longer
   available. It registers the folder in place and imports the recoverable message
   timelines into a `Recovered` conversation folder.
@@ -40,10 +40,12 @@ file as a transfer copy.
 
 Choose **Import project → Recover conversations from a workspace** only when the
 original SuperScience application database, project ZIP, and sync revision are unavailable.
-After a folder is selected, SuperScience scans regular JSON files under `.wisp/history`,
-accepts both plain message-array compaction snapshots and structured Exploration
-checkpoints, deduplicates exact message arrays by content hash, and keeps the
-greatest `message_head` for checkpoints with the same source frame. The preview
+After a folder is selected, SuperScience scans regular JSON files under
+`.superscience/history` (and the upstream `.wisp/history` fallback for
+pre-rebrand workspaces), accepts both plain message-array compaction snapshots
+and structured Exploration checkpoints, deduplicates exact message arrays by
+content hash, and keeps the greatest `message_head` for checkpoints with the
+same source frame. The preview
 shows the recoverable conversation count, message count, valid archive count,
 time range, and skipped damaged/duplicate archives before making any database
 change.
@@ -60,7 +62,7 @@ resource bindings, runs, undo indexes, branch relationships, or other project
 records. Plain message arrays do not identify their original frame, so exact
 copies can be deduplicated but distinct snapshots from one conversation may be
 recovered separately. Ordinary conversations that never produced a compaction or
-Exploration checkpoint may not appear in `.wisp/history` at all. Use project ZIP
+Exploration checkpoint may not appear in `.superscience/history` at all. Use project ZIP
 export/import or manual project sync for complete, planned backup and migration.
 
 ## Path rules

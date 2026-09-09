@@ -198,6 +198,20 @@ pub(crate) fn pick_default_project_id(list: &[ProjectSummary]) -> Option<String>
         .map(|project| project.id.clone())
 }
 
+/// 能力卡新建会话的归属项目：用户配置的默认项目优先，配置缺失或已删除时
+/// 回退到「default 项目优先，否则列表第一项」。
+pub(crate) fn resolve_capability_project_id(
+    configured: Option<&str>,
+    list: &[ProjectSummary],
+) -> Option<String> {
+    if let Some(project_id) = configured.map(str::trim).filter(|id| !id.is_empty()) {
+        if list.iter().any(|project| project.id == project_id) {
+            return Some(project_id.to_string());
+        }
+    }
+    pick_default_project_id(list)
+}
+
 pub(crate) fn spec_key_for_prompt(prompt_key: &str) -> Option<&'static str> {
     match prompt_key {
         "caps.prompt.python_r" => Some("caps.prompt.python_r.spec"),
@@ -278,6 +292,9 @@ pub(crate) fn install(ctx: CapabilityLaunchCtx) -> Callback<CapabilityAction> {
         if capability_needs_project(&action) && ctx.show_projects.get_untracked() {
             pending.set(Some(action));
             spawn_local(async move {
+                let configured = invoke("get_default_capability_project", JsValue::UNDEFINED).await;
+                let configured =
+                    serde_wasm_bindgen::from_value::<Option<String>>(configured).unwrap_or(None);
                 let v = invoke("list_projects", JsValue::UNDEFINED).await;
                 let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ProjectSummary>>(v) else {
                     pending.set(None);
@@ -285,7 +302,7 @@ pub(crate) fn install(ctx: CapabilityLaunchCtx) -> Callback<CapabilityAction> {
                         .set(t(ctx.locale.get(), "caps.need_project").into());
                     return;
                 };
-                let Some(id) = pick_default_project_id(&list) else {
+                let Some(id) = resolve_capability_project_id(configured.as_deref(), &list) else {
                     pending.set(None);
                     ctx.status
                         .set(t(ctx.locale.get(), "caps.need_project").into());

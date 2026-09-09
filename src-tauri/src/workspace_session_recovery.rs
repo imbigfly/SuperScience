@@ -1,9 +1,13 @@
 //! Best-effort recovery of conversations from an orphaned workspace.
 //!
-//! `.wisp/history/*.json` files are compaction snapshots or Exploration context
-//! checkpoints, not a complete project database. Recovery therefore imports
-//! only their message timelines into newly generated frames and keeps the source
-//! files untouched.
+//! `.superscience/history/*.json` files are compaction snapshots or Exploration
+//! context checkpoints, not a complete project database. Recovery therefore
+//! imports only their message timelines into newly generated frames and keeps
+//! the source files untouched.
+//!
+//! Workspaces written by upstream Wisp store the same archives under
+//! `.wisp/history`; that directory is scanned read-only as a legacy fallback so
+//! pre-rebrand projects remain recoverable.
 
 use super::{models, project_commands, AppState};
 use serde::Deserialize;
@@ -15,11 +19,19 @@ use superscience_llm::{Message, Role};
 use superscience_store::{RecoveredWorkspaceSession, Store};
 use tauri::State;
 
-const HISTORY_RELATIVE: &str = ".wisp/history";
+/// Current product project directory, kept in sync with
+/// `superscience_paths::history_dir` for display in error messages.
+const HISTORY_RELATIVE: &str = ".superscience/history";
+/// Upstream Wisp project directory name, read-only fallback.
+const LEGACY_PROJECT_DIR_NAME: &str = ".wisp";
+/// Manifest file name under either project directory.
+const MANIFEST_FILE: &str = "project.toml";
 const MAX_ARCHIVE_FILES: usize = 1_000;
 const MAX_ARCHIVE_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_TOTAL_ARCHIVE_BYTES: u64 = 200 * 1024 * 1024;
 const MAX_RECOVERED_MESSAGES: usize = 100_000;
+/// Marker prefix for the workspace write probe; product-named, not a protocol.
+const WRITE_PROBE_PREFIX: &str = ".superscience-recovery-write-test-";
 
 #[derive(Deserialize)]
 struct ContextArchive {
@@ -51,12 +63,36 @@ struct RecoveryScan {
     sessions: Vec<RecoveryCandidate>,
 }
 
+impl std::fmt::Debug for RecoveryScan {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RecoveryScan")
+            .field("manifest_project_id", &self.manifest_project_id)
+            .field("sessions", &self.sessions.len())
+            .finish_non_exhaustive()
+    }
+}
+
 fn coded(code: &str, message: impl AsRef<str>) -> String {
     format!("{code}: {}", message.as_ref())
 }
 
+/// Manifest paths to read, product directory first then the upstream fallback.
+fn manifest_paths(root: &Path) -> [PathBuf; 2] {
+    [
+        superscience_paths::project_dir(root).join(MANIFEST_FILE),
+        root.join(LEGACY_PROJECT_DIR_NAME).join(MANIFEST_FILE),
+    ]
+}
+
 fn manifest_string(root: &Path, key: &str) -> Option<String> {
-    let bytes = std::fs::read(root.join(".wisp/project.toml")).ok()?;
+    manifest_paths(root)
+        .into_iter()
+        .find_map(|path| manifest_string_at(&path, key))
+}
+
+fn manifest_string_at(path: &Path, key: &str) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
     if bytes.len() > 64 * 1024 {
         return None;
     }
@@ -108,6 +144,40 @@ fn modified_at(metadata: &std::fs::Metadata) -> i64 {
         .unwrap_or_else(|| chrono::Utc::now().timestamp())
 }
 
+/// Collect the JSON archives of one history directory, newest-first-agnostic.
+/// A missing directory is not an error so a legacy-only workspace still scans.
+fn history_archive_paths(directory: &Path) -> Result<Vec<PathBuf>, String> {
+    let metadata = match std::fs::symlink_metadata(directory) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(coded(
+                "workspace_recovery_no_history",
+                format!("Cannot read {}: {error}", directory.display()),
+            ))
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(coded(
+            "workspace_recovery_no_history",
+            format!("{} must be a real directory.", directory.display()),
+        ));
+    }
+    let mut paths = std::fs::read_dir(directory)
+        .map_err(|error| {
+            coded(
+                "workspace_recovery_no_history",
+                format!("Cannot read {}: {error}", directory.display()),
+            )
+        })?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("json"))
+        .collect::<Vec<_>>();
+    paths.sort();
+    Ok(paths)
+}
+
 fn scan_workspace(root: &Path) -> Result<RecoveryScan, String> {
     let root = dunce::canonicalize(root).map_err(|error| {
         coded(
@@ -121,32 +191,30 @@ fn scan_workspace(root: &Path) -> Result<RecoveryScan, String> {
             "The selected workspace is not a directory.",
         ));
     }
-    let history = root.join(HISTORY_RELATIVE);
-    let history_metadata = std::fs::symlink_metadata(&history).map_err(|error| {
-        coded(
-            "workspace_recovery_no_history",
-            format!("No readable {HISTORY_RELATIVE} directory was found: {error}"),
-        )
-    })?;
-    if history_metadata.file_type().is_symlink() || !history_metadata.is_dir() {
+
+    // Product directory first so its newer archives win deduplication, then the
+    // upstream `.wisp/history` fallback for pre-rebrand workspaces.
+    let directories = [
+        root.join(HISTORY_RELATIVE),
+        root.join(LEGACY_PROJECT_DIR_NAME).join("history"),
+    ];
+    let mut paths = Vec::new();
+    let mut found_history = false;
+    for directory in &directories {
+        let archive_paths = history_archive_paths(directory)?;
+        if directory.is_dir() {
+            found_history = true;
+        }
+        paths.extend(archive_paths);
+    }
+    if !found_history {
         return Err(coded(
             "workspace_recovery_no_history",
-            format!("{HISTORY_RELATIVE} must be a real directory."),
+            format!(
+                "No readable {HISTORY_RELATIVE} directory was found in the selected workspace."
+            ),
         ));
     }
-
-    let mut paths = std::fs::read_dir(&history)
-        .map_err(|error| {
-            coded(
-                "workspace_recovery_no_history",
-                format!("Cannot read {HISTORY_RELATIVE}: {error}"),
-            )
-        })?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("json"))
-        .collect::<Vec<_>>();
-    paths.sort();
     if paths.len() > MAX_ARCHIVE_FILES {
         return Err(coded(
             "workspace_recovery_too_large",
@@ -312,10 +380,7 @@ async fn ensure_workspace_is_unregistered(store: &Store, workspace: &Path) -> Re
 }
 
 fn probe_workspace_writable(root: &Path) -> Result<(), String> {
-    let marker = root.join(format!(
-        ".wisp-recovery-write-test-{}",
-        uuid::Uuid::new_v4()
-    ));
+    let marker = root.join(format!("{WRITE_PROBE_PREFIX}{}", uuid::Uuid::new_v4()));
     let file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -451,6 +516,25 @@ mod tests {
         root
     }
 
+    /// 在指定的历史目录下写入一个上下文存档。
+    fn write_archive_in(directory: &Path, name: &str, body: &serde_json::Value) {
+        std::fs::create_dir_all(directory).unwrap();
+        std::fs::write(
+            directory.join(name),
+            serde_json::to_vec_pretty(body).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_manifest_in(directory: &Path) {
+        std::fs::create_dir_all(directory).unwrap();
+        std::fs::write(
+            directory.join(MANIFEST_FILE),
+            "layout_version = 1\nproject_id = \"original\"\nname = \"Recovered Study\"\n",
+        )
+        .unwrap();
+    }
+
     fn message(role: Role, text: &str, ts: i64) -> Message {
         let mut message = match role {
             Role::User => Message::user(text),
@@ -485,12 +569,7 @@ mod tests {
     #[test]
     fn scan_deduplicates_frames_and_reports_damaged_archives() {
         let root = test_workspace("scan");
-        std::fs::create_dir_all(root.join(".wisp")).unwrap();
-        std::fs::write(
-            root.join(".wisp/project.toml"),
-            "layout_version = 1\nproject_id = \"original\"\nname = \"Recovered Study\"\n",
-        )
-        .unwrap();
+        write_manifest_in(&superscience_paths::project_dir(&root));
         write_archive(
             &root,
             "old.json",
@@ -579,7 +658,7 @@ mod tests {
                 .unwrap()
                 .file_name()
                 .to_string_lossy()
-                .starts_with(".wisp-recovery-write-test-")
+                .starts_with(WRITE_PROBE_PREFIX)
         }));
         let _ = std::fs::remove_dir_all(root);
     }
@@ -594,6 +673,92 @@ mod tests {
         assert_eq!(scan.preview.earliest_message_at, None);
         assert_eq!(scan.preview.latest_message_at, None);
         assert!(scan.sessions.is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scan_falls_back_to_legacy_wisp_history() {
+        let root = test_workspace("legacy");
+        std::fs::remove_dir_all(root.join(HISTORY_RELATIVE)).unwrap();
+        let legacy = root.join(LEGACY_PROJECT_DIR_NAME).join("history");
+        write_manifest_in(&root.join(LEGACY_PROJECT_DIR_NAME));
+        write_archive_in(
+            &legacy,
+            "legacy.json",
+            &serde_json::json!({
+                "schema_version": 1,
+                "frame_id": "legacy-frame",
+                "message_head": 2,
+                "messages": [
+                    message(Role::User, "legacy question", 10),
+                    message(Role::Assistant, "legacy answer", 20),
+                ],
+            }),
+        );
+
+        let scan = scan_workspace(&root).unwrap();
+        assert_eq!(scan.preview.suggested_name, "Recovered Study");
+        assert_eq!(scan.preview.archive_count, 1);
+        assert_eq!(scan.preview.recoverable_session_count, 1);
+        assert_eq!(scan.preview.message_count, 2);
+        assert_eq!(scan.manifest_project_id.as_deref(), Some("original"));
+        assert_eq!(scan.sessions[0].source_path, ".wisp/history/legacy.json");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scan_prefers_product_archives_over_legacy_copies() {
+        let root = test_workspace("both_dirs");
+        let legacy = root.join(LEGACY_PROJECT_DIR_NAME).join("history");
+        write_archive(
+            &root,
+            "current.json",
+            "shared-frame",
+            4,
+            vec![
+                message(Role::User, "current question", 20),
+                message(Role::Assistant, "current answer", 30),
+            ],
+        );
+        write_archive_in(
+            &legacy,
+            "legacy.json",
+            &serde_json::json!({
+                "schema_version": 1,
+                "frame_id": "shared-frame",
+                "message_head": 2,
+                "messages": [message(Role::User, "legacy question", 10)],
+            }),
+        );
+
+        let scan = scan_workspace(&root).unwrap();
+        assert_eq!(scan.preview.archive_count, 2);
+        assert_eq!(scan.preview.recoverable_session_count, 1);
+        assert_eq!(scan.preview.duplicate_archive_count, 1);
+        assert_eq!(scan.sessions[0].message_head, 4);
+        assert_eq!(
+            scan.sessions[0].source_path,
+            ".superscience/history/current.json"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scan_reports_missing_history_when_neither_directory_exists() {
+        let root = std::env::temp_dir().join(format!(
+            "wisp_workspace_recovery_none_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let error = scan_workspace(&root).unwrap_err();
+        assert!(
+            error.starts_with("workspace_recovery_no_history:"),
+            "{error}"
+        );
+
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -635,12 +800,7 @@ mod tests {
     #[tokio::test]
     async fn persist_scan_generates_a_new_id_when_the_manifest_id_is_registered() {
         let root = test_workspace("project_id_conflict");
-        std::fs::create_dir_all(root.join(".wisp")).unwrap();
-        std::fs::write(
-            root.join(".wisp/project.toml"),
-            "layout_version = 1\nproject_id = \"original\"\nname = \"Recovered Study\"\n",
-        )
-        .unwrap();
+        write_manifest_in(&superscience_paths::project_dir(&root));
         write_archive(
             &root,
             "one.json",

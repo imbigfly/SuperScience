@@ -148,6 +148,7 @@ fn local_workspace_menu_path(project_root: Option<&str>, path: &str) -> Option<S
         || path.contains("://")
         || path.starts_with("artifact:")
         || path.starts_with("artifact-version:")
+        || path.starts_with("knowledge:")
         || path.starts_with("remote:")
     {
         return None;

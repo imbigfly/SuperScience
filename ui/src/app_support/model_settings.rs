@@ -29,8 +29,11 @@ async fn save_sibling_entries(
         } else {
             catalog_limits_or_default(&provider, &effective_api_url, entry.model.trim()).await
         };
-        let image = entry.is_image_model();
-        let video = entry.is_video_model();
+        // Assignment must be gated on the exact model ID the backend accepts;
+        // a stale flag on a chat row would otherwise produce a payload that
+        // `save_model` has to reject.
+        let image = entry.use_for_image_generation && is_image_generation_model(&entry.model);
+        let video = entry.use_for_video_generation && is_video_generation_model(&entry.model);
         let media = image || video;
         let profile = serde_json::json!({
             "id": entry.profile_id.clone().unwrap_or_default(),
@@ -445,8 +448,8 @@ impl ModelSettingsState {
                 let (max_tokens, context_window) =
                     catalog_limits_or_default(&provider, &effective_api_url, entry.model.trim())
                         .await;
-                let image = entry.is_image_model();
-                let video = entry.is_video_model();
+                let image = entry.use_for_image_generation && is_image_generation_model(&entry.model);
+                let video = entry.use_for_video_generation && is_video_generation_model(&entry.model);
                 let media = image || video;
                 let profile = serde_json::json!({
                     "id": "",

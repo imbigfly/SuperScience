@@ -2747,7 +2747,7 @@ pub struct ProjectSummary {
 }
 
 /// Read-only scan result shown before an orphaned workspace is registered and
-/// its `.wisp/history` context archives are imported.
+/// its `.superscience/history` context archives are imported.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct WorkspaceSessionRecoveryPreview {
     pub workspace_dir: String,
@@ -2934,6 +2934,11 @@ pub struct Specialist {
     pub description: String,
     #[serde(default)]
     pub instructions: String,
+    /// Compiled rubric for built-in specialists; `None` for user-created ones.
+    /// The UI surfaces this as the "factory default" so the user can compare
+    /// against their own edits and roll back with one click.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_instructions: Option<String>,
     #[serde(default)]
     pub model_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

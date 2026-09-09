@@ -23,6 +23,13 @@ const REQUIRED_FILES: &[&str] = &[
     "wait_tab.js",
 ];
 
+/// 扩展清单可接受的显示名：fork 品牌名在前，同时保留上游原名，
+/// 这样 fork 改品牌名后不会与完整性校验互相打架，合上游也不会再撞。
+const EXTENSION_MANIFEST_NAMES: &[&str] = &[
+    "SuperScience Real Browser Bridge",
+    "Wisp Real Browser Bridge",
+];
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExtensionPackage {
     pub version: String,
@@ -128,7 +135,8 @@ pub fn inspect(dir: &Path, expected_extension_id: &str) -> Result<ExtensionPacka
         .map_err(|error| format!("read browser extension manifest: {error}"))?;
     let manifest: Value = serde_json::from_str(&manifest_text)
         .map_err(|error| format!("parse browser extension manifest: {error}"))?;
-    if manifest.get("name").and_then(Value::as_str) != Some("Wisp Real Browser Bridge") {
+    let manifest_name = manifest.get("name").and_then(Value::as_str);
+    if !manifest_name.is_some_and(|name| EXTENSION_MANIFEST_NAMES.contains(&name)) {
         return Err("browser extension manifest has an unexpected name".into());
     }
     let version = manifest

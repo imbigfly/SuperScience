@@ -8825,7 +8825,10 @@ test("settings page shows the saved protocol", async ({ page }) => {
   await expect(providerSelect(page)).toHaveValue("openai");
   await expect(page.locator("label.settings-check", { hasText: "Supports image input" })).toHaveCSS("flex-direction", "row");
   await expect(page.locator("label.settings-check", { hasText: "Use for image analysis" })).toHaveCSS("flex-direction", "row");
-  await expect(page.locator("label.settings-check", { hasText: "Use for image generation" })).toHaveCSS("flex-direction", "row");
+  // A chat model never shows the media role boxes: the backend only accepts
+  // image/video assignment for its known media model IDs.
+  await expect(page.getByTestId("provider-use-for-image")).toHaveCount(0);
+  await expect(page.getByTestId("provider-use-for-video")).toHaveCount(0);
   await page.locator(".settings-footer").getByRole("button", { name: "Cancel" }).click();
 });
 
@@ -15086,6 +15089,7 @@ test("builtin specialist cards follow the UI locale", async ({ page }) => {
   await expect(page.getByTestId("specialist-card-reviewer")).toContainText("追踪会话记录");
   await expect(page.getByTestId("specialist-card-reader")).toContainText("阅读专家");
   await expect(page.getByTestId("specialist-card-scientific_illustrator")).toContainText("科研作图专家");
+  await expect(page.getByTestId("specialist-card-r_bioinformatics_figure")).toContainText("生信图专家");
   await expect(page.getByTestId("specialist-card-handwriting_extract")).toContainText("手写提取专家");
   await expect(page.getByTestId("specialist-card-figure_duplicate_audit")).toContainText("图片查重");
   await expect(page.getByTestId("specialist-card-conversation_analysis")).toContainText("对话分析");

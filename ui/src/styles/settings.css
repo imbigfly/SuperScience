@@ -2341,7 +2341,7 @@ button.workflow-graph-port.output.active {
   font: inherit; text-align: center; font-weight: 500; cursor: pointer;
 }
 .theme-mode-card:hover { color: var(--text); }
-.theme-mode-preview { display: block; position: relative; aspect-ratio: 1.42; overflow: hidden; border: 1px solid transparent; border-radius: var(--radius-sm); background: #f4f4f4; transition: border-color .15s ease, box-shadow .15s ease; }
+.theme-mode-preview { display: block; position: relative; aspect-ratio: 1.42; overflow: hidden; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: #f4f4f4; transition: border-color .15s ease, box-shadow .15s ease; }
 .theme-mode-card:hover .theme-mode-preview { border-color: var(--text-faint); }
 .theme-mode-card.active .theme-mode-preview { border-color: var(--text-muted); box-shadow: 0 0 0 1px color-mix(in srgb, var(--text-muted) 28%, transparent); }
 .theme-preview-light { background: #f3f4f6; }
@@ -2453,6 +2453,63 @@ button.workflow-graph-port.output.active {
   font-size: 13px;
 }
 .knowledge-base-list code { font-size: 12px; }
+/* Knowledge-base picker: one trigger that opens a checkbox list, with the
+   refresh button pinned to its right. */
+.knowledge-kb-select { position: relative; }
+.knowledge-kb-select-row { display: flex; align-items: stretch; gap: 6px; width: 100%; }
+.knowledge-kb-trigger {
+  display: flex; align-items: center; gap: 8px;
+  flex: 1 1 auto; min-width: 0; height: 34px; padding: 0 10px;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--bg-input); color: var(--text); font: inherit; font-size: 13.5px;
+  text-align: left; cursor: pointer;
+}
+.knowledge-kb-trigger:hover { border-color: var(--border-strong); background: var(--surface-hover); }
+.knowledge-kb-trigger:focus-visible,
+.knowledge-kb-trigger.active { outline: none; border-color: var(--clay); box-shadow: 0 0 0 3px var(--focus-ring); }
+.knowledge-kb-trigger-label {
+  flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.knowledge-kb-trigger-label.placeholder { color: var(--text-faint); }
+.knowledge-kb-caret { display: inline-flex; flex: 0 0 auto; color: var(--text-faint); }
+.knowledge-kb-caret svg { width: 15px; height: 15px; }
+.knowledge-kb-refresh {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; flex: 0 0 auto;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--bg-input); color: var(--text-muted); cursor: pointer;
+}
+.knowledge-kb-refresh:hover:not(:disabled) { color: var(--text); background: var(--surface-hover); }
+.knowledge-kb-refresh:disabled { opacity: .45; cursor: default; }
+.knowledge-kb-refresh svg { width: 15px; height: 15px; }
+.knowledge-kb-menu {
+  position: fixed; z-index: 60;
+  max-height: min(46vh, 300px); overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--bg-elev); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.16);
+  display: flex; flex-direction: column; gap: 1px;
+}
+.knowledge-kb-option {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  padding: 7px 9px; border: none; border-radius: var(--radius-xs);
+  background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer;
+}
+.knowledge-kb-option:hover { background: var(--bg-sunken); }
+.knowledge-kb-option.selected { background: var(--clay-soft); }
+.knowledge-kb-check {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; flex: 0 0 auto;
+  border: 1px solid var(--border-strong); border-radius: 4px;
+  color: var(--on-clay); background: var(--bg-input);
+}
+.knowledge-kb-option.selected .knowledge-kb-check { background: var(--clay); border-color: var(--clay); }
+.knowledge-kb-check svg { width: 12px; height: 12px; }
+.knowledge-kb-option-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.knowledge-kb-option-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.knowledge-kb-option-id { font-size: 11.5px; color: var(--text-faint); }
+.knowledge-kb-empty { margin: 0; padding: 10px; font-size: 12.5px; color: var(--text-faint); }
 .settings-sync-block {
   display: grid;
   gap: 12px;
@@ -3903,7 +3960,8 @@ button.workflow-graph-port.output.active {
   border-radius: 50%;
   animation: environment-probe-spin 0.7s linear infinite;
 }
-.settings-pane .conn-form.model-form textarea { font: inherit; }
+/* 专家详情的描述/指令输入框只允许纵向调整高度，避免横向拖动撑破栅格布局 */
+.settings-pane .conn-form.model-form textarea { font: inherit; resize: vertical; max-width: 100%; }
 .settings-pane .settings-path-input {
   font-family: var(--font-mono);
   font-size: 12.5px;

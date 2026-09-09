@@ -198,7 +198,10 @@
 .cap-scene-head h2 { margin: 0; font-size: 18px; font-weight: 700; color: var(--text); }
 .cap-scene-subtitle { margin: 0; color: var(--text-muted); font-size: 13px; line-height: 1.45; }
 .cap-scene-tabs {
-  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: space-between;
+}
+.cap-scene-tablist {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0;
 }
 .cap-scene-tab {
   border: 1px solid var(--border); background: var(--bg-sunken); color: var(--text-muted);
@@ -210,6 +213,22 @@
   border-color: color-mix(in srgb, var(--clay) 28%, var(--border-strong));
   font-weight: 650;
 }
+/* 能力 tab 尾部的默认项目选择器：靠右对齐，不参与 tab 选中态。 */
+.cap-scene-tabs-end { margin-left: auto; }
+.cap-default-project {
+  display: inline-flex; align-items: center; gap: 8px;
+  color: var(--text-muted); font-size: 12.5px; white-space: nowrap;
+}
+.cap-default-project select {
+  max-width: 220px; padding: 6px 28px 6px 10px;
+  border: 1px solid var(--border-strong); border-radius: 999px;
+  background: var(--bg-input); color: var(--text); font: inherit; font-size: 12.5px;
+  appearance: none; -webkit-appearance: none;
+  background-image: var(--select-chevron); background-repeat: no-repeat;
+  background-position: right 10px center; background-size: 10px 6px;
+  cursor: pointer; outline: none; text-overflow: ellipsis;
+}
+.cap-default-project select:focus { border-color: var(--clay); box-shadow: 0 0 0 3px var(--focus-ring); }
 .cap-tile-stack {
   display: flex; flex-direction: column; gap: 12px;
 }
@@ -285,6 +304,97 @@
   max-width: 560px;
   max-height: min(86vh, 760px);
   overflow: auto;
+}
+/* 生图模型设置弹窗：分节卡片式布局，去掉原生表单的松散感 */
+.image-gen-settings-modal {
+  max-width: 560px;
+  padding: 0;
+  gap: 0;
+  max-height: min(86vh, 760px);
+  overflow: hidden;
+}
+.ig-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 20px 22px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.ig-head-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-xs);
+  background: var(--clay-soft);
+  color: var(--clay);
+}
+.ig-head-icon svg { width: 18px; height: 18px; }
+.ig-head-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.ig-head-text h2 { margin: 0; font-size: 16px; font-weight: 650; letter-spacing: -0.01em; }
+.ig-head-lead { margin: 0; color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
+.ig-head .ps-close { flex: 0 0 auto; }
+.ig-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.ig-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 22px;
+  border-bottom: 1px solid var(--border);
+}
+.ig-section:last-of-type { border-bottom: 0; }
+.ig-section-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.ig-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.image-gen-settings-modal .cap-field { margin: 0; }
+.image-gen-settings-modal .cap-field > span { font-size: 12px; color: var(--text-muted); font-weight: 550; }
+.image-gen-settings-modal .ig-section > select { width: 100%; }
+.ig-note {
+  margin: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  color: var(--text-faint);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.ig-note::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--clay);
+}
+.ig-empty {
+  margin: 0;
+  padding: 18px 22px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.image-gen-settings-modal > .settings-status { margin: 12px 22px 0; }
+.image-gen-settings-modal > .row {
+  margin: 0;
+  padding: 16px 22px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-sunken);
+}
+@media (max-width: 520px) {
+  .ig-grid { grid-template-columns: minmax(0, 1fr); }
 }
 .cap-info-terms {
   width: 100%;

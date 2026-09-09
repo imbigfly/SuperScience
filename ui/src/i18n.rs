@@ -60,10 +60,26 @@ fn fork_lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "scratch.open") => Some("Start conversation"),
         (Locale::Zh, "scratch.title") => Some("开始对话"),
         (Locale::En, "scratch.title") => Some("Start conversation"),
+        // 模型选择器中能力图标标签的悬浮提示
+        (Locale::Zh, "model.cap.vision") => Some("支持图片输入"),
+        (Locale::En, "model.cap.vision") => Some("Supports image input"),
+        (Locale::Zh, "model.cap.reasoning") => Some("支持推理强度"),
+        (Locale::En, "model.cap.reasoning") => Some("Supports reasoning effort"),
         (Locale::Zh, "home.director_cta_hint") => Some("把你想要做的事情告诉我，我来引导你得到结果"),
         (Locale::En, "home.director_cta_hint") => {
             Some("Tell me what you want to do, and I will guide you to the result.")
         }
+        // 首页能力 tab 尾部的「默认项目」选择器
+        (Locale::Zh, "caps.default_project.label") => Some("默认项目"),
+        (Locale::En, "caps.default_project.label") => Some("Default project"),
+        (Locale::Zh, "caps.default_project.hint") => {
+            Some("从能力卡新建的会话都归属到这个项目。")
+        }
+        (Locale::En, "caps.default_project.hint") => {
+            Some("Sessions started from a capability card belong to this project.")
+        }
+        (Locale::Zh, "caps.default_project.auto") => Some("自动（优先默认项目）"),
+        (Locale::En, "caps.default_project.auto") => Some("Automatic (prefer the default project)"),
         (Locale::Zh, "caps.skill.handwriting_extract.tip") => {
             Some("发送图片同时对每列数据进行格式说明，识别率会显著提高。")
         }
@@ -95,6 +111,18 @@ fn fork_lookup(locale: Locale, key: &str) -> Option<&'static str> {
         }
         (Locale::En, "specialists.builtin.scientific_illustrator.description") => {
             Some("Creates publication-ready scientific figures from the request and project context.")
+        }
+        (Locale::Zh, "specialists.builtin.r_bioinformatics_figure.name") => {
+            Some("生信图专家")
+        }
+        (Locale::En, "specialists.builtin.r_bioinformatics_figure.name") => {
+            Some("R bioinformatics figures")
+        }
+        (Locale::Zh, "specialists.builtin.r_bioinformatics_figure.description") => {
+            Some("默认用 R 绘制常见生信图（火山图、热图、PCA/UMAP、生存曲线等）。")
+        }
+        (Locale::En, "specialists.builtin.r_bioinformatics_figure.description") => {
+            Some("Draws common bioinformatics plots (volcano, heatmap, PCA/UMAP, survival, and similar) in R by default.")
         }
         (Locale::Zh, "specialists.builtin.handwriting_extract.name") => Some("手写提取专家"),
         (Locale::En, "specialists.builtin.handwriting_extract.name") => Some("Handwriting Extract"),
@@ -129,6 +157,27 @@ fn fork_lookup(locale: Locale, key: &str) -> Option<&'static str> {
         }
         (Locale::En, "specialists.chat_with_prompt") => {
             Some("Start as {name}. Ask one short question to confirm what I need done, then begin.")
+        }
+        // 浏览器扩展首次安装引导：文件选择框的输入方式随平台不同，所以提示语
+        // 用 {path_hint} 占位，由调用方按 macOS / Windows / Linux 填入。
+        (Locale::Zh, "browser.offline.setup_done") => {
+            Some("扩展路径已复制，并已在文件管理器中定位到该目录。在刚打开的浏览器页面中开启右上角「开发者模式」，点「加载已解压的扩展程序」，然后{path_hint}。")
+        }
+        (Locale::En, "browser.offline.setup_done") => Some(
+            "Extension path copied and the folder is revealed in your file manager. In the browser tab that just opened, turn on Developer mode (top right), choose \"Load unpacked\", then {path_hint}.",
+        ),
+        // 文件选择框里粘贴扩展路径的操作方式，按平台区分。
+        (Locale::Zh, "browser.offline.path_hint_mac") => {
+            Some("按 ⌘⇧G 打开「前往文件夹」，粘贴路径后回车")
+        }
+        (Locale::En, "browser.offline.path_hint_mac") => {
+            Some("press ⌘⇧G, paste the path, and press Return")
+        }
+        (Locale::Zh, "browser.offline.path_hint_other") => {
+            Some("在文件名框粘贴路径后回车")
+        }
+        (Locale::En, "browser.offline.path_hint_other") => {
+            Some("paste the path into the file name box and press Enter")
         }
         _ => None,
     }
@@ -1620,8 +1669,13 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "knowledge.weknora.api_key") => Some("API key"),
         (Locale::En, "knowledge.weknora.api_key_placeholder") => Some("X-API-Key"),
         (Locale::En, "knowledge.weknora.api_key_hint") => Some("Leave blank to keep the stored key. The key is saved in the local secret store, not SQLite."),
-        (Locale::En, "knowledge.weknora.kb_ids") => Some("Default knowledge base ID"),
-        (Locale::En, "knowledge.weknora.kb_ids_hint") => Some("Required for search. Separate multiple IDs with commas. The agent can override this per call."),
+        (Locale::En, "knowledge.weknora.kb_ids") => Some("Knowledge bases"),
+        (Locale::En, "knowledge.weknora.kb_ids_hint") => Some("Required for search. Tick the bases to cite, or type IDs separated by commas. The agent can override this per call."),
+        (Locale::En, "knowledge.weknora.kb_refresh") => Some("Refresh list"),
+        (Locale::En, "knowledge.weknora.kb_placeholder") => Some("Select knowledge bases"),
+        (Locale::En, "knowledge.weknora.kb_selected") => Some("{count} knowledge bases selected"),
+        (Locale::En, "knowledge.weknora.kb_empty") => Some("No knowledge bases yet. Check the API URL and key, then refresh."),
+        (Locale::En, "knowledge.weknora.kb_refreshed") => Some("Found {count} knowledge base(s)."),
         (Locale::En, "knowledge.weknora.match_count") => Some("Max excerpts"),
         (Locale::En, "knowledge.weknora.match_count_hint") => Some("How many excerpts to return to the agent (1–32)."),
         (Locale::En, "knowledge.test") => Some("Test connection"),
@@ -1841,6 +1895,13 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "specialists.metric.inherit") => Some("—"),
         (Locale::En, "specialists.edit_hint") => Some("Click card to edit"),
         (Locale::En, "specialists.builtin_locked") => Some("Built-in instructions are read-only."),
+        (Locale::En, "specialists.builtin_override_hint") => Some(
+            "Built-in specialist. Your edits fully replace the factory rubric. Click 'Restore default' at the bottom to roll back.",
+        ),
+        (Locale::En, "specialists.reset_default") => Some("Restore default"),
+        (Locale::En, "specialists.reset_confirm_body") => Some(
+            "Discard your edits to '{name}' and restore the factory instructions? This cannot be undone.",
+        ),
         (Locale::En, "cred.desc") => Some("API keys for external services used by skills and tools — including your own custom entries — are stored in the OS keyring."),
         (Locale::En, "cred.help.aria") => Some("About this credential"),
         (Locale::En, "cred.help.what") => Some("What it is"),
@@ -2324,6 +2385,17 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         }
         (Locale::En, "err.validation_timeout") => Some("Validation timed out after 30s"),
         (Locale::En, "err.vision_probe_failed") => Some(" This check sent a test image because \"supports images\" is on. If the model has no vision support, turn that off and validate again."),
+        (Locale::En, "err.image_generation_unsupported") => Some("Image generation currently supports OpenAI gpt-image-2 and xAI grok-imagine-image-2.0."),
+        (Locale::En, "err.video_generation_unsupported") => Some("Video generation currently supports xAI grok-imagine-video, grok-imagine-video-1.5, and grok-imagine-video-1.5-preview."),
+        (Locale::En, "err.image_analysis_requires_vision") => Some("Image analysis requires an API model marked as vision-capable."),
+        (Locale::En, "err.at_least_one_chat_model") => Some("At least one chat model is required."),
+        (Locale::En, "err.media_model_cannot_chat") => Some("Image or video generation models cannot be used for chat."),
+        (Locale::En, "err.unsupported_image_size") => Some("Unsupported image size."),
+        (Locale::En, "err.unsupported_image_quality") => Some("Unsupported image quality."),
+        (Locale::En, "err.unsupported_image_aspect_ratio") => Some("Unsupported image aspect ratio."),
+        (Locale::En, "err.unsupported_image_resolution") => Some("Unsupported image resolution."),
+        (Locale::En, "err.image_model_unavailable") => Some("Image model no longer available."),
+        (Locale::En, "err.image_generation_key_empty") => Some("Image-generation API key is empty."),
         (Locale::En, "err.skill_no_md") => Some("The selected folder has no SKILL.md."),
         (Locale::En, "err.skill_pick") => Some("Select a skill folder, a SKILL.md file, or a ZIP archive."),
         (Locale::En, "err.skill_zip_no_md") => Some("The ZIP archive has no SKILL.md at its root or in a top-level folder."),
@@ -2722,9 +2794,7 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "caps.tile.academic_paper.blurb") => Some("Plan, draft, revise, and format papers with the academic-paper skill team."),
         (Locale::En, "caps.tile.ai_drawing.title") => Some("AI illustration"),
         (Locale::En, "caps.tile.ai_drawing.blurb") => Some("Generate research illustrations and concept figures with the configured image model."),
-        (Locale::En, "caps.tile.ai_mechanism_figure.title") => Some("AI mechanism figure"),
         (Locale::En, "caps.tile.editable_figure.title") => Some("Editable figure"),
-        (Locale::En, "caps.tile.bioinfo_figure_layout.title") => Some("Bioinformatics figure layout"),
         (Locale::En, "caps.tile.r_bioinfo_figure.title") => Some("R bioinformatics figures"),
         (Locale::En, "caps.tile.r_bioinfo_figure.blurb") => Some(
             "Volcano, heatmap, PCA/UMAP, violin, survival, enrichment—plot with the R specialist in ≤5 questions.",
@@ -2777,6 +2847,23 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "caps.tile.pii_firewall.terms_issue.undelimited") => Some("Bare text without wrapping marks can collide with the paper. Use 〔词1〕 or {词1}."),
         (Locale::En, "caps.tile.pii_firewall.close") => Some("Got it"),
         (Locale::En, "caps.tile.pii_firewall.settings.aria") => Some("PII outbound firewall settings"),
+        (Locale::En, "caps.tile.ai_drawing.settings.aria") => Some("Image generation settings"),
+        (Locale::En, "caps.tile.ai_drawing.settings.title") => Some("Image generation settings"),
+        (Locale::En, "caps.tile.ai_drawing.settings.lead") => Some("Pick the model used by `generate_image`. Only one model is assigned at a time; its API key comes from Settings → Models."),
+        (Locale::En, "caps.tile.ai_drawing.settings.pick") => Some("Image model"),
+        (Locale::En, "caps.tile.ai_drawing.settings.empty") => Some("No model is currently configured for image generation. Add one in Settings → Models, then return here."),
+        (Locale::En, "caps.tile.ai_drawing.settings.key_note") => Some("Uses the API key already saved for this model in Settings → Models."),
+        (Locale::En, "caps.tile.ai_drawing.settings.params_section") => Some("Defaults"),
+        (Locale::En, "caps.tile.ai_drawing.settings.size") => Some("Default size"),
+        (Locale::En, "caps.tile.ai_drawing.settings.quality") => Some("Default quality"),
+        (Locale::En, "caps.tile.ai_drawing.settings.aspect") => Some("Default aspect ratio"),
+        (Locale::En, "caps.tile.ai_drawing.settings.aspect_placeholder") => Some("e.g. 1:1, 16:9, 3:2"),
+        (Locale::En, "caps.tile.ai_drawing.settings.resolution") => Some("Default resolution"),
+        (Locale::En, "caps.tile.ai_drawing.settings.resolution_placeholder") => Some("e.g. 1K, 2K"),
+        (Locale::En, "caps.tile.ai_drawing.settings.save") => Some("Save"),
+        (Locale::En, "caps.tile.ai_drawing.settings.close") => Some("Close"),
+        (Locale::En, "caps.tile.ai_drawing.settings.saved") => Some("Saved."),
+        (Locale::En, "caps.tile.ai_drawing.settings.required") => Some("Pick an image model first."),
         (Locale::En, "caps.skill.journal_prescreen.title") => Some("Journal prescreen"),
         (Locale::En, "caps.skill.journal_prescreen.blurb") => Some("Check a manuscript against that journal's author guidelines and mark problems with fixes."),
         (Locale::En, "caps.skill.journal_prescreen.prompt") => Some(
@@ -3033,10 +3120,10 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
             "Search my local knowledge base and cite excerpts. First ask what I want to find — do not lecture about setup.",
         ),
         (Locale::En, "caps.prompt.knowledge.spec") => Some(
-            "Capability tool spec.\nUse the `knowledge_search` tool to retrieve excerpts from the configured WeKnora knowledge base. Quote or cite titles/filenames. Do not treat this as a chat/answer API — write the reply yourself. If the tool is missing, say the knowledge base is not connected. Default IDs come from settings; pass knowledge_base_id only when the user names a specific base. If nothing matches, say so — do not invent excerpts.",
+            "Capability tool spec.\nUse the `knowledge_search` tool to retrieve excerpts from the configured WeKnora knowledge base. Quote or cite titles/filenames. Do not treat this as a chat/answer API — write the reply yourself. If the tool is missing, say the knowledge base is not connected. Default IDs come from settings; pass knowledge_base_id only when the user names a specific base. If nothing matches, say so — do not invent excerpts.\nSource files: each hit carries a ready-made `file_link`. When you mention a source file, copy that `file_link` value verbatim as the Markdown link destination — never invent a bare filename link, which cannot be opened.",
         ),
         (Locale::En, "caps.prompt.env_setup") => Some(
-            "Please set up this computer for scientific computing: check whether Python, R, Node, sci, pixi, and officecli are installed (and at the right versions), give me a short checklist of what is missing or needs upgrading, and only run the install after I confirm. Paste the output of every step so I can follow along.",
+            "Please set up this computer for scientific computing: check whether Python, R (with the common scientific / bioinformatics / plotting / statistics packages used in medical research), Node, sci, pixi, and officecli are installed at the latest versions. Give me a short checklist of what is missing or needs upgrading, and only run the install after I confirm. Paste the output of every step so I can follow along.",
         ),
         (Locale::En, "caps.help.aria") => Some("What this can do"),
         (Locale::En, "caps.help.close") => Some("Got it"),
@@ -3240,9 +3327,9 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "projects.import_zip") => Some("Import a ZIP archive"),
         (Locale::En, "projects.import_zip_hint") => Some("Restore workspace files, conversations, and Wisp project records into a new folder."),
         (Locale::En, "projects.recover_workspace") => Some("Recover conversations from a workspace"),
-        (Locale::En, "projects.recover_workspace_hint") => Some("Scan .wisp/history in an orphaned workspace and rebuild the recoverable conversation timelines in place."),
+        (Locale::En, "projects.recover_workspace_hint") => Some("Scan .superscience/history in an orphaned workspace and rebuild the recoverable conversation timelines in place."),
         (Locale::En, "projects.recover_title") => Some("Recover workspace conversations"),
-        (Locale::En, "projects.recover_notice") => Some("This is a best-effort recovery of message timelines from .wisp/history. It does not restore UI-only events, runs, reviews, or other database-only records, and the source archives are not changed."),
+        (Locale::En, "projects.recover_notice") => Some("This is a best-effort recovery of message timelines from .superscience/history. It does not restore UI-only events, runs, reviews, or other database-only records, and the source archives are not changed."),
         (Locale::En, "projects.recover_sessions") => Some("conversations"),
         (Locale::En, "projects.recover_messages") => Some("messages"),
         (Locale::En, "projects.recover_archives") => Some("valid archives"),
@@ -4817,8 +4904,13 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "knowledge.weknora.api_key") => Some("API 密钥"),
         (Locale::Zh, "knowledge.weknora.api_key_placeholder") => Some("X-API-Key"),
         (Locale::Zh, "knowledge.weknora.api_key_hint") => Some("留空则保留已保存的密钥。密钥只进本机凭据库，不会写入 SQLite。"),
-        (Locale::Zh, "knowledge.weknora.kb_ids") => Some("默认知识库 ID"),
-        (Locale::Zh, "knowledge.weknora.kb_ids_hint") => Some("检索必填。多个 ID 用逗号分隔。对话里可以按次覆盖。"),
+        (Locale::Zh, "knowledge.weknora.kb_ids") => Some("绑定知识库"),
+        (Locale::Zh, "knowledge.weknora.kb_ids_hint") => Some("检索必填。勾选要引用的知识库，或直接输入多个 ID（逗号分隔）。对话里可以按次覆盖。"),
+        (Locale::Zh, "knowledge.weknora.kb_refresh") => Some("刷新列表"),
+        (Locale::Zh, "knowledge.weknora.kb_placeholder") => Some("选择要引用的知识库"),
+        (Locale::Zh, "knowledge.weknora.kb_selected") => Some("已选 {count} 个知识库"),
+        (Locale::Zh, "knowledge.weknora.kb_empty") => Some("还没有拉取到知识库。先确认 API 地址和密钥，再点刷新。"),
+        (Locale::Zh, "knowledge.weknora.kb_refreshed") => Some("已拉取 {count} 个知识库。"),
         (Locale::Zh, "knowledge.weknora.match_count") => Some("返回条数"),
         (Locale::Zh, "knowledge.weknora.match_count_hint") => Some("返回给助手的片段数量（1–32）。"),
         (Locale::Zh, "knowledge.test") => Some("测试连接"),
@@ -5038,6 +5130,13 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "specialists.metric.inherit") => Some("—"),
         (Locale::Zh, "specialists.edit_hint") => Some("点击卡片编辑"),
         (Locale::Zh, "specialists.builtin_locked") => Some("内置指令不可编辑。"),
+        (Locale::Zh, "specialists.builtin_override_hint") => Some(
+            "出厂内置专家。你对指令的修改会完全覆盖默认提示词；点底部「恢复出厂指令」可一键还原。",
+        ),
+        (Locale::Zh, "specialists.reset_default") => Some("恢复出厂指令"),
+        (Locale::Zh, "specialists.reset_confirm_body") => Some(
+            "放弃对「{name}」的修改并恢复出厂指令吗？此操作无法撤销。",
+        ),
         (Locale::Zh, "cred.desc") => Some("技能与工具所用外部服务的 API 密钥（包括自定义凭据）均保存在系统钥匙串中。"),
         (Locale::Zh, "cred.help.aria") => Some("了解该凭据"),
         (Locale::Zh, "cred.help.what") => Some("这是什么"),
@@ -5524,6 +5623,17 @@ Do not leave generated files in the project root.",
         }
         (Locale::Zh, "err.validation_timeout") => Some("验证超时（30 秒）"),
         (Locale::Zh, "err.vision_probe_failed") => Some(" 因为勾选了「支持图片」，本次验证发送了一张测试图片。如果该模型不支持图片，请取消勾选后重新验证。"),
+        (Locale::Zh, "err.image_generation_unsupported") => Some("图片生成目前只支持 OpenAI gpt-image-2 与 xAI grok-imagine-image-2.0。"),
+        (Locale::Zh, "err.video_generation_unsupported") => Some("视频生成目前只支持 xAI grok-imagine-video、grok-imagine-video-1.5 与 grok-imagine-video-1.5-preview。"),
+        (Locale::Zh, "err.image_analysis_requires_vision") => Some("图片分析需要使用支持视觉的 API 模型。"),
+        (Locale::Zh, "err.at_least_one_chat_model") => Some("至少需要一个对话模型。"),
+        (Locale::Zh, "err.media_model_cannot_chat") => Some("图片或视频生成模型不能用于对话。"),
+        (Locale::Zh, "err.unsupported_image_size") => Some("不支持的图片尺寸。"),
+        (Locale::Zh, "err.unsupported_image_quality") => Some("不支持的图片质量。"),
+        (Locale::Zh, "err.unsupported_image_aspect_ratio") => Some("不支持的图片宽高比。"),
+        (Locale::Zh, "err.unsupported_image_resolution") => Some("不支持的图片分辨率。"),
+        (Locale::Zh, "err.image_model_unavailable") => Some("生图模型已不可用。"),
+        (Locale::Zh, "err.image_generation_key_empty") => Some("生图 API 密钥为空。"),
         (Locale::Zh, "err.file_not_found") => Some("文件未找到：{path}"),
         (Locale::Zh, "chat.assistant") => Some("天成科研助手"),
         (Locale::Zh, "chat.thinking") => Some("思考中"),
@@ -5914,10 +6024,8 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "caps.tile.academic_paper.blurb") => Some("用 academic-paper 技能规划、起草、修订与排版论文。"),
         (Locale::Zh, "caps.tile.ai_drawing.title") => Some("AI 插图生成"),
         (Locale::Zh, "caps.tile.ai_drawing.blurb") => Some("用已配置的生图模型生成科研示意与概念图。"),
-        (Locale::Zh, "caps.tile.ai_mechanism_figure.title") => Some("AI机制图"),
         (Locale::Zh, "caps.tile.editable_figure.title") => Some("图片可编辑"),
         (Locale::Zh, "caps.tile.editable_figure.blurb") => Some("把机制图转换成可编辑的格式"),
-        (Locale::Zh, "caps.tile.bioinfo_figure_layout.title") => Some("生信图布局"),
         (Locale::Zh, "caps.tile.r_bioinfo_figure.title") => Some("R语言生信图"),
         (Locale::Zh, "caps.tile.r_bioinfo_figure.blurb") => Some(
             "火山图、热图、PCA/UMAP、箱线/小提琴、生存曲线、富集图等——由生信图专家用 R 在 5 问内取数出图。",
@@ -5970,6 +6078,23 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "caps.tile.pii_firewall.terms_issue.undelimited") => Some("没有起止标记的裸词容易和正文撞车。请改用〔词1〕或{词1}。"),
         (Locale::Zh, "caps.tile.pii_firewall.close") => Some("知道了"),
         (Locale::Zh, "caps.tile.pii_firewall.settings.aria") => Some("出站隐私脱敏设置"),
+        (Locale::Zh, "caps.tile.ai_drawing.settings.aria") => Some("生图模型设置"),
+        (Locale::Zh, "caps.tile.ai_drawing.settings.title") => Some("生图模型设置"),
+        (Locale::Zh, "caps.tile.ai_drawing.settings.lead") => Some("选择 `generate_image` 工具使用的模型，一次只能指派一个。API key 直接沿用「设置 → 模型」里已保存的密钥，无需在此重复填写。"),
+        (Locale::Zh, "caps.tile.ai_drawing.settings.pick") => Some("生图模型"),
+        (Locale::Zh, "caps.tile.ai_drawing.settings.empty") => Some("当前还没有用于图片生成的模型。请先到「设置 → 模型」里添加一个，再回到这里。"),
+        (Locale::Zh, "caps.tile.ai_drawing.settings.key_note") => Some("直接使用该模型在「设置 → 模型」中已保存的 API key。"),
+        (Locale::Zh, "caps.tile.ai_drawing.settings.params_section") => Some("默认参数"),
+        (Locale::Zh, "caps.tile.ai_drawing.settings.size") => Some("默认尺寸"),
+        (Locale::Zh, "caps.tile.ai_drawing.settings.quality") => Some("默认质量"),
+        (Locale::Zh, "caps.tile.ai_drawing.settings.aspect") => Some("默认宽高比"),
+        (Locale::Zh, "caps.tile.ai_drawing.settings.aspect_placeholder") => Some("例如 1:1、16:9、3:2"),
+        (Locale::Zh, "caps.tile.ai_drawing.settings.resolution") => Some("默认分辨率"),
+        (Locale::Zh, "caps.tile.ai_drawing.settings.resolution_placeholder") => Some("例如 1K、2K"),
+        (Locale::Zh, "caps.tile.ai_drawing.settings.save") => Some("保存"),
+        (Locale::Zh, "caps.tile.ai_drawing.settings.close") => Some("关闭"),
+        (Locale::Zh, "caps.tile.ai_drawing.settings.saved") => Some("已保存。"),
+        (Locale::Zh, "caps.tile.ai_drawing.settings.required") => Some("请先选择一个生图模型。"),
         (Locale::Zh, "caps.skill.journal_prescreen.title") => Some("论文预审"),
         (Locale::Zh, "caps.skill.journal_prescreen.blurb") => Some("对照目标杂志投稿须知检查稿件，标出问题并给出改法。"),
         (Locale::Zh, "caps.skill.journal_prescreen.prompt") => Some(
@@ -6226,10 +6351,10 @@ Do not leave generated files in the project root.",
             "帮我检索本机知识库并引用出处。先问我想查什么，不要空讲功能。",
         ),
         (Locale::Zh, "caps.prompt.knowledge.spec") => Some(
-            "能力工具规格。\n用 `knowledge_search` 检索已接入的 WeKnora 知识库，返回片段后由你写回答并引用标题/文件名。不要把它当成聊天 API。若工具不存在，说明知识库未接通。默认用设置里的知识库 ID；用户点名某个库时再传 knowledge_base_id。查不到就直说，不要编造片段。",
+            "能力工具规格。\n用 `knowledge_search` 检索已接入的 WeKnora 知识库，返回片段后由你写回答并引用标题/文件名。不要把它当成聊天 API。若工具不存在，说明知识库未接通。默认用设置里的知识库 ID；用户点名某个库时再传 knowledge_base_id。查不到就直说，不要编造片段。\n来源文件：每条命中都带一个现成的 `file_link`。提到来源文件时，把该 `file_link` 的值原样作为 Markdown 链接地址，不要自己写裸文件名链接，那种链接打不开。",
         ),
         (Locale::Zh, "caps.prompt.env_setup") => Some(
-            "请帮我把这台电脑配置成可用的科学计算环境：检查 Python、R、Node、sci、pixi、officecli 各自是否已安装、版本是否够用，把缺失或需要升级的项列成清单，经我同意后再实际安装，过程中请把每一步的输出贴给我。",
+            "请帮我把这台电脑配置成可用的科学计算环境：检查 Python、R（包含科研/生信/绘图/统计等医疗科研常用包）、Node、sci、pixi、officecli 各自是否已安装、版本是最新版本，把缺失或需要升级的项列成清单，经我同意后再实际安装，过程中请把每一步的输出贴给我。",
         ),
         (Locale::Zh, "caps.help.aria") => Some("这个能力能做什么"),
         (Locale::Zh, "caps.help.close") => Some("知道了"),
@@ -6433,9 +6558,9 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "projects.import_zip") => Some("导入 ZIP 压缩包"),
         (Locale::Zh, "projects.import_zip_hint") => Some("把工作区文件、会话和 Wisp 项目记录完整恢复到一个新文件夹。"),
         (Locale::Zh, "projects.recover_workspace") => Some("从工作区恢复会话"),
-        (Locale::Zh, "projects.recover_workspace_hint") => Some("扫描孤立工作区中的 .wisp/history，并在原位置重建可恢复的会话时间线。"),
+        (Locale::Zh, "projects.recover_workspace_hint") => Some("扫描孤立工作区中的 .superscience/history，并在原位置重建可恢复的会话时间线。"),
         (Locale::Zh, "projects.recover_title") => Some("恢复工作区会话"),
-        (Locale::Zh, "projects.recover_notice") => Some("这是基于 .wisp/history 的尽力恢复，只恢复消息时间线，不恢复仅存在于数据库中的 UI 事件、运行、审阅等记录；原始存档不会被修改。"),
+        (Locale::Zh, "projects.recover_notice") => Some("这是基于 .superscience/history 的尽力恢复，只恢复消息时间线，不恢复仅存在于数据库中的 UI 事件、运行、审阅等记录；原始存档不会被修改。"),
         (Locale::Zh, "projects.recover_sessions") => Some("个会话"),
         (Locale::Zh, "projects.recover_messages") => Some("条消息"),
         (Locale::Zh, "projects.recover_archives") => Some("个有效存档"),
@@ -6648,6 +6773,25 @@ pub fn localize_backend(locale: Locale, msg: &str) -> String {
         }
         "Validation timed out after 30s" => t(locale, "err.validation_timeout"),
         "Validation succeeded" => t(locale, "status.validation_succeeded"),
+        "Image generation currently supports OpenAI gpt-image-2 and xAI grok-imagine-image-2.0." => {
+            t(locale, "err.image_generation_unsupported")
+        }
+        "Video generation currently supports xAI grok-imagine-video, grok-imagine-video-1.5, and grok-imagine-video-1.5-preview." => {
+            t(locale, "err.video_generation_unsupported")
+        }
+        "Image analysis requires an API model marked as vision-capable." => {
+            t(locale, "err.image_analysis_requires_vision")
+        }
+        "At least one chat model is required." => t(locale, "err.at_least_one_chat_model"),
+        "Image or video generation models cannot be used for chat." => {
+            t(locale, "err.media_model_cannot_chat")
+        }
+        "Unsupported image size." => t(locale, "err.unsupported_image_size"),
+        "Unsupported image quality." => t(locale, "err.unsupported_image_quality"),
+        "Unsupported image aspect ratio." => t(locale, "err.unsupported_image_aspect_ratio"),
+        "Unsupported image resolution." => t(locale, "err.unsupported_image_resolution"),
+        "Image model no longer available." => t(locale, "err.image_model_unavailable"),
+        "Image-generation API key is empty." => t(locale, "err.image_generation_key_empty"),
         "Credential name is required." => t(locale, "err.cred_name_required"),
         "Credential name must be 80 characters or fewer." => t(locale, "err.cred_name_long"),
         "Environment variable is required." => t(locale, "err.cred_env_required"),
@@ -6661,7 +6805,7 @@ pub fn localize_backend(locale: Locale, msg: &str) -> String {
         }
         m if m.starts_with("workspace_recovery_no_history:") => {
             if locale == Locale::Zh {
-                "所选文件夹中没有可读取的 .wisp/history 会话存档目录。".into()
+                "所选文件夹中没有可读取的 .superscience/history 会话存档目录。".into()
             } else {
                 m.trim_start_matches("workspace_recovery_no_history:")
                     .trim()

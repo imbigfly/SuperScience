@@ -4,15 +4,18 @@
 //! and never `CREDENTIALS` / `service_env`.
 
 use super::{clear_idle_agents, llm_proxy, AppState};
+use crate::file_browser::{file_content_from_bytes, is_text_mime, mime_for_path, FileContent};
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::path::Path;
 use std::time::Duration;
 use superscience_dto::{
     KnowledgeBaseSummary, KnowledgeConnectionTest, KnowledgeSettings, WeKnoraSettings,
 };
 use superscience_store::secrets::Secret;
 use superscience_store::Store;
-use tauri::State;
+use tauri::ipc::Response;
+use tauri::{AppHandle, State};
 
 const PROVIDER_WEKNORA: &str = "weknora";
 const SETTING_PROVIDER: &str = "knowledge_provider";
@@ -46,6 +49,32 @@ pub(crate) struct KnowledgeHit {
     pub title: String,
     pub filename: String,
     pub provider: String,
+    /// Preview path spelling the UI understands: `knowledge:<knowledge_id>:<filename>`.
+    /// Empty when WeKnora returned no knowledge id for the hit.
+    pub open_ref: String,
+}
+
+/// The preview path spelling for one knowledge-base file. Mirrors the other
+/// opaque preview spellings (`artifact-version:<id>`, `remote:ssh:<alias>:<path>`)
+/// so the UI can route a click to the right backend command.
+pub(crate) fn knowledge_preview_ref(source_id: &str, filename: &str) -> String {
+    let source_id = source_id.trim();
+    if source_id.is_empty() {
+        return String::new();
+    }
+    format!("knowledge:{source_id}:{}", filename.trim())
+}
+
+/// Parse a `knowledge:<knowledge_id>:<filename>` preview path. The filename may
+/// itself contain colons, so only the first separator after the id is split.
+pub(crate) fn parse_knowledge_preview_ref(reference: &str) -> Option<(&str, &str)> {
+    let rest = reference.strip_prefix("knowledge:")?;
+    let (source_id, filename) = rest.split_once(':')?;
+    let source_id = source_id.trim();
+    if source_id.is_empty() {
+        return None;
+    }
+    Some((source_id, filename.trim()))
 }
 
 pub(crate) fn normalize_weknora_base_url(raw: &str) -> String {
@@ -185,6 +214,7 @@ pub(crate) fn parse_search_hits(
                 .unwrap_or_default()
                 .to_string();
             let score = row.get("score").and_then(Value::as_f64);
+            let open_ref = knowledge_preview_ref(&source_id, &filename);
             Some(KnowledgeHit {
                 content,
                 score,
@@ -192,6 +222,7 @@ pub(crate) fn parse_search_hits(
                 title,
                 filename,
                 provider: provider.to_string(),
+                open_ref,
             })
         })
         .take(clamp_match_count(match_count) as usize)
@@ -316,6 +347,215 @@ pub(crate) async fn weknora_list_bases(
     let (_status, value) =
         weknora_request(reqwest::Method::GET, &url, api_key, None, proxy).await?;
     Ok(parse_knowledge_bases(&value))
+}
+
+/// Byte cap for one knowledge-base preview. Matches the remote ceiling: these
+/// bytes cross the network on every preview, and PDF/office still render from
+/// a full under-budget payload.
+const KNOWLEDGE_FILE_MAX_BYTES: u64 = 32 * 1024 * 1024;
+
+fn knowledge_byte_cap(max_bytes: Option<u64>) -> u64 {
+    max_bytes
+        .unwrap_or(KNOWLEDGE_FILE_MAX_BYTES)
+        .min(KNOWLEDGE_FILE_MAX_BYTES)
+}
+
+/// Head budget for a text-ish knowledge file. Matches the local/remote text
+/// preview default so multi-MB notes never land whole in the WebView.
+fn knowledge_text_cap(max_bytes: Option<u64>) -> u64 {
+    max_bytes
+        .unwrap_or(1024 * 1024)
+        .min(KNOWLEDGE_FILE_MAX_BYTES)
+}
+
+/// Fetch one knowledge-base file as raw bytes from WeKnora's authenticated
+/// proxy: `/preview` for inline rendering, `/download` for the save dialog.
+/// WeKnora sets `Content-Type` from the file extension; a missing header falls
+/// back to the filename's extension.
+async fn weknora_knowledge_bytes(
+    runtime: &WeKnoraRuntime,
+    knowledge_id: &str,
+    filename: &str,
+    download: bool,
+    max_bytes: Option<u64>,
+    proxy: Option<&str>,
+) -> Result<(Vec<u8>, String, Option<u64>), String> {
+    let knowledge_id = knowledge_id.trim();
+    if knowledge_id.is_empty() {
+        return Err("knowledge file reference has no knowledge id".into());
+    }
+    let endpoint = if download { "download" } else { "preview" };
+    let url = format!(
+        "{}/knowledge/{knowledge_id}/{endpoint}",
+        runtime.base_url.trim_end_matches('/')
+    );
+    let client = http_client(proxy)?;
+    let response = client
+        .request(reqwest::Method::GET, &url)
+        .header("X-API-Key", &runtime.api_key)
+        .header("Accept", "*/*")
+        .send()
+        .await
+        .map_err(|error| format!("WeKnora request failed: {error}"))?;
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.split(';').next().unwrap_or(value).trim().to_string())
+        .filter(|value| !value.is_empty());
+    let content_length = response.content_length();
+    if !(200..300).contains(&status) {
+        let body = response.text().await.unwrap_or_default();
+        return Err(map_http_error(status, &body));
+    }
+    let cap = knowledge_byte_cap(max_bytes);
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| format!("WeKnora response could not be read: {error}"))?;
+    if bytes.len() as u64 > cap {
+        return Err(format!("knowledge file exceeds {cap} byte limit"));
+    }
+    let mime = content_type.unwrap_or_else(|| mime_for_path(Path::new(filename)).to_string());
+    Ok((bytes.to_vec(), mime, content_length))
+}
+
+/// Resolve the configured knowledge runtime for a file preview. Unlike
+/// `knowledge_search`, a missing default knowledge-base id is fine here: the id
+/// travels inside the `knowledge:` reference.
+async fn knowledge_runtime_for_files(store: &Store) -> Result<WeKnoraRuntime, String> {
+    match load_runtime(store).await? {
+        Some(KnowledgeRuntime::WeKnora(runtime)) => {
+            let mut missing = Vec::new();
+            if runtime.base_url.trim().is_empty() {
+                missing.push("API URL");
+            }
+            if runtime.api_key.trim().is_empty() {
+                missing.push("API key");
+            }
+            if missing.is_empty() {
+                Ok(runtime)
+            } else {
+                Err(format!(
+                    "WeKnora is missing {}. Open Settings → Knowledge Base to add {}.",
+                    missing.join(", "),
+                    if missing.len() == 1 { "it" } else { "them" }
+                ))
+            }
+        }
+        None => Err("Choose a knowledge provider in Settings → Knowledge Base.".into()),
+    }
+}
+
+#[tauri::command]
+pub(super) async fn read_knowledge_file(
+    state: State<'_, AppState>,
+    knowledge_id: String,
+    filename: Option<String>,
+    max_bytes: Option<u64>,
+) -> Result<FileContent, String> {
+    let runtime = knowledge_runtime_for_files(&state.store).await?;
+    let filename = filename.unwrap_or_default();
+    let (bytes, mime, total) = weknora_knowledge_bytes(
+        &runtime,
+        &knowledge_id,
+        &filename,
+        false,
+        max_bytes,
+        llm_proxy().as_deref(),
+    )
+    .await?;
+    // Text previews get a head budget; binary payloads stay whole (the UI asks
+    // for the full file when it needs PDF/office/image bytes).
+    let shown_bytes = if is_text_mime(&mime) {
+        let cap = knowledge_text_cap(max_bytes) as usize;
+        if bytes.len() > cap {
+            bytes[..cap].to_vec()
+        } else {
+            bytes
+        }
+    } else {
+        bytes
+    };
+    let truncated = shown_bytes.len() < total.unwrap_or(shown_bytes.len() as u64) as usize;
+    let display = if filename.trim().is_empty() {
+        knowledge_id.clone()
+    } else {
+        filename.clone()
+    };
+    Ok(file_content_from_bytes(
+        display,
+        &mime,
+        shown_bytes,
+        total,
+        truncated,
+    ))
+}
+
+#[tauri::command]
+pub(super) async fn read_knowledge_file_bytes(
+    state: State<'_, AppState>,
+    knowledge_id: String,
+    filename: Option<String>,
+    max_bytes: Option<u64>,
+) -> Result<Response, String> {
+    let runtime = knowledge_runtime_for_files(&state.store).await?;
+    let (bytes, _mime, _total) = weknora_knowledge_bytes(
+        &runtime,
+        &knowledge_id,
+        filename.as_deref().unwrap_or_default(),
+        false,
+        max_bytes,
+        llm_proxy().as_deref(),
+    )
+    .await?;
+    Ok(Response::new(bytes))
+}
+
+#[tauri::command]
+pub(super) async fn download_knowledge_file(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    knowledge_id: String,
+    filename: Option<String>,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let runtime = knowledge_runtime_for_files(&state.store).await?;
+    let filename = filename.unwrap_or_default();
+    let (bytes, _mime, _total) = weknora_knowledge_bytes(
+        &runtime,
+        &knowledge_id,
+        &filename,
+        true,
+        None,
+        llm_proxy().as_deref(),
+    )
+    .await?;
+    let default_name = if filename.trim().is_empty() {
+        "knowledge-file".to_string()
+    } else {
+        Path::new(&filename)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("knowledge-file")
+            .to_string()
+    };
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_file_name(&default_name)
+        .save_file(move |path| {
+            let _ = tx.send(path);
+        });
+    let Some(destination) = rx.await.map_err(|error| error.to_string())? else {
+        return Ok(None);
+    };
+    let destination = std::path::PathBuf::from(destination.to_string());
+    tokio::fs::write(&destination, &bytes)
+        .await
+        .map_err(|error| format!("copy failed: {error}"))?;
+    Ok(Some(destination.display().to_string()))
 }
 
 fn secret_get(name: &str) -> Result<String, String> {
@@ -499,6 +739,34 @@ pub(super) async fn set_knowledge_settings(
     }
     clear_idle_agents(&state).await;
     Ok(load_settings(&state.store).await)
+}
+
+/// List the knowledge bases reachable with the given (or saved) settings, so
+/// the settings form can offer them as bindable checkboxes. Unlike
+/// `test_knowledge_connection` this succeeds with an empty default id — picking
+/// ids is exactly what the caller is about to do.
+#[tauri::command]
+pub(super) async fn list_knowledge_bases(
+    state: State<'_, AppState>,
+    settings: Option<KnowledgeSettings>,
+) -> Result<Vec<KnowledgeBaseSummary>, String> {
+    let settings = match settings {
+        Some(settings) => settings,
+        None => load_settings(&state.store).await,
+    };
+    let Some(runtime) = runtime_from_settings(&settings, None).await? else {
+        return Err("Choose a knowledge provider in Settings → Knowledge Base.".into());
+    };
+    match runtime {
+        KnowledgeRuntime::WeKnora(weknora) => {
+            if weknora.api_key.trim().is_empty() {
+                return Err(
+                    "WeKnora is missing an API key. Paste it in Settings → Knowledge Base.".into(),
+                );
+            }
+            weknora_list_bases(&weknora.base_url, &weknora.api_key, llm_proxy().as_deref()).await
+        }
+    }
 }
 
 #[tauri::command]

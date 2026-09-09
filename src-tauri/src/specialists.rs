@@ -9,6 +9,11 @@ use superscience_store::Store;
 use tauri::State;
 
 pub const SPECIALISTS_KEY: &str = "specialists";
+/// Per-builtin user overrides for `instructions`. Stored as a separate setting
+/// so built-in compiled rubrics are never mutated in place — the user can
+/// roll back at any time by clearing their override. Custom (non-builtin)
+/// specialists own their `instructions` directly.
+pub const SPECIALIST_INSTRUCTION_OVERRIDES_KEY: &str = "specialist_instruction_overrides";
 pub const SCIENTIFIC_ILLUSTRATOR_RUBRIC: &str = "\
 You are the Scientific Illustrator. Turn the user's request and relevant \
 project/session context into a finished scientific figure asset, not merely \
@@ -42,6 +47,23 @@ SVG -> PNG preview -> SVG correction loop, and deliver the SVG.\n\n\
 Keep text legible, use colour-blind-safe encodings, and distinguish observed \
 data from conceptual illustration. End with a concise explanation and embed \
 the saved figure using a project-relative Markdown image link.";
+
+pub const R_BIOINFORMATICS_FIGURE_ID: &str = "r_bioinformatics_figure";
+pub const R_BIOINFORMATICS_FIGURE_NAME: &str = "R bioinformatics figures";
+pub const R_BIOINFORMATICS_FIGURE_DESCRIPTION: &str =
+    "Draws common bioinformatics plots (volcano, heatmap, PCA/UMAP, survival, and similar) in R by default.";
+pub const R_BIOINFORMATICS_FIGURE_RUBRIC: &str = r#"你是「生信图专家」。默认且优先用持久 `r` tool 与 ggplot2（及任务所需的 Bioconductor / CRAN 包）绘制数据驱动的生信图，而不是给空泛建议。
+
+硬性规则：
+1. Intake 总共最多五个澄清问题；每次优先只问一个短问题。禁止长问卷。
+2. 优先请用户上传数据或给出项目内路径。禁止追问可从文件直接读出的元数据（行列数、schema、体积、列名清单等）——应自己用 `r` 读入后检查。
+3. 只补齐阻塞项：图类型（火山图、热图、PCA/UMAP、箱线/小提琴、生存曲线、富集条形/气泡图等，或用户描述的目标）、分组/比较变量、输出偏好。默认交付 `figures/*.pdf`（或用户指定格式）并另存 PNG 预览。
+4. 材料齐后立刻：读数 → 写/运行 R → 出图 → 用 `view_image` 质检预览 → 修正后交付。不要用「请确认长计划」拖延；一句「接下来我做 X」即可动手。
+5. 无用户明确要求时，不要改用 Python，也不要调用 `generate_image`。
+6. 不得捏造统计结果、p 值、样本或标签。缺 R 包时说明安装方式再继续。
+7. 可按需 `use_skill` 加载 `nature-figure` / `figure-style`；多面板组合可参考其版式指引，但仍以 R 出图为主。
+
+最后用项目相对路径的 Markdown 图片链接嵌入已保存图件，并简要说明所用脚本与图类型。"#;
 
 pub const HANDWRITING_EXTRACT_ID: &str = "handwriting_extract";
 pub const HANDWRITING_EXTRACT_RUBRIC: &str = "\
@@ -187,6 +209,11 @@ pub struct Specialist {
     pub description: String,
     #[serde(default)]
     pub instructions: String,
+    /// Compiled rubric for built-in specialists; `None` for user-created ones.
+    /// The UI surfaces this as the "factory default" so the user can compare
+    /// against their own edits and roll back with one click.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_instructions: Option<String>,
     /// "" = follow the active model; dangling ids fall back to active too.
     #[serde(default)]
     pub model_id: String,
@@ -215,6 +242,7 @@ pub fn builtin_reviewer() -> Specialist {
             "Traces a session transcript and reports fabrication, hallucination, or plan deviation."
                 .into(),
         instructions: crate::review::REVIEWER_RUBRIC.into(),
+        default_instructions: Some(crate::review::REVIEWER_RUBRIC.into()),
         model_id: String::new(),
         review_backend: None,
         skills: Some(vec![]), // reviewer runs one-shot; skills are irrelevant
@@ -232,6 +260,7 @@ pub fn builtin_reader() -> Specialist {
         description: "Searches project sessions in parallel and returns compact, cited evidence."
             .into(),
         instructions: crate::project_reader::READER_RUBRIC.into(),
+        default_instructions: Some(crate::project_reader::READER_RUBRIC.into()),
         model_id: String::new(),
         review_backend: None,
         skills: Some(vec![]),
@@ -250,9 +279,27 @@ pub fn builtin_scientific_illustrator() -> Specialist {
             "Creates publication-ready scientific figures from the request and project context."
                 .into(),
         instructions: SCIENTIFIC_ILLUSTRATOR_RUBRIC.into(),
+        default_instructions: Some(SCIENTIFIC_ILLUSTRATOR_RUBRIC.into()),
         model_id: String::new(),
         review_backend: None,
         skills: Some(vec!["figure-composer".into(), "figure-style".into()]),
+        connectors: Some(vec![]),
+        builtin: true,
+    }
+}
+
+pub fn builtin_r_bioinformatics_figure() -> Specialist {
+    Specialist {
+        id: R_BIOINFORMATICS_FIGURE_ID.into(),
+        name: R_BIOINFORMATICS_FIGURE_NAME.into(),
+        icon: "grid".into(),
+        color: "clay".into(),
+        description: R_BIOINFORMATICS_FIGURE_DESCRIPTION.into(),
+        instructions: R_BIOINFORMATICS_FIGURE_RUBRIC.into(),
+        default_instructions: Some(R_BIOINFORMATICS_FIGURE_RUBRIC.into()),
+        model_id: String::new(),
+        review_backend: None,
+        skills: Some(vec!["figure-style".into(), "nature-figure".into()]),
         connectors: Some(vec![]),
         builtin: true,
     }
@@ -266,6 +313,7 @@ pub fn builtin_handwriting_extract() -> Specialist {
         color: "clay".into(),
         description: "Reads handwritten lab or CRF photos into a flagged CSV, then calibrates uncertain cells.".into(),
         instructions: HANDWRITING_EXTRACT_RUBRIC.into(),
+        default_instructions: Some(HANDWRITING_EXTRACT_RUBRIC.into()),
         model_id: String::new(),
         review_backend: None,
         skills: Some(vec!["handwriting-extract".into()]),
@@ -282,6 +330,7 @@ pub fn builtin_figure_duplicate_audit() -> Specialist {
         color: "clay".into(),
         description: "Audit figures for duplicated, reused, or transformed panels.".into(),
         instructions: FIGURE_DUPLICATE_AUDIT_RUBRIC.into(),
+        default_instructions: Some(FIGURE_DUPLICATE_AUDIT_RUBRIC.into()),
         model_id: String::new(),
         review_backend: None,
         skills: Some(vec![
@@ -301,6 +350,7 @@ pub fn builtin_conversation_analysis() -> Specialist {
         color: "clay".into(),
         description: CONVERSATION_ANALYSIS_DESCRIPTION.into(),
         instructions: CONVERSATION_ANALYSIS_RUBRIC.into(),
+        default_instructions: Some(CONVERSATION_ANALYSIS_RUBRIC.into()),
         model_id: String::new(),
         review_backend: None,
         skills: Some(vec![]),
@@ -309,9 +359,17 @@ pub fn builtin_conversation_analysis() -> Specialist {
     }
 }
 
+fn pin_r_bioinformatics_figure(spec: &mut Specialist) {
+    spec.builtin = true;
+    spec.default_instructions = Some(R_BIOINFORMATICS_FIGURE_RUBRIC.into());
+    spec.review_backend = None;
+    spec.skills = Some(vec!["figure-style".into(), "nature-figure".into()]);
+    spec.connectors = Some(vec![]);
+}
+
 fn pin_handwriting_extract(spec: &mut Specialist) {
     spec.builtin = true;
-    spec.instructions = HANDWRITING_EXTRACT_RUBRIC.into();
+    spec.default_instructions = Some(HANDWRITING_EXTRACT_RUBRIC.into());
     spec.review_backend = None;
     spec.skills = Some(vec!["handwriting-extract".into()]);
     spec.connectors = Some(vec![]);
@@ -322,7 +380,7 @@ fn pin_handwriting_extract(spec: &mut Specialist) {
 
 fn pin_figure_duplicate_audit(spec: &mut Specialist) {
     spec.builtin = true;
-    spec.instructions = FIGURE_DUPLICATE_AUDIT_RUBRIC.into();
+    spec.default_instructions = Some(FIGURE_DUPLICATE_AUDIT_RUBRIC.into());
     spec.review_backend = None;
     spec.skills = Some(vec![
         "figure-duplicate-audit".into(),
@@ -335,7 +393,7 @@ fn pin_conversation_analysis(spec: &mut Specialist) {
     spec.builtin = true;
     spec.name = CONVERSATION_ANALYSIS_NAME.into();
     spec.description = CONVERSATION_ANALYSIS_DESCRIPTION.into();
-    spec.instructions = CONVERSATION_ANALYSIS_RUBRIC.into();
+    spec.default_instructions = Some(CONVERSATION_ANALYSIS_RUBRIC.into());
     spec.review_backend = None;
     spec.skills = Some(vec![]);
     spec.connectors = Some(vec![]);
@@ -359,22 +417,46 @@ async fn save_raw(store: &Store, list: &[Specialist]) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// Load the list, materializing builtins if absent. Builtin instructions are
-/// always re-pinned to their compiled rubrics so improvements ship without a
-/// settings migration.
+async fn load_overrides(store: &Store) -> std::collections::HashMap<String, String> {
+    store
+        .get_setting(SPECIALIST_INSTRUCTION_OVERRIDES_KEY)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|s| serde_json::from_str::<std::collections::HashMap<String, String>>(&s).ok())
+        .unwrap_or_default()
+}
+
+async fn save_overrides(
+    store: &Store,
+    overrides: &std::collections::HashMap<String, String>,
+) -> Result<(), String> {
+    let json = serde_json::to_string(overrides).map_err(|e| e.to_string())?;
+    store
+        .set_setting(SPECIALIST_INSTRUCTION_OVERRIDES_KEY, &json)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Load the list, materializing builtins if absent. Builtin `default_instructions`
+/// are always re-pinned to their compiled rubrics so improvements ship without
+/// a settings migration. Active `instructions` for builtins come from
+/// `specialist_instruction_overrides` if the user has edited them, otherwise
+/// from `default_instructions`.
 pub async fn ensure(store: &Store) -> Vec<Specialist> {
     let mut list = load_raw(store).await;
+    let overrides = load_overrides(store).await;
     match list.iter_mut().find(|s| s.id == "reviewer") {
         Some(r) => {
             r.builtin = true;
-            r.instructions = crate::review::REVIEWER_RUBRIC.into();
+            r.default_instructions = Some(crate::review::REVIEWER_RUBRIC.into());
         }
         None => list.insert(0, builtin_reviewer()),
     }
     match list.iter_mut().find(|s| s.id == "reader") {
         Some(reader) => {
             reader.builtin = true;
-            reader.instructions = crate::project_reader::READER_RUBRIC.into();
+            reader.default_instructions = Some(crate::project_reader::READER_RUBRIC.into());
             reader.review_backend = None;
             reader.skills = Some(vec![]);
             reader.connectors = Some(vec![]);
@@ -384,24 +466,37 @@ pub async fn ensure(store: &Store) -> Vec<Specialist> {
     match list.iter_mut().find(|s| s.id == "scientific_illustrator") {
         Some(illustrator) => {
             illustrator.builtin = true;
-            illustrator.instructions = SCIENTIFIC_ILLUSTRATOR_RUBRIC.into();
+            illustrator.default_instructions = Some(SCIENTIFIC_ILLUSTRATOR_RUBRIC.into());
             illustrator.review_backend = None;
             illustrator.skills = Some(vec!["figure-composer".into(), "figure-style".into()]);
             illustrator.connectors = Some(vec![]);
         }
         None => list.insert(2.min(list.len()), builtin_scientific_illustrator()),
     }
+    match list.iter_mut().find(|s| s.id == R_BIOINFORMATICS_FIGURE_ID) {
+        Some(bio) => pin_r_bioinformatics_figure(bio),
+        None => list.insert(3.min(list.len()), builtin_r_bioinformatics_figure()),
+    }
     match list.iter_mut().find(|s| s.id == HANDWRITING_EXTRACT_ID) {
         Some(extractor) => pin_handwriting_extract(extractor),
-        None => list.insert(3.min(list.len()), builtin_handwriting_extract()),
+        None => list.insert(4.min(list.len()), builtin_handwriting_extract()),
     }
     match list.iter_mut().find(|s| s.id == FIGURE_DUPLICATE_AUDIT_ID) {
         Some(auditor) => pin_figure_duplicate_audit(auditor),
-        None => list.insert(4.min(list.len()), builtin_figure_duplicate_audit()),
+        None => list.insert(5.min(list.len()), builtin_figure_duplicate_audit()),
     }
     match list.iter_mut().find(|s| s.id == CONVERSATION_ANALYSIS_ID) {
         Some(analyst) => pin_conversation_analysis(analyst),
-        None => list.insert(5.min(list.len()), builtin_conversation_analysis()),
+        None => list.insert(6.min(list.len()), builtin_conversation_analysis()),
+    }
+    for spec in list.iter_mut() {
+        if spec.builtin {
+            if let Some(overridden) = overrides.get(&spec.id) {
+                spec.instructions = overridden.clone();
+            } else if let Some(default) = spec.default_instructions.clone() {
+                spec.instructions = default;
+            }
+        }
     }
     list
 }
@@ -430,8 +525,11 @@ fn fresh_id(existing: &[Specialist]) -> String {
     "sp".into()
 }
 
-/// Create (empty id) or update (existing id). Builtin rows keep their
-/// compiled instructions and can never lose `builtin`.
+/// Create (empty id) or update (existing id). Builtin rows can never lose
+/// `builtin`, and structural fields (skills/connectors/review_backend) stay
+/// pinned to the compiled rubric. The user's `instructions` is allowed
+/// through and persisted to `specialist_instruction_overrides` so the
+/// factory rubric remains recoverable.
 pub async fn upsert(store: &Store, mut spec: Specialist) -> Result<Vec<Specialist>, String> {
     if spec.name.trim().is_empty() {
         return Err("Specialist name is required.".into());
@@ -440,10 +538,20 @@ pub async fn upsert(store: &Store, mut spec: Specialist) -> Result<Vec<Specialis
     if spec.id.trim().is_empty() {
         spec.id = fresh_id(&list);
     }
+    // Capture the id before `spec` is moved into the row so the override
+    // persistence below can still inspect it.
+    let upserted_id = spec.id.clone();
+    let mut builtin_override: Option<String> = None;
     if let Some(existing) = list.iter_mut().find(|s| s.id == spec.id) {
         if existing.builtin {
             spec.builtin = true;
-            spec.instructions = existing.instructions.clone();
+            // Capture the user's edited instructions so we can persist them to
+            // the override map. The stored row keeps the compiled rubric so
+            // ensure() can fall back to it if the user resets.
+            builtin_override = Some(spec.instructions.clone());
+            if let Some(default) = existing.default_instructions.clone() {
+                spec.default_instructions = Some(default);
+            }
         }
         if spec.id == "reviewer" {
             if let Some(crate::review::ReviewBackendConfig::HttpModel { profile_id }) =
@@ -460,6 +568,10 @@ pub async fn upsert(store: &Store, mut spec: Specialist) -> Result<Vec<Specialis
         } else if spec.id == "scientific_illustrator" {
             spec.review_backend = None;
             spec.skills = Some(vec!["figure-composer".into(), "figure-style".into()]);
+            spec.connectors = Some(vec![]);
+        } else if spec.id == R_BIOINFORMATICS_FIGURE_ID {
+            spec.review_backend = None;
+            spec.skills = Some(vec!["figure-style".into(), "nature-figure".into()]);
             spec.connectors = Some(vec![]);
         } else if spec.id == HANDWRITING_EXTRACT_ID {
             spec.review_backend = None;
@@ -486,6 +598,30 @@ pub async fn upsert(store: &Store, mut spec: Specialist) -> Result<Vec<Specialis
         list.push(spec);
     }
     save_raw(store, &list).await?;
+    // If the upserted row is a built-in, persist the user-edited instructions
+    // to the override map. ensure() then re-applies the override on the next
+    // read, so the compiled rubric stays recoverable.
+    if let (Some(overridden), Some(target_id)) = (
+        builtin_override,
+        list.iter()
+            .find(|s| s.builtin && s.id == upserted_id)
+            .map(|s| s.id.clone()),
+    ) {
+        let mut overrides = load_overrides(store).await;
+        // If the user typed exactly the default rubric back, drop the override
+        // so the row reads from default_instructions on next ensure().
+        let default = list
+            .iter()
+            .find(|s| s.id == target_id)
+            .and_then(|s| s.default_instructions.clone())
+            .unwrap_or_default();
+        if overridden.trim() == default.trim() {
+            overrides.remove(&target_id);
+        } else {
+            overrides.insert(target_id, overridden);
+        }
+        save_overrides(store, &overrides).await?;
+    }
     Ok(ensure(store).await)
 }
 
@@ -520,6 +656,52 @@ pub async fn remove_specialist(
     id: String,
 ) -> Result<Vec<Specialist>, String> {
     remove(&state.store, &id).await
+}
+
+/// Persist a user-edited instruction string for a built-in specialist. The
+/// value is stored in the `specialist_instruction_overrides` settings map; the
+/// compiled rubric remains recoverable through `reset_specialist_instructions`.
+/// Returns the updated specialist list so the UI can re-render in one call.
+#[tauri::command]
+pub async fn save_specialist_instructions(
+    state: State<'_, crate::AppState>,
+    id: String,
+    instructions: String,
+) -> Result<Vec<Specialist>, String> {
+    let list = ensure(&state.store).await;
+    let spec = list
+        .iter()
+        .find(|s| s.id == id)
+        .ok_or_else(|| format!("Unknown specialist '{id}'."))?;
+    if !spec.builtin {
+        return Err("Custom specialists edit instructions directly via save_specialist.".into());
+    }
+    let mut overrides = load_overrides(&state.store).await;
+    let default = spec.default_instructions.clone().unwrap_or_default();
+    if instructions.trim() == default.trim() {
+        overrides.remove(&id);
+    } else {
+        overrides.insert(id.clone(), instructions);
+    }
+    save_overrides(&state.store, &overrides).await?;
+    Ok(ensure(&state.store).await)
+}
+
+/// Drop the user override for a built-in specialist's instructions. The next
+/// read returns the compiled rubric via `default_instructions`.
+#[tauri::command]
+pub async fn reset_specialist_instructions(
+    state: State<'_, crate::AppState>,
+    id: String,
+) -> Result<Vec<Specialist>, String> {
+    let list = ensure(&state.store).await;
+    if !list.iter().any(|s| s.id == id && s.builtin) {
+        return Err(format!("Unknown or non-builtin specialist '{id}'."));
+    }
+    let mut overrides = load_overrides(&state.store).await;
+    overrides.remove(&id);
+    save_overrides(&state.store, &overrides).await?;
+    Ok(ensure(&state.store).await)
 }
 
 /// LLM config for a specialist: its bound profile, or the active-model chain
@@ -679,7 +861,7 @@ mod tests {
     async fn ensure_materializes_builtin_specialists_once() {
         let (store, tmp) = test_store().await;
         let list = ensure(&store).await;
-        assert_eq!(list.len(), 6);
+        assert_eq!(list.len(), 7);
         let r = &list[0];
         assert_eq!(r.id, "reviewer");
         assert!(r.builtin);
@@ -696,7 +878,15 @@ mod tests {
             illustrator.skills.as_deref(),
             Some(&["figure-composer".to_string(), "figure-style".to_string()][..])
         );
-        let extractor = &list[3];
+        let bio = &list[3];
+        assert_eq!(bio.id, R_BIOINFORMATICS_FIGURE_ID);
+        assert!(bio.builtin);
+        assert_eq!(bio.instructions, R_BIOINFORMATICS_FIGURE_RUBRIC);
+        assert_eq!(
+            bio.skills.as_deref(),
+            Some(&["figure-style".to_string(), "nature-figure".to_string()][..])
+        );
+        let extractor = &list[4];
         assert_eq!(extractor.id, HANDWRITING_EXTRACT_ID);
         assert!(extractor.builtin);
         assert_eq!(extractor.instructions, HANDWRITING_EXTRACT_RUBRIC);
@@ -706,7 +896,7 @@ mod tests {
         );
         assert!(extractor.model_id.is_empty());
         assert!(handwriting_extract_calibration_id(&store).await.is_none());
-        let auditor = &list[4];
+        let auditor = &list[5];
         assert_eq!(auditor.id, FIGURE_DUPLICATE_AUDIT_ID);
         assert!(auditor.builtin);
         assert_eq!(auditor.instructions, FIGURE_DUPLICATE_AUDIT_RUBRIC);
@@ -719,7 +909,7 @@ mod tests {
                 ][..]
             )
         );
-        let analyst = &list[5];
+        let analyst = &list[6];
         assert_eq!(analyst.id, CONVERSATION_ANALYSIS_ID);
         assert!(analyst.builtin);
         assert_eq!(analyst.name, CONVERSATION_ANALYSIS_NAME);
@@ -727,7 +917,7 @@ mod tests {
         assert_eq!(analyst.instructions, CONVERSATION_ANALYSIS_RUBRIC);
         assert_eq!(analyst.skills.as_deref(), Some(&[][..]));
         // Second read does not duplicate the built-ins.
-        assert_eq!(ensure(&store).await.len(), 6);
+        assert_eq!(ensure(&store).await.len(), 7);
 
         let mut leftover = get(&store, HANDWRITING_EXTRACT_ID).await.unwrap();
         leftover.model_id = "m5".into();
@@ -753,6 +943,7 @@ mod tests {
             color: "clay".into(),
             description: "finds papers".into(),
             instructions: "You hunt papers.".into(),
+            default_instructions: None,
             model_id: "m1".into(),
             review_backend: None,
             skills: Some(vec!["bear-support".into()]),
@@ -785,17 +976,23 @@ mod tests {
         assert!(remove(&store, "reviewer").await.is_err());
         assert!(remove(&store, "reader").await.is_err());
         assert!(remove(&store, "scientific_illustrator").await.is_err());
+        assert!(remove(&store, R_BIOINFORMATICS_FIGURE_ID).await.is_err());
         assert!(remove(&store, HANDWRITING_EXTRACT_ID).await.is_err());
         assert!(remove(&store, FIGURE_DUPLICATE_AUDIT_ID).await.is_err());
         assert!(remove(&store, CONVERSATION_ANALYSIS_ID).await.is_err());
-        // Editing the builtin keeps instructions but accepts a model change.
+        // Built-in instructions are now user-editable. The override persists
+        // separately from the compiled rubric so it can be rolled back.
         let mut r = get(&store, "reviewer").await.unwrap();
         r.instructions = "haha".into();
         r.model_id = "m2".into();
         let list = upsert(&store, r).await.unwrap();
         let r = list.iter().find(|s| s.id == "reviewer").unwrap();
-        assert_eq!(r.instructions, crate::review::REVIEWER_RUBRIC);
+        assert_eq!(r.instructions, "haha");
         assert_eq!(r.model_id, "m2");
+        assert_eq!(
+            r.default_instructions.as_deref(),
+            Some(crate::review::REVIEWER_RUBRIC)
+        );
 
         let mut reader = get(&store, "reader").await.unwrap();
         reader.instructions = "replace rubric".into();
@@ -806,9 +1003,13 @@ mod tests {
             .iter()
             .find(|specialist| specialist.id == "reader")
             .unwrap();
-        assert_eq!(reader.instructions, crate::project_reader::READER_RUBRIC);
+        assert_eq!(reader.instructions, "replace rubric");
         assert_eq!(reader.model_id, "cheap");
         assert_eq!(reader.skills, Some(vec![]));
+        assert_eq!(
+            reader.default_instructions.as_deref(),
+            Some(crate::project_reader::READER_RUBRIC),
+        );
 
         let mut illustrator = get(&store, "scientific_illustrator").await.unwrap();
         illustrator.instructions = "replace rubric".into();
@@ -818,10 +1019,32 @@ mod tests {
             .iter()
             .find(|specialist| specialist.id == "scientific_illustrator")
             .unwrap();
-        assert_eq!(illustrator.instructions, SCIENTIFIC_ILLUSTRATOR_RUBRIC);
+        assert_eq!(illustrator.instructions, "replace rubric");
         assert_eq!(
             illustrator.skills,
             Some(vec!["figure-composer".into(), "figure-style".into()])
+        );
+        assert_eq!(
+            illustrator.default_instructions.as_deref(),
+            Some(SCIENTIFIC_ILLUSTRATOR_RUBRIC),
+        );
+
+        let mut bio = get(&store, R_BIOINFORMATICS_FIGURE_ID).await.unwrap();
+        bio.instructions = "replace rubric".into();
+        bio.skills = None;
+        let list = upsert(&store, bio).await.unwrap();
+        let bio = list
+            .iter()
+            .find(|specialist| specialist.id == R_BIOINFORMATICS_FIGURE_ID)
+            .unwrap();
+        assert_eq!(bio.instructions, "replace rubric");
+        assert_eq!(
+            bio.skills,
+            Some(vec!["figure-style".into(), "nature-figure".into()])
+        );
+        assert_eq!(
+            bio.default_instructions.as_deref(),
+            Some(R_BIOINFORMATICS_FIGURE_RUBRIC),
         );
 
         let mut extractor = get(&store, HANDWRITING_EXTRACT_ID).await.unwrap();
@@ -833,9 +1056,13 @@ mod tests {
             .iter()
             .find(|specialist| specialist.id == HANDWRITING_EXTRACT_ID)
             .unwrap();
-        assert_eq!(extractor.instructions, HANDWRITING_EXTRACT_RUBRIC);
+        assert_eq!(extractor.instructions, "replace rubric");
         assert!(extractor.model_id.is_empty());
         assert_eq!(extractor.skills, Some(vec!["handwriting-extract".into()]));
+        assert_eq!(
+            extractor.default_instructions.as_deref(),
+            Some(HANDWRITING_EXTRACT_RUBRIC),
+        );
 
         let mut auditor = get(&store, FIGURE_DUPLICATE_AUDIT_ID).await.unwrap();
         auditor.instructions = "replace rubric".into();
@@ -845,13 +1072,17 @@ mod tests {
             .iter()
             .find(|specialist| specialist.id == FIGURE_DUPLICATE_AUDIT_ID)
             .unwrap();
-        assert_eq!(auditor.instructions, FIGURE_DUPLICATE_AUDIT_RUBRIC);
+        assert_eq!(auditor.instructions, "replace rubric");
         assert_eq!(
             auditor.skills,
             Some(vec![
                 "figure-duplicate-audit".into(),
                 "local-env-setup".into()
             ])
+        );
+        assert_eq!(
+            auditor.default_instructions.as_deref(),
+            Some(FIGURE_DUPLICATE_AUDIT_RUBRIC),
         );
 
         let mut analyst = get(&store, CONVERSATION_ANALYSIS_ID).await.unwrap();
@@ -864,9 +1095,15 @@ mod tests {
             .iter()
             .find(|specialist| specialist.id == CONVERSATION_ANALYSIS_ID)
             .unwrap();
+        // Display name and description stay pinned to the factory copy.
         assert_eq!(analyst.name, CONVERSATION_ANALYSIS_NAME);
         assert_eq!(analyst.description, CONVERSATION_ANALYSIS_DESCRIPTION);
-        assert_eq!(analyst.instructions, CONVERSATION_ANALYSIS_RUBRIC);
+        // Instructions are user-editable; default rubric is preserved.
+        assert_eq!(analyst.instructions, "replace rubric");
+        assert_eq!(
+            analyst.default_instructions.as_deref(),
+            Some(CONVERSATION_ANALYSIS_RUBRIC),
+        );
         assert_eq!(analyst.skills, Some(vec![]));
         let _ = std::fs::remove_file(&tmp);
     }

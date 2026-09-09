@@ -225,3 +225,9 @@ pub(crate) fn open_external_url(url: String) {
 pub(crate) async fn open_browser_extension_page() -> JsValue {
     invoke("open_browser_extension_page", JsValue::UNDEFINED).await
 }
+
+/// Reveal the verified managed browser-extension folder in the OS file
+/// manager, so "Load unpacked" can pick it instead of typing the path.
+pub(crate) async fn reveal_browser_extension_dir() {
+    let _ = invoke("reveal_browser_extension_dir", JsValue::UNDEFINED).await;
+}

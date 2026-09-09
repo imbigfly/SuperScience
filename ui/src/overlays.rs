@@ -1190,7 +1190,9 @@ pub(super) fn CapabilitiesOverlay(
     show_capabilities: RwSignal<bool>,
     bootstrap: RwSignal<Option<BootstrapStatus>>,
     caps: RwSignal<Option<Capabilities>>,
-    busy: RwSignal<bool>,
+    // Reserved for future in-overlay async work; not currently consumed but
+    // kept in the signature so callers can pipe the global busy signal in.
+    _busy: RwSignal<bool>,
     open_settings_section: Callback<String>,
 ) -> impl IntoView {
     move || {

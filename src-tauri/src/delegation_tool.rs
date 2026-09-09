@@ -1572,6 +1572,7 @@ mod tests {
                 color: String::new(),
                 description: "Finds primary literature".into(),
                 instructions: "PRIVATE SPECIALIST RUBRIC".into(),
+                default_instructions: None,
                 model_id: "private-model-binding".into(),
                 review_backend: None,
                 skills: None,

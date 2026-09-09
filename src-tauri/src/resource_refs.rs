@@ -152,6 +152,10 @@ fn is_external_reference(reference: &str) -> bool {
         || lower.starts_with("mailto:")
         || lower.starts_with("data:")
         || lower.starts_with('#')
+        // Knowledge-base files are fetched on click from WeKnora's authenticated
+        // proxy; there is no project file to snapshot and binding one would
+        // rewrite the link into an unresolved dead end.
+        || lower.starts_with("knowledge:")
 }
 
 fn percent_decode(reference: &str) -> String {

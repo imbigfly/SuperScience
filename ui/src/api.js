@@ -1449,12 +1449,26 @@ const mediaUrlCache = new Map(); // path -> { url, mime }
 const thumbnailJobs = new Map(); // path -> Promise<string | null>
 
 function mediaBytesCommand(path) {
-  // Mirrors `previewBytes`'s command selection for the four path spellings.
+  // Mirrors `previewBytes`'s command selection for the five path spellings.
   if (path.startsWith("artifact-version:")) {
     return { command: "read_artifact_version_bytes", args: { versionId: path.slice("artifact-version:".length) } };
   }
   if (path.startsWith("artifact:")) {
     return { command: "read_artifact_bytes", args: { id: path.slice("artifact:".length) } };
+  }
+  if (path.startsWith("knowledge:")) {
+    const withoutPrefix = path.slice("knowledge:".length);
+    const separator = withoutPrefix.indexOf(":");
+    if (separator <= 0) {
+      throw new Error("Knowledge media path is invalid");
+    }
+    return {
+      command: "read_knowledge_file_bytes",
+      args: {
+        knowledgeId: withoutPrefix.slice(0, separator),
+        filename: withoutPrefix.slice(separator + 1),
+      },
+    };
   }
   if (path.startsWith("remote:ssh:")) {
     const withoutPrefix = path.slice("remote:ssh:".length);
@@ -1612,6 +1626,18 @@ async function previewBytes(payload) {
   } else if (path.startsWith("artifact:")) {
     command = "read_artifact_bytes";
     args = { id: path.slice("artifact:".length), maxBytes };
+  } else if (path.startsWith("knowledge:")) {
+    const withoutPrefix = path.slice("knowledge:".length);
+    const separator = withoutPrefix.indexOf(":");
+    if (separator <= 0) {
+      throw new Error("Knowledge preview path is invalid");
+    }
+    command = "read_knowledge_file_bytes";
+    args = {
+      knowledgeId: withoutPrefix.slice(0, separator),
+      filename: withoutPrefix.slice(separator + 1),
+      maxBytes,
+    };
   } else if (path.startsWith("remote:ssh:")) {
     const withoutPrefix = path.slice("remote:ssh:".length);
     const separator = withoutPrefix.indexOf(":");

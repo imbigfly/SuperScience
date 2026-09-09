@@ -908,6 +908,71 @@ pub(super) async fn get_project_info(
     build_project_info(&state, window.label()).await
 }
 
+/// 首页能力卡「默认项目」设置键：能力卡新建的会话归属到这里。
+pub(crate) const DEFAULT_CAPABILITY_PROJECT_KEY: &str = "default_capability_project_id";
+
+/// 读取用户配置的能力卡默认项目。项目已被删除时返回 None（并顺手清掉失效值）。
+#[tauri::command]
+pub(super) async fn get_default_capability_project(
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let configured = state
+        .store
+        .get_setting(DEFAULT_CAPABILITY_PROJECT_KEY)
+        .await
+        .ok()
+        .flatten()
+        .filter(|id| !id.trim().is_empty());
+    let Some(project_id) = configured else {
+        return Ok(None);
+    };
+    let exists = state
+        .store
+        .get_project(&project_id)
+        .await
+        .map_err(|e| format!("{e}"))?
+        .is_some();
+    if !exists {
+        let _ = state
+            .store
+            .delete_setting(DEFAULT_CAPABILITY_PROJECT_KEY)
+            .await;
+        return Ok(None);
+    }
+    Ok(Some(project_id))
+}
+
+/// 写入能力卡默认项目。空字符串表示恢复为「自动（优先 default 项目）」。
+#[tauri::command]
+pub(super) async fn set_default_capability_project(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<Option<String>, String> {
+    let project_id = project_id.trim();
+    if project_id.is_empty() {
+        let _ = state
+            .store
+            .delete_setting(DEFAULT_CAPABILITY_PROJECT_KEY)
+            .await;
+        return Ok(None);
+    }
+    if state
+        .store
+        .get_project(project_id)
+        .await
+        .map_err(|e| format!("{e}"))?
+        .is_none()
+    {
+        return Err("Project not found".into());
+    }
+    state
+        .store
+        .set_setting(DEFAULT_CAPABILITY_PROJECT_KEY, project_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(Some(project_id.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

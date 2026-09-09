@@ -43,6 +43,31 @@ fn image_source_from_response(value: &Value) -> Result<ImageSource, String> {
     Err("image-generation response has no data[0].b64_json or data[0].url".into())
 }
 
+/// 从响应 JSON 中取出网关错误消息。
+///
+/// 部分 OpenAI 兼容网关失败时仍返回 HTTP 200，把错误放在
+/// `{"error": {...}}` 信封里，因此成功路径也必须检查该字段；
+/// 否则真实原因会被吞掉，只留下 `has no data[0]` 这类无意义报错。
+fn api_error_message(value: &Value) -> Option<String> {
+    let error = value.get("error")?;
+    if let Some(message) = error
+        .get("message")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+    {
+        return Some(message.to_string());
+    }
+    if let Some(message) = error
+        .as_str()
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+    {
+        return Some(message.to_string());
+    }
+    Some(error.to_string())
+}
+
 fn decode_image_base64(encoded: &str) -> Result<Vec<u8>, String> {
     if encoded.len() > MAX_BASE64_BYTES {
         return Err("generated image response is too large".into());
@@ -203,6 +228,32 @@ impl GenerateImageTool {
             .map_err(|error| format!("image-generation HTTP client: {error}"))
     }
 
+    /// 下载生成图专用的 HTTP 客户端。
+    ///
+    /// 不能复用 `client()` 的全局超时：网关把生成图托管在 S3，
+    /// 慢速链路下单张 2MB 图片可能需要数分钟，全局超时会在下载途中
+    /// 直接断开（表现为 `error decoding response body`）。
+    /// 这里只限制连接与两次读取之间的间隔，让慢速但持续的下载能完成。
+    fn download_client(&self) -> Result<reqwest::Client, String> {
+        let mut builder = reqwest::Client::builder()
+            .user_agent("superscience")
+            .connect_timeout(Duration::from_secs(30))
+            .read_timeout(Duration::from_secs(120));
+        match self.proxy.as_deref().map(str::trim) {
+            None | Some("") => {}
+            Some("none") => builder = builder.no_proxy(),
+            Some(proxy) => {
+                builder = builder.proxy(
+                    reqwest::Proxy::all(proxy)
+                        .map_err(|error| format!("invalid image-generation proxy: {error}"))?,
+                );
+            }
+        }
+        builder
+            .build()
+            .map_err(|error| format!("image-generation HTTP client: {error}"))
+    }
+
     async fn generate(&self, prompt: &str, size: &str, quality: &str) -> Result<Vec<u8>, String> {
         if !crate::models::is_image_generation_model(self.configured_model()) {
             return Err(crate::models::IMAGE_GENERATION_UNSUPPORTED.into());
@@ -244,12 +295,7 @@ impl GenerateImageTool {
         if !status.is_success() {
             let message = serde_json::from_slice::<Value>(&body)
                 .ok()
-                .and_then(|value| {
-                    value
-                        .pointer("/error/message")
-                        .and_then(Value::as_str)
-                        .map(str::to_string)
-                })
+                .and_then(|value| api_error_message(&value))
                 .unwrap_or_else(|| String::from_utf8_lossy(&body[..body.len().min(2_048)]).into());
             let request_id = (!request_id.is_empty())
                 .then(|| format!(" (request {request_id})"))
@@ -261,9 +307,17 @@ impl GenerateImageTool {
         }
         let value: Value = serde_json::from_slice(&body)
             .map_err(|error| format!("invalid image-generation response: {error}"))?;
+        // 网关可能返回 HTTP 200 却把失败原因放进 error 信封。
+        // 必须在此拦截，否则真实原因会被后续的 "no data[0]" 覆盖。
+        if let Some(message) = api_error_message(&value) {
+            let request_id = (!request_id.is_empty())
+                .then(|| format!(" (request {request_id})"))
+                .unwrap_or_default();
+            return Err(format!("image API error{request_id}: {message}"));
+        }
         let image = match image_source_from_response(&value)? {
             ImageSource::Base64(encoded) => decode_image_base64(&encoded)?,
-            ImageSource::Url(url) => self.download_image(&client, &url).await?,
+            ImageSource::Url(url) => self.download_image(&url).await?,
         };
         if image.len() > MAX_IMAGE_BYTES {
             return Err("generated image is too large".into());
@@ -278,23 +332,77 @@ impl GenerateImageTool {
         Ok(image)
     }
 
-    async fn download_image(&self, client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
+    async fn download_image(&self, url: &str) -> Result<Vec<u8>, String> {
         let url = url.trim();
         if !(url.starts_with("https://") || url.starts_with("http://")) {
             return Err("image-generation response URL is not http(s)".into());
         }
-        let mut response = client
-            .get(url)
+        let client = self.download_client()?;
+        // 生成图托管在 S3，同一链接的速度会在 1KB/s 到 80KB/s 之间波动。
+        // 单次下载可能中途停滞，这里最多重试三次，并用 Range 从断点续传，
+        // 避免每次失败都从零开始。
+        let mut body: Vec<u8> = Vec::new();
+        let mut last_error = String::new();
+        for attempt in 1..=3u32 {
+            match Self::download_from(&client, url, &mut body).await {
+                Ok(()) => return Ok(body),
+                Err(error) => {
+                    last_error = error;
+                    if attempt < 3 {
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                    }
+                }
+            }
+        }
+        Err(format!(
+            "image-generation download failed after 3 attempts: {last_error}"
+        ))
+    }
+
+    /// 下载（或续传）图片到 `body`。
+    ///
+    /// `body` 非空时用 `Range` 头从断点续传；若服务器忽略 Range 并回 200，
+    /// 说明不支持续传，需要清空已收数据从头重来。
+    async fn download_from(
+        client: &reqwest::Client,
+        url: &str,
+        body: &mut Vec<u8>,
+    ) -> Result<(), String> {
+        let mut request = client.get(url);
+        if !body.is_empty() {
+            request = request.header(reqwest::header::RANGE, format!("bytes={}-", body.len()));
+        }
+        let mut response = request
             .send()
             .await
             .map_err(|error| format!("image-generation download failed: {error}"))?;
-        if !response.status().is_success() {
+        let status = response.status();
+        if body.is_empty() {
+            if !status.is_success() {
+                return Err(format!(
+                    "image-generation download returned {}",
+                    status.as_u16()
+                ));
+            }
+            // 有 Content-Length 时预留容量，减少大图分片拷贝开销。
+            if let Some(length) = response.content_length() {
+                if let Ok(length) = usize::try_from(length) {
+                    if length <= MAX_IMAGE_BYTES {
+                        body.reserve(length);
+                    }
+                }
+            }
+        } else if status == reqwest::StatusCode::PARTIAL_CONTENT {
+            // 正常续传。
+        } else if status.is_success() {
+            // 服务器忽略了 Range，回退到整包下载。
+            body.clear();
+        } else {
             return Err(format!(
                 "image-generation download returned {}",
-                response.status().as_u16()
+                status.as_u16()
             ));
         }
-        let mut body = Vec::new();
         while let Some(chunk) = response
             .chunk()
             .await
@@ -305,7 +413,7 @@ impl GenerateImageTool {
             }
             body.extend_from_slice(&chunk);
         }
-        Ok(body)
+        Ok(())
     }
 
     /// Validate credentials and access without creating a billable image.

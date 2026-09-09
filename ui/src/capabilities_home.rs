@@ -7,8 +7,9 @@ use crate::bindings::{invoke, invoke_checked};
 use crate::capability_intros::{
     help, intro_for, intro_lines, intro_value_parts, CapabilityHelp, CapabilityIntro,
 };
-use crate::dto::ModelProfile;
-use crate::i18n::{t, tf, Locale};
+use crate::dto::{is_image_generation_model, ModelProfile, ProjectSummary};
+use crate::app_support::js_error_text;
+use crate::i18n::{localize_backend, t, tf, Locale};
 use crate::knowledge_settings::{probe_knowledge_ready, KnowledgeSettingsOverlay};
 use crate::text::{event_target_checked, event_target_value};
 use crate::window_capture_escape;
@@ -500,6 +501,7 @@ pub(crate) enum CapabilityCardSettings {
     HandwritingModels,
     Knowledge,
     PiiFirewall,
+    ImageGeneration,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -890,22 +892,9 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
                 "Describe the illustration you want. It asks the configured image model to draw a research figure, then you can ask for changes.",
                 "用话说清要画什么。它调用已配置的生图模型画科研示意，你还可以让它改。",
             ),
-        ),
-        // Placeholder cards: visible in AI drawing, click wired later.
-        CapabilityTile {
-            id: "ai-mechanism-figure",
-            group: CapabilityGroup::AiDrawing,
-            title_key: "caps.tile.ai_mechanism_figure.title",
-            blurb_key: "caps.tile.ai_mechanism_figure.blurb",
-            help: help(
-                "Describe a biological or chemical mechanism. It draws a journal-style mechanism figure. This card is a preview; click-to-run is not wired yet.",
-                "描述一个机制过程，它按顶刊风格画机制图。这张卡还是预告，点下去暂时不会开工。",
-            ),
-            icon: "image",
-            action: CapabilityAction::ComingSoon,
-            toggle: None,
-            card_settings: None,
-        },
+        )
+        .with_settings(CapabilityCardSettings::ImageGeneration),
+        // Placeholder card: visible in AI drawing, click wired later.
         CapabilityTile {
             id: "editable-figure",
             group: CapabilityGroup::AiDrawing,
@@ -916,20 +905,6 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
                 "把机制图给它，目标是变成还能改的格式。这张卡还是预告，点下去暂时不会开工。",
             ),
             icon: "edit",
-            action: CapabilityAction::ComingSoon,
-            toggle: None,
-            card_settings: None,
-        },
-        CapabilityTile {
-            id: "bioinfo-figure-layout",
-            group: CapabilityGroup::AiDrawing,
-            title_key: "caps.tile.bioinfo_figure_layout.title",
-            blurb_key: "caps.tile.bioinfo_figure_layout.blurb",
-            help: help(
-                "Drop in several bioinformatics plots. It arranges them into one submission-ready panel. This card is a preview; click-to-run is not wired yet.",
-                "把好几张生信图丢给它，它排成一张能投稿的拼图。这张卡还是预告，点下去暂时不会开工。",
-            ),
-            icon: "grid",
             action: CapabilityAction::ComingSoon,
             toggle: None,
             card_settings: None,
@@ -1669,6 +1644,7 @@ fn capability_settings_aria_key(tile: &CapabilityTile) -> &'static str {
     match tile.card_settings {
         Some(CapabilityCardSettings::Knowledge) => "caps.tile.knowledge.settings.aria",
         Some(CapabilityCardSettings::PiiFirewall) => "caps.tile.pii_firewall.settings.aria",
+        Some(CapabilityCardSettings::ImageGeneration) => "caps.tile.ai_drawing.settings.aria",
         _ => "caps.skill.handwriting_extract.settings.aria",
     }
 }
@@ -1703,6 +1679,120 @@ fn vision_chat_models(models: &[ModelProfile]) -> Vec<ModelProfile> {
         .collect()
 }
 
+fn image_generation_models(models: &[ModelProfile]) -> Vec<ModelProfile> {
+    models
+        .iter()
+        .filter(|model| is_image_generation_model(&model.model))
+        .cloned()
+        .collect()
+}
+
+fn assigned_image_gen_id(models: &[ModelProfile]) -> Option<String> {
+    models
+        .iter()
+        .find(|model| model.use_for_image_generation)
+        .map(|model| model.id.clone())
+}
+
+fn model_label(model: &ModelProfile) -> String {
+    if !model.label.trim().is_empty() {
+        return model.label.clone();
+    }
+    if !model.model.trim().is_empty() {
+        return model.model.clone();
+    }
+    model.id.clone()
+}
+
+async fn load_image_gen_picks() -> (Vec<ModelProfile>, String, Option<ModelProfile>) {
+    let v = invoke("list_models", JsValue::UNDEFINED).await;
+    let models: Vec<ModelProfile> = serde_wasm_bindgen::from_value(v).unwrap_or_default();
+    let candidates = image_generation_models(&models);
+    let pick = assigned_image_gen_id(&candidates)
+        .or_else(|| candidates.first().map(|model| model.id.clone()))
+        .unwrap_or_default();
+    let selected = candidates
+        .iter()
+        .find(|model| model.id == pick)
+        .cloned();
+    (candidates, pick, selected)
+}
+
+fn model_to_image_gen_payload(model: &ModelProfile) -> serde_json::Value {
+    serde_json::json!({
+        "id": model.id,
+        "label": model.label,
+        "provider": model.provider,
+        "api_url": model.api_url,
+        "endpoint_suffix": model.endpoint_suffix,
+        "model": model.model,
+        "max_tokens": model.max_tokens,
+        "context_window": model.context_window,
+        "reasoning_effort": model.reasoning_effort,
+        "service_tier": model.service_tier,
+        "supports_vision": model.supports_vision,
+        "use_for_vision": model.use_for_vision,
+        "use_for_image_generation": model.use_for_image_generation,
+        "image_size": model.image_size,
+        "image_quality": model.image_quality,
+        "image_aspect_ratio": model.image_aspect_ratio,
+        "image_resolution": model.image_resolution,
+        "use_for_video_generation": model.use_for_video_generation,
+        "video_duration_secs": model.video_duration_secs,
+        "video_aspect_ratio": model.video_aspect_ratio,
+        "video_resolution": model.video_resolution,
+    })
+}
+
+async fn save_model_profile(
+    profile: &ModelProfile,
+    use_for_image_generation: bool,
+) -> Result<(), String> {
+    let payload = model_to_image_gen_payload(profile);
+    let arg = to_value(&serde_json::json!({
+        "profile": payload,
+        "key": Option::<String>::None,
+        "useForVision": profile.use_for_vision,
+        "useForImageGeneration": use_for_image_generation,
+        "useForVideoGeneration": profile.use_for_video_generation,
+    }))
+    .unwrap();
+    invoke_checked("save_model", arg)
+        .await
+        .map_err(|err| js_error_text(err))?;
+    Ok(())
+}
+
+async fn save_image_gen_selection(
+    candidates: Vec<ModelProfile>,
+    pick: String,
+    size: String,
+    quality: String,
+    aspect: String,
+    resolution: String,
+) -> Result<(), String> {
+    let selected = candidates
+        .iter()
+        .find(|model| model.id == pick)
+        .cloned()
+        .ok_or_else(|| "Image model no longer available.".to_string())?;
+    for model in candidates
+        .iter()
+        .filter(|m| m.id != pick && m.use_for_image_generation)
+    {
+        let mut cleared = model.clone();
+        cleared.use_for_image_generation = false;
+        save_model_profile(&cleared, false).await?;
+    }
+    let mut next = selected.clone();
+    next.image_size = size;
+    next.image_quality = quality;
+    next.image_aspect_ratio = aspect;
+    next.image_resolution = resolution;
+    save_model_profile(&next, true).await?;
+    Ok(())
+}
+
 fn handwriting_saved_model_id(candidates: &[ModelProfile], id: &str) -> String {
     candidates
         .iter()
@@ -1726,6 +1816,48 @@ fn remember_handwriting_picks(
     models.set(candidates);
     vision_pick.set(vision);
     calib_pick.set(calib);
+}
+
+#[derive(Clone, Copy, Default)]
+struct ImageGenForm {
+    size: &'static str,
+    quality: &'static str,
+}
+
+const IMAGE_SIZE_OPTIONS: &[&str] = &["1024x1024", "1024x1536", "1536x1024", "auto"];
+const IMAGE_QUALITY_OPTIONS: &[&str] = &["auto", "low", "medium", "high"];
+
+fn image_gen_form_from_profile(profile: &ModelProfile) -> ImageGenForm {
+    ImageGenForm {
+        size: pick_image_size(profile.image_size.as_str()),
+        quality: pick_image_quality(profile.image_quality.as_str()),
+    }
+}
+
+fn pick_image_size(value: &str) -> &'static str {
+    if IMAGE_SIZE_OPTIONS.iter().any(|opt| *opt == value) {
+        match value {
+            "1024x1024" => "1024x1024",
+            "1024x1536" => "1024x1536",
+            "1536x1024" => "1536x1024",
+            _ => "auto",
+        }
+    } else {
+        "auto"
+    }
+}
+
+fn pick_image_quality(value: &str) -> &'static str {
+    if IMAGE_QUALITY_OPTIONS.iter().any(|opt| *opt == value) {
+        match value {
+            "low" => "low",
+            "medium" => "medium",
+            "high" => "high",
+            _ => "auto",
+        }
+    } else {
+        "auto"
+    }
 }
 
 async fn load_handwriting_model_picks() -> (Vec<ModelProfile>, String, String) {
@@ -2309,7 +2441,7 @@ mod tests {
                 .filter(|tile| tile.card_settings.is_some())
                 .map(|tile| tile.id)
                 .collect::<Vec<_>>(),
-            vec!["pii-firewall", "handwriting-extract", "knowledge"]
+            vec!["ai-drawing", "pii-firewall", "handwriting-extract", "knowledge"]
         );
         assert!(!ids.contains(&"nature-shared"));
         assert!(!ids.contains(&"academic-research"));
@@ -2429,9 +2561,7 @@ mod tests {
                 "nature-figure",
                 "r-bioinfo-figure",
                 "ai-drawing",
-                "ai-mechanism-figure",
                 "editable-figure",
-                "bioinfo-figure-layout",
                 "nature-paper2ppt",
                 "nature-image2ppt",
                 "ppt-master",
@@ -2468,11 +2598,7 @@ mod tests {
             }),
             Some("caps.skill.ppt_master.title")
         );
-        for id in [
-            "ai-mechanism-figure",
-            "editable-figure",
-            "bioinfo-figure-layout",
-        ] {
+        for id in ["editable-figure"] {
             let tile = capability_catalog()
                 .iter()
                 .find(|t| t.id == id)
@@ -2919,6 +3045,88 @@ mod tests {
         assert!(!handwriting_models_ready("vl", ""));
         assert!(handwriting_models_ready("vl", "vl"));
     }
+
+    #[test]
+    fn ai_drawing_tile_wires_image_generation_settings() {
+        let tile = capability_catalog()
+            .iter()
+            .find(|tile| tile.id == "ai-drawing")
+            .expect("ai-drawing tile present in catalog");
+        assert_eq!(
+            tile.card_settings,
+            Some(CapabilityCardSettings::ImageGeneration)
+        );
+    }
+
+    #[test]
+    fn nature_figure_tile_has_no_settings_entry() {
+        let tile = capability_catalog()
+            .iter()
+            .find(|tile| tile.id == "nature-figure")
+            .expect("nature-figure tile present in catalog");
+        assert_eq!(tile.card_settings, None);
+    }
+
+    #[test]
+    fn image_generation_filter_keeps_only_known_models() {
+        let models = vec![
+            sample_profile("m-gpt", "gpt-image-2", false),
+            sample_profile("m-grok", "grok-imagine-image-2.0", false),
+            sample_profile("m-gemini", "google/gemini-3.1-flash-image", false),
+            sample_profile("m-gpt4o", "openai/gpt-4o", false),
+            sample_profile("m-assigned", "gpt-image-2", true),
+        ];
+        let keep = image_generation_models(&models);
+        let ids: Vec<&str> = keep.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, vec!["m-gpt", "m-grok", "m-assigned"]);
+    }
+
+    #[test]
+    fn assigned_image_gen_id_picks_active_model() {
+        let models = vec![
+            sample_profile("a", "gpt-image-2", false),
+            sample_profile("b", "grok-imagine-image-2.0", true),
+        ];
+        assert_eq!(assigned_image_gen_id(&models), Some("b".to_string()));
+        let none = vec![sample_profile("a", "gpt-image-2", false)];
+        assert_eq!(assigned_image_gen_id(&none), None);
+    }
+
+    #[test]
+    fn pick_image_size_and_quality_fall_back_to_auto() {
+        assert_eq!(pick_image_size("1024x1024"), "1024x1024");
+        assert_eq!(pick_image_size(""), "auto");
+        assert_eq!(pick_image_quality("high"), "high");
+        assert_eq!(pick_image_quality("garbage"), "auto");
+    }
+
+    fn sample_profile(id: &str, model: &str, use_for_image_generation: bool) -> ModelProfile {
+        ModelProfile {
+            id: id.to_string(),
+            label: String::new(),
+            provider: "openai".to_string(),
+            api_url: "https://api.openai.com/v1".to_string(),
+            endpoint_suffix: String::new(),
+            model: model.to_string(),
+            has_api_key: false,
+            active: true,
+            max_tokens: 8192,
+            context_window: 128_000,
+            reasoning_effort: String::new(),
+            service_tier: String::new(),
+            supports_vision: false,
+            use_for_vision: false,
+            use_for_image_generation,
+            image_size: String::new(),
+            image_quality: String::new(),
+            image_aspect_ratio: String::new(),
+            image_resolution: String::new(),
+            use_for_video_generation: false,
+            video_duration_secs: None,
+            video_aspect_ratio: None,
+            video_resolution: None,
+        }
+    }
 }
 
 /// Shared capability discovery surface for the projects home and Settings →
@@ -2936,25 +3144,98 @@ pub(crate) fn CapabilitySceneTabs(
                 <h2 id="capabilities-title">{move || t(locale.get(), "caps.home.title")}</h2>
                 <p class="cap-scene-subtitle">{move || t(locale.get(), "caps.home.subtitle")}</p>
             </div>
-            <div class="cap-scene-tabs" role="tablist" aria-label=move || t(locale.get(), "caps.home.title")>
-                {CapabilityGroup::all().iter().copied().map(|group| {
-                    let group_for_click = group;
-                    view! {
-                        <button type="button" class="cap-scene-tab" role="tab"
-                            data-testid=format!("cap-tab-{}", group.label_key())
-                            class:active=move || active.get() == group
-                            aria-selected=move || (active.get() == group).to_string()
-                            on:click=move |_| {
-                                save_capability_scene(group_for_click);
-                                active.set(group_for_click);
-                            }>
-                            {move || t(locale.get(), group.label_key())}
-                        </button>
-                    }
-                }).collect_view()}
+            <div class="cap-scene-tabs">
+                <div class="cap-scene-tablist" role="tablist" aria-label=move || t(locale.get(), "caps.home.title")>
+                    {CapabilityGroup::all().iter().copied().map(|group| {
+                        let group_for_click = group;
+                        view! {
+                            <button type="button" class="cap-scene-tab" role="tab"
+                                data-testid=format!("cap-tab-{}", group.label_key())
+                                class:active=move || active.get() == group
+                                aria-selected=move || (active.get() == group).to_string()
+                                on:click=move |_| {
+                                    save_capability_scene(group_for_click);
+                                    active.set(group_for_click);
+                                }>
+                                {move || t(locale.get(), group.label_key())}
+                            </button>
+                        }
+                    }).collect_view()}
+                </div>
+                <CapabilityDefaultProjectPicker locale=locale />
             </div>
             <CapabilityTileGrid locale=locale group=Signal::derive(move || active.get()) on_activate=on_activate />
         </section>
+    }
+}
+
+/// 能力 tab 尾部的「默认项目」选择器：能力卡新建的会话归属到这个项目。
+/// 与 `CapabilitySceneTabs` 同处一套实现，首页与设置-能力自动保持一致。
+#[component]
+fn CapabilityDefaultProjectPicker(locale: RwSignal<Locale>) -> impl IntoView {
+    let projects = create_rw_signal(Vec::<ProjectSummary>::new());
+    let selected = create_rw_signal(String::new());
+    let loaded = create_rw_signal(false);
+    create_effect(move |_| {
+        spawn_local(async move {
+            let list = invoke("list_projects", JsValue::UNDEFINED).await;
+            if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ProjectSummary>>(list) {
+                projects.set(list);
+            }
+            let configured = invoke("get_default_capability_project", JsValue::UNDEFINED).await;
+            let configured =
+                serde_wasm_bindgen::from_value::<Option<String>>(configured).unwrap_or(None);
+            selected.set(configured.unwrap_or_default());
+            loaded.set(true);
+        });
+    });
+    let persist = move |project_id: String| {
+        selected.set(project_id.clone());
+        spawn_local(async move {
+            let arg = to_value(&serde_json::json!({ "projectId": project_id })).unwrap();
+            let _ = invoke_checked("set_default_capability_project", arg).await;
+        });
+    };
+    view! {
+        <div class="cap-scene-tabs-end" data-testid="capability-default-project">
+            {move || {
+                let list = projects.get();
+                if !loaded.get() || list.is_empty() {
+                    return None;
+                }
+                Some(view! {
+                    <label class="cap-default-project"
+                        title=move || t(locale.get(), "caps.default_project.hint")>
+                        <span class="cap-default-project-label">
+                            {move || t(locale.get(), "caps.default_project.label")}
+                        </span>
+                        <select
+                            data-testid="capability-default-project-select"
+                            prop:value=move || selected.get()
+                            on:change=move |ev| persist(event_target_value(&ev))>
+                            <option value="" prop:selected=move || selected.get().is_empty()>
+                                {move || t(locale.get(), "caps.default_project.auto")}
+                            </option>
+                            {list.into_iter().map(|project| {
+                                let id = project.id.clone();
+                                let selected_id = id.clone();
+                                let name = if project.name.trim().is_empty() {
+                                    id.clone()
+                                } else {
+                                    project.name.clone()
+                                };
+                                view! {
+                                    <option value=id
+                                        prop:selected=move || selected.get() == selected_id>
+                                        {name}
+                                    </option>
+                                }
+                            }).collect_view()}
+                        </select>
+                    </label>
+                })
+            }}
+        </div>
     }
 }
 
@@ -2981,14 +3262,32 @@ pub(crate) fn CapabilityTileGrid(
     let handwriting_vision_notice = create_rw_signal(String::new());
     let handwriting_pending_launch = create_rw_signal(None::<CapabilityAction>);
     let knowledge_settings_open = create_rw_signal(false);
+    // 知识库下拉菜单的展开态由 app 持有，供窗口级 Escape 栈先关菜单再关弹窗。
+    let knowledge_kb_menu_open = create_rw_signal(false);
     let knowledge_pending_launch = create_rw_signal(None::<CapabilityAction>);
     let knowledge_notice = create_rw_signal(None::<(bool, String)>);
+    let image_gen_open = create_rw_signal(false);
+    let image_gen_models = create_rw_signal(Vec::<ModelProfile>::new());
+    let image_gen_pick = create_rw_signal(String::new());
+    let image_gen_form = create_rw_signal(ImageGenForm::default());
+    let image_gen_aspect_text = create_rw_signal(String::new());
+    let image_gen_resolution_text = create_rw_signal(String::new());
+    let image_gen_notice = create_rw_signal(None::<(bool, String)>);
+    let image_gen_busy = create_rw_signal(false);
     let close_handwriting_settings = Callback::new(move |_: ()| {
         handwriting_vision_open.set(false);
         handwriting_pending_launch.set(None);
         handwriting_vision_notice.set(String::new());
     });
+    let close_image_gen_settings = move || {
+        if image_gen_busy.get_untracked() {
+            return;
+        }
+        image_gen_open.set(false);
+        image_gen_notice.set(None);
+    };
     let close_knowledge_settings = Callback::new(move |_: ()| {
+        knowledge_kb_menu_open.set(false);
         knowledge_settings_open.set(false);
         knowledge_pending_launch.set(None);
         knowledge_notice.set(None);
@@ -3031,6 +3330,31 @@ pub(crate) fn CapabilityTileGrid(
                 }
                 Some(CapabilityCardSettings::PiiFirewall) => {
                     pii_firewall_info_open.set(true);
+                }
+                Some(CapabilityCardSettings::ImageGeneration) => {
+                    image_gen_notice.set(None);
+                    image_gen_busy.set(false);
+                    spawn_local(async move {
+                        let (candidates, pick, selected) = load_image_gen_picks().await;
+                        let form = selected
+                            .as_ref()
+                            .map(image_gen_form_from_profile)
+                            .unwrap_or_default();
+                        let aspect = selected
+                            .as_ref()
+                            .map(|p| p.image_aspect_ratio.clone())
+                            .unwrap_or_default();
+                        let resolution = selected
+                            .as_ref()
+                            .map(|p| p.image_resolution.clone())
+                            .unwrap_or_default();
+                        image_gen_models.set(candidates);
+                        image_gen_pick.set(pick);
+                        image_gen_form.set(form);
+                        image_gen_aspect_text.set(aspect);
+                        image_gen_resolution_text.set(resolution);
+                        image_gen_open.set(true);
+                    });
                 }
                 None => {}
             },
@@ -3161,8 +3485,15 @@ pub(crate) fn CapabilityTileGrid(
         });
     });
     window_capture_escape(move || {
-        if knowledge_settings_open.get_untracked() {
-            close_knowledge_settings.call(());
+        if image_gen_open.get_untracked() {
+            close_image_gen_settings();
+            true
+        } else if knowledge_settings_open.get_untracked() {
+            if knowledge_kb_menu_open.get_untracked() {
+                knowledge_kb_menu_open.set(false);
+            } else {
+                close_knowledge_settings.call(());
+            }
             true
         } else if handwriting_vision_open.get_untracked() {
             close_handwriting_settings.call(());
@@ -3339,6 +3670,7 @@ pub(crate) fn CapabilityTileGrid(
                     locale=locale
                     require_connection=require_connection
                     notice=knowledge_notice
+                    menu_open=knowledge_kb_menu_open
                     on_close=close_knowledge_settings
                     on_connected=on_knowledge_connected
                 />
@@ -3504,6 +3836,232 @@ pub(crate) fn CapabilityTileGrid(
                                     });
                                 }>
                                 {move || t(locale.get(), "caps.skill.handwriting_extract.settings.save")}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            }
+        })}
+        {move || image_gen_open.get().then(|| {
+            let candidates = image_gen_models.get();
+            let pick = image_gen_pick.get();
+            let form = image_gen_form.get();
+            let empty = candidates.is_empty();
+            let busy = image_gen_busy.get();
+            let pick_for_disabled = pick.clone();
+            view! {
+                <div class="overlay" data-testid="image-gen-settings-overlay"
+                    on:click=move |_| close_image_gen_settings()>
+                    <div class="modal cap-info-modal image-gen-settings-modal" role="dialog" aria-modal="true"
+                        aria-labelledby="image-gen-settings-title"
+                        on:click=move |ev| ev.stop_propagation()>
+                        <header class="ig-head">
+                            <span class="ig-head-icon" aria-hidden="true">{compose_icon("image")}</span>
+                            <div class="ig-head-text">
+                                <h2 id="image-gen-settings-title">
+                                    {move || t(locale.get(), "caps.tile.ai_drawing.settings.title")}
+                                </h2>
+                                <p class="ig-head-lead">
+                                    {move || t(locale.get(), "caps.tile.ai_drawing.settings.lead")}
+                                </p>
+                            </div>
+                            <button type="button" class="ps-close"
+                                aria-label=move || t(locale.get(), "caps.tile.ai_drawing.settings.close")
+                                disabled=busy
+                                on:click=move |_| close_image_gen_settings()>
+                                {compose_icon("close")}
+                            </button>
+                        </header>
+                        {if empty {
+                            view! {
+                                <p class="ig-empty" data-testid="image-gen-settings-empty">
+                                    {move || t(locale.get(), "caps.tile.ai_drawing.settings.empty")}
+                                </p>
+                            }.into_view()
+                        } else {
+                            let candidates = candidates.clone();
+                            let candidates_for_change = candidates.clone();
+                            view! {
+                                <div class="ig-body">
+                                    <section class="ig-section">
+                                        <h3 class="ig-section-title">
+                                            {move || t(locale.get(), "caps.tile.ai_drawing.settings.pick")}
+                                        </h3>
+                                        <select data-testid="image-gen-model-select"
+                                            aria-label=move || t(locale.get(), "caps.tile.ai_drawing.settings.pick")
+                                            prop:value=move || image_gen_pick.get()
+                                            disabled=busy
+                                            on:change=move |ev| {
+                                                let new_pick = event_target_value(&ev);
+                                                image_gen_pick.set(new_pick.clone());
+                                                if let Some(model) = candidates_for_change
+                                                    .iter()
+                                                    .find(|m| m.id == new_pick)
+                                                    .cloned()
+                                                {
+                                                    let form = image_gen_form_from_profile(&model);
+                                                    image_gen_form.set(form);
+                                                    image_gen_aspect_text.set(model.image_aspect_ratio.clone());
+                                                    image_gen_resolution_text.set(model.image_resolution.clone());
+                                                }
+                                            }>
+                                            {candidates.into_iter().map(|model| {
+                                                let id = model.id.clone();
+                                                let selected_id = id.clone();
+                                                let pick_for_check = pick.clone();
+                                                let label = model_label(&model);
+                                                view! {
+                                                    <option value=id
+                                                        prop:selected=move || pick_for_check == selected_id>
+                                                        {label}
+                                                    </option>
+                                                }
+                                            }).collect_view()}
+                                        </select>
+                                        <p class="ig-note">
+                                            {move || t(locale.get(), "caps.tile.ai_drawing.settings.key_note")}
+                                        </p>
+                                    </section>
+                                    <section class="ig-section">
+                                        <h3 class="ig-section-title">
+                                            {move || t(locale.get(), "caps.tile.ai_drawing.settings.params_section")}
+                                        </h3>
+                                        <div class="ig-grid">
+                                            <label class="cap-field">
+                                                <span>{move || t(locale.get(), "caps.tile.ai_drawing.settings.size")}</span>
+                                                <select data-testid="image-gen-size-select"
+                                                    prop:value=move || image_gen_form.get().size
+                                                    disabled=busy
+                                                    on:change=move |ev| {
+                                                        let v = event_target_value(&ev);
+                                                        image_gen_form.update(|f| f.size = pick_image_size(&v));
+                                                    }>
+                                                    {IMAGE_SIZE_OPTIONS.iter().map(|opt| {
+                                                        let opt_value = *opt;
+                                                        let opt_value_for_check = *opt;
+                                                        view! {
+                                                            <option value=opt_value
+                                                                prop:selected=move || form.size == opt_value_for_check>
+                                                                {opt_value}
+                                                            </option>
+                                                        }
+                                                    }).collect_view()}
+                                                </select>
+                                            </label>
+                                            <label class="cap-field">
+                                                <span>{move || t(locale.get(), "caps.tile.ai_drawing.settings.quality")}</span>
+                                                <select data-testid="image-gen-quality-select"
+                                                    prop:value=move || image_gen_form.get().quality
+                                                    disabled=busy
+                                                    on:change=move |ev| {
+                                                        let v = event_target_value(&ev);
+                                                        image_gen_form.update(|f| f.quality = pick_image_quality(&v));
+                                                    }>
+                                                    {IMAGE_QUALITY_OPTIONS.iter().map(|opt| {
+                                                        let opt_value = *opt;
+                                                        let opt_value_for_check = *opt;
+                                                        view! {
+                                                            <option value=opt_value
+                                                                prop:selected=move || form.quality == opt_value_for_check>
+                                                                {opt_value}
+                                                            </option>
+                                                        }
+                                                    }).collect_view()}
+                                                </select>
+                                            </label>
+                                            <label class="cap-field">
+                                                <span>{move || t(locale.get(), "caps.tile.ai_drawing.settings.aspect")}</span>
+                                                <input type="text" data-testid="image-gen-aspect-input"
+                                                    prop:value=move || image_gen_aspect_text.get()
+                                                    placeholder=move || t(locale.get(), "caps.tile.ai_drawing.settings.aspect_placeholder")
+                                                    disabled=busy
+                                                    on:input=move |ev| {
+                                                        image_gen_aspect_text.set(event_target_value(&ev));
+                                                    } />
+                                            </label>
+                                            <label class="cap-field">
+                                                <span>{move || t(locale.get(), "caps.tile.ai_drawing.settings.resolution")}</span>
+                                                <input type="text" data-testid="image-gen-resolution-input"
+                                                    prop:value=move || image_gen_resolution_text.get()
+                                                    placeholder=move || t(locale.get(), "caps.tile.ai_drawing.settings.resolution_placeholder")
+                                                    disabled=busy
+                                                    on:input=move |ev| {
+                                                        image_gen_resolution_text.set(event_target_value(&ev));
+                                                    } />
+                                            </label>
+                                        </div>
+                                    </section>
+                                </div>
+                            }.into_view()
+                        }}
+                        {move || {
+                            image_gen_notice.get().map(|(ok, text)| {
+                                let class = if ok { "settings-status ok" } else { "settings-status fail" };
+                                let attr = if ok { "image-gen-settings-saved" } else { "image-gen-settings-notice" };
+                                view! {
+                                    <div class=class data-testid=attr>{text}</div>
+                                }
+                            })
+                        }}
+                        <div class="row">
+                            <button type="button"
+                                data-testid="image-gen-close"
+                                disabled=busy
+                                on:click=move |_| close_image_gen_settings()>
+                                {move || t(locale.get(), "caps.tile.ai_drawing.settings.close")}
+                            </button>
+                            <button type="button" class="primary"
+                                data-testid="image-gen-save"
+                                disabled=move || empty || busy || pick_for_disabled.is_empty()
+                                on:click=move |_| {
+                                    if image_gen_busy.get_untracked() || empty {
+                                        return;
+                                    }
+                                    let pick = image_gen_pick.get_untracked();
+                                    if pick.is_empty() {
+                                        image_gen_notice.set(Some((
+                                            false,
+                                            t(locale.get_untracked(), "caps.tile.ai_drawing.settings.required"),
+                                        )));
+                                        return;
+                                    }
+                                    let form = image_gen_form.get_untracked();
+                                    let aspect = image_gen_aspect_text.get_untracked();
+                                    let resolution = image_gen_resolution_text.get_untracked();
+                                    let candidates = image_gen_models.get_untracked();
+                                    let size = form.size.to_string();
+                                    let quality = form.quality.to_string();
+                                    image_gen_busy.set(true);
+                                    image_gen_notice.set(None);
+                                    spawn_local(async move {
+                                        let result = save_image_gen_selection(
+                                            candidates,
+                                            pick,
+                                            size,
+                                            quality,
+                                            aspect,
+                                            resolution,
+                                        )
+                                        .await;
+                                        image_gen_busy.set(false);
+                                        match result {
+                                            Ok(()) => {
+                                                image_gen_notice.set(Some((
+                                                    true,
+                                                    t(locale.get_untracked(), "caps.tile.ai_drawing.settings.saved"),
+                                                )));
+                                                image_gen_open.set(false);
+                                            }
+                                            Err(err) => {
+                                                image_gen_notice.set(Some((
+                                                    false,
+                                                    localize_backend(locale.get_untracked(), &err),
+                                                )));
+                                            }
+                                        }
+                                    });
+                                }>
+                                {move || t(locale.get(), "caps.tile.ai_drawing.settings.save")}
                             </button>
                         </div>
                     </div>

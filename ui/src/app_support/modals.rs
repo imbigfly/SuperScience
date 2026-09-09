@@ -47,6 +47,9 @@ pub(crate) enum UiConfirm {
     ReloadProjectRules(String),
     SaveAgentContext,
     DeleteUserDemo(String),
+    /// Confirm discarding the user-edited instructions for a built-in
+    /// specialist and reverting to the compiled rubric.
+    ResetSpecialistInstructions { id: String, name: String },
 }
 
 #[derive(Clone)]

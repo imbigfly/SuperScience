@@ -6,11 +6,31 @@
 use crate::app_support::{compose_icon, js_error_text};
 use crate::bindings::invoke_checked;
 use crate::dto::{KnowledgeBaseSummary, KnowledgeConnectionTest, KnowledgeSettings};
-use crate::i18n::{t, Locale};
-use crate::text::{event_target_input, event_target_value};
+use crate::i18n::{t, tf, Locale};
+use crate::text::event_target_input;
+use leptos::html;
 use leptos::*;
 use serde_wasm_bindgen::to_value;
 use wasm_bindgen::JsValue;
+
+/// Split the stored comma/whitespace list into ids for checkbox state.
+fn parse_kb_ids(raw: &str) -> Vec<String> {
+    raw.split(|c: char| c == ',' || c.is_whitespace())
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Add or remove one id, keeping the remaining order and comma separation.
+fn toggle_kb_id(raw: &str, id: &str, on: bool) -> String {
+    let mut ids = parse_kb_ids(raw);
+    ids.retain(|existing| existing != id);
+    if on {
+        ids.push(id.to_string());
+    }
+    ids.join(",")
+}
 
 pub(crate) fn knowledge_settings_configured(settings: &KnowledgeSettings) -> bool {
     settings.provider.trim() == "weknora"
@@ -83,6 +103,23 @@ pub(crate) async fn probe_knowledge_ready() -> Result<KnowledgeConnectionTest, S
     probe_saved_knowledge_connection().await
 }
 
+/// Fetch the knowledge bases reachable with the given (or saved) settings, so
+/// the dropdown can list what the user is editing rather than only what was
+/// last saved.
+pub(crate) async fn list_knowledge_settings_bases(
+    settings: KnowledgeSettings,
+    api_key: String,
+) -> Result<Vec<KnowledgeBaseSummary>, String> {
+    let next = prepare_knowledge_settings(settings, api_key);
+    let arg =
+        to_value(&serde_json::json!({ "settings": next })).map_err(|error| error.to_string())?;
+    let value = invoke_checked("list_knowledge_bases", arg)
+        .await
+        .map_err(js_error_text)?;
+    serde_wasm_bindgen::from_value::<Vec<KnowledgeBaseSummary>>(value)
+        .map_err(|error| error.to_string())
+}
+
 #[component]
 pub(crate) fn KnowledgeSettingsForm(
     locale: RwSignal<Locale>,
@@ -91,8 +128,10 @@ pub(crate) fn KnowledgeSettingsForm(
     msg: RwSignal<Option<(bool, String)>>,
     busy: RwSignal<bool>,
     bases: RwSignal<Vec<KnowledgeBaseSummary>>,
+    menu_open: RwSignal<bool>,
     on_save: Callback<()>,
     on_test: Callback<()>,
+    on_refresh: Callback<()>,
 ) -> impl IntoView {
     view! {
         {move || msg.get().map(|(ok, text)| view! {
@@ -133,12 +172,14 @@ pub(crate) fn KnowledgeSettingsForm(
                 <span class="settings-field-hint">{move || t(locale.get(), "knowledge.weknora.api_key_hint")}</span>
             </label>
             <label class="span-2">{move || t(locale.get(), "knowledge.weknora.kb_ids")}
-                <input data-testid="knowledge-base-ids"
-                    prop:value=move || settings.get().weknora.knowledge_base_ids
-                    placeholder="kb-00000001"
-                    on:input=move |ev| settings.update(|current| {
-                        current.weknora.knowledge_base_ids = event_target_input(&ev).value();
-                    }) />
+                <KnowledgeBasePicker
+                    locale=locale
+                    settings=settings
+                    bases=bases
+                    busy=busy
+                    menu_open=menu_open
+                    on_refresh=on_refresh
+                />
                 <span class="settings-field-hint">{move || t(locale.get(), "knowledge.weknora.kb_ids_hint")}</span>
             </label>
             <label>{move || t(locale.get(), "knowledge.weknora.match_count")}
@@ -151,16 +192,6 @@ pub(crate) fn KnowledgeSettingsForm(
             </label>
         </div>
         <p class="settings-field-hint">{move || t(locale.get(), "knowledge.secret_note")}</p>
-        {move || {
-            let listed = bases.get();
-            (!listed.is_empty()).then(move || view! {
-                <ul class="knowledge-base-list" data-testid="knowledge-bases">
-                    {listed.into_iter().map(|kb| view! {
-                        <li><code>{kb.id}</code> <span>{kb.name}</span></li>
-                    }).collect_view()}
-                </ul>
-            })
-        }}
         <div class="row settings-footer">
             <button type="button" data-testid="knowledge-test"
                 disabled=move || busy.get()
@@ -176,11 +207,168 @@ pub(crate) fn KnowledgeSettingsForm(
     }
 }
 
+/// 多选下拉：触发器显示已选名称（或占位文案），菜单是勾选列表，直接写回
+/// `knowledge_base_ids`，因此保存表单时选择状态随其它字段一起持久化。
+///
+/// `menu_open` 由父级 surface 持有，这样窗口级 Escape 栈可以先关菜单再关弹窗。
+#[component]
+fn KnowledgeBasePicker(
+    locale: RwSignal<Locale>,
+    settings: RwSignal<KnowledgeSettings>,
+    bases: RwSignal<Vec<KnowledgeBaseSummary>>,
+    busy: RwSignal<bool>,
+    menu_open: RwSignal<bool>,
+    on_refresh: Callback<()>,
+) -> impl IntoView {
+    let open = menu_open;
+    let picker = create_node_ref::<html::Div>();
+    let trigger = create_node_ref::<html::Button>();
+    on_cleanup(move || open.set(false));
+    // 点击触发器/菜单之外即关闭。
+    window_event_listener(ev::mousedown, move |event| {
+        use wasm_bindgen::JsCast;
+        if !open.get_untracked() {
+            return;
+        }
+        let inside = picker
+            .get_untracked()
+            .zip(event.target().and_then(|t| t.dyn_into::<web_sys::Node>().ok()))
+            .is_some_and(|(root, target)| root.contains(Some(&target)));
+        if !inside {
+            open.set(false);
+        }
+    });
+    // 菜单用 fixed 定位跟随触发器，避免被设置面板的 overflow-y 裁剪。
+    let menu_style = move || {
+        let Some(rect) = trigger.get_untracked().map(|el| el.get_bounding_client_rect())
+        else {
+            return String::new();
+        };
+        format!(
+            "left:{left}px;top:{top}px;width:{width}px;",
+            left = rect.left(),
+            top = rect.bottom() + 4.0,
+            width = rect.width(),
+        )
+    };
+
+    let trigger_label = move || {
+        let selected = parse_kb_ids(&settings.get().weknora.knowledge_base_ids);
+        if selected.is_empty() {
+            return t(locale.get(), "knowledge.weknora.kb_placeholder").to_string();
+        }
+        let listed = bases.get();
+        let names: Vec<String> = selected
+            .iter()
+            .map(|id| {
+                listed
+                    .iter()
+                    .find(|kb| &kb.id == id)
+                    .map(|kb| {
+                        if kb.name.trim().is_empty() {
+                            id.clone()
+                        } else {
+                            kb.name.clone()
+                        }
+                    })
+                    .unwrap_or_else(|| id.clone())
+            })
+            .collect();
+        if names.len() <= 2 {
+            names.join("、")
+        } else {
+            tf(
+                locale.get(),
+                "knowledge.weknora.kb_selected",
+                &[("count", &names.len().to_string())],
+            )
+        }
+    };
+
+    view! {
+        <div class="knowledge-kb-select" node_ref=picker>
+            <div class="knowledge-kb-select-row">
+                <button type="button"
+                    class="knowledge-kb-trigger"
+                    data-testid="knowledge-base-select"
+                    node_ref=trigger
+                    attr:data-selected-ids=move || settings.get().weknora.knowledge_base_ids
+                    aria-haspopup="listbox"
+                    aria-expanded=move || open.get().to_string()
+                    class:active=move || open.get()
+                    on:click=move |_| open.update(|value| *value = !*value)>
+                    <span class="knowledge-kb-trigger-label"
+                        class:placeholder=move || parse_kb_ids(&settings.get().weknora.knowledge_base_ids).is_empty()>
+                        {trigger_label}
+                    </span>
+                    <span class="knowledge-kb-caret" aria-hidden="true">{compose_icon("chevron-down")}</span>
+                </button>
+                <button type="button" class="knowledge-kb-refresh"
+                    data-testid="knowledge-base-refresh"
+                    disabled=move || busy.get()
+                    title=move || t(locale.get(), "knowledge.weknora.kb_refresh")
+                    aria-label=move || t(locale.get(), "knowledge.weknora.kb_refresh")
+                    on:click=move |_| on_refresh.call(())>
+                    {compose_icon("sync")}
+                </button>
+            </div>
+            {move || open.get().then(|| view! {
+                <div class="knowledge-kb-menu" role="listbox" aria-multiselectable="true"
+                    data-testid="knowledge-base-menu" style=menu_style>
+                    {move || {
+                        let listed = bases.get();
+                        if listed.is_empty() {
+                            return view! {
+                                <p class="knowledge-kb-empty" data-testid="knowledge-bases-empty">
+                                    {move || t(locale.get(), "knowledge.weknora.kb_empty")}
+                                </p>
+                            }.into_view();
+                        }
+                        listed.into_iter().map(|kb| {
+                            let option_id = kb.id.clone();
+                            let toggle_id = kb.id.clone();
+                            let checked = parse_kb_ids(&settings.get().weknora.knowledge_base_ids)
+                                .contains(&kb.id);
+                            view! {
+                                <button type="button"
+                                    class="knowledge-kb-option"
+                                    role="option"
+                                    aria-selected=checked.to_string()
+                                    data-testid="knowledge-base-option"
+                                    data-kb-id=option_id.clone()
+                                    class:selected=checked
+                                    on:click=move |_| {
+                                        settings.update(|current| {
+                                            current.weknora.knowledge_base_ids = toggle_kb_id(
+                                                &current.weknora.knowledge_base_ids,
+                                                &toggle_id,
+                                                !checked,
+                                            );
+                                        });
+                                    }>
+                                    <span class="knowledge-kb-check" aria-hidden="true">
+                                        {(checked).then(|| compose_icon("check"))}
+                                    </span>
+                                    <span class="knowledge-kb-option-text">
+                                        <span class="knowledge-kb-option-name">{kb.name.clone()}</span>
+                                        <code class="knowledge-kb-option-id">{kb.id.clone()}</code>
+                                    </span>
+                                </button>
+                            }
+                        }).collect_view()
+                    }}
+                </div>
+            })}
+        </div>
+    }
+}
+
 #[component]
 pub(crate) fn KnowledgeSettingsOverlay(
     locale: RwSignal<Locale>,
     require_connection: bool,
     notice: RwSignal<Option<(bool, String)>>,
+    menu_open: RwSignal<bool>,
     on_close: Callback<()>,
     on_connected: Callback<()>,
 ) -> impl IntoView {
@@ -191,8 +379,14 @@ pub(crate) fn KnowledgeSettingsOverlay(
     let bases = create_rw_signal(Vec::<KnowledgeBaseSummary>::new());
     spawn_local(async move {
         if let Ok(loaded) = load_knowledge_settings().await {
+            // Best-effort fill of the picker so saved ids render as names
+            // without the user pressing refresh first.
+            let listed = list_knowledge_settings_bases(loaded.clone(), String::new()).await;
             settings.set(loaded);
             api_key.set(String::new());
+            if let Ok(listed) = listed {
+                bases.set(listed);
+            }
         }
     });
     let save = Callback::new(move |_: ()| {
@@ -258,6 +452,34 @@ pub(crate) fn KnowledgeSettingsOverlay(
             busy.set(false);
         });
     });
+    let refresh = Callback::new(move |_: ()| {
+        if busy.get_untracked() {
+            return;
+        }
+        busy.set(true);
+        spawn_local(async move {
+            match list_knowledge_settings_bases(
+                settings.get_untracked(),
+                api_key.get_untracked(),
+            )
+            .await
+            {
+                Ok(listed) => {
+                    let count = listed.len();
+                    bases.set(listed);
+                    msg.set(Some((
+                        true,
+                        tf(locale.get_untracked(), "knowledge.weknora.kb_refreshed", &[(
+                            "count",
+                            &count.to_string(),
+                        )]),
+                    )));
+                }
+                Err(err) => msg.set(Some((false, err))),
+            }
+            busy.set(false);
+        });
+    });
     view! {
         <div class="overlay" data-testid="knowledge-settings-overlay"
             on:click=move |_| on_close.call(())>
@@ -282,8 +504,10 @@ pub(crate) fn KnowledgeSettingsOverlay(
                     msg=msg
                     busy=busy
                     bases=bases
+                    menu_open=menu_open
                     on_save=save
                     on_test=test
+                    on_refresh=refresh
                 />
                 <div class="row">
                     <button type="button"

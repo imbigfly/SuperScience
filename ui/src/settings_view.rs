@@ -19,8 +19,8 @@ use crate::i18n::{
     specialist_display_name, t, tf, use_locale, Locale, BRAND_GITHUB_REPO,
 };
 use crate::knowledge_settings::{
-    load_knowledge_settings, persist_knowledge_settings, test_knowledge_settings,
-    KnowledgeSettingsForm,
+    list_knowledge_settings_bases, load_knowledge_settings, persist_knowledge_settings,
+    test_knowledge_settings, KnowledgeSettingsForm,
 };
 use crate::text::{
     dom_value, endpoint_host, event_target_checked, event_target_input, event_target_value,
@@ -976,6 +976,21 @@ fn selected_entry_advanced_fields(
                             </select>
                         </label>
                         <span class="hint span-2">{move || t(locale.get(), "settings.video_defaults_hint")}</span>
+                        <label class="settings-check span-2">
+                            <input type="checkbox" data-testid="use-for-video-generation"
+                                prop:checked=move || model_form.get()
+                                    .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
+                                    .map(|e| e.use_for_video_generation)
+                                    .unwrap_or(false)
+                                on:change=move|ev| model_form.update(|o| if let Some(o)=o {
+                                    if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
+                                        e.use_for_video_generation = event_target_checked(&ev);
+                                    }
+                                    sync_form_from_selected(o);
+                                }) />
+                            <span>{move || t(locale.get(), "settings.use_for_video_generation")}</span>
+                        </label>
+                        <span class="hint span-2">{move || t(locale.get(), "settings.video_generation_hint")}</span>
                     }.into_view()
                 } else if image {
                     view! {
@@ -1402,11 +1417,15 @@ fn provider_model_entries_editor(
                         <div class="provider-model-row" data-testid="provider-model-row"
                             class:selected=move || model_form.get().is_some_and(|f| f.selected_row_id == row_id)
                             on:focusin=move |_| {
-                                model_form.update(|o| if let Some(o)=o {
-                                    if o.selected_row_id != row_id {
+                                // 选中态没变时不能写信号：no-op 写入同样会通知订阅者，
+                                // 导致整行重渲染并夺走刚聚焦输入框的焦点。
+                                let needs_select = model_form
+                                    .with_untracked(|o| o.as_ref().is_some_and(|o| o.selected_row_id != row_id));
+                                if needs_select {
+                                    model_form.update(|o| if let Some(o)=o {
                                         select_form_row(o, row_id);
-                                    }
-                                });
+                                    });
+                                }
                             }>
                             <div class="provider-model-summary">
                                 <div class="provider-model-summary-text">
@@ -1502,6 +1521,11 @@ fn provider_model_entries_editor(
                                                         e.use_for_vision = false;
                                                         e.use_for_image_generation = false;
                                                         e.use_for_video_generation = true;
+                                                    } else {
+                                                        // Back to a chat model: the media roles no longer
+                                                        // apply, and a stale flag would fail the save.
+                                                        e.use_for_image_generation = false;
+                                                        e.use_for_video_generation = false;
                                                     }
                                                 }
                                                 select_form_row(o, row_id);
@@ -1554,12 +1578,16 @@ fn provider_model_entries_editor(
                             </div>
                             <div class="provider-model-roles">
                                 {move || {
+                                    // Role checkboxes follow the model ID only. The backend
+                                    // accepts image/video assignment exclusively for its known
+                                    // media model IDs, so showing these boxes on a chat model
+                                    // would let the user pick a combination that can never save.
                                     let image = model_form.get()
                                         .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
-                                        .is_some_and(|e| e.is_image_model());
+                                        .is_some_and(|e| is_image_generation_model(&e.model));
                                     let video = !image && model_form.get()
                                         .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
-                                        .is_some_and(|e| e.is_video_model());
+                                        .is_some_and(|e| is_video_generation_model(&e.model));
                                     if video {
                                         view! {
                                 <label class="settings-check">
@@ -1646,47 +1674,6 @@ fn provider_model_entries_editor(
                                             });
                                         } />
                                     <span>{move || t(locale.get(), "settings.use_for_vision")}</span>
-                                </label>
-                                <label class="settings-check">
-                                    <input type="checkbox" data-testid="provider-use-for-image"
-                                        prop:checked=move || model_form.get()
-                                            .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
-                                            .map(|e| e.use_for_image_generation)
-                                            .unwrap_or(false)
-                                        on:change=move |ev| {
-                                            let checked = event_target_checked(&ev);
-                                            model_form.update(|o| if let Some(o)=o {
-                                                if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
-                                                    e.use_for_image_generation = checked;
-                                                    if checked {
-                                                        e.supports_vision = false;
-                                                        e.use_for_vision = false;
-                                                    }
-                                                }
-                                            });
-                                        } />
-                                    <span>{move || t(locale.get(), "settings.use_for_image_generation")}</span>
-                                </label>
-                                <label class="settings-check">
-                                    <input type="checkbox" data-testid="provider-use-for-video"
-                                        prop:checked=move || model_form.get()
-                                            .and_then(|f| f.entries.into_iter().find(|e| e.row_id == row_id))
-                                            .map(|e| e.use_for_video_generation)
-                                            .unwrap_or(false)
-                                        on:change=move |ev| {
-                                            let checked = event_target_checked(&ev);
-                                            model_form.update(|o| if let Some(o)=o {
-                                                if let Some(e) = o.entries.iter_mut().find(|e| e.row_id == row_id) {
-                                                    e.use_for_video_generation = checked;
-                                                    if checked {
-                                                        e.supports_vision = false;
-                                                        e.use_for_vision = false;
-                                                        e.use_for_image_generation = false;
-                                                    }
-                                                }
-                                            });
-                                        } />
-                                    <span>{move || t(locale.get(), "settings.use_for_video_generation")}</span>
                                 </label>
                                         }.into_view()
                                     }
@@ -2273,6 +2260,7 @@ pub(super) fn SettingsView(
     use_plugin: Callback<(String, String, String, Vec<String>, bool)>,
     remove_plugin: Callback<(String, String)>,
     remove_specialist: Callback<String>,
+    request_reset_specialist_instructions: Callback<()>,
     open_add_host: Callback<()>,
     edit_ssh_host: Callback<String>,
     import_ssh_hosts: Callback<()>,
@@ -2378,6 +2366,8 @@ pub(super) fn SettingsView(
     let knowledge_msg = create_rw_signal(None::<(bool, String)>);
     let knowledge_busy = create_rw_signal(false);
     let knowledge_bases = create_rw_signal(Vec::<KnowledgeBaseSummary>::new());
+    // 知识库下拉菜单展开态由 app 持有，窗口级 Escape 栈先关它再关设置。
+    let knowledge_kb_menu_open = create_rw_signal(false);
     let skill_update_enabled = create_rw_signal(true);
     let skill_update_report = create_rw_signal(SkillUpdateReport::default());
     let skill_update_busy = create_rw_signal(false);
@@ -2561,8 +2551,14 @@ pub(super) fn SettingsView(
         if show_settings.get() && settings_section.get() == "knowledge" {
             spawn_local(async move {
                 if let Ok(loaded) = load_knowledge_settings().await {
+                    // Best-effort: show names for already-bound ids before the
+                    // user presses refresh.
+                    let listed = list_knowledge_settings_bases(loaded.clone(), String::new()).await;
                     knowledge_settings.set(loaded);
                     knowledge_api_key.set(String::new());
+                    if let Ok(listed) = listed {
+                        knowledge_bases.set(listed);
+                    }
                 }
             });
         }
@@ -2601,6 +2597,32 @@ pub(super) fn SettingsView(
                 Ok(result) => {
                     knowledge_bases.set(result.knowledge_bases.clone());
                     knowledge_msg.set(Some((result.ok, result.message)));
+                }
+                Err(err) => knowledge_msg.set(Some((false, err))),
+            }
+            knowledge_busy.set(false);
+        });
+    });
+    let refresh_knowledge_bases = Callback::new(move |_: ()| {
+        knowledge_busy.set(true);
+        spawn_local(async move {
+            match list_knowledge_settings_bases(
+                knowledge_settings.get_untracked(),
+                knowledge_api_key.get_untracked(),
+            )
+            .await
+            {
+                Ok(listed) => {
+                    let count = listed.len();
+                    knowledge_bases.set(listed);
+                    knowledge_msg.set(Some((
+                        true,
+                        tf(
+                            locale.get_untracked(),
+                            "knowledge.weknora.kb_refreshed",
+                            &[("count", &count.to_string())],
+                        ),
+                    )));
                 }
                 Err(err) => knowledge_msg.set(Some((false, err))),
             }
@@ -2720,6 +2742,10 @@ pub(super) fn SettingsView(
         }
         if joining.get_untracked() {
             joining.set(false);
+            return true;
+        }
+        if knowledge_kb_menu_open.get_untracked() {
+            knowledge_kb_menu_open.set(false);
             return true;
         }
         if memory_project_menu_open.get_untracked() {
@@ -5119,11 +5145,10 @@ pub(super) fn SettingsView(
                                                 on:input=move |ev| specialist_form.update(|o| if let Some(o)=o { o.description = event_target_value(&ev); })></textarea></label>
                                         <label class="span-2">{move || t(locale.get(), "specialists.instructions")}
                                             <textarea rows="6"
-                                                prop:disabled=move || specialist_form.get().map(|f| f.builtin).unwrap_or(false)
                                                 prop:value=move || specialist_form.get().map(|f| f.instructions.clone()).unwrap_or_default()
                                                 on:input=move |ev| specialist_form.update(|o| if let Some(o)=o { o.instructions = event_target_value(&ev); })></textarea></label>
                                         {move || specialist_form.get().filter(|f| f.builtin).map(|_| view! {
-                                            <span class="hint span-2">{move || t(locale.get(), "specialists.builtin_locked")}</span>
+                                            <span class="hint span-2">{move || t(locale.get(), "specialists.builtin_override_hint")}</span>
                                         })}
                                         {move || specialist_form.get().filter(|f| !f.builtin).map(|_| view! {
                                             <span class="hint span-2">{move || t(locale.get(), "specialists.instructions.hint")}</span>
@@ -5347,6 +5372,22 @@ pub(super) fn SettingsView(
                                                 {move || t(locale.get(), "specialists.reviewer.test")}
                                             </button>
                                         })}
+                                        {move || {
+                                            let show_reset = specialist_form.get().is_some_and(|f| {
+                                                f.builtin
+                                                    && f.default_instructions
+                                                        .as_deref()
+                                                        .map(|d| d != f.instructions.as_str())
+                                                        .unwrap_or(false)
+                                            });
+                                            show_reset.then(|| view! {
+                                                <button type="button" data-testid="reset-specialist-instructions"
+                                                    disabled=move || settings_busy.get()
+                                                    on:click=move |_| request_reset_specialist_instructions.call(())>
+                                                    {move || t(locale.get(), "specialists.reset_default")}
+                                                </button>
+                                            })
+                                        }}
                                         <button type="button" disabled=move || settings_busy.get() on:click=move |_| close_settings_subpage.call(())>{move || t(locale.get(), "settings.cancel")}</button>
                                             <button type="button" class="primary" disabled=move || settings_busy.get() on:click=move |ev| save_specialist_form.call(ev)>{move || t(locale.get(), "settings.save")}</button>
                                     </div>
@@ -5494,6 +5535,7 @@ pub(super) fn SettingsView(
                                             color: "clay".into(),
                                             description: String::new(),
                                             instructions: String::new(),
+                                            default_instructions: None,
                                             model_id: String::new(),
                                             review_backend: None,
                                             skills: None,
@@ -7021,8 +7063,10 @@ pub(super) fn SettingsView(
                             msg=knowledge_msg
                             busy=knowledge_busy
                             bases=knowledge_bases
+                            menu_open=knowledge_kb_menu_open
                             on_save=save_knowledge_settings
                             on_test=test_knowledge_connection
+                            on_refresh=refresh_knowledge_bases
                         />
                     </div>
                 }.into_view())}

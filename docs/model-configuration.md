@@ -102,7 +102,11 @@ vision model, SuperScience rejects that new image before starting the main model
 
 Image generation is a separate model role. Create an OpenAI-compatible profile
 with model ID `gpt-image-2` or `grok-imagine-image-2.0`, then enable **Use for
-image generation**. The edit form for those models hides chat-only fields
+image generation**. The **Use for image generation** and **Use for video
+generation** boxes appear only on rows whose model ID is one of the media model
+IDs the backend accepts, so a chat model can no longer be checked into a
+combination that cannot be saved. The edit form for those models hides
+chat-only fields
 (max output tokens, context window, reasoning effort, and vision) and shows
 image defaults instead: size and quality for `gpt-image-2`, or aspect ratio,
 resolution, and quality for `grok-imagine-image-2.0`. `generate_image` uses

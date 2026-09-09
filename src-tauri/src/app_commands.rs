@@ -703,6 +703,25 @@ pub(super) fn reveal_in_file_manager(
         .map_err(|e| e.to_string())
 }
 
+/// Reveal the verified managed browser-extension folder in the OS file manager,
+/// so the user can drag or pick it in Chrome's "Load unpacked" dialog instead of
+/// typing the path. Only this one verified folder is revealed; arbitrary paths
+/// stay behind [`reveal_in_file_manager`]'s project-root check.
+#[tauri::command]
+pub(super) fn reveal_browser_extension_dir(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let path = state
+        .browser_bridge
+        .verified_extension_path()
+        .ok_or_else(|| "browser extension directory is not verified".to_string())?;
+    app.opener()
+        .reveal_item_in_dir(std::path::PathBuf::from(path))
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub(super) fn open_workspace_path(
     app: AppHandle,

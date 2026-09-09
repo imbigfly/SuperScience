@@ -105,9 +105,7 @@ pub(crate) fn intro_for(id: &str) -> Option<&'static CapabilityIntro> {
         "nature-figure" => &NATURE_FIGURE,
         "r-bioinfo-figure" => &R_BIOINFO_FIGURE,
         "ai-drawing" => &AI_DRAWING,
-        "ai-mechanism-figure" => &AI_MECHANISM_FIGURE,
         "editable-figure" => &EDITABLE_FIGURE,
-        "bioinfo-figure-layout" => &BIOINFO_FIGURE_LAYOUT,
         "nature-paper2ppt" => &NATURE_PAPER2PPT,
         "nature-image2ppt" => &NATURE_IMAGE2PPT,
         "ppt-master" => &PPT_MASTER,
@@ -1128,33 +1126,6 @@ const AI_DRAWING: CapabilityIntro = intro(
     ),
 );
 
-const AI_MECHANISM_FIGURE: CapabilityIntro = intro(
-    help(
-        "Describe a pathway or drug mechanism and get a journal-style mechanism figure.\nThis card is a preview. Clicking the tile stays Coming Soon, then say something as specific as: “Draw a TGF-β liver-fibrosis mechanism figure in extracellular, membrane, and nuclear layers”.",
-        "要把通路或药物机制画成顶刊常见机制图。\n这是预告卡，点卡片主体会提示正在开发，尚未开工，第一句尽量写具体，例如：「画 TGF-β 促肝纤维化的机制图，分细胞外、膜、核三层」。",
-    ),
-    help(
-        "A pathway description has no journal-style layered figure yet — and this card is not wired.\nMolecules and arrows need extracellular, membrane, and nuclear grammar, not a clip-art pile.\nWhen it ships, the first draft must still be editable.\nUntil then, clicking the tile only shows Coming Soon.",
-        "通路描述还没有顶刊那种分层机制图——这张卡也还没接通。\n分子和箭头需要细胞外、膜、核的语法，不是剪贴画堆。\n上线后第一稿仍必须能改。\n在此之前，点卡片只会提示正在开发。",
-    ),
-    help(
-        "When shipped: journal mechanism grammar | Molecules and arrows will sit in extracellular, membrane, and nuclear layers.\nEditable layers | The draft is meant to stay changeable, not flatten to one bitmap.\nPreview only today | The tile will not start a run until the capability is wired.\nA target, not a promise of quality today | Use the card to learn the intended workflow.",
-        "上线后按期刊机制图语法出图 | 分子和箭头会按细胞外、膜、核三层排。\n图层可继续改 | 目标是可改稿，而不是压成一张死图。\n今天只是预告 | 接通之前，点卡片不会开工。\n先看清工作流 | 用这张卡了解上线后怎么用，而不是假装现在能画。",
-    ),
-    help(
-        "This card is a preview. Clicking the tile stays Coming Soon\nWhen shipped: describe the pathway and key molecules\nStart with the actual task, for example: “Draw a TGF-β liver-fibrosis mechanism figure in extracellular, membrane, and nuclear layers.”",
-        "这是预告卡，点卡片主体会提示正在开发，尚未开工\n上线后：描述通路与关键分子即可\n第一句直接进入任务，可参考：「画 TGF-β 促肝纤维化的机制图，分细胞外、膜、核三层。」",
-    ),
-    help(
-        "Draw a TGF-β liver-fibrosis mechanism figure in extracellular, membrane, and nuclear layers.",
-        "画 TGF-β 促肝纤维化的机制图，分细胞外、膜、核三层。",
-    ),
-    help(
-        "When this ships, I will place molecules and arrows in three layers and return an editable draft.",
-        "上线后按三层排分子与箭头，并给出可编辑稿。",
-    ),
-);
-
 const EDITABLE_FIGURE: CapabilityIntro = intro(
     help(
         "Turn a flattened mechanism figure into something you can still edit.\nThis card is a preview and is not wired yet, then say something as specific as: “On this mechanism figure, make Akt red and change the arrow to inhibition”.",
@@ -1179,33 +1150,6 @@ const EDITABLE_FIGURE: CapabilityIntro = intro(
     help(
         "When this ships, I will edit those objects on an editable layer without redrawing the whole figure.",
         "上线后在可编辑层改指定元素，不重绘整图。",
-    ),
-);
-
-const BIOINFO_FIGURE_LAYOUT: CapabilityIntro = intro(
-    help(
-        "Arrange several bioinformatics plots into one submission-ready multi-panel figure.\nThis card is a preview and is not wired yet, then say something as specific as: “Combine these four plots as Figure 1: A volcano, B heatmap, C PCA, D KM”.",
-        "多张生信图要拼成投稿多面板。\n这是预告卡，点卡片主体尚未开工，第一句尽量写具体，例如：「这四张图拼成 Figure 1，A 火山 B 热图 C PCA D KM」。",
-    ),
-    help(
-        "Four plots sit in four files with four fonts and cannot become Figure 1.\nManual collage in PowerPoint drifts labels and column widths.\nThis card is a preview and will not arrange panels yet.\nWhen it ships, A/B/C/D labeling and unified width are the point.",
-        "四张图四个文件四种字体，拼不成 Figure 1。\n在 PPT 里手工拼，标签和栏宽会漂。\n这是预告卡，现在还不会帮你排面板。\n上线后，A/B/C/D 标注和统一栏宽才是重点。",
-    ),
-    help(
-        "When shipped: unified column width and labels | Separate volcano, heatmap, PCA, and KM become one submission panel.\nLess manual collage | Alignment is a layout job, not a late-night PowerPoint fight.\nPreview only today | The tile stays Coming Soon until the arranger is wired.\nPanel letters included | A/B/C/D are part of the deliverable, not an afterthought.",
-        "上线后统一栏宽与标签 | 分开的火山图、热图、PCA、KM 会变成一张投稿拼图。\n减少手工拼 | 对齐是排版活，不是凌晨在 PPT 里对位。\n今天只是预告 | 排版器接通前，卡片保持「正在开发」。\n带上面板字母 | A/B/C/D 是交付物的一部分，不是事后手写。",
-    ),
-    help(
-        "This card is a preview and is not wired yet\nWhen shipped: drop in several plots and name panels A/B/C\nStart with the actual task, for example: “Combine these four plots as Figure 1: A volcano, B heatmap, C PCA, D KM.”",
-        "这是预告卡，点卡片主体尚未开工\n上线后：一次丢入多图并说明 A/B/C\n第一句直接进入任务，可参考：「这四张图拼成 Figure 1，A 火山 B 热图 C PCA D KM。」",
-    ),
-    help(
-        "Combine these four plots as Figure 1: A volcano, B heatmap, C PCA, D KM.",
-        "这四张图拼成 Figure 1，A 火山 B 热图 C PCA D KM。",
-    ),
-    help(
-        "When this ships, I will align a submission multi-panel and return the collage with labels.",
-        "上线后按投稿多面板对齐，并给出带 A/B/C/D 标注的拼图。",
     ),
 );
 

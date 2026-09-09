@@ -1178,6 +1178,18 @@ pub(crate) fn handle_md_click(
                     ev.prevent_default();
                     ev.stop_propagation();
                     let path = normalize_path(&decode_href(&href));
+                    if let Some((_, filename)) = knowledge_file_path(&path) {
+                        // Knowledge-base files carry no local path: the modal
+                        // fetches them from WeKnora on demand.
+                        let name = if filename.is_empty() {
+                            path.clone()
+                        } else {
+                            attachment_name(filename)
+                        };
+                        let kind = file_kind(filename).unwrap_or("text").to_string();
+                        on_file.call((path, name, kind));
+                        return;
+                    }
                     if let Some(idx) = artifact_index_for_href(arts, &path) {
                         on_artifact.call(idx);
                     } else {

@@ -101,7 +101,7 @@ impl RemoteRunner for ProcessRemoteRunner {
 
 #[derive(Serialize, Clone, Debug)]
 pub(super) struct FileContent {
-    path: String,
+    pub(super) path: String,
     mime: String,
     text: Option<String>,
     /// Base64 payload for binary files (images, pdf, pdb, …).
@@ -412,7 +412,7 @@ fn tiff_to_png(tiff: &[u8]) -> Result<Vec<u8>, String> {
     Ok(png)
 }
 
-fn is_text_mime(mime: &str) -> bool {
+pub(super) fn is_text_mime(mime: &str) -> bool {
     mime.starts_with("text/")
         || mime == "application/json"
         || mime == "application/x-ipynb+json"
@@ -1289,9 +1289,9 @@ pub(super) fn read_file_bytes_at(
 
 /// The shared text-vs-binary decision for previews, local or remote: named text
 /// mimes go out as text, unnamed extensions are sniffed, the rest is base64.
-fn file_content_from_bytes(
+pub(super) fn file_content_from_bytes(
     path: String,
-    mime: &'static str,
+    mime: &str,
     bytes: Vec<u8>,
     total_bytes: Option<u64>,
     truncated: bool,

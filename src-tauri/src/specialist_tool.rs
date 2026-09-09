@@ -97,6 +97,7 @@ impl Tool for SaveSpecialistTool {
                     }
                 },
                 instructions,
+                default_instructions: existing.default_instructions,
                 model_id: if args.get("model_id").is_some() {
                     str_arg(args, "model_id")
                 } else {
@@ -115,6 +116,7 @@ impl Tool for SaveSpecialistTool {
                 color: "clay".into(),
                 description: str_arg(args, "description"),
                 instructions,
+                default_instructions: None,
                 model_id: str_arg(args, "model_id"),
                 review_backend: None,
                 skills: list_arg(args, "skills"),

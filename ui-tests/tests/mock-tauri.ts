@@ -570,6 +570,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
     { id: "reviewer", name: "Reviewer", icon: "review", color: "clay", description: "", instructions: "rubric", model_id: "", skills: [], connectors: [], builtin: true },
     { id: "reader", name: "Reader", icon: "search", color: "clay", description: "Searches project sessions", instructions: "reader rubric", model_id: "", skills: [], connectors: [], builtin: true },
     { id: "scientific_illustrator", name: "Scientific Illustrator", icon: "image", color: "clay", description: "Creates scientific figures", instructions: "illustrator rubric", model_id: "", skills: ["figure-composer", "figure-style"], connectors: [], builtin: true },
+    { id: "r_bioinformatics_figure", name: "R bioinformatics figures", icon: "grid", color: "clay", description: "Draws common bioinformatics plots in R", instructions: "r bioinfo figure rubric", model_id: "", skills: ["figure-style", "nature-figure"], connectors: [], builtin: true },
     { id: "handwriting_extract", name: "Handwriting Extract", icon: "grid", color: "clay", description: "Reads handwritten tables", instructions: "handwriting rubric", model_id: query.get("mockHandwritingCalibrationUnset") === "1" ? "" : "default", skills: ["handwriting-extract"], connectors: [], builtin: true },
     { id: "figure_duplicate_audit", name: "Figure Duplicate Audit", icon: "copy", color: "clay", description: "Audit figures for duplicated panels", instructions: "figure audit rubric", model_id: "", skills: ["figure-duplicate-audit", "local-env-setup"], connectors: [], builtin: true },
     { id: "conversation_analysis", name: "对话分析", icon: "chat", color: "clay", description: "分析系统内全部项目的全部会话，提取每个会话中用户发送的所有消息，以及模型在每一轮对话中最终回复的结论性内容，并以对话聊天的形式生成一个 HTML 报告。", instructions: "# 对话分析 Agent 提示词", model_id: "", skills: [], connectors: [], builtin: true },
@@ -2539,6 +2540,13 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               { id: "default", name: projectNames.default ?? project.name, workspace_dir: project.root, session_count: 0, updated_at: 1, running_count: 0, needs_you_count: 0, sync_configured: syncedProjects.has("default"), last_synced_at: syncedProjects.has("default") ? Math.floor(Date.now() / 1000) : null },
               { id: "other", name: projectNames.other ?? "Other project", workspace_dir: "/mock/other", session_count: 1, updated_at: 1, running_count: 0, needs_you_count: 0, sync_configured: syncedProjects.has("other"), last_synced_at: syncedProjects.has("other") ? Math.floor(Date.now() / 1000) : null },
             ];
+          case "get_default_capability_project":
+            return ((window as any).__defaultCapabilityProject ?? null);
+          case "set_default_capability_project": {
+            const projectId = String(arg("projectId") ?? "");
+            (window as any).__defaultCapabilityProject = projectId || null;
+            return projectId || null;
+          }
           case "list_recent_sessions":
             return [
               {
@@ -2786,6 +2794,21 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string 
               message: "Connected. Found 1 knowledge base(s).",
               knowledge_bases: [{ id: "kb-00000001", name: "Lab notes" }],
             };
+          }
+          case "list_knowledge_bases": {
+            if (query.get("mockKnowledgeFail") === "1") {
+              throw new Error("Could not reach WeKnora.");
+            }
+            const submitted = plain(arg("settings") ?? {});
+            const weknora = plain(submitted.weknora ?? mockKnowledgeSettings.weknora);
+            const submittedKey = String(weknora.api_key ?? "").trim();
+            const hasKey = Boolean(submittedKey)
+              || Boolean(weknora.has_api_key)
+              || mockKnowledgeSettings.weknora.has_api_key;
+            if (!hasKey) {
+              throw new Error("WeKnora is not configured.");
+            }
+            return [{ id: "kb-00000001", name: "Lab notes" }];
           }
           case "list_pending_browser_needs_human":
             return { tabs: mockPendingBrowserNeedsHuman };

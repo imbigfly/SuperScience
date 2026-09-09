@@ -47,7 +47,8 @@ use bindings::{
     jump_chat_to_item, jump_chat_to_user, listen, listen_current_window, listen_native_file_drop,
     native_drop_in_composer, open_browser_extension_page, open_external_url, pasted_image_count,
     preserve_chat_prepend_position, preview_selection, restore_chat_session_scroll,
-    schedule_chat_follow, set_saved_marks, set_window_title, CHAT_SCROLLER_ID, CHAT_THREAD_ID,
+    reveal_browser_extension_dir, schedule_chat_follow, set_saved_marks, set_window_title,
+    CHAT_SCROLLER_ID, CHAT_THREAD_ID,
 };
 use context_menu::{ContextMenuPortal, CtxMenu};
 use dto::*;
@@ -5428,6 +5429,22 @@ fn App() -> impl IntoView {
 
     let remove_specialist_fn = move |id: String| model_settings.remove_specialist(id);
 
+    // Trigger the second-step "reset to factory rubric" confirm dialog for a
+    // built-in specialist. The actual reset_specialist_instructions call is
+    // dispatched from the ui_confirm action handler above.
+    let request_reset_specialist_instructions_fn = move |_: ()| {
+        let Some(spec) = specialist_form.get_untracked() else {
+            return;
+        };
+        if !spec.builtin {
+            return;
+        }
+        ui_confirm.set(Some(UiConfirm::ResetSpecialistInstructions {
+            id: spec.id.clone(),
+            name: spec.name.clone(),
+        }));
+    };
+
     let start_new_session = Callback::new(move |_: ()| {
         if demo_mode.get_untracked() {
             return;
@@ -10735,6 +10752,7 @@ fn App() -> impl IntoView {
                 // and remote previews have no local file for the runtime to read.
                 let run_language = (!path.starts_with("artifact:")
                     && !path.starts_with("artifact-version:")
+                    && !path.starts_with("knowledge:")
                     && remote_file_path(&path).is_none())
                     .then(|| runtime_language(&path))
                     .flatten();
@@ -12488,9 +12506,23 @@ fn App() -> impl IntoView {
                                                         )
                                                         .await;
                                                     }
+                                                    // Also reveal the folder, so the user can drag it
+                                                    // into the picker when pasting is unavailable.
+                                                    reveal_browser_extension_dir().await;
                                                 }
                                                 if setup.opened && has_path {
-                                                    show_actionable_toast(&t(locale.get_untracked(), "browser.offline.setup_done"));
+                                                    let loc = locale.get_untracked();
+                                                    let path_hint_key = if is_mac() {
+                                                        "browser.offline.path_hint_mac"
+                                                    } else {
+                                                        "browser.offline.path_hint_other"
+                                                    };
+                                                    let path_hint = t(loc, path_hint_key);
+                                                    show_actionable_toast(&tf(
+                                                        loc,
+                                                        "browser.offline.setup_done",
+                                                        &[("path_hint", path_hint.as_str())],
+                                                    ));
                                                 } else {
                                                     show_actionable_warning_toast(&t(locale.get_untracked(), "browser.offline.setup_failed"));
                                                 }
@@ -13681,6 +13713,11 @@ fn App() -> impl IntoView {
                                                     let is_active = !acp_selected
                                                         && selected.as_deref().map_or(m.active, |id| id == m.id);
                                                     let show_sub = !m.model.is_empty() && m.model != m.label;
+                                                    // 能力图标：眼睛=支持图片输入，星芒=文档支持推理强度
+                                                    let show_vision_cap = m.supports_vision;
+                                                    let show_reasoning_cap =
+                                                        known_effort_values(&m.provider, &m.model)
+                                                            .is_some_and(|values| !values.is_empty());
                                                     let effort = m.reasoning_effort.clone();
                                                     let effort_id = m.id.clone();
                                                     let effort_id_open = m.id.clone();
@@ -13710,13 +13747,27 @@ fn App() -> impl IntoView {
                                                                 }
                                                             }>
                                                                 <span class="model-menu-text">
-                                                                    <span class="model-menu-label">{m.label.clone()}</span>
+                                                                    <span class="model-menu-title-row">
+                                                                        <span class="model-menu-label">{m.label.clone()}</span>
+                                                                        <span class="model-menu-caps">
+                                                                            <span class="model-menu-cap" class:model-menu-cap-off=!show_vision_cap
+                                                                                title=show_vision_cap.then(|| t(locale.get(), "model.cap.vision"))>
+                                                                                {show_vision_cap.then(|| compose_icon("eye"))}
+                                                                            </span>
+                                                                            <span class="model-menu-cap" class:model-menu-cap-off=!show_reasoning_cap
+                                                                                title=show_reasoning_cap.then(|| t(locale.get(), "model.cap.reasoning"))>
+                                                                                {show_reasoning_cap.then(|| compose_icon("sparkles"))}
+                                                                            </span>
+                                                                        </span>
+                                                                    </span>
                                                                     {show_sub.then(|| view! { <span class="model-menu-sub">{m.model.clone()}</span> })}
                                                                     {(!effort.is_empty()).then(|| view! {
                                                                         <span class="model-menu-effort-tag">{effort}</span>
                                                                     })}
                                                                 </span>
-                                                                {is_active.then(|| view! { <span class="model-menu-check">"✓"</span> })}
+                                                                <span class="model-menu-check" class:model-menu-check-off=!is_active>
+                                                                    {is_active.then_some("✓")}
+                                                                </span>
                                                             </button>
                                                             <button type="button" class="model-menu-effort-edit"
                                                                 class:open=move || effort_menu_for.get().as_ref().is_some_and(|(open_id, _, _)| open_id == &effort_id_open)
@@ -15932,6 +15983,11 @@ fn App() -> impl IntoView {
                 UiConfirm::ReloadProjectRules(_) => t(locale.get(), "session.reload_rules_hint").to_string(),
                 UiConfirm::SaveAgentContext => t(locale.get(), "proj_settings.agent_context_confirm").to_string(),
                 UiConfirm::DeleteUserDemo(_) => t(locale.get(), "demo.delete_confirm").to_string(),
+                UiConfirm::ResetSpecialistInstructions { name, .. } => tf(
+                    locale.get(),
+                    "specialists.reset_confirm_body",
+                    &[("name", name)],
+                ),
             };
             let action_key = match &action {
                 UiConfirm::EnableFullPermission => "full_permission.confirm_action",
@@ -15943,6 +15999,7 @@ fn App() -> impl IntoView {
                 UiConfirm::ReloadProjectRules(_) => "session.reload_rules_action",
                 UiConfirm::SaveAgentContext => "proj_settings.agent_context_confirm_action",
                 UiConfirm::DeleteUserDemo(_) => "ctx.delete_user_demo",
+                UiConfirm::ResetSpecialistInstructions { .. } => "specialists.reset_default",
             };
             view! {
             <div class="overlay">
@@ -16103,6 +16160,19 @@ fn App() -> impl IntoView {
                                 UiConfirm::DeleteUserDemo(id) => {
                                     demo_actions::delete_user_demo(id, locale, demos);
                                 }
+                                UiConfirm::ResetSpecialistInstructions { id, .. } => {
+                                    let id = id.clone();
+                                    spawn_local(async move {
+                                        let arg = to_value(&serde_json::json!({ "id": id.clone() })).unwrap();
+                                        let value = invoke("reset_specialist_instructions", arg).await;
+                                        if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<Specialist>>(value) {
+                                            specialists.set(list);
+                                            if let Some(updated) = specialists.get_untracked().iter().find(|s| s.id == id).cloned() {
+                                                specialist_form.set(Some(updated));
+                                            }
+                                        }
+                                    });
+                                }
                             }
                         }>{move || t(locale.get(), action_key)}</button>
                     </div>
@@ -16210,6 +16280,7 @@ fn App() -> impl IntoView {
             use_plugin=use_plugin
             remove_plugin=remove_plugin
             remove_specialist=Callback::new(remove_specialist_fn)
+            request_reset_specialist_instructions=Callback::new(request_reset_specialist_instructions_fn)
             open_add_host=open_add_host_form
             edit_ssh_host=edit_ssh_host
             import_ssh_hosts=Callback::new(move |_: ()| {
@@ -16390,7 +16461,7 @@ fn App() -> impl IntoView {
         />
         <CapabilitiesOverlay
             locale=locale show_capabilities=show_capabilities
-            bootstrap=bootstrap caps=caps busy=busy open_settings_section=open_capability_settings
+            bootstrap=bootstrap caps=caps _busy=busy open_settings_section=open_capability_settings
         />
         <OnboardingOverlay
             locale=locale show_onboarding=show_onboarding

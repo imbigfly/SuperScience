@@ -108,6 +108,7 @@ impl ComposerQuote {
         self.source.as_deref().filter(|source| {
             !source.starts_with("artifact:")
                 && !source.starts_with("artifact-version:")
+                && !source.starts_with("knowledge:")
                 && remote_file_path(source).is_none()
                 && matches!(
                     file_kind(source),

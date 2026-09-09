@@ -46,7 +46,36 @@ fn format_hits(hits: &[KnowledgeHit]) -> String {
     if hits.is_empty() {
         return "No matching excerpts were returned from the knowledge base.".into();
     }
-    json!({ "hits": hits }).to_string()
+    // Each hit carries a ready-made Markdown link so the model can copy the
+    // attachment reference verbatim instead of inventing a bare filename.
+    let rows: Vec<Value> = hits
+        .iter()
+        .map(|hit| {
+            let mut row = serde_json::to_value(hit).unwrap_or_else(|_| json!({}));
+            if let (Some(object), Some(link)) = (row.as_object_mut(), hit_file_link(hit)) {
+                object.insert("file_link".into(), Value::String(link));
+            }
+            row
+        })
+        .collect();
+    json!({ "hits": rows }).to_string()
+}
+
+/// Markdown for one hit's source file, so the model can emit a clickable
+/// attachment link. Hits without a knowledge id stay plain text.
+fn hit_file_link(hit: &KnowledgeHit) -> Option<String> {
+    if hit.open_ref.is_empty() {
+        return None;
+    }
+    let label = if hit.filename.trim().is_empty() {
+        hit.title.trim()
+    } else {
+        hit.filename.trim()
+    };
+    if label.is_empty() {
+        return None;
+    }
+    Some(format!("[{}]({})", label, hit.open_ref))
 }
 
 #[async_trait]
@@ -58,7 +87,7 @@ impl Tool for KnowledgeSearchTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "knowledge_search",
-            "Search the configured research knowledge base and return raw excerpts with scores and source titles. Use this when the user asks about project or lab knowledge stored in the knowledge base. Quote or cite the excerpts; do not treat this as a chat/answer API — write the reply yourself.",
+            "Search the configured research knowledge base and return raw excerpts with scores and source titles. Use this when the user asks about project or lab knowledge stored in the knowledge base. Quote or cite the excerpts; do not treat this as a chat/answer API — write the reply yourself. When you mention or list a source file, copy its `file_link` value verbatim as the Markdown destination — never invent a bare filename link.",
             json!({
                 "type": "object",
                 "properties": {
