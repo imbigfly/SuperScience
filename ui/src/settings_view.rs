@@ -16,7 +16,7 @@ use crate::bindings::{invoke, invoke_checked, is_mac, is_windows, open_external_
 use crate::dto::*;
 use crate::i18n::{
     brand_visible_copy, localize_backend, set_document_lang, specialist_display_description,
-    specialist_display_name, t, tf, use_locale, Locale, BRAND_GITHUB_REPO,
+    specialist_display_name, t, tf, use_locale, Locale,
 };
 use crate::knowledge_settings::{
     list_knowledge_settings_bases, load_knowledge_settings, persist_knowledge_settings,
@@ -81,17 +81,20 @@ fn SettingsNavigation(
     let search = create_rw_signal(String::new());
     view! {
         <nav class="settings-nav" aria-label=move || t(locale.get(), "settings.title")>
-            <button type="button" class="settings-app-back settings-head-close"
-                on:click=move |_| show_settings.set(false)>
-                {compose_icon("chevron-left")}
-                <span>{move || t(locale.get(), "settings.back_to_app")}</span>
-            </button>
-            <div class="settings-nav-title">{move || t(locale.get(), "settings.title")}</div>
-            <input type="search" class="settings-nav-search"
-                aria-label=move || t(locale.get(), "settings.search")
-                placeholder=move || t(locale.get(), "settings.search")
-                prop:value=move || search.get()
-                on:input=move |ev| search.set(event_target_value(&ev)) />
+            <div class="settings-nav-head">
+                <button type="button" class="settings-app-back settings-head-close"
+                    on:click=move |_| show_settings.set(false)>
+                    {compose_icon("chevron-left")}
+                    <span>{move || t(locale.get(), "settings.back_to_app")}</span>
+                </button>
+                <div class="settings-nav-title">{move || t(locale.get(), "settings.title")}</div>
+                <input type="search" class="settings-nav-search"
+                    aria-label=move || t(locale.get(), "settings.search")
+                    placeholder=move || t(locale.get(), "settings.search")
+                    prop:value=move || search.get()
+                    on:input=move |ev| search.set(event_target_value(&ev)) />
+            </div>
+            <div class="settings-nav-scroll" data-testid="settings-nav-scroll">
             {move || {
                 let query = search.get().trim().to_lowercase();
                 let loc = locale.get();
@@ -136,6 +139,7 @@ fn SettingsNavigation(
                     })}
                 }
             }}
+            </div>
         </nav>
     }
 }
