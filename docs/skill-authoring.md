@@ -1,7 +1,7 @@
-# Preparing Skills for Wisp Science
+# Preparing Skills for SuperScience
 
-This guide targets Wisp **1.11.0**. The examples are checked against the current
-[parser](../crates/wisp-skills/src/manifest.rs) and package validator in automated
+This guide targets SuperScience **1.11.0**. The examples are checked against the current
+[parser](../crates/superscience-skills/src/manifest.rs) and package validator in automated
 tests. They have **not** been validated through a model-driven research task.
 Current behavior, recommendations, and future work are distinguished below.
 Issue #1018 is a proposal, not an implemented Skill permission manifest.
@@ -42,7 +42,7 @@ license, source, compatibility declarations, and operation boundaries. The
 example becomes remotely installable after these files are published to the
 indexed repository ref; local tests use the checked-out package without GitHub.
 
-## 2. Optional Wisp metadata
+## 2. Optional SuperScience metadata
 
 Traditional Skills without `wisp` remain supported. A valid extension is:
 
@@ -103,7 +103,7 @@ Different limits serve different purposes:
 | Installed package Files preview | UTF-8 text ≤ 1 MiB/file; 2,000 files; 32 levels. Hidden entries and symlinks omitted. These are preview limits, not universal Skill schema rules. |
 | GitHub store preview | `SKILL.md` ≤ 1 MiB each / 4 MiB combined; at most 100 discovered Skills per selected directory. Narrow a repository URL if exceeded. |
 | GitHub store download/extraction | Entire repository ZIP ≤ 32 MiB, 4,000 ZIP entries, 8 MiB/file, 128 MiB expanded, portable path ≤ 1,024 bytes and 64 levels. Exceeding these rejects this installation; it is not a universal runtime file limit. |
-| Runtime execution | Governed by each Wisp tool and execution context; preview limits do not define interpreter memory, dataset sizes, or execution duration. |
+| Runtime execution | Governed by each SuperScience tool and execution context; preview limits do not define interpreter memory, dataset sizes, or execution duration. |
 
 The first store version downloads a commit-pinned GitHub repository ZIP, then
 installs only the selected package. Very large repositories should publish small,
@@ -111,10 +111,10 @@ self-contained Skill repositories. Private repositories are not supported.
 
 ## 4. Execution and tools
 
-[`use_skill`](../crates/wisp-skills/src/tool.rs) loads Skill instructions and
+[`use_skill`](../crates/superscience-skills/src/tool.rs) loads Skill instructions and
 provides package location/resource information. Discovering, previewing,
 installing, or loading a Skill does not execute scripts or install dependencies.
-The Agent subsequently uses the available Wisp tools under host policy.
+The Agent subsequently uses the available SuperScience tools under host policy.
 
 Root-level `runtime.py` and `runtime.r` are special sidecars. Loading a Skill
 appends instructions for the persistent `python`/`r` tool to load those files;
@@ -147,7 +147,7 @@ checksums, and input requirements. Do not default to synchronizing large data.
 
 ## 6. Permissions and confirmation
 
-Use Wisp's existing tool approval and confirmation cards. Installation does not
+Use SuperScience's existing tool approval and confirmation cards. Installation does not
 authorize network, MCP, file writes, external submissions, or runtime installation.
 The user's task may authorize an action; Skill prose cannot bypass host policy.
 When input or consent is required, an unanswered question is not permission.
@@ -171,10 +171,10 @@ Use platform.read_workspace, assume references are auto-loaded, invoke
 platform.python_session, then publish using platform.upload without asking.
 ```
 
-For Wisp, adapt the workflow itself:
+For SuperScience, adapt the workflow itself:
 
 ```text
-Use the available Wisp read tool to read the supplied project files and
+Use the available SuperScience read tool to read the supplied project files and
 references/template.md relative to the loaded package. Check that the python
 runtime is available before computation. Return the result in chat, or write a
 requested artifact to the project under normal host approval. External upload
@@ -192,18 +192,18 @@ implements the read-and-handoff subset with no proprietary dependencies.
 Use the [community contribution guide](../community-skills/README.md) and copy an
 entry from [index.json](../community-skills/index.json). Every entry needs source,
 ref, package path, responsibilities, required/optional dependencies, operation
-boundaries, author/license, supported Wisp version, reported verification version
+boundaries, author/license, supported SuperScience version, reported verification version
 (or `null`), known limitations, and feedback URL. Community inclusion is not an
 official maintenance or verification claim. Keep the body and index consistent.
 
 Before submitting a PR:
 
-1. Parse frontmatter using Wisp's current parser. Validate resource links and
-   package boundaries. Run `cargo test -p wisp-skills` for this repository.
+1. Parse frontmatter using SuperScience's current parser. Validate resource links and
+   package boundaries. Run `cargo test -p superscience-skills` for this repository.
 2. Test positive and negative triggers; simulate missing input, unavailable tools,
    dependency failure, and denied permissions without real services.
-3. Install and load in a test Wisp project, inspect package files, then verify an
-   example task and artifacts. Record the exact Wisp version and context if done.
+3. Install and load in a test SuperScience project, inspect package files, then verify an
+   example task and artifacts. Record the exact SuperScience version and context if done.
 4. Distinguish **format passed**, **dependencies pending/configured**,
    **author-declared compatibility**, and **reported runtime validation**.
    Do not mark runtime verification based only on parsing or install success.
@@ -235,7 +235,7 @@ existing packages remain intact. After a crash, an abandoned staging directory
 may remain, but it is not discovered as an installation.
 
 Historical resource layouts include both `resources/skills` and
-`resources/_up_/skills` (see [path resolution](../crates/wisp-paths/src/lib.rs)).
+`resources/_up_/skills` (see [path resolution](../crates/superscience-paths/src/lib.rs)).
 No supplied history proves an application updater deleted a user's package, and
 this change does not add an updater migration hook. **Before replacing an old
 installation directory**, copy any user-added or modified package from either

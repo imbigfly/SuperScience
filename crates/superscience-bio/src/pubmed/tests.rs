@@ -159,7 +159,7 @@ async fn http_contract_encodes_queries_and_credentials_without_python() {
     assert!(body.contains("term=gene%5BTitle%5D+%26+study"));
     assert!(body.contains("api_key=synthetic-key%26value"));
     assert!(body.contains("email=operator%40example.test"));
-    assert!(body.contains("tool=wisp-science"));
+    assert!(body.contains("tool=SuperScience"));
     assert!(!result.to_string().contains("synthetic-key"));
 }
 

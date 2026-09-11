@@ -54,7 +54,7 @@ Choose a provider adapter only after the provider-neutral plan is valid.
 
 ## Adapter selection order
 
-1. Installed Wisp connector/MCP for discovery and small results.
+1. Installed SuperScience connector/MCP for discovery and small results.
 2. Official provider API or bulk client.
 3. A versioned external CLI or language package already installed in the
    execution environment, such as geokit for GEO in R.

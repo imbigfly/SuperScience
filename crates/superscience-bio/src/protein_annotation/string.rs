@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 
-const CALLER: &str = "wisp-science";
+const CALLER: &str = "SuperScience";
 const EVIDENCE: &[&str] = &[
     "nscore", "fscore", "pscore", "ascore", "escore", "dscore", "tscore",
 ];

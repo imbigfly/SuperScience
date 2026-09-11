@@ -1,12 +1,12 @@
 ---
 name: self-awareness
-description: Wisp-science's actual agent tool surface and runtime boundaries. Load this when deciding which Wisp tool can perform a task, checking whether Python can reach agent or desktop capabilities, choosing between interactive analysis and persisted Runs, or answering questions about delegation, images, skills, memory, artifacts, lineage, credentials, session history, and other self-introspection capabilities.
+description: SuperScience-science's actual agent tool surface and runtime boundaries. Load this when deciding which SuperScience tool can perform a task, checking whether Python can reach agent or desktop capabilities, choosing between interactive analysis and persisted Runs, or answering questions about delegation, images, skills, memory, artifacts, lineage, credentials, session history, and other self-introspection capabilities.
 license: Apache-2.0
 ---
 
-# Self-awareness — Wisp's actual capabilities
+# Self-awareness — SuperScience's actual capabilities
 
-Use only tools advertised in the current conversation. Wisp exposes agent and
+Use only tools advertised in the current conversation. SuperScience exposes agent and
 desktop capabilities as explicit tools; do not assume that an SDK documented by
 another application also exists here. Some tools are conditional on the desktop
 session, project settings, execution context, or capability grants. If a tool is
@@ -22,15 +22,15 @@ context (falling back to local). Pass `local`, `ssh:<alias>`, or `wsl:<distro>`
 explicitly when needed. The CLI's language runtimes are local.
 
 The Python worker initializes an ordinary namespace with common standard-library
-modules and any available convenience packages. It does **not** inject a Wisp
+modules and any available convenience packages. It does **not** inject a SuperScience
 control-plane object. Code executed with `python` therefore cannot directly call
-the agent model, spawn Agents, submit or monitor Runs, inspect Wisp credentials,
+the agent model, spawn Agents, submit or monitor Runs, inspect SuperScience credentials,
 or query internal project/session metadata. Leave the Python cell and call the
-corresponding Wisp tool instead.
+corresponding SuperScience tool instead.
 
 ## Capability reference
 
-| Need | Wisp interface | Availability and boundary |
+| Need | SuperScience interface | Availability and boundary |
 |---|---|---|
 | Read, create, or patch project files | `read`, `write`, `edit` | Operate on normal filesystem paths within the granted workspace. |
 | Find files or text | `search`, `grep` | Use before broad manual inspection. |
@@ -38,10 +38,10 @@ corresponding Wisp tool instead.
 | Interactive Python or R analysis | `python`, `r` | Persistent per conversation and execution context; no injected control-plane SDK. |
 | Inspect a local image | `view_image` | Explicit tool call for a supported local image; this is not a Python method. |
 | Track a multi-step plan | `update_plan` | Update task progress when a plan materially helps. |
-| Present the completed result | `attempt_completion` | Wisp's normal completion path; there is no separate structured-output submission SDK. |
+| Present the completed result | `attempt_completion` | SuperScience's normal completion path; there is no separate structured-output submission SDK. |
 | Audit configured workflow guidance | `list_skill_catalog` | Page through discovered/effective records and use its explicit counts. |
 | Discover and load workflow guidance | `search_skills`, `use_skill` | Search by task/domain, then load the exact returned skill name. |
-| Search confirmed project notes | `search_memory` | Available only when project memory is enabled. New notes are proposed after a completed turn and require confirmation in the Wisp UI; there is no direct memory-write tool. |
+| Search confirmed project notes | `search_memory` | Available only when project memory is enabled. New notes are proposed after a completed turn and require confirmation in the SuperScience UI; there is no direct memory-write tool. |
 | Delegate multi-file codebase reading | `explore` | Read-only sub-Agent with its own context and `read`/`grep`/`search` access. |
 | Delegate general bounded tasks | `delegate_tasks` | Desktop-only and capability-gated. Use it only when its schema is advertised; it is not callable from Python. |
 | Read a truncated delegated result | `get_delegated_result` | Desktop-only and available with delegation. Use only when the compact result lacks necessary detail. |
@@ -54,7 +54,7 @@ corresponding Wisp tool instead.
 | Create or update a specialist | `save_specialist` | Desktop-only. Omit `id` to create; pass `id` from `configure` get `specialists` to update. Builtin instruction text stays pinned. Deletion remains in Settings. |
 | Make an extra model call from Python | Not available | Continue through the normal agent turn. For bounded delegated work, use `explore` or advertised `delegate_tasks`. |
 | Resolve artifact ids to paths, list a generic artifact store, or inspect lineage | Not available | Use ordinary project paths plus `read`/`search`/`grep`. Do not invent artifact ids, version ids, or lineage records. Run output registration is limited to the explicit `output_specs` contract of `run_in_context`. |
-| Read credentials from Python or an agent tool | Not available | Wisp keeps secrets outside SQLite in its keyring path; no credential accessor is exposed to the agent. |
+| Read credentials from Python or an agent tool | Not available | SuperScience keeps secrets outside SQLite in its keyring path; no credential accessor is exposed to the agent. |
 | Query frames, token/cost accounting, tool-call history, or the internal metadata DB | Not available | Use only conversation context and tool results already provided. Do not claim access to hidden session tables or telemetry. |
 
 ## Choosing the right execution path
@@ -79,4 +79,4 @@ corresponding Wisp tool instead.
    Python-side bridge for a capability that is not present.
 
 For SSH-direct details, load `remote-compute-ssh`; its Run workflow and current
-limitations are the authoritative Wisp contract.
+limitations are the authoritative SuperScience contract.

@@ -17,7 +17,7 @@ only for **Custom proxy**; **System** and **Direct** do not show an address fiel
 
 | Scope | Applies to | Takes effect |
 | --- | --- | --- |
-| Model API | Wisp's HTTP model providers, image and video generation | Next turn; active requests keep their current client |
+| Model API | SuperScience's HTTP model providers, image and video generation | Next turn; active requests keep their current client |
 | MCP services | Bundled scientific connectors, HTTP MCP (including OAuth), custom and plugin stdio MCP child processes | New connections; reconnect existing services |
 | Code requests | Local shell commands, local Runs, and local Python/R interpreter processes | Newly launched processes; restart an existing interpreter |
 
@@ -29,7 +29,7 @@ Saving one row does not save edits in other rows or in Package mirror. Network
 settings can be saved before a model/API key has been configured.
 
 Code proxy settings supply both uppercase and lowercase HTTP(S)/ALL_PROXY and
-NO_PROXY variables without changing Wisp's host environment. Libraries must
+NO_PROXY variables without changing SuperScience's host environment. Libraries must
 honor these variables (and may need their own SOCKS support). Code can explicitly
 override them: this is a routing preference, not a sandbox or firewall. Existing
 Python objects and in-flight MCP connections are not killed on save. SSH/WSL
@@ -47,7 +47,7 @@ Leave a field blank to remove that preference. Save applies the three fields
 together; Cancel discards their edits. Escape immediately returns to the Network section in General;
 another Escape closes Settings.
 
-These values are installation guidance. Wisp refreshes the system prompt at the
+These values are installation guidance. SuperScience refreshes the system prompt at the
 next native agent turn, includes it in native delegated-agent instructions, and
 passes it as context to ACP turns. The agent is told to use the configured
 Conda/pixi channel or pip/uv index when creating an environment or installing

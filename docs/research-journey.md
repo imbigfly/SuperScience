@@ -46,7 +46,7 @@ Windows 下研究历程位于集成标题栏下方，菜单和窗口控制按钮
 
 ## 持久化与范围
 
-跨边界类型定义在 `wisp-dto::ResearchJourney*`。`get_research_journey` 读取指定时间范围的投影；`get_research_journey_source` 读取准确产物版本的运行和输入；`add_research_journal_entry` 追加人工记录。
+跨边界类型定义在 `superscience-dto::ResearchJourney*`。`get_research_journey` 读取指定时间范围的投影；`get_research_journey_source` 读取准确产物版本的运行和输入；`add_research_journal_entry` 追加人工记录。
 
 人工记录使用独立的 `research_journal_entries` 表，不把进展和发现混存成 Decision。迁移 `0054_research_journal` 幂等。项目包导入导出和同步指纹包含主线记录；旧项目包没有这张表也可导入。
 

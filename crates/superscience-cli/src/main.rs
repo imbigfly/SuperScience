@@ -1037,7 +1037,7 @@ async fn main() -> Result<()> {
 
     let bio_package = env("WISP_MCP_PKG", "mcp_bio");
     let mcp_command = env("WISP_MCP_COMMAND", "");
-    let native_bio = mcp_command.is_empty() && wisp_bio::selected_by_package(&bio_package);
+    let native_bio = mcp_command.is_empty() && superscience_bio::selected_by_package(&bio_package);
     if native_bio {
         let credentials: Vec<_> = std::env::vars()
             .filter(|(key, value)| {
@@ -1048,9 +1048,11 @@ async fn main() -> Result<()> {
                         || key == "NCBI_EMAIL")
             })
             .collect();
-        match wisp_bio::NativeBio::new(&credentials) {
+        match superscience_bio::NativeBio::new(&credentials) {
             Ok(client) => {
-                for tool in wisp_bio::tools_for_package(std::sync::Arc::new(client), &bio_package) {
+                for tool in
+                    superscience_bio::tools_for_package(std::sync::Arc::new(client), &bio_package)
+                {
                     agent.add_tool(tool);
                 }
             }
@@ -1076,7 +1078,7 @@ async fn main() -> Result<()> {
             let args: Vec<String> = parts[1..].to_vec();
             wire_mcp(&mut agent, &parts[0], &args, jsonl).await;
         }
-    } else if !wisp_bio::selected_by_package(&bio_package) {
+    } else if !superscience_bio::selected_by_package(&bio_package) {
         setup_message(
             jsonl,
             format_args!("Unknown native bio package: {bio_package}"),

@@ -61,7 +61,7 @@ superscience-skills = { workspace = true }
 superscience-store = { workspace = true }
 superscience-runtime = { workspace = true }
 superscience-mcp = { workspace = true }
-wisp-bio = { workspace = true }
+superscience-bio = { workspace = true }
 superscience-acp = { workspace = true }
 superscience-paths = { workspace = true }
 superscience-sync = { workspace = true }

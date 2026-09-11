@@ -1,8 +1,8 @@
-# Wisp Science Basics: Import, Export, and Sharing
+# SuperScience Basics: Import, Export, and Sharing
 
 After an analysis, you may want to continue the whole project on another computer, hand one conversation to a colleague, or share a few results with your lab group.
 
-Wisp Science provides separate entry points for these needs. Choosing the right scope makes importing and reading easier. This tutorial goes from the whole project to one conversation and then selected messages, explaining what each option carries.
+SuperScience provides separate entry points for these needs. Choosing the right scope makes importing and reading easier. This tutorial goes from the whole project to one conversation and then selected messages, explaining what each option carries.
 
 > Screenshots use the real frontend in English with demonstration projects and conversations. Numbers, paths, and contact names are examples, not real experimental results or evidence of completed migration.
 
@@ -10,7 +10,7 @@ Wisp Science provides separate entry points for these needs. Choosing the right 
 
 | Need | Export | How the recipient uses it |
 | --- | --- | --- |
-| Continue the whole project on another computer | Project ZIP | Restore through Import project in Wisp |
+| Continue the whole project on another computer | Project ZIP | Restore through Import project in SuperScience |
 | Hand off one complete conversation and exportable associated artifacts | Session ZIP | Use Import session archive in the target project |
 | Show a few messages | PNG long image or HTML sharing export | Read with an image viewer or browser |
 | Inspect the execution process | Trajectory HTML export | Review calls, results, time, and usage |
@@ -23,7 +23,7 @@ Wait for active conversations and tasks in the project to finish. Click **Export
 
 ![Project export dialog offering a full ZIP archive](../../assets/tutorials/en/transfer/02-project-export.png)
 
-*Figure 1: Copy the ordinary project folder yourself when you only need files. Choose a full ZIP when you also need Wisp conversations and project records.*
+*Figure 1: Copy the ordinary project folder yourself when you only need files. Choose a full ZIP when you also need SuperScience conversations and project records.*
 
 Choose **Export ZIP** and a destination. A progress card at the lower right reports stage, file count, bytes, and current path. Wait for completion before copying the ZIP.
 
@@ -44,12 +44,12 @@ Click **Import project** on the Projects screen to see the choices.
 
 ![Project import choices: open a folder in place, import a ZIP, or recover workspace conversations](../../assets/tutorials/en/transfer/01-project-import.png)
 
-*Figure 2: Open an already-copied folder in place. Use ZIP import for a complete Wisp project export. Workspace conversation recovery is a separate fallback.*
+*Figure 2: Open an already-copied folder in place. Use ZIP import for a complete SuperScience project export. Workspace conversation recovery is a separate fallback.*
 
 For a complete migration:
 
-1. Choose **Import a ZIP archive** and select the exported Wisp project ZIP.
-2. Select a local parent directory; Wisp creates the project directory inside it.
+1. Choose **Import a ZIP archive** and select the exported SuperScience project ZIP.
+2. Select a local parent directory; SuperScience creates the project directory inside it.
 3. Wait for the progress card to finish, then open the project from the Projects screen.
 4. Check conversations, scripts, figures, and key data paths, then configure models and environments on the destination computer.
 
@@ -122,7 +122,7 @@ Export saves a file. It does not automatically publish to a public account, grou
 
 **Share conclusions and retain the process together.**
 
-Export key messages for a colleague who needs the conclusion. Add [trajectory HTML](wisp-science-trajectory.md) for debugging. To continue analysis in Wisp, supply a session or project ZIP and any required input data and environment information.
+Export key messages for a colleague who needs the conclusion. Add [trajectory HTML](superscience-trajectory.md) for debugging. To continue analysis in SuperScience, supply a session or project ZIP and any required input data and environment information.
 
 Practice in a small project with two conversation turns: export a project, export and import one session, and share just one question-and-answer pair. Check how each file opens before relying on it for a real handoff.
 

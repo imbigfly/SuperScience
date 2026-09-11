@@ -685,7 +685,7 @@ async fn protein_atlas_and_string_tools_dispatch_through_native_bio_call() {
 
     let traffic = captured.lock().unwrap().join("\n");
     assert!(
-        traffic.contains("caller_identity=wisp-science"),
+        traffic.contains("caller_identity=SuperScience"),
         "{traffic}"
     );
     assert!(traffic.contains("echo_query=1"), "{traffic}");

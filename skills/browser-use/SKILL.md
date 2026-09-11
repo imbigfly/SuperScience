@@ -1,25 +1,25 @@
 ---
 name: browser-use
-description: "Use this skill to drive Wisp Browser Runtime sessions (shared daily Chrome or workspace Chrome) — open pages, read them, click, fill and submit forms, navigate, switch tabs, or scrape content that needs the user's existing cookies and login state. Triggers when the user asks to do something in their browser, log into a site and act inside it, fill out a web form, click through a flow, or extract data from a page that requires being signed in. Tools: browser_setup (check/connect the extension), web_open_tab (open a URL), web_scan (read visible content + actionable elements with ready-made selectors), web_execute_js (click/type/navigate, or a JSON command for tabs/CDP), web_screenshot (see what the tab is showing — layout, charts, canvas, QR codes). Not for the built-in read-only web fetch — this is for interacting with a live browser."
+description: "Use this skill to drive SuperScience Browser Runtime sessions (shared daily Chrome or workspace Chrome) — open pages, read them, click, fill and submit forms, navigate, switch tabs, or scrape content that needs the user's existing cookies and login state. Triggers when the user asks to do something in their browser, log into a site and act inside it, fill out a web form, click through a flow, or extract data from a page that requires being signed in. Tools: browser_setup (check/connect the extension), web_open_tab (open a URL), web_scan (read visible content + actionable elements with ready-made selectors), web_execute_js (click/type/navigate, or a JSON command for tabs/CDP), web_screenshot (see what the tab is showing — layout, charts, canvas, QR codes). Not for the built-in read-only web fetch — this is for interacting with a live browser."
 fold_cue: "instead_of=guessing-selectors use=web_scan first — it returns a unique CSS selector and rect for every actionable element; never invent selectors"
 ---
 
 # Browser Use — act inside the user's real Chrome
 
-Wisp talks to the **Browser Runtime**. Shared mode uses the user's daily
+SuperScience talks to the **Browser Runtime**. Shared mode uses the user's daily
 Chrome via the unpacked extension — every action runs in their real
 profile: existing cookies, logins, extensions, and normal fingerprint all
 apply. Workspace mode can launch a separate Chrome profile. Omitting
 `session` always uses shared, even when workspace is connected. Pass
 `session: "workspace"` only when the user explicitly requests isolation. If
 Settings → Browser has **Open browser automatically** enabled (the
-default) and the shared extension is disconnected, Wisp may start the installed
+default) and the shared extension is disconnected, SuperScience may start the installed
 Chrome/Chromium/Edge so the extension can reconnect. That is still the
 user's profile, not Playwright or Selenium.
 
 **Shared is the default; workspace is not a fallback.** Google Chrome 137
 and later ignore `--load-extension`, so on a machine with only branded
-Chrome the workspace window cannot load the Wisp extension at all.
+Chrome the workspace window cannot load the SuperScience extension at all.
 `browser_setup {"action":"start_workspace"}` therefore returns only once
 the workspace extension has connected, and otherwise closes the window
 and fails with `WORKSPACE_EXTENSION_BLOCKED`. On that error: relay the
@@ -47,23 +47,23 @@ is false), relay its `steps` (load the unpacked extension from
 `extension_path`, verbatim) and **stop**. Do not answer live, latest,
 current, or URL-specific questions from prior knowledge. Tell the user
 this turn contains no live web retrieval and wait until the popup shows
-*Connected to Wisp*. Only continue from memory if they explicitly ask
+*Connected to SuperScience*. Only continue from memory if they explicitly ask
 for a knowledge-only answer. Never invent the path.
 
 Two fields say *why* a browser that looks connected is not usable —
 never report a bare "not connected" when either is set:
 
-- `refused_connection` — something reached the bridge port and Wisp
+- `refused_connection` — something reached the bridge port and SuperScience
   refused it (usually a different extension id, or another loopback
-  bridge holding the port). Its popup can still read *Connected to Wisp*.
+  bridge holding the port). Its popup can still read *Connected to SuperScience*.
   Relay `refused_connection.explanation`.
 - `update_required` / `reload_required` — a connected extension is older than
   this build. Call `browser_setup {"action":"update_extension"}` first. If it
   returns `updated`, call `browser_setup` again and continue only when
   `update_required=false`. If it returns `manual_reload_required`, relay the
   current and bundled versions plus `extension_path` verbatim, ask the user to
-  **Reload** Wisp Real Browser Bridge on `chrome://extensions`, and wait. Older
-  unpacked extensions cannot accept Wisp's automatic service-worker reload.
+  **Reload** SuperScience Real Browser Bridge on `chrome://extensions`, and wait. Older
+  unpacked extensions cannot accept SuperScience's automatic service-worker reload.
 
 One exception: the user says the extension is already installed. Chrome
 suspends its service worker when idle and reconnects on a one-minute
@@ -112,7 +112,7 @@ events or you truly need trusted input.
 
 ## In-browser chat — `web_agent_send` / `web_agent_wait` / `web_agent_read`
 
-Use these on an **already signed-in** tab. They are not a new Wisp agent;
+Use these on an **already signed-in** tab. They are not a new SuperScience agent;
 they drive the chat composer in the user's Chrome.
 
 Supported tabs (HTTPS, exact host, no lookalikes):
@@ -163,7 +163,7 @@ they opened during the task, are theirs.
 ## Stop conditions (do not automate through these)
 
 - **Human verification / CAPTCHA:** if `web_scan` returns
-  `human_intervention.required=true`, a Wisp prompt has already been shown.
+  `human_intervention.required=true`, a SuperScience prompt has already been shown.
   Stop browser automation. Do not open another in-app question about the
   challenge. Do not click, solve, or bypass it. End your turn. The user
   confirms in the app after completing it in the visible tab; the next

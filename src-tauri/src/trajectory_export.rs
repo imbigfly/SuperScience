@@ -102,9 +102,9 @@ pub(crate) fn trajectory_file_name(frame_id: &str) -> String {
         .collect();
     let safe = safe.trim_matches('-');
     if safe.is_empty() {
-        "wisp-trajectory.html".into()
+        "superscience-trajectory.html".into()
     } else {
-        format!("wisp-trajectory-{safe}.html")
+        format!("superscience-trajectory-{safe}.html")
     }
 }
 
@@ -699,14 +699,14 @@ mod tests {
     fn file_name_keeps_only_safe_components() {
         assert_eq!(
             trajectory_file_name("abc-123"),
-            "wisp-trajectory-abc-123.html"
+            "superscience-trajectory-abc-123.html"
         );
         assert_eq!(
             trajectory_file_name("../../etc/passwd"),
-            "wisp-trajectory-etc-passwd.html"
+            "superscience-trajectory-etc-passwd.html"
         );
-        assert_eq!(trajectory_file_name(""), "wisp-trajectory.html");
-        assert_eq!(trajectory_file_name(".."), "wisp-trajectory.html");
+        assert_eq!(trajectory_file_name(""), "superscience-trajectory.html");
+        assert_eq!(trajectory_file_name(".."), "superscience-trajectory.html");
     }
 
     #[test]

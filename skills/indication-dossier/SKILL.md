@@ -52,7 +52,7 @@ instructions live in `references/phases.md`; waypoint formats in
 1. **Identity.** Resolve definition, ICD codes, aliases, parent, diagnostic
    status; quick CT.gov landscape count. Write `meta.json`. Then show the
    resolved identity and end the turn asking **Proceed / Revise identity /
-   Stop** — the expensive phases wait for the answer (Wisp has no separate
+   Stop** — the expensive phases wait for the answer (SuperScience has no separate
    interactive-question tool, so this is a normal turn end).
 2. **Epidemiology.** Case definition, prevalence/incidence, demographics,
    natural history → `epidemiology.json`.

@@ -80,7 +80,7 @@
 
 <h2><span class="no">1</span>Background</h2>
 
-<p>Wisp's chat composer carries a small gauge next to the model picker. Clicking it (or typing <code>/context</code>) opens the <b>context usage panel</b>: a card showing how full the model's context window is, broken into seven colored categories — system prompt, tool definitions, built-in rules, skills guidance, MCP tools, subagents, and conversation — with a stacked bar and expandable rows that reveal the underlying text (the actual system prompt, the actual tool schemas). The panel was introduced in PR #662 (2026-08-04), narrowed to the composer's width in #665, given expandable rows in #680, and its gauge tied to the session's model in #713. That work settled how the panel relates to the <i>composer</i>; how it relates to the <i>conversation</i> was never addressed, and that is what this plan changes.</p>
+<p>SuperScience's chat composer carries a small gauge next to the model picker. Clicking it (or typing <code>/context</code>) opens the <b>context usage panel</b>: a card showing how full the model's context window is, broken into seven colored categories — system prompt, tool definitions, built-in rules, skills guidance, MCP tools, subagents, and conversation — with a stacked bar and expandable rows that reveal the underlying text (the actual system prompt, the actual tool schemas). The panel was introduced in PR #662 (2026-08-04), narrowed to the composer's width in #665, given expandable rows in #680, and its gauge tied to the session's model in #713. That work settled how the panel relates to the <i>composer</i>; how it relates to the <i>conversation</i> was never addressed, and that is what this plan changes.</p>
 
 <div class="card prob">
 <h3>Three problems with the current behavior</h3>
@@ -148,7 +148,7 @@
 
 <div class="card">
   <h3><span class="id">B8</span>Small windows follow the same rules</h3>
-  <p>No special-casing below the 960px breakpoint where Wisp's Inspector becomes a drawer: the same clamps simply bind tighter — a floating panel can't exceed the window minus margins, and the docked cap still holds. Floating remains available at every size.</p>
+  <p>No special-casing below the 960px breakpoint where SuperScience's Inspector becomes a drawer: the same clamps simply bind tighter — a floating panel can't exceed the window minus margins, and the docked cap still holds. Floating remains available at every size.</p>
 </div>
 
 <h2><span class="no">3</span>Delivery steps</h2>
@@ -185,7 +185,7 @@
   <div class="pr-head"><span class="n">PR 4</span><h3>Polish and QA pass</h3><span class="dep">independent, last</span></div>
   <div class="pr-body">
     <div class="row"><div class="rk">Goal</div><div class="rv"><p>The feature holds up in dark theme, small windows, and both languages — and the repo's design record reflects the new behavior.</p></div></div>
-    <div class="row"><div class="rk">Deliverable</div><div class="rv"><p>Dark-theme and narrow-breakpoint verification (the gap <code>design-qa.md</code> already lists as open), motion on Wisp's <code>--motion-*</code> tokens with <code>prefers-reduced-motion</code> respected, the <code>design-qa.md</code> comparison record refreshed, and the upstream issue (if filed) updated with what shipped.</p></div></div>
+    <div class="row"><div class="rk">Deliverable</div><div class="rv"><p>Dark-theme and narrow-breakpoint verification (the gap <code>design-qa.md</code> already lists as open), motion on SuperScience's <code>--motion-*</code> tokens with <code>prefers-reduced-motion</code> respected, the <code>design-qa.md</code> comparison record refreshed, and the upstream issue (if filed) updated with what shipped.</p></div></div>
     <div class="row"><div class="rk">Done when</div><div class="rv"><p>Screenshots in both themes at 1100px and below 960px attached to the PR; the full verification suite green on all three OS targets in CI.</p></div></div>
   </div>
 </div>
@@ -237,7 +237,7 @@
 <h3>Risks and mitigations</h3>
 <ul>
   <li><b>Scroll anchoring regressions</b> — this area has history (#670: chat jumps to top during streaming; #849: scroll position across sessions). Mitigation: dock insertion/removal goes through <code>schedule_chat_follow()</code> only; PR 1 adds a test that streams a reply with the panel docked and asserts the viewport stays pinned.</li>
-  <li><b>Animation vs. test flakiness</b> — the panel's enter animation is long enough to make a mid-animation assertion see a transparent panel (observed during mock verification). Tests assert post-animation state via <code>expect.poll</code> on geometry, never fixed sleeps; motion uses Wisp's <code>--motion-*</code> tokens and respects <code>prefers-reduced-motion</code>.</li>
+  <li><b>Animation vs. test flakiness</b> — the panel's enter animation is long enough to make a mid-animation assertion see a transparent panel (observed during mock verification). Tests assert post-animation state via <code>expect.poll</code> on geometry, never fixed sleeps; motion uses SuperScience's <code>--motion-*</code> tokens and respects <code>prefers-reduced-motion</code>.</li>
   <li><b>One-click outside dismissal surprises</b> — B4's "click also lands" applies window-wide. If a specific control turns out to be dangerous to hit through a dismissal (none identified so far), an exemption is a contained change in the dismiss listener, not a layout rework.</li>
   <li><b>Geometry restored off-screen</b> after a window shrink — the restore path clamps to the live viewport before the floating panel's first paint.</li>
 </ul>

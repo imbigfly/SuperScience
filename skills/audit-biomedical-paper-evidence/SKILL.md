@@ -92,4 +92,4 @@ description: 审读用户提供的生命科学或生物医学论文、PDF、摘�
 
 使用 `evals/trigger-cases.json`、`evals/task-cases.json` 和 `evals/rubric.json` 检查范围、
 缺口诚实、证据锚定、因果克制、方法边界、安全停止和输出可用性。结构检查和测试定义
-不能替代真实任务表现，也不能证明实际 Wisp 发现、解析或启用状态。
+不能替代真实任务表现，也不能证明实际 SuperScience 发现、解析或启用状态。

@@ -59,7 +59,7 @@ conversation using that model and is not scoped to the current conversation.
 Choosing "default" clears the value so the provider decides.
 
 The add/edit model page includes collapsed **Advanced options** with an optional
-**User-Agent** field. Leave it blank to send `wisp-science`, or enter a client
+**User-Agent** field. Leave it blank to send `SuperScience`, or enter a client
 identifier such as `research-client/1.0` using printable ASCII characters.
 The value is saved per model and used for connection validation, chat and vision
 requests, auxiliary model calls, and image/video model requests. When adding

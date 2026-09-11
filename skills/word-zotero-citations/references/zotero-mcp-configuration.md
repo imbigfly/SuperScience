@@ -51,7 +51,7 @@ Create or edit `~/.config/zotero-mcp/config.json`:
    `Copy-Item ~\.config\zotero-mcp\config.json ~\.config\zotero-mcp\config.json.bak`
 2. Add only the `client_env` block; leave any existing top-level keys
    (`semantic_search`, etc.) untouched.
-3. **Restart the zotero-mcp connector** (in wisp-science: Settings → the Zotero
+3. **Restart the zotero-mcp connector** (in SuperScience: Settings → the Zotero
    MCP/connector entry → reconnect/restart). A running connector will not
    re-read the file.
 4. Verify with a read-only probe:

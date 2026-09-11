@@ -1,19 +1,19 @@
-# Wisp Science高级：ACP配置
+# 天成科研助手高级：ACP配置
 
-如果你已经在使用 Codex、Claude 等外部 Agent，希望在 Wisp Science 的项目界面里继续使用它们，可以通过 ACP 接入。Wisp 负责项目界面、消息和权限交互，外部 Agent 负责自己的会话、工具与认证。
+如果你已经在使用 Codex、Claude 等外部 Agent，希望在 天成科研助手 的项目界面里继续使用它们，可以通过 ACP 接入。天成科研助手 负责项目界面、消息和权限交互，外部 Agent 负责自己的会话、工具与认证。
 
-这篇教程从准备本机适配器开始，介绍配置、测试和第一次对话。普通 API 模型的配置见[模型配置教程](wisp-science-models.md)。
+这篇教程从准备本机适配器开始，介绍配置、测试和第一次对话。普通 API 模型的配置见[模型配置教程](superscience-models.md)。
 
 **先区分 HTTP 模型与 ACP Agent。**
 
 | 方式 | 配置入口 | 执行任务的 Agent |
 | --- | --- | --- |
-| HTTP 模型 | 设置 → 模型 → Models → 添加 API 接入 | Wisp 内置 Agent，通过 API 调用模型 |
+| HTTP 模型 | 设置 → 模型 → Models → 添加 API 接入 | 天成科研助手 内置 Agent，通过 API 调用模型 |
 | ACP Agent | 设置 → 模型 → ACP Agents → 添加 ACP Agent | 本机启动的外部 Agent 进程 |
 
-ACP 是 Agent Client Protocol。Wisp 通过本地标准输入输出连接支持 ACP v1 的进程。这里填写的是启动适配器的命令，不是模型 API 地址。
+ACP 是 Agent Client Protocol。天成科研助手 通过本地标准输入输出连接支持 ACP v1 的进程。这里填写的是启动适配器的命令，不是模型 API 地址。
 
-不要把普通 `codex`、`claude` 或 `claude -p` 命令直接填进 ACP 表单；应使用对应的 ACP 适配器。登录与密钥由外部 Agent 管理，不会因为配置了 Wisp 的 HTTP 模型而自动完成。
+不要把普通 `codex`、`claude` 或 `claude -p` 命令直接填进 ACP 表单；应使用对应的 ACP 适配器。登录与密钥由外部 Agent 管理，不会因为配置了 天成科研助手 的 HTTP 模型而自动完成。
 
 **开始前，准备运行环境和适配器。**
 
@@ -52,7 +52,7 @@ ACP 是 Agent Client Protocol。Wisp 通过本地标准输入输出连接支持 
 npx -y @agentclientprotocol/codex-acp --version
 ```
 
-在 Wisp 中将名称填为 `Codex ACP`，命令填为 `npx`；Windows 通常使用 `npx.cmd`。参数框填写两行：
+在 天成科研助手 中将名称填为 `Codex ACP`，命令填为 `npx`；Windows 通常使用 `npx.cmd`。参数框填写两行：
 
 ```text
 -y
@@ -96,7 +96,7 @@ claude-agent-acp --version
 
 保存 Agent 后点击 **测试连接**。测试成功表示进程能够启动，并完成 ACP `initialize`，不代表所有任务权限和服务额度都已验证。
 
-如果出现认证按钮，按 Agent 返回的方式操作。有些认证直接通过 Agent 完成；需要终端登录的方式，会在 Wisp 的终端面板中打开适配器提供的登录命令。完成登录后，再测试或开始会话。凭据由 Agent 管理，Wisp 不会将它们写入 SQLite。
+如果出现认证按钮，按 Agent 返回的方式操作。有些认证直接通过 Agent 完成；需要终端登录的方式，会在 天成科研助手 的终端面板中打开适配器提供的登录命令。完成登录后，再测试或开始会话。凭据由 Agent 管理，天成科研助手 不会将它们写入 SQLite。
 
 **新建空会话，进行第一次测试。**
 
@@ -104,11 +104,11 @@ claude-agent-acp --version
 
 > 请用两句话解释 CSV 文件，并给出一个包含两行数据的示例。不要读取文件或运行命令。
 
-首条消息后，这段会话会绑定到所选 Agent。从已有消息的普通对话选择 ACP 时，Wisp 会创建新的空会话，并保留输入框草稿。希望切回普通 HTTP 模型时，也应新建空会话再选择。
+首条消息后，这段会话会绑定到所选 Agent。从已有消息的普通对话选择 ACP 时，天成科研助手 会创建新的空会话，并保留输入框草稿。希望切回普通 HTTP 模型时，也应新建空会话再选择。
 
 任务期间的权限卡会展示 Agent 提供的选项。若 Agent 支持 model、mode 等会话配置，可通过发送按钮旁的 ACP 模型菜单调整；停止按钮用于取消当前 ACP 回合。
 
-Wisp 会向用户自己的 ACP 会话提供科研 MCP bridge，让外部 Agent 在项目范围内发现并使用可用的科学工具。具体能力和权限仍以当前会话提供的配置为准。
+天成科研助手 会向用户自己的 ACP 会话提供科研 MCP bridge，让外部 Agent 在项目范围内发现并使用可用的科学工具。具体能力和权限仍以当前会话提供的配置为准。
 
 **连接失败时，先修复 ACP 配置再重试。**
 

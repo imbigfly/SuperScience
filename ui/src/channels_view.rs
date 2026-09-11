@@ -624,7 +624,7 @@ pub(super) fn ChannelsPane(
     move || {
         match open.get().as_deref() {
         Some("feishu") => view! {
-            <div class="settings-pane settings-pane-subpage" data-testid="feishu-channel-card">
+            <div class="settings-pane settings-pane-subpage settings-card channel-detail-card" data-testid="feishu-channel-card">
                 {msg_view}
                 <div class="channel-bind-row">
                     <div>
@@ -828,7 +828,7 @@ pub(super) fn ChannelsPane(
             </div>
         }.into_view(),
         Some("weixin") => view! {
-            <div class="settings-pane settings-pane-subpage" data-testid="weixin-channel-card">
+            <div class="settings-pane settings-pane-subpage settings-card channel-detail-card" data-testid="weixin-channel-card">
                 {msg_view}
                 <div class="channel-bind-row">
                     <div>
@@ -883,7 +883,7 @@ pub(super) fn ChannelsPane(
             </div>
         }.into_view(),
         Some("sticks3") => view! {
-            <div class="settings-pane settings-pane-subpage" data-testid="sticks3-channel-card">
+            <div class="settings-pane settings-pane-subpage settings-card channel-detail-card" data-testid="sticks3-channel-card">
                 {msg_view}
                 <div class="channel-bind-row">
                     <div>
@@ -1005,9 +1005,11 @@ pub(super) fn ChannelsPane(
         }.into_view(),
         Some(_) => view! { <div></div> }.into_view(),
         None => view! {
-            <div class="settings-card channels-overview" data-testid="channels-overview">
-                <h3>{move || t(locale.get(), "channels.messages_devices")}</h3>
-                <p class="settings-note">{move || t(locale.get(), "channels.desc")}</p>
+            <div class="channels-overview" data-testid="channels-overview">
+                <div class="channels-overview-head">
+                    <h3>{move || t(locale.get(), "channels.messages_devices")}</h3>
+                    <p class="settings-note">{move || t(locale.get(), "channels.desc")}</p>
+                </div>
 
                 {msg_view}
                 <div class="channel-card-grid" data-testid="channel-card-grid">
@@ -1111,15 +1113,18 @@ pub(super) fn ChannelsPane(
                         </header>
                     </article>
                 </div>
-                <p class="settings-note" data-testid="channel-routing-help">
-                    {move || t(locale.get(), "channels.routing.desc")}
+                <div class="settings-card channels-routing-card" data-testid="channel-routing-help">
+                    <h3>{move || t(locale.get(), "channels.routing.title")}</h3>
+                    <p class="settings-note">
+                        {move || t(locale.get(), "channels.routing.desc")}
+                    </p>
                     <span class="channels-command-list" aria-label="IM slash commands">
                         <code>"/status"</code>
                         <code>"/project"</code>
                         <code>"/session"</code>
                         <code>"/new"</code>
                     </span>
-                </p>
+                </div>
             </div>
         }.into_view(),
     }

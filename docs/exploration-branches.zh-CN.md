@@ -15,7 +15,7 @@
 
 天成科研助手只在用户显式选择**开始探索**时记录不可变检查点：对话只归档到所选回答，工作区快照、Artifact heads、Runs、Decisions 和外部资源摘要则使用创建时的状态。历史回答探索不会恢复旧文件版本；隔离工作区从当前项目和记录开始，创建对话框会明确说明这一点。普通主线轮次不再自动创建探索快照。工作区 blob 仍按内容寻址复用；点击创建前由外部编辑器写入的文件也会进入快照。
 
-快照扫描会按 Git ignore 语法读取各级 `.gitignore` 和项目内的 `.wispignore`，包括 `!` 反向规则。对于需要留在项目中、但不应进入探索历史的文件，可将规则写入 `.wispignore`。天成科研助手还会在任意层级自动跳过 `.git`、`.pixi`、`.venv`、`node_modules`、`target`、Python 缓存以及内部 `.wisp` artifact/output 等明确的生成目录；`.github` 这类源码配置目录不会被一概排除。
+快照扫描会按 Git ignore 语法读取各级 `.gitignore` 和项目内的 `.superscienceignore`，包括 `!` 反向规则。对于需要留在项目中、但不应进入探索历史的文件，可将规则写入 `.superscienceignore`；旧项目中的 `.wispignore` 仍会被读取。天成科研助手还会在任意层级自动跳过 `.git`、`.pixi`、`.venv`、`node_modules`、`target`、Python 缓存以及内部 `.wisp` artifact/output 等明确的生成目录；`.github` 这类源码配置目录不会被一概排除。
 
 强快照的上限为单文件 32 MiB、每个检查点合计 64 MiB 和 4,096 个文件；超出范围的内容会保存为明确的弱引用，而不是复制数据。扫描和 blob 写入均可取消。
 

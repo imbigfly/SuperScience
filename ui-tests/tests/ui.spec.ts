@@ -28,21 +28,22 @@ async function expectInsideViewport(locator: Locator, width: number, height: num
   expect(box!.y + box!.height).toBeLessThanOrEqual(height);
 }
 
-async function revealHiddenModelEntries(page: Page) {
-  const proxy = page.getByTestId("proxy-url");
-  await expect(proxy).toBeVisible();
-  await proxy.click();
-  for (let i = 0; i < 8; i++) {
-    await page.keyboard.press(" ");
-  }
+async function clickAddApiAccess(page: Page) {
+  await page.getByRole("button", { name: /Add API access/i }).click();
 }
 
-async function clickAddApiAccess(page: Page) {
-  const add = page.getByRole("button", { name: /Add API access/i });
-  if (!(await add.isVisible().catch(() => false))) {
-    await revealHiddenModelEntries(page);
+// Content blocks that must stack one per row: each block keeps the first
+// block's left edge and starts at or below the previous block's bottom.
+async function expectStackedBlocks(locator: Locator) {
+  const count = await locator.count();
+  expect(count).toBeGreaterThan(1);
+  const boxes = await Promise.all(
+    Array.from({ length: count }, async (_, index) => (await locator.nth(index).boundingBox())!),
+  );
+  for (let i = 1; i < boxes.length; i++) {
+    expect(Math.abs(boxes[i].x - boxes[0].x)).toBeLessThanOrEqual(1);
+    expect(boxes[i].y).toBeGreaterThanOrEqual(boxes[i - 1].y + boxes[i - 1].height - 1);
   }
-  await add.click();
 }
 
 async function waitForTranscriptFonts(page: Page) {
@@ -798,6 +799,8 @@ test("Memory settings show the active project name", async ({ page }) => {
   await expect(
     page.getByTestId("memory-notes").locator(".memory-note-icon svg").first(),
   ).toBeVisible();
+  // Project memory and global memory stack one block per row.
+  await expectStackedBlocks(page.locator(".memory-collections > section"));
 });
 
 test("Memory settings show and forget global habits", async ({ page }) => {
@@ -923,6 +926,42 @@ test("settings nav highlights Workspace and Capabilities as parent groups", asyn
   await expect(nav.locator("button.active")).toHaveText("Models");
 });
 
+test("settings back button stays pinned while the section list scrolls", async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 620 });
+  await enterApp(page);
+  await globalSettingsButton(page).click();
+
+  const back = page.locator(".settings-nav .settings-head-close");
+  await expect(back).toBeVisible();
+  const before = (await back.boundingBox())!;
+  const list = page.getByTestId("settings-nav-scroll");
+  const vertical = await list.evaluate(el => {
+    el.scrollTop = el.scrollHeight - el.clientHeight;
+    return { overflow: el.scrollHeight - el.clientHeight, scrollTop: el.scrollTop };
+  });
+  expect(vertical.overflow).toBeGreaterThan(0);
+  expect(vertical.scrollTop).toBeGreaterThan(0);
+  // The header sits outside the scroll container, so the way back stays reachable.
+  const after = (await back.boundingBox())!;
+  expect(Math.abs(after.y - before.y)).toBeLessThan(2);
+  await expect(list.getByTestId("settings-nav-usage")).toBeVisible();
+
+  // Narrow layout: the same header stays pinned while the chips scroll sideways.
+  await page.setViewportSize({ width: 420, height: 720 });
+  await expect(back).toBeVisible();
+  const horizontal = await list.evaluate(el => {
+    el.scrollLeft = el.scrollWidth;
+    return el.scrollWidth > el.clientWidth;
+  });
+  expect(horizontal).toBe(true);
+  const narrow = (await back.boundingBox())!;
+  expect(narrow.x).toBeGreaterThanOrEqual(0);
+  expect(narrow.x + narrow.width).toBeLessThanOrEqual(420);
+
+  await back.click();
+  await expect(page.locator(".settings-nav")).toBeHidden();
+});
+
 test("knowledge base settings can choose WeKnora and save", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Knowledge Base");
@@ -933,7 +972,7 @@ test("knowledge base settings can choose WeKnora and save", async ({ page }) => 
   await expect(provider.locator("option")).toHaveText(["WeKnora"]);
   await page.getByTestId("knowledge-base-url").fill("http://localhost:8080");
   await page.getByTestId("knowledge-api-key").fill("sk-test");
-  await page.getByTestId("knowledge-base-ids").fill("kb-00000001");
+  await selectKnowledgeBaseViaPicker(pane);
   await page.getByTestId("knowledge-save").click();
   await expect.poll(() => lastInvokeArgs(page, "set_knowledge_settings")).toMatchObject({
     settings: {
@@ -948,7 +987,9 @@ test("knowledge base settings can choose WeKnora and save", async ({ page }) => 
   await expect(pane.locator(".settings-status.ok")).toContainText("Knowledge base settings saved.");
   await page.getByTestId("knowledge-test").click();
   await expect.poll(() => lastInvokeArgs(page, "test_knowledge_connection")).toBeTruthy();
-  await expect(page.getByTestId("knowledge-bases")).toContainText("kb-00000001");
+  // The backend returns this sentence as English; the UI rebuilds it from the
+  // returned bases so it follows the active locale.
+  await expect(pane.getByTestId("knowledge-settings-status")).toContainText("Connected. Found 1 knowledge base(s).");
 });
 
 async function openKnowledgeHome(page: Page, path = "/") {
@@ -957,6 +998,18 @@ async function openKnowledgeHome(page: Page, path = "/") {
   await page.getByRole("tab", { name: "Efficiency tools" }).click();
   await expect(page.getByTestId("cap-tile-knowledge")).toBeVisible();
   await expect(page.getByTestId("cap-tile-settings-knowledge")).toBeVisible();
+}
+
+// The knowledge bases field is a picker, not a text input: refresh to list what
+// the backend knows, tick one option, then close the menu so the footer is
+// reachable.
+async function selectKnowledgeBaseViaPicker(scope: Locator, id = "kb-00000001") {
+  await scope.getByTestId("knowledge-base-refresh").click();
+  await scope.getByTestId("knowledge-base-select").click();
+  await scope.getByTestId("knowledge-base-menu")
+    .locator(`[data-testid="knowledge-base-option"][data-kb-id="${id}"]`).click();
+  await scope.getByTestId("knowledge-base-select").click();
+  await expect(scope.getByTestId("knowledge-base-menu")).toHaveCount(0);
 }
 
 test("knowledge gear opens settings without starting a chat", async ({ page }) => {
@@ -968,7 +1021,7 @@ test("knowledge gear opens settings without starting a chat", async ({ page }) =
   await expect(overlay.getByTestId("knowledge-provider")).toHaveValue("weknora");
   await overlay.getByTestId("knowledge-base-url").fill("http://localhost:8080");
   await overlay.getByTestId("knowledge-api-key").fill("sk-test");
-  await overlay.getByTestId("knowledge-base-ids").fill("kb-00000001");
+  await selectKnowledgeBaseViaPicker(overlay);
   await overlay.getByTestId("knowledge-save").click();
   await expect(overlay).toHaveCount(0);
   await expect.poll(() => lastInvokeArgs(page, "set_knowledge_settings")).toMatchObject({
@@ -982,7 +1035,7 @@ test("knowledge gear opens settings without starting a chat", async ({ page }) =
     },
   });
   await page.getByTestId("cap-tile-settings-knowledge").click();
-  await expect(overlay.getByTestId("knowledge-base-ids")).toHaveValue("kb-00000001");
+  await expect(overlay.getByTestId("knowledge-base-select")).toContainText("Lab notes");
   await page.keyboard.press("Escape");
   await expect(overlay).toHaveCount(0);
   await expect(page.getByTestId("capability-scene")).toBeVisible();
@@ -1000,7 +1053,7 @@ test("knowledge tile opens settings when the knowledge base is not connected", a
   await expect(page.getByTestId("capability-scene")).toBeVisible();
 
   await overlay.getByTestId("knowledge-api-key").fill("sk-test");
-  await overlay.getByTestId("knowledge-base-ids").fill("kb-00000001");
+  await selectKnowledgeBaseViaPicker(overlay);
   await overlay.getByTestId("knowledge-save").click();
   await expect(overlay).toHaveCount(0);
   await expect.poll(() => lastInvokeArgs(page, "set_knowledge_settings")).toMatchObject({
@@ -1040,6 +1093,44 @@ test("knowledge tile opens settings when the saved connection fails", async ({ p
   await expect(overlay).toBeVisible();
   await expect(overlay.getByTestId("knowledge-settings-status")).toContainText("Could not reach WeKnora");
   expect(await invokeCount(page, "send_message")).toBe(sendsBefore);
+});
+
+test("knowledge settings keep one footer row and localize the connection status", async ({ page }) => {
+  await openKnowledgeHome(page);
+  await page.getByTestId("cap-tile-settings-knowledge").click();
+  const overlay = page.getByTestId("knowledge-settings-overlay");
+  await expect(overlay).toBeVisible();
+
+  // Test / Save / Close share the footer instead of stacking into two rows.
+  const footer = overlay.locator(".settings-footer");
+  const boxes = await Promise.all(
+    ["knowledge-test", "knowledge-save", "knowledge-close"].map(
+      async (id) => (await footer.getByTestId(id).boundingBox())!,
+    ),
+  );
+  const middle = (box: { y: number; height: number }) => box.y + box.height / 2;
+  expect(Math.abs(middle(boxes[0]) - middle(boxes[1]))).toBeLessThanOrEqual(2);
+  expect(Math.abs(middle(boxes[1]) - middle(boxes[2]))).toBeLessThanOrEqual(2);
+  // Close used to sit in its own `.row` below the form; nothing follows the footer now.
+  await expect(overlay.locator(".settings-footer ~ .row")).toHaveCount(0);
+
+  const enHint = overlay.locator(".settings-field-hint", { hasText: "http://localhost:8080/api/v1" }).first();
+  await expect(enHint).toHaveText("Defaults to http://localhost:8080/api/v1; a host-only URL gets /api/v1 appended.");
+
+  // A successful probe reports the count in the UI locale, not the backend's
+  // fixed English sentence.
+  await page.goto("/?mockLocale=zh");
+  await expect(page.getByTestId("capability-scene")).toBeVisible();
+  await page.getByRole("tab", { name: "效率工具" }).click();
+  await page.getByTestId("cap-tile-settings-knowledge").click();
+  const zhOverlay = page.getByTestId("knowledge-settings-overlay");
+  await expect(zhOverlay).toBeVisible();
+  const zhHint = zhOverlay.locator(".settings-field-hint", { hasText: "http://localhost:8080/api/v1" }).first();
+  await expect(zhHint).toHaveText("默认 http://localhost:8080/api/v1，只填主机时会自动补上 /api/v1。");
+  await zhOverlay.getByTestId("knowledge-api-key").fill("sk-test");
+  await selectKnowledgeBaseViaPicker(zhOverlay);
+  await zhOverlay.getByTestId("knowledge-test").click();
+  await expect(zhOverlay.getByTestId("knowledge-settings-status")).toHaveText("已连接，找到 1 个知识库。");
 });
 
 test("Memory project picker consumes Escape before leaving Settings", async ({ page }) => {
@@ -1143,7 +1234,7 @@ test("model switch confirm consumes Escape before the right pane", async ({ page
   await enterApp(page);
   await composer(page).fill("bind this conversation model");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+  await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible();
   await page.getByRole("button", { name: "Toggle panel" }).click();
   await expect(page.locator(".rightpane")).toBeVisible();
 
@@ -1389,30 +1480,19 @@ test("effort flyout closes on Escape before the model menu", async ({ page }) =>
   await expect(page.locator(".model-menu")).toHaveCount(0);
 });
 
-test("model add and presets stay hidden until eight spaces in the proxy field", async ({ page }) => {
+test("model add and presets are always visible and no proxy field is shown", async ({ page }) => {
   await enterApp(page);
   await openSettingsSection(page, "Models");
-  await expect(page.getByTestId("add-provider")).toHaveCount(0);
-  await expect(page.getByTestId("model-presets")).toHaveCount(0);
-
-  const proxy = page.getByTestId("proxy-url");
-  const before = await proxy.inputValue();
-  await proxy.click();
-  for (let i = 0; i < 7; i++) {
-    await page.keyboard.press(" ");
-  }
-  await expect(page.getByTestId("add-provider")).toHaveCount(0);
-  await expect(proxy).toHaveValue(before);
-
-  await page.keyboard.press(" ");
+  // No hidden unlock gesture: the quick-setup row and the add button are always there.
   await expect(page.getByTestId("add-provider")).toBeVisible();
   await expect(page.getByTestId("model-presets")).toBeVisible();
-  await expect(proxy).toHaveValue(before);
+  await expect(page.getByTestId("proxy-url")).toHaveCount(0);
 
   await page.getByRole("button", { name: "Appearance", exact: true }).click();
   await page.getByRole("button", { name: "Models", exact: true }).click();
-  await expect(page.getByTestId("add-provider")).toHaveCount(0);
-  await expect(page.getByTestId("model-presets")).toHaveCount(0);
+  await expect(page.getByTestId("add-provider")).toBeVisible();
+  await expect(page.getByTestId("model-presets")).toBeVisible();
+  await expect(page.getByTestId("proxy-url")).toHaveCount(0);
 });
 
 test("Settings Models page can open ACP Agents dialog", async ({ page }) => {
@@ -2137,7 +2217,7 @@ for (const locale of ["zh", "en"]) {
     await page.locator(".proj-card-main").first().click();
     await composer(page).fill("show a network error");
     await composer(page).press("Enter");
-    await expect(page.getByText("Hello from mock wisp-science.")).toBeVisible();
+    await expect(page.getByText("Hello from mock SuperScience.")).toBeVisible();
     const send = await lastInvokeArgs(page, "send_message");
     const message = "http: error decoding response body: request or response body error: error reading a body from connection: peer closed connection without sending TLS close_notify: "
       + "https://docs.rs/rustls/latest/rustls/manual/_03_howto/index.html#unexpected-eof-" + "connection".repeat(30);
@@ -9144,7 +9224,7 @@ test("model settings updates activation and confirms removal", async ({ page }) 
   await openSettingsSection(page, "Models");
 
   const opus = page.locator(".model-card").filter({ hasText: "api.anthropic.com" });
-  await opus.getByRole("button", { name: "Use" }).click();
+  await opus.getByRole("button", { name: "Set as default" }).click();
   await expect.poll(() => lastInvokeArgs(page, "set_active_model")).toMatchObject({ id: "opus" });
   await expect(opus).toHaveClass(/active/);
 
@@ -9405,7 +9485,7 @@ test("model User-Agent advanced option validates, persists, and resets", async (
   await expect(userAgent).toBeHidden();
   await advanced.locator("summary").click();
   await expect(userAgent).toHaveValue("");
-  await expect(userAgent).toHaveAttribute("placeholder", "wisp-science");
+  await expect(userAgent).toHaveAttribute("placeholder", "SuperScience");
   await userAgent.fill("research-client/1.0");
   await page.getByRole("button", { name: "Valid", exact: true }).click();
   await expect.poll(() => lastInvokeArgs(page, "validate_settings"))
@@ -9413,14 +9493,18 @@ test("model User-Agent advanced option validates, persists, and resets", async (
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect.poll(() => lastInvokeArgs(page, "save_model"))
     .toMatchObject({ profile: { user_agent: "research-client/1.0" } });
-  await page.locator(".settings-list-row").first().click();
+  // The Models list shows one card per saved API channel; clicking it reopens
+  // the multi-model editor.
+  await page.locator(".model-card").first().click();
   await advanced.locator("summary").click();
   await expect(userAgent).toHaveValue("research-client/1.0");
   await userAgent.fill("");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect.poll(() => lastInvokeArgs(page, "save_model"))
     .toMatchObject({ profile: { user_agent: "" } });
-  await page.locator(".settings-list-row").first().click();
+  // The Models list shows one card per saved API channel; clicking it reopens
+  // the multi-model editor.
+  await page.locator(".model-card").first().click();
   await advanced.locator("summary").click();
   await expect(userAgent).toHaveValue("");
 });
@@ -9512,6 +9596,9 @@ test("Fast profile toggle is available for both OpenAI HTTP protocols", async ({
     await providerSelect(page).selectOption(provider);
     await page.getByLabel("Base URL").fill("https://api.openai.com/v1");
     await page.getByRole("textbox", { name: "Model ID", exact: true }).fill("gpt-5.6-luna");
+    // The editor keeps per-model effort inside the row's Advanced section, so
+    // open it before picking the effort the Fast toggle is saved with.
+    await expandModelAdvanced(page);
     await page.getByLabel("Reasoning effort").selectOption("high");
     const row = page.getByTestId("service-tier-toggle-row");
     const toggle = page.getByTestId("service-tier-toggle");
@@ -9526,7 +9613,9 @@ test("Fast profile toggle is available for both OpenAI HTTP protocols", async ({
     await expect.poll(() => lastInvokeArgs(page, "save_model")).toMatchObject({
       profile: { provider, reasoning_effort: "high", service_tier: "priority" },
     });
-    await page.locator(".settings-list-row").first().click();
+    // Reopen the channel this iteration just saved so the next provider runs
+    // against the same form state.
+    await page.locator(".model-card").filter({ hasText: "api.openai.com" }).first().click();
   }
 
   await providerSelect(page).selectOption("anthropic");
@@ -9987,7 +10076,7 @@ test("model Base URL explains per-model endpoint suffixes", async ({ page }) => 
   await openModelsSettings(page);
 
   await expect(page.getByTestId("model-api-url-hint")).toHaveText(
-    "Enter the shared API root. Put protocol-specific paths such as /anthropic or an explicit image endpoint in that model's optional suffix; Wisp then completes the protocol request path.",
+    "Enter the shared API root. Put protocol-specific paths such as /anthropic or an explicit image endpoint in that model's optional suffix; SuperScience then completes the protocol request path.",
   );
   await expect(page.getByLabel("Base URL")).toHaveAttribute(
     "aria-describedby",
@@ -10437,6 +10526,14 @@ test("credential service subpages navigate, discard drafts, and update list stat
   await expect(list.locator("button")).toHaveCount(4);
   await expect(list.locator("input")).toHaveCount(0);
   await expect.poll(async () => (await list.boundingBox())?.height ?? 0).toBeGreaterThan(250);
+  // Four providers render as cards, two per row.
+  const entries = list.locator("[data-credential-service]");
+  const entryBoxes = await Promise.all(
+    Array.from({ length: 4 }, async (_, index) => (await entries.nth(index).boundingBox())!),
+  );
+  expect(Math.abs(entryBoxes[0].y - entryBoxes[1].y)).toBeLessThanOrEqual(2);
+  expect(Math.abs(entryBoxes[0].x - entryBoxes[2].x)).toBeLessThanOrEqual(1);
+  expect(entryBoxes[2].y).toBeGreaterThan(entryBoxes[0].y);
   await page.screenshot({ path: test.info().outputPath("credential-services.png"), animations: "disabled" });
 
   for (const service of ["openalex", "infinisynapse", "scimaster", "ncbi"]) {
@@ -10917,13 +11014,13 @@ test("skill manager filters by tag and batch disables visible skills", async ({ 
   await page.getByRole("button", { name: "Add to message" }).click();
   await page.getByRole("button", { name: "Manage skills" }).click();
   await expect(page.getByRole("button", { name: "Skills", exact: true })).toBeVisible();
-  await expect(page.locator(".settings-search")).toHaveAttribute("type", "text");
-  await expect(page.locator(".settings-search")).toHaveAttribute("inputmode", "search");
-  await expect(page.locator(".settings-search")).toHaveAttribute("autocomplete", "off");
   await expect(page.getByTestId("skill-update-enabled")).toBeChecked();
   await expect(page.locator(".skills-enabled-frac")).toContainText(/\d+\/\d+/);
   await expect(page.locator(".settings-filter")).toContainText(/visible.*enabled/);
-  await expect(page.locator(".skill-tags-input")).toHaveCount(0);
+  // Tag editing stays in each row's menu; the filter bar only shows chips.
+  await expect(page.locator(".skill-tags-input").first()).toBeHidden();
+  // Tags render inline in the filter bar as clickable chips.
+  await expect(page.locator(".skill-tags-filter .skill-filter-tag").first()).toBeVisible();
 
   await page.getByRole("button", { name: "Disabled", exact: true }).click();
   await expect(page.getByText("No skills match the current filters.")).toBeVisible();
@@ -10933,7 +11030,7 @@ test("skill manager filters by tag and batch disables visible skills", async ({ 
   await expect(page.getByText("literature-review")).toBeVisible();
   await expect(page.getByText("remote-compute-ssh")).toBeVisible();
 
-  await page.locator(".settings-search").fill("compute");
+  await page.locator(".skill-tags-filter").getByRole("button", { name: "compute", exact: true }).click();
   await expect(page.getByText("remote-compute-ssh")).toBeVisible();
   await expect(page.getByText("literature-review")).not.toBeVisible();
 
@@ -10943,7 +11040,10 @@ test("skill manager filters by tag and batch disables visible skills", async ({ 
     const args = calls.at(-1)?.args;
     return args instanceof Map ? Object.fromEntries(args) : (args ?? null);
   })).toEqual({ names: ["remote-compute-ssh"], enabled: false });
-  await expect(page.locator('[data-skill-name="remote-compute-ssh"]')).toHaveCount(0);
+  // The tag filter still lists the row; its toggle now reads as disabled.
+  await expect(
+    page.locator('[data-skill-name="remote-compute-ssh"] label.toggle input'),
+  ).not.toBeChecked();
 });
 
 test("skill manager reloads manually copied skills and shows their scope", async ({ page }) => {
@@ -13678,7 +13778,7 @@ test("bound BibTeX resources open their immutable text preview", async ({ page }
   await expect(page.locator('.center-tab[data-center-path="artifact-version:resource-version-bib"]'))
     .toContainText("references.bib");
   await expect(page.locator(".center-file-preview"))
-    .toContainText("@article{wisp");
+    .toContainText("@article{superscience");
   await expect(page.locator(".center-file-preview [data-open-editor]")).toHaveCount(0);
   await expect.poll(() => lastInvokeArgs(page, "read_artifact_version"))
     .toMatchObject({ versionId: "resource-version-bib" });
@@ -13790,6 +13890,46 @@ test("projects landing logo and login open the same user center", async ({ page 
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("user-center-dialog")).toHaveCount(0);
   await expect(page.locator(".projects-screen")).toBeVisible();
+});
+
+test("user center signed-out view is a narrow branded login card", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/");
+  await page.getByTestId("projects-login").click();
+  const modal = page.locator(".user-center-modal");
+  await expect(modal).toBeVisible();
+  await expect(modal).toHaveClass(/uc-login-mode/);
+  // The two-field form stays a focused centered card instead of stretching to
+  // the signed-in tab shell width.
+  await expect.poll(async () =>
+    modal.evaluate((el) => Math.round(el.getBoundingClientRect().width))
+  ).toBeLessThanOrEqual(420);
+
+  const mark = page.locator(".uc-login-hero .uc-login-mark img");
+  await expect(mark).toBeVisible();
+  await expect(mark).toHaveAttribute("src", /logo\.png$/);
+  await expect(page.getByTestId("user-center-username")).toBeVisible();
+  await expect(page.getByTestId("user-center-password")).toBeVisible();
+  await expect(page.getByTestId("user-center-remember")).toBeVisible();
+
+  // The CTA carries the app accent fill, not the plain modal button look.
+  await expect.poll(() => page.evaluate(() => {
+    const probe = document.createElement("div");
+    probe.style.backgroundColor = "var(--clay)";
+    document.body.appendChild(probe);
+    const expected = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    const cta = document.querySelector('[data-testid="user-center-login-btn"]');
+    return cta ? getComputedStyle(cta).backgroundColor === expected : false;
+  })).toBe(true);
+
+  // The eye toggle reveals the password in place.
+  const password = page.getByTestId("user-center-password");
+  await expect(password).toHaveAttribute("type", "password");
+  await password.fill("s3cret");
+  await page.getByTestId("user-center-password-toggle").click();
+  await expect(password).toHaveAttribute("type", "text");
+  await expect(password).toHaveValue("s3cret");
 });
 
 test("empty session shows the branded chat empty state", async ({ page }) => {
@@ -14517,80 +14657,12 @@ test("projects home suppresses the native context menu except in text fields", a
   expect(namePrevented).toBe(false);
 });
 
-test("projects sync manually, copy a device code, and join on another device", async ({ page }) => {
+test("project sync actions are not shown on the home cards", async ({ page }) => {
   await page.goto("/");
-  const projectCard = page.locator(".proj-card:not(.proj-example)").first();
-  await projectCard.hover();
-  await projectCard.getByRole("button", { name: "Sync now" }).click();
-  await expect(page.locator(".projects-sync-notice")).toContainText("Uploaded 1 changed workspace file");
-  await expect(projectCard.locator(".pc-sync-state")).toContainText("Synced");
-  await expect.poll(async () => page.evaluate(() =>
-    ((window as any).__skillInvokeLog ?? []).some((call: any) => call.cmd === "sync_project"),
-  )).toBe(true);
-
-  await projectCard.hover();
-  await projectCard.getByRole("button", { name: "Copy device code" }).click();
-  await expect.poll(async () => page.evaluate(() =>
-    ((window as any).__skillInvokeLog ?? []).some((call: any) => call.cmd === "project_sync_code"),
-  )).toBe(true);
-
-  await expect(page.getByRole("button", { name: "Join synced project" })).toHaveCount(0);
-  await globalSettingsButton(page).click();
-  await page.getByRole("button", { name: "Remote Access", exact: true }).click();
-  await page.getByRole("button", { name: "Join synced project" }).click();
-  const joinDialog = page.getByRole("dialog", { name: "Join a synced project" });
-  const deviceCode = page.getByTestId("sync-device-code");
-  await expect(joinDialog).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(joinDialog).toHaveCount(0);
-  await expect(page.locator(".settings-page")).toBeVisible();
-
-  await page.getByRole("button", { name: "Join synced project" }).click();
-  await expect(joinDialog).toBeVisible();
-  await expect(page.getByText("Secret device code", { exact: true })).toBeVisible();
-  await expect.poll(async () => joinDialog.evaluate((el) => Math.round(el.getBoundingClientRect().width))).toBeGreaterThanOrEqual(520);
-  await expect.poll(async () => joinDialog.getByRole("button", { name: "Cancel" }).first().evaluate((el) => {
-    const rect = el.getBoundingClientRect();
-    return [Math.round(rect.width), Math.round(rect.height)];
-  })).toEqual([34, 34]);
-
-  await joinDialog.getByRole("button", { name: "Read sync guide" }).click();
-  await expect.poll(() => lastInvokeArgs(page, "open_external_url")).toMatchObject({
-    url: expect.stringContaining("docs/project-sync.md"),
-  });
-
-  await deviceCode.fill("superscience-sync:mock-secret-code");
-  await page.getByRole("button", { name: "Choose destination and join" }).click();
-  await expect.poll(async () => page.evaluate(() =>
-    ((window as any).__skillInvokeLog ?? []).some((call: any) => call.cmd === "join_synced_project"),
-  )).toBe(true);
-});
-
-test("project sync actions appear only after a sync backend is configured", async ({ page }) => {
-  await page.goto("/?mockSyncUnconfigured=1");
   const projectCard = page.locator(".proj-card:not(.proj-example)").first();
   await expect(projectCard.getByRole("button", { name: "Sync now" })).toHaveCount(0);
   await expect(projectCard.getByRole("button", { name: "Copy device code" })).toHaveCount(0);
-
-  await openSettingsSection(page, "Remote Access");
-  await page.getByTestId("sync-relay-url").fill("https://relay.example.test");
-  await page.getByTestId("sync-relay-token").fill("secret-token");
-  await page.locator(".settings-footer").getByRole("button", { name: "Save" }).click();
-
-  await expect(projectCard.getByRole("button", { name: "Sync now" })).toBeVisible();
-  await expect(projectCard.getByRole("button", { name: "Copy device code" })).toBeVisible();
-});
-
-test("remote access settings configure a cloud-drive sync folder", async ({ page }) => {
-  await page.goto("/");
-  await openSettingsSection(page, "Remote Access");
-  await page.getByTestId("sync-backend").selectOption("folder");
-  await page.locator(".settings-path-row").getByRole("button", { name: "Choose folder" }).click();
-  await expect(page.getByTestId("sync-folder")).toHaveValue("/mock/root/new-project");
-  await page.locator(".settings-footer").getByRole("button", { name: "Save" }).click();
-  await expect.poll(() => lastInvokeArgs(page, "set_settings")).toMatchObject({
-    settings: { sync_backend: "folder", sync_folder: "/mock/root/new-project" },
-  });
+  await expect(projectCard.locator(".pc-sync-state")).toHaveCount(0);
 });
 
 test("session settings save the maximum agent iterations", async ({ page }) => {
@@ -15152,19 +15224,6 @@ test("notification navigation opens the project and session that need the user (
 
   await expect.poll(() => lastInvokeArgs(page, "open_project")).toMatchObject({ id: "other" });
   await expect.poll(() => lastInvokeArgs(page, "load_session")).toMatchObject({ id: "pet-frame" });
-});
-
-test("a sync conflict requires an explicit authoritative device choice", async ({ page }) => {
-  await page.goto("/");
-  await page.evaluate(() => { (window as any).__failSyncConflict = true; });
-  const projectCard = page.locator(".proj-card:not(.proj-example)").first();
-  await projectCard.hover();
-  await projectCard.getByRole("button", { name: "Sync now" }).click();
-  await expect(page.getByRole("dialog", { name: "Both devices changed this project" })).toBeVisible();
-  await page.getByRole("button", { name: "Use remote version" }).click();
-  await expect.poll(() => lastInvokeArgs(page, "resolve_project_sync")).toMatchObject({
-    id: "default", strategy: "remote",
-  });
 });
 
 test("a second conversation can run in parallel without interleaving transcripts", async ({ page }) => {
@@ -16374,12 +16433,7 @@ test("remote access settings: Feishu, WeChat, and StickS3 setup", async ({ page 
   await expect(page.getByTestId("feishu-channel-row")).toBeVisible();
   await expect(page.getByTestId("weixin-channel-row")).toBeVisible();
   await expect(page.getByTestId("sticks3-channel-row")).toBeVisible();
-  const cards = page.getByTestId("channel-card-grid");
-  const sync = page.locator(".settings-sync-block");
-  await expect(sync).toBeVisible();
-  const cardBox = await cards.boundingBox();
-  const syncBox = await sync.boundingBox();
-  expect(cardBox?.y ?? 0).toBeLessThan(syncBox?.y ?? 0);
+  await expect(page.locator(".settings-sync-block")).toHaveCount(0);
   await expect(page.getByTestId("feishu-enabled")).toBeDisabled();
   await expect(page.getByTestId("weixin-enabled")).toBeDisabled();
   await expect(page.getByTestId("sticks3-enabled")).toBeDisabled();

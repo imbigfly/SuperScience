@@ -16,7 +16,7 @@ use crate::bindings::{invoke, invoke_checked, is_mac, is_windows, open_external_
 use crate::dto::*;
 use crate::i18n::{
     brand_visible_copy, localize_backend, set_document_lang, specialist_display_description,
-    specialist_display_name, t, tf, use_locale, Locale, BRAND_GITHUB_REPO,
+    specialist_display_name, t, tf, use_locale, Locale,
 };
 use crate::knowledge_settings::{
     list_knowledge_settings_bases, load_knowledge_settings, persist_knowledge_settings,
@@ -922,9 +922,6 @@ const MODEL_PRESETS: [(&str, &str, &str); 5] = [
         "glm-5.2",
     ),
 ];
-
-/// Consecutive Space keydowns in the model-proxy field unlock hidden add/preset rows.
-const HIDDEN_MODEL_ENTRY_UNLOCK_SPACES: u8 = 8;
 
 fn appearance_palette_options(dark: bool) -> [(&'static str, &'static str); 5] {
     if dark {
@@ -2974,13 +2971,6 @@ pub(super) fn SettingsView(
     let quick_action_error = create_rw_signal(None::<String>);
     // Skill details share the section breadcrumb and Escape navigation.
     let selected_skill = create_rw_signal(None::<String>);
-    let skill_store_open = create_rw_signal(false);
-    let skill_store_github = create_rw_signal(false);
-    create_effect(move |_| {
-        if !show_settings.get() || settings_section.get() != "skills" {
-            skill_store_open.set(false);
-        }
-    });
     create_effect(move |_| {
         if !show_settings.get()
             || settings_section.get() != "skills"
@@ -3023,10 +3013,6 @@ pub(super) fn SettingsView(
             || external_link_confirm.get_untracked().is_some()
         {
             return false;
-        }
-        if joining.get_untracked() {
-            joining.set(false);
-            return true;
         }
         if knowledge_kb_menu_open.get_untracked() {
             knowledge_kb_menu_open.set(false);
@@ -3169,55 +3155,6 @@ pub(super) fn SettingsView(
             }
         });
     });
-    create_effect(move |_| {
-        if joining.get() {
-            focus_element_soon("sync-device-code");
-        }
-    });
-    let choose_sync_folder = move |_| {
-        spawn_local(async move {
-            let value = invoke("pick_directory", JsValue::UNDEFINED).await;
-            if let Ok(path) = serde_wasm_bindgen::from_value::<String>(value) {
-                settings.update(|current| current.sync_folder = path);
-            }
-        });
-    };
-    let open_sync_guide = move |_| {
-        let page = if locale.get_untracked() == Locale::Zh {
-            "project-sync.zh-CN.md"
-        } else {
-            "project-sync.md"
-        };
-        crate::bindings::open_external_url(format!("{BRAND_GITHUB_REPO}/blob/main/docs/{page}"));
-    };
-    let join_project = move |_| {
-        let code = join_code.get();
-        if code.trim().is_empty() || join_busy.get_untracked() {
-            return;
-        }
-        join_busy.set(true);
-        join_error.set(None);
-        spawn_local(async move {
-            let args = to_value(&serde_json::json!({ "code": code })).unwrap();
-            match invoke_checked("join_synced_project", args).await {
-                Ok(value) => {
-                    if let Ok(Some(project)) =
-                        serde_wasm_bindgen::from_value::<Option<ProjectSummary>>(value)
-                    {
-                        joining.set(false);
-                        join_code.set(String::new());
-                        show_settings.set(false);
-                        open_project.call(project.id);
-                    }
-                }
-                Err(error) => {
-                    let message = localize_backend(locale.get_untracked(), &js_error_text(error));
-                    join_error.set(Some(message));
-                }
-            }
-            join_busy.set(false);
-        });
-    };
     let persist_quick_action = Callback::new(move |action: QuickAction| {
         if quick_action_busy.get_untracked() {
             return;
@@ -3766,50 +3703,6 @@ pub(super) fn SettingsView(
                         </div>
                     </div>
                 }.into_view())}
-                {move || joining.get().then(|| view! {
-                    <div class="overlay project-sync-join-overlay">
-                        <div class="modal project-sync-join-modal" role="dialog"
-                            aria-modal="true"
-                            aria-label=move || t(locale.get(), "projects.sync.join_title")
-                            aria-describedby="sync-join-hint">
-                            <div class="ps-head">
-                                <h2>{move || t(locale.get(), "projects.sync.join_title")}</h2>
-                                <button type="button" class="ps-close"
-                                    title=move || t(locale.get(), "projects.cancel")
-                                    aria-label=move || t(locale.get(), "projects.cancel")
-                                    on:click=move |_| joining.set(false)>{compose_icon("close")}</button>
-                            </div>
-                            <p id="sync-join-hint" class="project-sync-join-hint">
-                                {move || t(locale.get(), "projects.sync.join_hint")}
-                            </p>
-                            <div class="project-sync-code-head">
-                                <label for="sync-device-code">
-                                    {move || t(locale.get(), "projects.sync.code_label")}
-                                </label>
-                                <button type="button" class="project-sync-guide" on:click=open_sync_guide>
-                                    {compose_icon("doc")}
-                                    <span>{move || t(locale.get(), "projects.sync.guide")}</span>
-                                </button>
-                            </div>
-                            <textarea id="sync-device-code" data-testid="sync-device-code" rows="5"
-                                autofocus=true autocomplete="off" spellcheck="false"
-                                placeholder=move || t(locale.get(), "projects.sync.code_placeholder")
-                                prop:value=move || join_code.get()
-                                on:input=move |ev| join_code.set(event_target_value(&ev))></textarea>
-                            {move || join_error.get().map(|message| view! {
-                                <div class="settings-status fail" role="alert">{message}</div>
-                            })}
-                            <div class="row project-sync-join-actions">
-                                <button type="button" disabled=move || join_busy.get()
-                                    on:click=move |_| joining.set(false)>
-                                    {move || t(locale.get(), "projects.cancel")}</button>
-                                <button type="button" class="primary"
-                                    disabled=move || join_busy.get() || join_code.get().trim().is_empty()
-                                    on:click=join_project>{move || t(locale.get(), "projects.sync.join_action")}</button>
-                            </div>
-                        </div>
-                    </div>
-                })}
                 {move || (settings_section.get() == "storage").then(|| view! {
                     <div class="settings-pane">
                         <div class="settings-form-grid">
@@ -6639,7 +6532,7 @@ pub(super) fn SettingsView(
                         </div>
                     </div>
                 }.into_view())}
-                {move || (settings_section.get() == "skills" && selected_skill.get().is_none() && !skill_store_open.get()).then(|| view! {
+                {move || (settings_section.get() == "skills" && selected_skill.get().is_none()).then(|| view! {
                     <div class="settings-pane settings-pane-list skills-pane">
                         <div class="skills-update-bar">
                             <div class="skills-update-copy">
@@ -6705,8 +6598,6 @@ pub(super) fn SettingsView(
                             <button type="button" on:click=move |_| reload_skills.call(())>
                                 {move || t(locale.get(), "skills.reload")}
                             </button>
-                            <button type="button" on:click=move |_| { skill_store_github.set(false); skill_store_open.set(true); }>{move || t(locale.get(), "store.browse")}</button>
-                            <button type="button" on:click=move |_| { skill_store_github.set(true); skill_store_open.set(true); }>{move || t(locale.get(), "store.github")}</button>
                             <details class="settings-add-menu">
                                 <summary>{move || t(locale.get(), "skills.add")}</summary>
                                 <button type="button" on:click=move |ev| {
@@ -6932,12 +6823,6 @@ pub(super) fn SettingsView(
                         </div>
                     </div>
                 }.into_view())}
-                {move || (settings_section.get() == "skills" && skill_store_open.get()).then(|| view! {
-                    <crate::skill_store::SkillStore locale=locale skills=skills_list
-                        close=Callback::new(move |_| skill_store_open.set(false))
-                        refresh_skills=refresh_skills github_first=skill_store_github.get_untracked()
-                        external_link_confirm=external_link_confirm />
-                })}
                 {move || (settings_section.get() == "skills").then(|| selected_skill.get().map(|name| view! {
                     <crate::skill_detail::SkillDetail name=name skills=skills_list locale=locale
                         refresh=refresh_skills save_tags=save_skill_tags delete_confirm=delete_confirm />
@@ -7295,78 +7180,7 @@ pub(super) fn SettingsView(
                 }.into_view())}
                 {move || (settings_section.get() == "channels").then(|| view! {
                     <div class="settings-pane remote-settings-pane" data-testid="remote-settings-pane">
-                        <div class="remote-settings-grid" class:remote-settings-detail=move || channels_open.get().is_some()>
-                        {move || channels_open.get().is_none().then(|| view! {
-                            <section class="settings-card settings-sync-block" data-testid="project-sync-card">
-                                <h3>{move || t(locale.get(), "settings.sync.title")}</h3>
-                                <p class="settings-field-hint">{move || t(locale.get(), "settings.sync.hint")}</p>
-                                <label>{move || t(locale.get(), "settings.sync.backend")}
-                                    <select data-testid="sync-backend"
-                                        prop:value=move || settings.get().sync_backend
-                                        on:change=move |ev| settings.update(|current| current.sync_backend = dom_value(&ev))>
-                                        <option value="relay">{move || t(locale.get(), "settings.sync.relay")}</option>
-                                        <option value="folder">{move || t(locale.get(), "settings.sync.folder")}</option>
-                                    </select>
-                                </label>
-                                {move || if settings.get().sync_backend == "folder" {
-                                    view! {
-                                        <label>{move || t(locale.get(), "settings.sync.folder_path")}
-                                            <div class="settings-path-row">
-                                                <input class="settings-path-input" data-testid="sync-folder"
-                                                    prop:value=move || settings.get().sync_folder
-                                                    on:input=move |ev| settings.update(|current| current.sync_folder = event_target_input(&ev).value()) />
-                                                <button type="button" class="settings-add-btn" data-testid="sync-choose-folder"
-                                                    on:click=choose_sync_folder>
-                                                    {move || t(locale.get(), "projects.choose_dir")}
-                                                </button>
-                                            </div>
-                                            <span class="settings-field-hint">{move || t(locale.get(), "settings.sync.folder_hint")}</span>
-                                        </label>
-                                    }.into_view()
-                                } else {
-                                    view! {
-                                        <label>{move || t(locale.get(), "settings.sync.relay_url")}
-                                            <input data-testid="sync-relay-url" type="url"
-                                                prop:value=move || settings.get().sync_relay_url
-                                                placeholder="https://sync.example.com"
-                                                on:input=move |ev| settings.update(|current| current.sync_relay_url = event_target_input(&ev).value()) />
-                                        </label>
-                                        <label>{move || t(locale.get(), "settings.sync.relay_token")}
-                                            <input data-testid="sync-relay-token" type="password"
-                                                prop:value=move || settings.get().sync_relay_token
-                                                placeholder=move || if settings.get().has_sync_relay_token {
-                                                    t(locale.get(), "settings.key_stored")
-                                                } else {
-                                                    t(locale.get(), "settings.sync.token_placeholder")
-                                                }
-                                                on:input=move |ev| settings.update(|current| current.sync_relay_token = event_target_input(&ev).value()) />
-                                            <span class="settings-field-hint">{move || t(locale.get(), "settings.sync.relay_hint")}</span>
-                                        </label>
-                                    }.into_view()
-                                }}
-                        <div class="row settings-footer">
-                            <button type="button" disabled=move || settings_busy.get() on:click=move |_| show_settings.set(false)>{move || t(locale.get(), "settings.cancel")}</button>
-                            <button type="button" class="primary" disabled=move || settings_busy.get() on:click=move |ev| save_settings.call(ev)>{move || t(locale.get(), "settings.save")}</button>
-                        </div>
-                                <p class="settings-field-hint">
-                                    {move || t(locale.get(), "settings.sync.join_hint")}
-                                </p>
-                                <div class="row settings-sync-actions">
-                                    <button type="button" on:click=open_sync_guide>
-                                        {compose_icon("doc")}
-                                        <span>{move || t(locale.get(), "projects.sync.guide")}</span>
-                                    </button>
-                                    <button type="button" class="secondary"
-                                        on:click=move |_| {
-                                            join_error.set(None);
-                                            joining.set(true);
-                                        }>
-                                        {compose_icon("link")}
-                                        <span>{move || t(locale.get(), "projects.sync.join")}</span>
-                                    </button>
-                                </div>
-                            </section>
-                        })}
+                        <div class="remote-settings-grid">
                         <crate::channels_view::ChannelsPane locale=locale open=channels_open/>
                         </div>
                     </div>

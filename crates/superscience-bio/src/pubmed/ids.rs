@@ -29,7 +29,7 @@ pub(super) async fn convert(client: &PubMed, args: &Value) -> Result<Value> {
         ("ids".into(), ids.join(",")),
         ("idtype".into(), id_type.clone()),
         ("format".into(), "json".into()),
-        ("tool".into(), "wisp-science".into()),
+        ("tool".into(), "SuperScience".into()),
     ];
     if let Some(email) = &client.email {
         params.push(("email".into(), email.clone()));

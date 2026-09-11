@@ -3,7 +3,7 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/wordmark-dark.svg" />
   <source media="(prefers-color-scheme: light)" srcset="docs/assets/wordmark-light.svg" />
-  <img src="docs/assets/wordmark-light.svg" alt="SuperScience" width="360" />
+  <img src="docs/assets/wordmark-light.svg" alt="天成科研助手" width="360" />
 </picture>
 
 **本地优先的 AI 科研工作台。** 把文献、数据、算力、绘图、写作和决策放在同一个项目里。
@@ -12,8 +12,6 @@
 
 - 下载安装包：[tctoken.cn/downloads](https://www.tctoken.cn/downloads/)
 - GitHub：[imbigfly/SuperScience](https://github.com/imbigfly/SuperScience)
-- 本仓库 GitLab：<http://119.96.147.4:8081/huangfei/SuperScience>
-- 上游开源项目：[xuzhougeng/wisp-science](https://github.com/xuzhougeng/wisp-science)
 
 数据、会话和项目文件默认留在本机。模型 API Key 进系统钥匙串，不写入 SQLite。
 
@@ -21,7 +19,7 @@
 
 ## 它解决什么问题
 
-科研过程通常散落在浏览器、终端、网盘和 Word 里：检索一篇、分析一份、出一张图、再另开窗口写稿。天成科研助手把这些步骤收进一个 **Project**：
+科研过程通常散落在浏览器、终端、网盘和文档里：检索一篇、分析一份、出一张图、再另开窗口写稿。天成科研助手把这些步骤收进一个 **Project**：
 
 | 概念 | 含义 |
 |------|------|
@@ -65,12 +63,11 @@
 ### 论文写作与发表
 
 - **学术论文写作 / 研究到成稿流水线**
-- **国际期刊审稿 / Nature 审稿**
-- **Nature 风格起草与润色 / 去除 AI 痕迹**
+- **国际期刊审稿与润色**
 - **引用补全 / 参考文献核验 / 数据可用性（FAIR）**
 - **修回信 / 答复信**
 - **论文转专利初稿**
-- **Word / Excel / PPT**（OfficeCLI）
+- **Word / Excel / PPT 文档处理**
 
 侧栏仍可打开论文证据工作区：为某一稿某一版冻结证据并打成可核查胶囊。
 
@@ -78,7 +75,7 @@
 
 - **投稿级科研作图 / R 语言生信图**
 - **论文转组会 PPT / 图片转可编辑 PPT**
-- **PPT Master**（首次使用会先安装技能）
+- **PPT 技能包**（首次使用会先安装）
 - **AI 插图生成**；机制图需求走「投稿级科研作图 / AI 插图生成」
 
 ### 数据清洗
@@ -92,13 +89,13 @@
 - **论文预审 / 选题引导**
 - **图片查重**：审核图块是否重复、复用或变换后再用
 - **手写数据提取**：识别手写表格，可分别指定识图模型与校准模型
-- **知识库**：检索本机 WeKnora 并引用片段
+- **知识库**：检索本机知识库并引用片段
 
 ### 协作扩展
 
-- **飞书 / 微信接入**：用 IM 驱动同一桌面会话，工具审批仍在本机
-- **真实浏览器**：通过本机 Chrome 扩展操作已登录网页
-- **Playwright 无头浏览器**
+- **即时通讯接入**：用 IM 驱动同一桌面会话，工具审批仍在本机
+- **真实浏览器**：通过本机浏览器扩展操作已登录网页
+- **无头浏览器自动化**
 - **插件扩展**：安装 Skill + MCP 功能包
 - **技能扩展**：打开技能目录，浏览、开关或添加 `SKILL.md`
 
@@ -113,7 +110,7 @@
 - 流式思考、工具调用、停止与上下文压缩
 - `@` 附加文件 / 产物 / 环境，`#` 引用历史会话，`/` 指定 Skill 或 Workflow
 - 会话持久化、导出导入、撤销某一轮文件改动
-- 可接入 OpenAI 兼容、Anthropic，或通过 ACP 驱动 Codex / Claude Code
+- 可接入主流模型 API，或通过 ACP 连接外部 Agent
 
 **算力与运行**
 
@@ -155,7 +152,7 @@
 
 ## 从源码运行
 
-需要 Rust 1.88+（含 `wasm32-unknown-unknown`）、[uv](https://docs.astral.sh/uv/)、Trunk、Tauri CLI v2。详见 [开发指南](docs/development.md)。
+需要 Rust 1.88+（含 `wasm32-unknown-unknown`）、uv、Trunk、Tauri CLI v2。详见 [开发指南](docs/development.md)。
 
 ```bash
 rustup target add wasm32-unknown-unknown
@@ -170,13 +167,11 @@ cargo tauri build    # 安装包在 target/release/bundle
 
 ```bash
 export SUPERSCIENCE_API_KEY=<your-key>
-export SUPERSCIENCE_PROVIDER=openai
-export SUPERSCIENCE_MODEL=deepseek-v4-flash
+export SUPERSCIENCE_PROVIDER=<your-provider>
+export SUPERSCIENCE_MODEL=<your-model>
 cargo run -p superscience-cli
 cargo run -p superscience-cli -- run "Summarize the files in this project"
 ```
-
-桌面端认 `SUPERSCIENCE_*`，并继续兼容上游 `WISP_*` 环境变量。远程协议头（如 `__WISP_HANDLE__`）保持原名，以便跟上游合并。
 
 ---
 
@@ -193,13 +188,13 @@ crates/superscience-mcp/       MCP 客户端
 crates/superscience-acp/       ACP 外部 Agent
 crates/superscience-cli/       无界面命令行
 crates/superscience-dto/       UI ⇄ 桌面契约
-crates/wisp-runs/              Run 控制面（本地 / SSH）
+crates/superscience-runs/      Run 控制面（本地 / SSH）
 src-tauri/                     桌面壳、命令、SSH 主机登记
 ui/                            Leptos 前端
-ui-tests/                      Playwright（模拟 Tauri 桥）
+ui-tests/                      前端自动化测试
 skills/                        预装科研工作流
 docs/                          使用与架构文档
-report/                        本 fork 上游同步记录
+report/                        版本同步记录
 ```
 
 ---
@@ -208,7 +203,7 @@ report/                        本 fork 上游同步记录
 
 | 主题 | 文档 |
 |------|------|
-| 上手 | [快速开始](docs/wechat/wisp-science-quick-start.md) · [基础配置](docs/basic-configuration.md) · [模型](docs/model-configuration.md) · [ACP](docs/acp-agents.md) |
+| 上手 | [快速开始](docs/wechat/superscience-quick-start.md) · [基础配置](docs/basic-configuration.md) · [模型](docs/model-configuration.md) · [ACP](docs/acp-agents.md) |
 | 科研 | [探索分支](docs/exploration-branches.zh-CN.md) · [证据胶囊](docs/publication-evidence.md) · [选题库](docs/case-studies.zh-CN.md) |
 | 项目 | [迁移](docs/project-transfer.md) · [同步](docs/project-sync.zh-CN.md) · [全局库](docs/global-library.md) |
 | 算力 | [终端](docs/terminal-sessions.md) · [远程文件](docs/remote-file-browser.md) · [传输](docs/server-transfers.md) |
@@ -220,14 +215,11 @@ report/                        本 fork 上游同步记录
 ## 致谢
 
 感谢所有提交 issue、发 PR，以及在真实项目中试用天成科研助手的用户。
-特别感谢 [SpicyChicken6](https://github.com/xuzhougeng/wisp-science/discussions/1154) 设计的分子字标与三重旋涡桌面图标。
 
 ---
 
-## 许可证与来源
+## 许可证
 
-除另有说明外，采用 [AGPL-3.0-only](LICENSE)。
-
-本仓库是 [wisp-science](https://github.com/xuzhougeng/wisp-science) 的产品 fork：用户可见品牌为「天成科研助手 / SuperScience」，上游协议字符串与 `WISP_*` 环境变量保持原名，避免下次合入大面积冲突。预装 Skills 的第三方声明见 [skills/THIRD_PARTY_LICENSES.md](skills/THIRD_PARTY_LICENSES.md)。
+除另有说明外，采用 [AGPL-3.0-only](LICENSE)。预装 Skills 的第三方声明见 [skills/THIRD_PARTY_LICENSES.md](skills/THIRD_PARTY_LICENSES.md)。
 
 反馈：应用内 **帮助 → 反馈问题**。会自动附带版本、系统和当前模型。

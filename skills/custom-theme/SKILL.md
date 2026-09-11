@@ -1,11 +1,11 @@
 ---
 name: custom-theme
-description: Author a Wisp custom theme CSS file that uses documented tokens and import constraints. Use when the user wants a custom look, hide the paragraph lead bar, restyle chat Markdown, override colors, or import a stylesheet under Settings → Appearance.
+description: Author a SuperScience custom theme CSS file that uses documented tokens and import constraints. Use when the user wants a custom look, hide the paragraph lead bar, restyle chat Markdown, override colors, or import a stylesheet under Settings → Appearance.
 ---
 
-# Custom Wisp theme CSS
+# Custom SuperScience theme CSS
 
-Wisp injects one user stylesheet after the built-in theme. Prefer CSS variables
+SuperScience injects one user stylesheet after the built-in theme. Prefer CSS variables
 on `:root`. Do not invent Settings toggles for one-off look changes.
 
 ## Workflow

@@ -23,7 +23,7 @@ const MAX_ROWS: u32 = 500;
 const MAX_SYMBOL: usize = 64;
 const MAX_FILTER: usize = 128;
 const MAX_TSV: usize = 16 * 1024 * 1024;
-const SNAPSHOT_NOTICE: &str = " This is the frozen 27 Mar 2020 PanglaoDB marker snapshot (historical; symbols predate later HGNC/MGI updates). PanglaoDB does not publish a JSON API. Redistribution/commercial terms are not stated on the site; cite Franzén et al. Database (2019) doi:10.1093/database/baz046. The client identifies as wisp-science and does not spoof a browser.";
+const SNAPSHOT_NOTICE: &str = " This is the frozen 27 Mar 2020 PanglaoDB marker snapshot (historical; symbols predate later HGNC/MGI updates). PanglaoDB does not publish a JSON API. Redistribution/commercial terms are not stated on the site; cite Franzén et al. Database (2019) doi:10.1093/database/baz046. The client identifies as SuperScience and does not spoof a browser.";
 const HEADER: [&str; 14] = [
     "species",
     "official gene symbol",
@@ -292,7 +292,7 @@ async fn download_markers(bio: &NativeBio, url: &str) -> Result<Vec<u8>> {
     let response = bio.http().send(PANGLAO, Method::GET, url, &[]).await?;
     if response.status == StatusCode::FORBIDDEN {
         bail!(
-            "PanglaoDB returned HTTP 403; the server may reject the wisp-science User-Agent. This client does not spoof a browser."
+            "PanglaoDB returned HTTP 403; the server may reject the SuperScience User-Agent. This client does not spoof a browser."
         );
     }
     response.check()?;

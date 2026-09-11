@@ -39,10 +39,10 @@ def render_skills():
     output = ['<section class="doc-hero"><div class="container">',
         localized("div", "让科研方法可以复用", "Reusable research methods", ' class="eyebrow"'),
         localized("h1", "科研技能", "Research Skills"),
-        localized("p", f"Wisp Science 内置 {count} 个技能，覆盖文献调研、数据分析、图表制作、环境配置与写作交付。把成熟的步骤和检查要求交给 Agent，让每次任务都有方法可循。", f"Wisp Science includes {count} Skills for literature, analysis, figures, environments, and writing. Give the agent reusable methods and checks to follow on each task.", ' class="lead"'),
-        '<div class="hero-actions"><a class="btn btn-primary" href="tutorials/wisp-science-skills.html">'
+        localized("p", f"天成科研助手 内置 {count} 个技能，覆盖文献调研、数据分析、图表制作、环境配置与写作交付。把成熟的步骤和检查要求交给 Agent，让每次任务都有方法可循。", f"SuperScience includes {count} Skills for literature, analysis, figures, environments, and writing. Give the agent reusable methods and checks to follow on each task.", ' class="lead"'),
+        '<div class="hero-actions"><a class="btn btn-primary" href="tutorials/superscience-skills.html">'
         + localized("span", "学习使用 Skills", "Learn to use Skills") + '</a>'
-        '<a class="btn btn-secondary" href="https://github.com/xuzhougeng/wisp-science/tree/main/skills">'
+        '<a class="btn btn-secondary" href="https://github.com/imbigfly/SuperScience/tree/main/skills">'
         + localized("span", "查看技能源码", "Browse Skill sources") + '</a></div></div></section>',
         '<section class="skills-intro"><div class="container"><div class="feature-list doc-card-grid">']
     for zh_title, en_title, zh_body, en_body in [
@@ -68,7 +68,7 @@ def render_skills():
             output.append(f'<article class="skill-card" data-skill-id="{skill_id}"><code>{skill_id}</code>'
                           + localized("h3", entry["title_zh"], entry["title_en"])
                           + localized("p", entry["summary_zh"], entry["summary_en"])
-                          + f'<a href="https://github.com/xuzhougeng/wisp-science/blob/main/skills/{skill_id}/SKILL.md">'
+                          + f'<a href="https://github.com/imbigfly/SuperScience/blob/main/skills/{skill_id}/SKILL.md">'
                           + localized("span", "查看技能说明", "Read Skill instructions") + '</a></article>')
         output.append('</div></div></section>')
     return "\n".join(output)

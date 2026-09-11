@@ -8,10 +8,10 @@ members = [
     "crates/superscience-skills",
     "crates/superscience-runtime",
     "crates/superscience-mcp",
-    "crates/wisp-bio",
+    "crates/superscience-bio",
     "crates/superscience-acp",
     "crates/superscience-cli",
-    "crates/wisp-runs",
+    "crates/superscience-runs",
     "crates/superscience-paths",
     "crates/superscience-sync",
     "crates/superscience-dto",
@@ -69,9 +69,9 @@ superscience-store = { path = "crates/superscience-store" }
 superscience-skills = { path = "crates/superscience-skills" }
 superscience-runtime = { path = "crates/superscience-runtime" }
 superscience-mcp = { path = "crates/superscience-mcp" }
-wisp-bio = { path = "crates/wisp-bio" }
+superscience-bio = { path = "crates/superscience-bio" }
 superscience-acp = { path = "crates/superscience-acp" }
-superscience-runs = { path = "crates/wisp-runs" }
+superscience-runs = { path = "crates/superscience-runs" }
 superscience-paths = { path = "crates/superscience-paths" }
 superscience-sync = { path = "crates/superscience-sync" }
 superscience-dto = { path = "crates/superscience-dto" }
@@ -87,3 +87,13 @@ lto = "thin"
 opt-level = "s"
 panic = "abort"
 strip = true
+
+# Local DMG iteration (`scripts/package-macos-local.sh --fast`): no LTO, keep
+# incremental artifacts so one-line Rust changes re-link in minutes instead of
+# re-optimizing the whole graph. Not for shipping size/parity checks — use the
+# default release profile (no --fast) when you need a release-like binary.
+[profile.release-local]
+inherits = "release"
+lto = false
+opt-level = 3
+incremental = true

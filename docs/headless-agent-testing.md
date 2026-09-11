@@ -7,11 +7,13 @@ SuperScience has two complementary headless interfaces:
 
 Both exercise the production `Agent` loop and tool registry, including the Run
 control plane (`run_in_context`, `monitor_run`, `get_run`, `cancel_run`,
-harvest/cleanup/transfer). Interactive/`run`/`rpc` open `.wisp/wisp.sqlite` in
-the project (override with `WISP_STORE`) so long jobs wait through
-`monitor_run` instead of shell `sleep` polling. SSH/WSL contexts in that store
+harvest/cleanup/transfer). Interactive/`run`/`rpc` open
+`.superscience/superscience.sqlite` in the project (override with
+`SUPERSCIENCE_STORE`, or the legacy `WISP_STORE`) so long jobs wait through
+`monitor_run` instead of shell `sleep` polling. A pre-rebrand project that only
+has `.wisp/wisp.sqlite` keeps opening that file. SSH/WSL contexts in that store
 are used when present; the desktop app's host registry is a separate database
-unless `WISP_STORE` points at it.
+unless the store override points at it.
 
 The default eval suite uses a deterministic scripted provider, temporary
 workspaces, and fixture MCP/subagent boundaries, so it requires no API key,
@@ -217,7 +219,7 @@ The same long-context scenario is also bundled as an Example-project demo
 right-click **Long-context memory demo**, and choose **Copy to a project…**
 to materialize the transcript (and `.superscience/memory` notes) in a real workspace.
 The transcript is a complete GSE153250 ESR1-knockdown RNA-seq analysis
-session recorded live with the wisp CLI (58 turns, ~104K estimated tokens;
+session recorded live with the superscience CLI (58 turns, ~104K estimated tokens;
 see `scripts/export_memory_demo.py`). The opening assistant turn locks the
 analysis decision (`GENE_FILTER`, `PRIMARY_CONTRAST`, `FDR_CUTOFF`); the
 session then runs QC, PCA, exploratory DE, sensitivity checks, figures, and

@@ -25,7 +25,7 @@ _UA_BASE = "WispScience-literature-review/1.0"
 def _contact_email():
     """Polite-pool contact for CrossRef/OpenAlex, or None.
 
-    Wisp never injects credentials or profile data into Python; the only way
+    SuperScience never injects credentials or profile data into Python; the only way
     to identify these requests is an explicit WISP_LITERATURE_CONTACT_EMAIL
     in the environment the kernel was started with.
     """

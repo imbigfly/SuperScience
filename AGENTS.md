@@ -30,6 +30,8 @@ Do not implement broad product vision in one change. Prefer small PRs that add o
 ## Engineering Rules
 
 - Branding must not break upstream merges. Keep wire-protocol markers, remote script tokens, and upstream env names as `WISP_*` / `__WISP_*`. User-visible SuperScience names go in UI (`t()` display rewrite), docs, and `superscience-paths` (`env_product_or_wisp` / `env_or_legacy`). Do not rename identifiers that exist in `xuzhougeng/wisp-science` just to match the product name.
+- Crate naming is the one exception, and it is uniform: upstream `wisp-*` crates are renamed to `superscience-*` in both package name and directory (`crates/superscience-store`, ...). Rename a newly merged upstream crate the same way instead of leaving it as `wisp-*`; a partial rename means the next sync has to special-case it. Do not rename anything else on the way past — `.wisp-science/` remote workdirs, `WISP_*` / `__WISP_*` env markers, and upstream doc URLs keep their names.
+- When syncing upstream, the recurring cost of that rename is relocating upstream's newly added files under the old crate path. After the merge, check `git status` for `crates/wisp-*/` entries and `git mv` them into the renamed directory, then sweep `wisp_*` crate references back to `superscience_*`.
 - Keep Windows and macOS behavior explicit. Avoid Unix-only assumptions unless gated behind an SSH/WSL context.
 - Never require a real SSH host, GPU, SLURM cluster, WSL distro, API key, or network access in automated tests. Use pure parsing tests, fake command runners, temporary directories, and mocked Tauri commands.
 - Store secrets in the existing keyring path, not SQLite. SSH private key contents must never be copied into SQLite.

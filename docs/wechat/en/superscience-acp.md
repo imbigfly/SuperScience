@@ -1,19 +1,19 @@
-# Wisp Science Advanced: ACP Configuration
+# SuperScience Advanced: ACP Configuration
 
-If you already use an external agent such as Codex or Claude and want to work with it inside Wisp Science's project interface, connect it through ACP. Wisp provides the project UI, messaging, and permission interactions; the external agent owns its session, tools, and authentication.
+If you already use an external agent such as Codex or Claude and want to work with it inside SuperScience's project interface, connect it through ACP. SuperScience provides the project UI, messaging, and permission interactions; the external agent owns its session, tools, and authentication.
 
-This tutorial covers preparing a local adapter, configuring it, testing the connection, and starting a conversation. For ordinary model APIs, see [Model Configuration](wisp-science-models.md).
+This tutorial covers preparing a local adapter, configuring it, testing the connection, and starting a conversation. For ordinary model APIs, see [Model Configuration](superscience-models.md).
 
 **Distinguish HTTP models from ACP agents.**
 
 | Method | Settings entry | Agent performing the task |
 | --- | --- | --- |
-| HTTP model | Settings → Models → Models → Add API access | Wisp's built-in agent, calling a model API |
+| HTTP model | Settings → Models → Models → Add API access | SuperScience's built-in agent, calling a model API |
 | ACP agent | Settings → Models → ACP Agents → Add ACP Agent | An external process started locally |
 
-ACP is the Agent Client Protocol. Wisp connects to an ACP v1 process over local standard input and output. Enter an adapter launch command, not an API address.
+ACP is the Agent Client Protocol. SuperScience connects to an ACP v1 process over local standard input and output. Enter an adapter launch command, not an API address.
 
-Do not put bare `codex`, `claude`, or `claude -p` commands in the ACP form. Use the appropriate ACP adapter. External-agent login and keys are separate from Wisp's HTTP model configuration.
+Do not put bare `codex`, `claude`, or `claude -p` commands in the ACP form. Use the appropriate ACP adapter. External-agent login and keys are separate from SuperScience's HTTP model configuration.
 
 **Prepare the runtime and adapter.**
 
@@ -50,7 +50,7 @@ Check in a terminal:
 npx -y @agentclientprotocol/codex-acp --version
 ```
 
-In Wisp, use label `Codex ACP` and command `npx`, or normally `npx.cmd` on Windows. Put these on two separate argument lines:
+In SuperScience, use label `Codex ACP` and command `npx`, or normally `npx.cmd` on Windows. Put these on two separate argument lines:
 
 ```text
 -y
@@ -94,7 +94,7 @@ These demonstrate launch configurations, not completed installation or authentic
 
 Save the agent, then click **Test Connection**. Success means the process started and completed ACP `initialize`; it does not verify every task permission or service quota.
 
-If authentication buttons appear, follow the methods advertised by the agent. Some operate through the agent directly. Terminal methods open the adapter's advertised login command in Wisp's terminal dock. Complete login, then test or start the session again. Credentials remain with the agent and are not written to Wisp's SQLite database.
+If authentication buttons appear, follow the methods advertised by the agent. Some operate through the agent directly. Terminal methods open the adapter's advertised login command in SuperScience's terminal dock. Complete login, then test or start the session again. Credentials remain with the agent and are not written to SuperScience's SQLite database.
 
 **Try a simple request in an empty conversation.**
 
@@ -106,7 +106,7 @@ The first message binds the conversation to that agent. Selecting ACP from an or
 
 Permission cards display the agent's supplied choices. If it advertises session settings such as model or mode, adjust them in the ACP model menu beside Send. Stop cancels the active ACP turn.
 
-Wisp provides its scientific MCP bridge to user-owned ACP sessions, allowing the external agent to discover and use available scientific tools in project scope. Actual capabilities and permissions depend on the current session configuration.
+SuperScience provides its scientific MCP bridge to user-owned ACP sessions, allowing the external agent to discover and use available scientific tools in project scope. Actual capabilities and permissions depend on the current session configuration.
 
 **Fix the ACP connection before retrying.**
 

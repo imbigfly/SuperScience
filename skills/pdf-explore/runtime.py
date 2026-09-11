@@ -12,7 +12,7 @@ Public surface:
     pdf_resolve(path)     ~-expansion and a clear error for artifact-id input
 
 The reference host's LLM fan-out helpers (pdf_scan / pdf_extract / pdf_map
-and the LLM outline fallback) need an in-kernel model bridge Wisp does not
+and the LLM outline fallback) need an in-kernel model bridge SuperScience does not
 provide; they are absent by design rather than left to fail at call time.
 """
 
@@ -43,7 +43,7 @@ _ARTIFACT_ID_SHAPE = re.compile(r"[0-9a-fA-F-]{32,36}")
 def pdf_resolve(path_or_id):
     """Expand ``~`` and hand back a filesystem path.
 
-    Wisp has no in-kernel artifact resolver, so a UUID-shaped string that is
+    SuperScience has no in-kernel artifact resolver, so a UUID-shaped string that is
     not an existing file raises immediately with an explanation instead of
     being treated as a path that merely doesn't exist yet.
     """

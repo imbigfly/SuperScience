@@ -91,18 +91,18 @@ Notes:
 - The login cannot be refreshed programmatically. When the server reports the
   session expired (errcode −14) the channel disables itself; re-scan to rebind.
 - Replies must be sent within ~30 minutes of your message (server-side
-  `context_token` window). Wisp keeps polling while an agent turn is running and
+  `context_token` window). SuperScience keeps polling while an agent turn is running and
   uses the newest owner message token for approval acknowledgements and final
   replies.
-- Native Wisp confirmations and ACP permission requests are sent as plain text.
+- Native SuperScience confirmations and ACP permission requests are sent as plain text.
   Reply with the exact
   `/approve <code>` or `/reject <code> [feedback]` command, or use `/approval`
   to list pending requests again. Codes are single-use and accept a unique
   prefix of at least six hexadecimal characters.
-- For ACP, Wisp selects only the protocol's `AllowOnce` or `RejectOnce` option.
+- For ACP, SuperScience selects only the protocol's `AllowOnce` or `RejectOnce` option.
   If the ACP agent offers only persistent choices, the text command fails
   closed and that request must be handled in the desktop UI. ACP rejection
-  options cannot carry free-form feedback; Wisp names that limitation in its
+  options cannot carry free-form feedback; SuperScience names that limitation in its
   acknowledgement instead of silently claiming the feedback was delivered.
 - Remote approval deliberately means **once**. Full Permission and persistent
   session/project/global grants cannot be enabled from WeChat.

@@ -420,7 +420,7 @@ def panel_crops(fig, dpi=None, pad_px=6, bbox_inches=None, pad_inches=None):
 def figure_style_self_check():
     """Explicitly apply defaults and check font wiring; never run on loading.
 
-    Wisp executes sidecars in the REPL's __main__ namespace, so a conventional
+    SuperScience executes sidecars in the REPL's __main__ namespace, so a conventional
     __main__ guard would run during helper loading as well as direct execution.
     """
     import matplotlib

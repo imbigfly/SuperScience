@@ -227,7 +227,7 @@
         <outline text="设为主线（fast-forward）"/>
         <outline text="归档 / 丢弃"/>
         <outline text="主线冻结；多候选互斥"/>
-        <outline text=".gitignore / .wispignore"/>
+        <outline text=".gitignore / .superscienceignore"/>
         <outline text="外部副作用不可回滚警告"/>
         <outline text="ACP 探索（规划）"/>
       </outline>

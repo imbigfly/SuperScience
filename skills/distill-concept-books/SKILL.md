@@ -163,11 +163,11 @@ evidence → claim → relation / capability rule → candidate specification
 ### MRULE-006：准备已接受候选的安全移交（Gate 5）
 
 - 只处理本流程产出、已有权威 Gate 4 accepted 决定的同一候选；不是通用发布 Skill。
-- 把进入正式 `skills/`、Git 初始化、公开和 Wisp 部署作为四项独立授权，并按目标动作
+- 把进入正式 `skills/`、Git 初始化、公开和 SuperScience 部署作为四项独立授权，并按目标动作
   复核版权、隐私、引用与数据目的地。
 - 移交前对同一 snapshot-bound tree 重跑 disclosure lint；不得把私有 manifest、source map、
   evidence ledger、normalized/OCR bundle 或 extra-terms 文件复制进候选或部署目录。
-- Wisp 部署另核对 runtime/schema；仅对部署或覆盖动作执行 dry-run、diff、覆盖确认、
+- SuperScience 部署另核对 runtime/schema；仅对部署或覆盖动作执行 dry-run、diff、覆盖确认、
   部署后验证和回滚记录。未授权或不满足条件时只阻断对应动作。
 
 ## 阻断与恢复
@@ -180,7 +180,7 @@ evidence → claim → relation / capability rule → candidate specification
 | 候选状态 | 无 current approval、无唯一 matching materialization 或治理状态 invalid | 仅执行状态允许的 review/maintenance/materialization | 权威 Gate 决定、唯一匹配物化与通过的验证 |
 | 单个 eval run | fixture 不可重放、权利不足、污染、泄漏不明或需要未批准的联网/上传/安装 | 其他独立合法 runs | fixture/hash/权利/隔离记录与所需授权 |
 | Gate 4 acceptance | 3/3/3、holdout、对照、completed/pass 或人工评分不足 | 保留已完成 runs，继续补足评测 | 同一 materialization 上完整合格 runs |
-| 移交操作 | 缺少该项授权、版权/隐私边界、目标 diff、回滚或 Wisp schema | 其他独立获准操作 | 对应的明确授权与操作前提 |
+| 移交操作 | 缺少该项授权、版权/隐私边界、目标 diff、回滚或 SuperScience schema | 其他独立获准操作 | 对应的明确授权与操作前提 |
 
 ## 输出与诚实边界
 

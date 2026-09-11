@@ -1,18 +1,18 @@
-# Wisp Science Tips: Trajectories
+# SuperScience Tips: Trajectories
 
 When an AI finishes an analysis, “Done” is often not enough. Which file did it read? What code did it execute? Where did plotting fail? Can you return to the process a few days later?
 
-Wisp Science's **Trajectory** view shows that process. It organizes user inputs, assistant replies, tool calls, and model usage so you can work backward from a result to the steps that produced it.
+SuperScience's **Trajectory** view shows that process. It organizes user inputs, assistant replies, tool calls, and model usage so you can work backward from a result to the steps that produced it.
 
-The previous tutorials covered [MCP](wisp-science-mcp.md) and [Skills](wisp-science-skills.md). Here we explain how to open a trajectory, read its records, verify an analysis, and investigate failures.
+The previous tutorials covered [MCP](superscience-mcp.md) and [Skills](superscience-skills.md). Here we explain how to open a trajectory, read its records, verify an analysis, and investigate failures.
 
 > Screenshots show the real frontend in English with a demonstration conversation that checks a differential-expression table and attempts a plot. Filenames, code, errors, and usage are teaching examples, not completed scientific analysis.
 
 **Expand the execution process of a task.**
 
-Suppose you ask Wisp to inspect differential-expression results and draw a volcano plot. It may read the table, check column names, handle missing values, and run plotting code. A failure may lead to further checks and retries.
+Suppose you ask SuperScience to inspect differential-expression results and draw a volcano plot. It may read the table, check column names, handle missing values, and run plotting code. A failure may lead to further checks and retries.
 
-The trajectory groups these records by **turn**. Your message starts a turn containing the records produced while Wisp responds.
+The trajectory groups these records by **turn**. Your message starts a turn containing the records produced while SuperScience responds.
 
 ![Trajectory overview with the timeline and events grouped by turn](../../assets/tutorials/en/trajectory/01-overview.png)
 
@@ -48,7 +48,7 @@ The demonstration begins with:
 
 > Check the column names and missing values in results/differential_expression.csv.
 
-Wisp calls Python to read the table. Select that tool record and open **Preview** to inspect parameters and results.
+SuperScience calls Python to read the table. Select that tool record and open **Preview** to inspect parameters and results.
 
 ![Tool preview showing the file-reading code, column names, and missing-value counts](../../assets/tutorials/en/trajectory/02-tool-details.png)
 

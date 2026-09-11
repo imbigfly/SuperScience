@@ -228,7 +228,9 @@ pub(crate) fn normalize_mcp_app_context(
                 .as_object()
                 .ok_or_else(|| "MCP App model context blocks must be objects.".to_string())?;
             if block.get("type").and_then(serde_json::Value::as_str) != Some("text") {
-                return Err("Wisp currently accepts only text MCP App context blocks.".into());
+                return Err(
+                    "SuperScience currently accepts only text MCP App context blocks.".into(),
+                );
             }
             let text = block
                 .get("text")

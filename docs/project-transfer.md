@@ -50,9 +50,10 @@ existing aliases with canonical paths (including Windows junctions and symlinks)
 On Windows, canonical paths are compared without ASCII case differences. This
 lookup is read-only and does not infer that matching projects should be merged.
 
-When conversations appear missing after an update but remain in `wisp.sqlite`,
+When conversations appear missing after an update but remain in
+`superscience.sqlite` (legacy installs: `wisp.sqlite`),
 try this existing-project chooser before archive recovery. Session visibility is
-scoped to project ID, not just the workspace path. A small `.wisp/history`
+scoped to project ID, not just the workspace path. A small `.superscience/history`
 directory does not establish that database conversations were deleted. The
 chooser provides access to existing identities; it does not diagnose which
 version or operation originally created duplicates or changed window restoration.

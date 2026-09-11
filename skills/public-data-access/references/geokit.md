@@ -1,7 +1,7 @@
 # GEO acquisition with geokit
 
 Use this reference for the optional R adapter within `public-data-access`.
-geokit is not a bundled Wisp MCP server. Discover the current Wisp tool catalog
+geokit is not a bundled SuperScience MCP server. Discover the current SuperScience tool catalog
 before choosing operations; this guide does not introduce new tool names.
 
 ## Choose the operation
@@ -19,7 +19,7 @@ before choosing operations; this guide does not introduce new tool names.
 result limit. Use bounded connector queries for discovery. `geo_meta()` filters
 metadata during parsing but can still download full SOFT files.
 `geo_suppl()` returns paths and does not parse arbitrary attachment formats.
-The chat/Shiny helpers are unnecessary for acquisition through Wisp.
+The chat/Shiny helpers are unnecessary for acquisition through SuperScience.
 
 ## Check the selected execution context
 
@@ -106,7 +106,7 @@ fixtures and fake runners without R packages or network access.
 
 Reviewed geokit R package 0.0.2 at commit
 `3e0157737d4d3c948d55d155b1d73730a736ed13` on 2026-09-08. Check installed-version
-behavior before using flags; this reference is Wisp-specific routing guidance.
+behavior before using flags; this reference is SuperScience-specific routing guidance.
 
 - [Upstream skill](https://github.com/WangLabCSU/geokit/blob/3e0157737d4d3c948d55d155b1d73730a736ed13/pkgdown/assets/skills/geokit/SKILL.md)
 - [Download implementation](https://github.com/WangLabCSU/geokit/blob/3e0157737d4d3c948d55d155b1d73730a736ed13/R/download.R)

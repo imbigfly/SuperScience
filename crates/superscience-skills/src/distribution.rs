@@ -15,7 +15,9 @@ pub const MAX_ARCHIVE_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
 pub const MAX_EXPANDED_BYTES: u64 = 128 * 1024 * 1024;
 pub const MAX_ENTRIES: usize = 4000;
-pub const ORIGIN_FILE: &str = ".wisp-source.json";
+pub const ORIGIN_FILE: &str = ".superscience-source.json";
+/// Pre-rebrand provenance marker, still read from Skills installed by older builds.
+pub const LEGACY_ORIGIN_FILE: &str = ".wisp-source.json";
 
 #[derive(Debug, PartialEq)]
 pub struct GithubLink {
@@ -484,12 +486,16 @@ pub fn install_new(
 }
 
 pub fn read_origin(dir: &Path) -> Option<SkillInstallSource> {
-    let path = dir.join(ORIGIN_FILE);
-    if std::fs::symlink_metadata(&path)
+    read_origin_file(&dir.join(ORIGIN_FILE))
+        .or_else(|| read_origin_file(&dir.join(LEGACY_ORIGIN_FILE)))
+}
+
+fn read_origin_file(path: &Path) -> Option<SkillInstallSource> {
+    if std::fs::symlink_metadata(path)
         .ok()?
         .file_type()
         .is_symlink()
-        || std::fs::metadata(&path).ok()?.len() > 16 * 1024
+        || std::fs::metadata(path).ok()?.len() > 16 * 1024
     {
         return None;
     }
@@ -822,6 +828,25 @@ mod tests {
                 .all()
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn read_origin_accepts_pre_rebrand_marker_file() {
+        let temp = StagingDir::new(&std::env::temp_dir()).unwrap();
+        let root = extract_repository(&package(), &temp.0.join("unpack")).unwrap();
+        let candidates = inspect_repository(&root, &source("skills/sample")).unwrap();
+        let global = temp.0.join("user/skills");
+        let destination = install_new(&root, &global, &candidates[0]).unwrap();
+
+        // A Skill installed by a pre-rebrand build carries only the legacy marker.
+        let bytes = std::fs::read(destination.join(ORIGIN_FILE)).unwrap();
+        std::fs::remove_file(destination.join(ORIGIN_FILE)).unwrap();
+        std::fs::write(destination.join(LEGACY_ORIGIN_FILE), &bytes).unwrap();
+
+        assert_eq!(
+            read_origin(&destination),
+            Some(candidates[0].source.clone())
         );
     }
 

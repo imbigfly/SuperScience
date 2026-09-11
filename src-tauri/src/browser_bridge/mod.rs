@@ -2,12 +2,12 @@
 //!
 //! The extension runs inside the user's existing browser profile, so page
 //! execution keeps that profile's cookies, login state, extensions, GPU, and
-//! browser fingerprint. Wisp never launches a separate automation browser.
+//! browser fingerprint. SuperScience never launches a separate automation browser.
 //!
 //! Design acknowledgement: this bridge is inspired by GenericAgent's GA Web /
 //! TMWebDriver real-browser architecture and compatible loopback protocol:
 //! https://github.com/lsdefine/GenericAgent (MIT, Copyright 2025 lsdefine).
-//! This module is Wisp's independent Rust implementation; see
+//! This module is SuperScience's independent Rust implementation; see
 //! `browser-extension/NOTICE.md` for provenance details.
 
 use crate::workspace_surface::WorkspaceManager;
@@ -53,7 +53,7 @@ const EXTENSION_ORIGIN: &str = "chrome-extension://gnkjgagleagkgdlkkcianolobfdoo
 const BROWSER_DISCONNECTED_CODE: &str = "browser_extension_disconnected";
 const BROWSER_DISCONNECTED_MARKER: &str = "WISP_BROWSER_DISCONNECTED";
 const DISCONNECTED_ASSISTANT_INSTRUCTION: &str = "Live web retrieval is unavailable. Do not answer live, latest, current, or URL-specific questions from prior knowledge. Tell the user this turn contains no live web retrieval, relay the install steps, and wait until status is connected. Only continue from memory if they explicitly ask for a knowledge-only answer.";
-const STALE_ASSISTANT_INSTRUCTION: &str = "A connected extension is older than this Wisp build, so parts of the browser toolset will fail. Call browser_setup with action=update_extension first. It verifies and prepares the managed extension directory and automatically reloads compatible extension versions. If the result says manual_reload_required, relay current and bundled versions plus extension_path exactly, then ask the user to Reload Wisp Real Browser Bridge on chrome://extensions and call browser_setup again to recheck. Do not claim the newer tools exist until update_required is false.";
+const STALE_ASSISTANT_INSTRUCTION: &str = "A connected extension is older than this SuperScience build, so parts of the browser toolset will fail. Call browser_setup with action=update_extension first. It verifies and prepares the managed extension directory and automatically reloads compatible extension versions. If the result says manual_reload_required, relay current and bundled versions plus extension_path exactly, then ask the user to Reload SuperScience Real Browser Bridge on chrome://extensions and call browser_setup again to recheck. Do not claim the newer tools exist until update_required is false.";
 const DEFAULT_TIMEOUT_MS: u64 = 15_000;
 const MAX_TIMEOUT_MS: u64 = 60_000;
 const AUTO_LAUNCH_WAIT: Duration = Duration::from_secs(15);
@@ -115,7 +115,7 @@ struct PendingCleanup {
     auto_close: bool,
 }
 
-/// What `complete_turn` decided to do with tabs Wisp opened this turn.
+/// What `complete_turn` decided to do with tabs SuperScience opened this turn.
 #[derive(Debug)]
 pub enum TabCleanupAction {
     None,
@@ -147,9 +147,9 @@ struct SessionState {
     meta: SessionMeta,
 }
 
-/// A client that reached a bridge port but was never claimed as the Wisp
+/// A client that reached a bridge port but was never claimed as the SuperScience
 /// extension. Kept so `browser_setup` can say *why* the extension popup shows
-/// "Connected to Wisp" while Wisp reports `connected=false`.
+/// "Connected to SuperScience" while SuperScience reports `connected=false`.
 #[derive(Clone, Debug)]
 struct RefusedConnection {
     session: String,
@@ -243,7 +243,7 @@ fn session_summary(state: &BridgeState, name: &str, bundled_version: Option<&str
 }
 
 /// Explain a refused connection in the terms the user sees: the popup says
-/// connected, Wisp says it is not.
+/// connected, SuperScience says it is not.
 fn refusal_summary(refusal: Option<&RefusedConnection>) -> Value {
     let Some(refusal) = refusal else {
         return Value::Null;
@@ -251,10 +251,10 @@ fn refusal_summary(refusal: Option<&RefusedConnection>) -> Value {
     let session = &refusal.session;
     let explanation = match refusal.origin.as_deref() {
         Some(origin) if !origin.is_empty() => format!(
-            "An extension at {origin} reached the {session} port and Wisp refused it, because this bridge only accepts {EXTENSION_ORIGIN}. Its own popup can still read Connected to Wisp while Wisp reports connected=false. Load the bundled extension from extension_path (a repacked or third-party copy gets a different id), and remove any other loopback bridge extension."
+            "An extension at {origin} reached the {session} port and SuperScience refused it, because this bridge only accepts {EXTENSION_ORIGIN}. Its own popup can still read Connected to SuperScience while SuperScience reports connected=false. Load the bundled extension from extension_path (a repacked or third-party copy gets a different id), and remove any other loopback bridge extension."
         ),
         _ => format!(
-            "A client reached the {session} port without completing the Wisp extension handshake, so no session was claimed and Wisp reports connected=false. Another browser bridge or a plain HTTP client is probably using this port; stop it, then reload the Wisp extension."
+            "A client reached the {session} port without completing the SuperScience extension handshake, so no session was claimed and SuperScience reports connected=false. Another browser bridge or a plain HTTP client is probably using this port; stop it, then reload the SuperScience extension."
         ),
     };
     json!({
@@ -401,7 +401,7 @@ impl BrowserBridge {
             }
             Err(error) => {
                 bridge.state.lock().await.startup_error = Some(format!(
-                    "cannot listen on {BRIDGE_ADDR}: {error}; stop any other TMWebDriver/Wisp browser bridge using this port"
+                    "cannot listen on {BRIDGE_ADDR}: {error}; stop any other TMWebDriver/SuperScience browser bridge using this port"
                 ));
             }
         }
@@ -455,19 +455,19 @@ impl BrowserBridge {
         let live_retrieval = status == "connected";
         let steps = extension_path.as_ref().map_or_else(Vec::new, |path| {
             vec![
-                "Start Wisp Science and keep it running.".to_string(),
-                "Open chrome://extensions in the Chrome/Chromium profile Wisp should control."
+                "Start SuperScience Science and keep it running.".to_string(),
+                "Open chrome://extensions in the Chrome/Chromium profile SuperScience should control."
                     .to_string(),
                 "Enable Developer mode.".to_string(),
                 format!("Click Load unpacked and select this exact folder: {path}"),
-                "Open the Wisp Real Browser Bridge extension popup and confirm Connected to Wisp."
+                "Open the SuperScience Real Browser Bridge extension popup and confirm Connected to SuperScience."
                     .to_string(),
             ]
         });
         let path_instruction = if extension_ready {
             "Copy extension_path character-for-character. Never translate, infer, normalize, or replace any path segment."
         } else {
-            "The running Wisp build has no verified bundled extension path. Do not invent a path or claim the extension exists."
+            "The running SuperScience build has no verified bundled extension path. Do not invent a path or claim the extension exists."
         };
         let connected_tabs = ["shared", "workspace"]
             .into_iter()
@@ -973,7 +973,7 @@ impl BrowserBridge {
             return Err(errors::structured(
                 errors::EXTENSION_STALE,
                 &format!(
-                    "connected extension {version} (protocol {}) does not provide '{capability}'. Call browser_setup with action=update_extension to prepare and load Wisp Real Browser Bridge {bundled_version}. Do not pretend the new tool exists.",
+                    "connected extension {version} (protocol {}) does not provide '{capability}'. Call browser_setup with action=update_extension to prepare and load SuperScience Real Browser Bridge {bundled_version}. Do not pretend the new tool exists.",
                     slot.meta.protocol_version,
                 ),
                 false,
@@ -1169,11 +1169,11 @@ impl BrowserBridge {
     fn unavailable_message(&self, reason: &str) -> String {
         let setup = match self.verified_extension_path() {
             Some(path) => format!(
-                "real-browser bridge unavailable: {reason}. In Chrome/Chromium open chrome://extensions, enable Developer mode, and Load unpacked from this exact native {} path: '{path}'. Keep Wisp running; the extension connects only to {BRIDGE_ADDR}.",
+                "real-browser bridge unavailable: {reason}. In Chrome/Chromium open chrome://extensions, enable Developer mode, and Load unpacked from this exact native {} path: '{path}'. Keep SuperScience running; the extension connects only to {BRIDGE_ADDR}.",
                 std::env::consts::OS
             ),
             None => format!(
-                "real-browser bridge unavailable: {reason}. This Wisp build has no verified bundled browser extension; do not infer an installation path."
+                "real-browser bridge unavailable: {reason}. This SuperScience build has no verified bundled browser extension; do not infer an installation path."
             ),
         };
         format!("{setup} {BROWSER_DISCONNECTED_MARKER}. {DISCONNECTED_ASSISTANT_INSTRUCTION}")
@@ -1929,7 +1929,7 @@ impl BrowserBridge {
     }
 }
 
-/// Start the user's existing Chrome/Chromium/Edge so the unpacked Wisp
+/// Start the user's existing Chrome/Chromium/Edge so the unpacked SuperScience
 /// extension can reconnect. Does not use a temporary automation profile.
 fn spawn_user_browser(url: Option<&str>) -> Result<(), String> {
     let (program, args) = first_available_browser()
@@ -2141,7 +2141,7 @@ fn forbidden_response() -> ErrorResponse {
     tokio_tungstenite::tungstenite::http::Response::builder()
         .status(StatusCode::FORBIDDEN)
         .body(Some(
-            "Wisp browser bridge accepts Chrome extensions only".into(),
+            "SuperScience browser bridge accepts Chrome extensions only".into(),
         ))
         .expect("static browser bridge rejection response")
 }
@@ -2450,13 +2450,13 @@ fn human_verification_handoff(page: &Value) -> Option<Value> {
     Some(json!({
         "required": true,
         "reason": "captcha_challenge",
-        "instruction": "A verification prompt has been shown in the Wisp app. Stop browser automation. Do not call ask_user and do not click, solve, or bypass the challenge. End your turn. The user will confirm in the app after completing the challenge in the visible browser tab.",
+        "instruction": "A verification prompt has been shown in the SuperScience app. Stop browser automation. Do not call ask_user and do not click, solve, or bypass the challenge. End your turn. The user will confirm in the app after completing the challenge in the visible browser tab.",
         "resume": "After the user confirms, a follow-up message arrives. Call web_scan on the same tab and continue only when the challenge is no longer detected."
     }))
 }
 
 fn needs_human_block_message() -> String {
-    "This tab needs human verification. Do not automate the challenge. Wait for the user to complete it in the visible browser tab and confirm in the Wisp app.".into()
+    "This tab needs human verification. Do not automate the challenge. Wait for the user to complete it in the visible browser tab and confirm in the SuperScience app.".into()
 }
 
 fn script_allowed_during_needs_human(script: &str) -> bool {
@@ -2552,7 +2552,7 @@ impl Tool for BrowserSetupTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             self.name(),
-            "Call with no action before live page retrieval. The default is the user's shared daily Chrome profile: Wisp reuses it when connected and, when automatic launch is enabled, starts that normal profile so its installed extension can reconnect. Workspace is never a fallback; call action=start_workspace only when the user explicitly requests an isolated browser. Wisp verifies the bundled extension and maintains extension_path in a stable application-data directory. Copy extension_path character-for-character and never convert it between Windows, WSL, macOS, or Linux. If status is not connected, live_retrieval is false: do not answer live, latest, current, or URL-specific questions from prior knowledge; relay the steps and wait. If refused_connection is present, relay its explanation. If update_required is true, call this tool again with action=update_extension; compatible extensions reload automatically, while older extensions return manual_reload_required with the exact path. If extension_path_verified is false, report the validation error and never invent a path.",
+            "Call with no action before live page retrieval. The default is the user's shared daily Chrome profile: SuperScience reuses it when connected and, when automatic launch is enabled, starts that normal profile so its installed extension can reconnect. Workspace is never a fallback; call action=start_workspace only when the user explicitly requests an isolated browser. SuperScience verifies the bundled extension and maintains extension_path in a stable application-data directory. Copy extension_path character-for-character and never convert it between Windows, WSL, macOS, or Linux. If status is not connected, live_retrieval is false: do not answer live, latest, current, or URL-specific questions from prior knowledge; relay the steps and wait. If refused_connection is present, relay its explanation. If update_required is true, call this tool again with action=update_extension; compatible extensions reload automatically, while older extensions return manual_reload_required with the exact path. If extension_path_verified is false, report the validation error and never invent a path.",
             json!({
                 "type": "object",
                 "properties": {
@@ -3169,7 +3169,7 @@ impl Tool for WebSaveAssetsTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             self.name(),
-            "Download page assets (images, PDFs, zips) through the connected Chrome session using the extension host permission. Files are staged under Downloads/WispBrowserStaging then copied into the project. Never uses page fetch/CORS. Pass session when both browsers are connected.",
+            "Download page assets (images, PDFs, zips) through the connected Chrome session using the extension host permission. Files are staged under Downloads/SuperScienceBrowserStaging then copied into the project. Never uses page fetch/CORS. Pass session when both browsers are connected.",
             json!({
                 "type": "object",
                 "properties": {
@@ -3263,7 +3263,7 @@ impl Tool for WebSaveAssetsTool {
                         .value
                         .get("filename")
                         .and_then(Value::as_str)
-                        .unwrap_or("WispBrowserStaging/download.bin");
+                        .unwrap_or("SuperScienceBrowserStaging/download.bin");
                     let staged = execution
                         .value
                         .get("absolute_path")
@@ -4831,7 +4831,7 @@ mod tests {
         assert_eq!(foreign["reason"], "HTTP error: 403 Forbidden");
         let explanation = foreign["explanation"].as_str().unwrap();
         assert!(explanation.contains("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
-        assert!(explanation.contains("Connected to Wisp"));
+        assert!(explanation.contains("Connected to SuperScience"));
 
         let unfinished = refusal_summary(Some(&RefusedConnection {
             session: "workspace".into(),
@@ -4841,7 +4841,7 @@ mod tests {
         assert!(unfinished["explanation"]
             .as_str()
             .unwrap()
-            .contains("without completing the Wisp extension handshake"));
+            .contains("without completing the SuperScience extension handshake"));
     }
 
     #[tokio::test]

@@ -181,6 +181,22 @@ pub(crate) fn save_view_pref(key: &str, value: &str) {
     }
 }
 
+const SKILLS_FILTER_PREF: &str = "superscience-skills-filter";
+
+/// Skill filter chips include dynamic user tags, so any stored string is accepted.
+pub(crate) fn load_skill_filter_pref() -> String {
+    web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .and_then(|s| s.get_item(SKILLS_FILTER_PREF).ok().flatten())
+        .unwrap_or_default()
+}
+
+pub(crate) fn save_skill_filter_pref(value: &str) {
+    if let Some(s) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+        let _ = s.set_item(SKILLS_FILTER_PREF, value);
+    }
+}
+
 fn load_font_size(key: &str, fallback: u16, min: u16, max: u16) -> u16 {
     web_sys::window()
         .and_then(|w| w.local_storage().ok().flatten())

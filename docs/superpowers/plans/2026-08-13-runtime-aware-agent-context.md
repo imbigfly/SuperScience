@@ -10,7 +10,7 @@ tool-selection and code-generation decisions within each agent turn.
 
 ## 1. Motivation
 
-wisp-science's `RuntimeManager` already maintains persistent Python/R sessions
+superscience's `RuntimeManager` already maintains persistent Python/R sessions
 that retain loaded data across cells. The `inspect` protocol command returns a
 `RuntimeObjectList` with every object's name, type, summary, and size. The
 `system_prompt.rs` assembly layer produces a well-structured prompt with
@@ -384,7 +384,7 @@ independently in PR-sized stages.
 
 ## 4. Architecture fit
 
-All five enhancements are designed as natural extensions of existing wisp-science
+All five enhancements are designed as natural extensions of existing superscience
 abstractions:
 
 ```

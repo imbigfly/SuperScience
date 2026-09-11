@@ -10,7 +10,6 @@ pub(crate) fn ProjectsScreen(
     dialog_open: RwSignal<bool>,
     running: RwSignal<HashSet<String>>,
     approval_pending: ReadSignal<HashSet<String>>,
-    sync_actions_available: ReadSignal<bool>,
     open_error: RwSignal<Option<String>>,
     on_open: Callback<String>,
     on_open_session: Callback<(String, String)>,
@@ -59,9 +58,6 @@ pub(crate) fn ProjectsScreen(
     // the box reveals the convention text, which doubles as a worked example of
     // what Agent Context is for.
     let new_layout = create_rw_signal(false);
-    let syncing_projects = create_rw_signal(HashSet::<String>::new());
-    let sync_notice = create_rw_signal(None::<(bool, String)>);
-    let sync_conflict_project = create_rw_signal(None::<String>);
     // Pending project deletion, awaiting in-app confirmation. Native
     // `window.confirm()` is a no-op in this webview (wry's WKUIDelegate doesn't
     // implement the JS confirm panel), so it always returned false and the ✕
@@ -556,58 +552,6 @@ pub(crate) fn ProjectsScreen(
         });
     });
 
-    let resolve_sync_conflict = Callback::new(move |strategy: String| {
-        let Some(id) = sync_conflict_project.get_untracked() else {
-            return;
-        };
-        if syncing_projects.with_untracked(|ids| ids.contains(&id)) {
-            return;
-        }
-        syncing_projects.update(|ids| {
-            ids.insert(id.clone());
-        });
-        open_error.set(None);
-        sync_notice.set(Some((
-            true,
-            t(locale.get_untracked(), "projects.sync.running").into(),
-        )));
-        spawn_local(async move {
-            let args =
-                to_value(&serde_json::json!({ "id": id.clone(), "strategy": strategy })).unwrap();
-            match invoke_checked("resolve_project_sync", args).await {
-                Ok(value) => {
-                    if let Ok(result) = serde_wasm_bindgen::from_value::<ProjectSyncResult>(value) {
-                        let loc = locale.get_untracked();
-                        let text = if result.direction == "pull" {
-                            tf(
-                                loc,
-                                "projects.sync.pulled",
-                                &[("n", &result.downloaded_files.to_string())],
-                            )
-                        } else {
-                            tf(
-                                loc,
-                                "projects.sync.pushed",
-                                &[("n", &result.uploaded_files.to_string())],
-                            )
-                        };
-                        sync_notice.set(Some((true, text)));
-                    }
-                    sync_conflict_project.set(None);
-                    reload();
-                }
-                Err(error) => {
-                    sync_notice.set(None);
-                    let message = localize_backend(locale.get_untracked(), &js_error_text(error));
-                    open_error.set(Some(message));
-                }
-            }
-            syncing_projects.update(|ids| {
-                ids.remove(&id);
-            });
-        });
-    });
-
     // The root Escape stack closes the calendar only after these visually
     // higher, component-owned dialogs have had their turn.
     create_effect(move |_| {
@@ -619,7 +563,6 @@ pub(crate) fn ProjectsScreen(
                 || recovery_preview.get().is_some()
                 || import_options_open.get()
                 || pending_delete.get().is_some()
-                || sync_conflict_project.get().is_some()
                 || search_open.get()
                 || creating.get(),
         );
@@ -678,11 +621,6 @@ pub(crate) fn ProjectsScreen(
         if pending_delete.get().is_some() {
             ev.prevent_default();
             pending_delete.set(None);
-            return;
-        }
-        if sync_conflict_project.get().is_some() {
-            ev.prevent_default();
-            sync_conflict_project.set(None);
             return;
         }
         if search_open.get() {
@@ -1321,7 +1259,6 @@ pub(crate) fn ProjectsScreen(
                             .into_iter()
                             .filter(|project| !project_is_hidden(&project.id))
                             .collect::<Vec<_>>();
-                        let show_sync_actions = sync_actions_available.get();
                         if list.is_empty() && !creating.get() {
                             return view! {}.into_view();
                         }
@@ -1339,26 +1276,11 @@ pub(crate) fn ProjectsScreen(
                             let id_settings_locked = p.id.clone();
                             let workspace_export = p.workspace_dir.clone();
                             let workspace_path = p.workspace_dir.clone();
-                            let id_sync = p.id.clone();
-                            let id_sync_disabled = p.id.clone();
-                            let id_sync_locked = p.id.clone();
-                            let id_code = p.id.clone();
                             let meta = tf(loc, "projects.sessions_n", &[("n", &p.session_count.to_string())]);
                             let artifacts_meta = tf(loc, "projects.artifacts_n", &[("n", &p.artifact_count.to_string())]);
                             let active = p.running_count + p.needs_you_count;
                             let dot_class = if p.running_count > 0 { "running" } else { "ready" };
                             let when = format_relative_time(p.updated_at, loc);
-                            let sync_when = p.last_synced_at
-                                .map(|timestamp| format_relative_time(timestamp, loc))
-                                .filter(|value| !value.is_empty());
-                            let sync_label = if p.sync_configured {
-                                Some(sync_when.as_deref().map_or_else(
-                                    || t(loc, "projects.sync.enabled").into(),
-                                    |when| tf(loc, "projects.sync.last", &[("when", when)]),
-                                ))
-                            } else {
-                                None
-                            };
                             view! {
                                 <div class="proj-card"
                                     class:project-exporting=move || project_transfer.get().is_some_and(|transfer| transfer.is_exporting_project(&id_card_locked))>
@@ -1389,7 +1311,6 @@ pub(crate) fn ProjectsScreen(
                                         <div class="pc-meta-row">
                                             <span class="pc-meta">{meta}</span>
                                             <span class="pc-meta">{artifacts_meta}</span>
-                                            {sync_label.clone().map(|label| view! { <span class="pc-sync-state">{label}</span> })}
                                         </div>
                                     </div>
                                     </button>
@@ -1424,75 +1345,6 @@ pub(crate) fn ProjectsScreen(
                                                 }
                                             });
                                         }>{compose_icon("gear")}</button>
-                                    {show_sync_actions.then(|| view! {
-                                        <button class="pc-sync" title=t(loc, "projects.sync.now")
-                                            aria-label=t(loc, "projects.sync.now")
-                                            disabled=move || syncing_projects.with(|ids| ids.contains(&id_sync_disabled))
-                                                || project_transfer.get().is_some_and(|transfer| transfer.is_exporting_project(&id_sync_locked))
-                                            on:click=move |e| {
-                                                e.stop_propagation();
-                                                let id = id_sync.clone();
-                                                if syncing_projects.with(|ids| ids.contains(&id)) { return; }
-                                                syncing_projects.update(|ids| { ids.insert(id.clone()); });
-                                                sync_notice.set(Some((true, t(locale.get_untracked(), "projects.sync.running").into())));
-                                                open_error.set(None);
-                                                spawn_local(async move {
-                                                    let args = to_value(&serde_json::json!({ "id": id.clone() })).unwrap();
-                                                    match invoke_checked("sync_project", args).await {
-                                                        Ok(value) => {
-                                                            if let Ok(result) = serde_wasm_bindgen::from_value::<ProjectSyncResult>(value) {
-                                                                let loc = locale.get_untracked();
-                                                                let text = match result.direction.as_str() {
-                                                                    "push" => tf(loc, "projects.sync.pushed", &[("n", &result.uploaded_files.to_string())]),
-                                                                    "pull" => tf(loc, "projects.sync.pulled", &[("n", &result.downloaded_files.to_string())]),
-                                                                    _ => t(loc, "projects.sync.current").into(),
-                                                                };
-                                                                let text = if result.skipped_paths.is_empty() {
-                                                                    text
-                                                                } else {
-                                                                    format!("{text} {}", tf(loc, "projects.sync.skipped", &[("n", &result.skipped_paths.len().to_string())]))
-                                                                };
-                                                                sync_notice.set(Some((true, text)));
-                                                            }
-                                                            reload();
-                                                        }
-                                                        Err(error) => {
-                                                            sync_notice.set(None);
-                                                            let raw = js_error_text(error);
-                                                            if raw.contains("Sync conflict") {
-                                                                sync_conflict_project.set(Some(id.clone()));
-                                                            } else {
-                                                                let message = localize_backend(locale.get_untracked(), &raw);
-                                                                open_error.set(Some(message));
-                                                            }
-                                                        }
-                                                    }
-                                                    syncing_projects.update(|ids| { ids.remove(&id); });
-                                                });
-                                            }>{compose_icon("sync")}</button>
-                                        <button class="pc-sync-code" title=t(loc, "projects.sync.copy_code")
-                                            aria-label=t(loc, "projects.sync.copy_code")
-                                            on:click=move |e| {
-                                                e.stop_propagation();
-                                                let id = id_code.clone();
-                                                open_error.set(None);
-                                                spawn_local(async move {
-                                                    let args = to_value(&serde_json::json!({ "id": id })).unwrap();
-                                                    match invoke_checked("project_sync_code", args).await {
-                                                        Ok(value) => {
-                                                            if let Ok(code) = serde_wasm_bindgen::from_value::<String>(value) {
-                                                                copy_text(code);
-                                                                sync_notice.set(Some((true, t(locale.get_untracked(), "projects.sync.code_copied").into())));
-                                                            }
-                                                        }
-                                                        Err(error) => {
-                                                            let message = localize_backend(locale.get_untracked(), &js_error_text(error));
-                                                            open_error.set(Some(message));
-                                                        }
-                                                    }
-                                                });
-                                            }>{compose_icon("link")}</button>
-                                    })}
                                     <button class="pc-export" title=t(loc, "projects.export")
                                         aria-label=t(loc, "projects.export")
                                         disabled=move || project_transfer.get().is_some_and(|transfer| transfer.is_active())
@@ -1549,38 +1401,6 @@ pub(crate) fn ProjectsScreen(
                     }).collect_view()}
                 </div>
             </div>
-            <div class="projects-footer" prop:inert=move ||calendar_open.get()>
-                <span>{move || t(locale.get(), "projects.star_hint")}</span>
-                <button type="button" class="projects-star-link"
-                    on:click=move |_| open_external_url("https://github.com/imbigfly/SuperScience".into())>
-                    {move || t(locale.get(), "projects.star_link")}
-                </button>
-            </div>
-            {move || sync_notice.get().map(|(ok, text)| view! {
-                <div class="projects-sync-notice" class:ok=move || ok>{text}</div>
-            })}
-            {move || sync_conflict_project.get().map(|_| {
-                let use_remote = resolve_sync_conflict;
-                let use_local = resolve_sync_conflict;
-                view! {
-                    <div class="overlay">
-                        <div class="modal confirm-modal project-sync-conflict-modal" role="dialog"
-                            aria-label=move || t(locale.get(), "projects.sync.conflict_title")>
-                            <h2>{move || t(locale.get(), "projects.sync.conflict_title")}</h2>
-                            <p class="hint">{move || t(locale.get(), "projects.sync.conflict_hint")}</p>
-                            <p class="hint">{move || t(locale.get(), "projects.sync.conflict_backup")}</p>
-                            <div class="row project-sync-conflict-actions">
-                                <button type="button" on:click=move |_| sync_conflict_project.set(None)>
-                                    {move || t(locale.get(), "projects.cancel")}</button>
-                                <button type="button" on:click=move |_| use_remote.call("remote".into())>
-                                    {move || t(locale.get(), "projects.sync.use_remote")}</button>
-                                <button type="button" class="primary" on:click=move |_| use_local.call("local".into())>
-                                    {move || t(locale.get(), "projects.sync.use_local")}</button>
-                            </div>
-                        </div>
-                    </div>
-                }
-            })}
             {move || {
                 let delete_data_unlock_at = Rc::clone(&delete_data_unlock_at);
                 pending_delete.get().map(|id| {

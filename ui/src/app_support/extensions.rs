@@ -13,6 +13,7 @@ pub(crate) struct ExtensionsState {
     pub(crate) skills_search: RwSignal<String>,
     pub(crate) skills_msg: RwSignal<Option<(bool, String)>>,
     pub(crate) skill_filter_tag: RwSignal<String>,
+    pub(crate) skills_view_mode: RwSignal<String>,
     pub(crate) plugins_list: RwSignal<Vec<PluginRow>>,
     pub(crate) plugins_msg: RwSignal<Option<(bool, String)>>,
     // Cross-domain signals injected by `App`. The install modal flag stays
@@ -27,7 +28,12 @@ impl ExtensionsState {
             skills_list: create_rw_signal(Vec::<SkillRow>::new()),
             skills_search: create_rw_signal(String::new()),
             skills_msg: create_rw_signal(None::<(bool, String)>),
-            skill_filter_tag: create_rw_signal(String::new()),
+            skill_filter_tag: create_rw_signal(load_skill_filter_pref()),
+            skills_view_mode: create_rw_signal(load_view_pref(
+                "superscience-skills-view",
+                "cards",
+                &["cards", "list"],
+            )),
             plugins_list: create_rw_signal(Vec::<PluginRow>::new()),
             plugins_msg: create_rw_signal(None::<(bool, String)>),
             plugin_install_open,

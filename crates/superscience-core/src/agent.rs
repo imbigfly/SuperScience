@@ -890,7 +890,7 @@ async fn describe_image(
     let comp = provider
         .complete(
             &[
-                Message::system("You are Wisp's vision subagent. Return concise, factual observations for a non-visual main agent. Do not invent details that are not visible."),
+                Message::system("You are SuperScience's vision subagent. Return concise, factual observations for a non-visual main agent. Do not invent details that are not visible."),
                 user,
             ],
             &[],

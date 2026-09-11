@@ -5,12 +5,12 @@ SuperScience can run an external coding agent through the [Agent Client Protocol
 ACP Agents are **not** HTTP model profiles. Settings → Models configures API providers for the built-in SuperScience agent. ACP configures a separate local process that owns its own session, tools, and auth.
 
 Each conversation retains its own agent binding when switching sessions or
-restarting Wisp. Model/reasoning configuration options are cached per conversation
+restarting SuperScience. Model/reasoning configuration options are cached per conversation
 and launch-profile fingerprint, including subsequent agent option updates. When
-an agent omits options from load/resume, Wisp restores the last received list;
+an agent omits options from load/resume, SuperScience restores the last received list;
 an explicitly empty list clears it. Restored controls work before the first
 message by resuming the bound agent when a setting is changed. Older sessions
-without a saved list must receive options once before Wisp can cache them.
+without a saved list must receive options once before SuperScience can cache them.
 
 ## Prerequisites
 

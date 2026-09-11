@@ -5112,6 +5112,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "superscience-bio"
+version = "1.11.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "chrono",
+ "flate2",
+ "noodles-bgzf",
+ "noodles-core",
+ "noodles-csi",
+ "noodles-tabix",
+ "reqwest 0.12.28",
+ "roxmltree",
+ "serde",
+ "serde_json",
+ "sha2",
+ "superscience-llm",
+ "superscience-tools",
+ "tokio",
+]
+
+[[package]]
 name = "superscience-cli"
 version = "1.11.0"
 dependencies = [
@@ -5123,6 +5146,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
+ "superscience-bio",
  "superscience-core",
  "superscience-llm",
  "superscience-mcp",
@@ -5134,7 +5158,6 @@ dependencies = [
  "tokio",
  "tracing-subscriber",
  "uuid",
- "wisp-bio",
 ]
 
 [[package]]
@@ -5350,6 +5373,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "superscience-acp",
+ "superscience-bio",
  "superscience-core",
  "superscience-dto",
  "superscience-llm",
@@ -5380,7 +5404,6 @@ dependencies = [
  "which",
  "windows",
  "winreg 0.55.0",
- "wisp-bio",
  "zip 2.4.2",
 ]
 
@@ -7434,29 +7457,6 @@ name = "winsafe"
 version = "0.0.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d135d17ab770252ad95e9a872d365cf3090e3be864a34ab46f48555993efc904"
-
-[[package]]
-name = "wisp-bio"
-version = "1.11.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "chrono",
- "flate2",
- "noodles-bgzf",
- "noodles-core",
- "noodles-csi",
- "noodles-tabix",
- "reqwest 0.12.28",
- "roxmltree",
- "serde",
- "serde_json",
- "sha2",
- "superscience-llm",
- "superscience-tools",
- "tokio",
-]
 
 [[package]]
 name = "wit-bindgen"

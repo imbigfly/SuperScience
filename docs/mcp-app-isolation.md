@@ -107,12 +107,12 @@ Automated entry points (PowerShell, from the worktree):
 ```powershell
 $env:WISP_CATALOG_OFFLINE = '1'
 cargo fmt --all -- --check
-cargo check -p wisp-tauri --offline
+cargo check -p superscience-tauri --offline
 cargo test --workspace --offline
-cargo run -p wisp-mcp --example smoke --offline
-cargo run -p wisp-tauri --example webview_recovery_smoke --offline
+cargo run -p superscience-mcp --example smoke --offline
+cargo run -p superscience-tauri --example webview_recovery_smoke --offline
 $env:WISP_ISOLATION_CYCLES = '100'
-cargo run -p wisp-tauri --example mcp_app_isolation_smoke --offline
+cargo run -p superscience-tauri --example mcp_app_isolation_smoke --offline
 Push-Location ui
 cargo check --target wasm32-unknown-unknown --offline
 Pop-Location
@@ -128,7 +128,7 @@ browser/renderer process trees, runs a bounded 20-second guest block, exercises
 primary DOM control handlers during the block, rejects a child workspace IPC,
 tests scoped native Stop, closes a blocked child and cycles mount/destruction.
 It waits for profile cleanup and asserts no orphan controllers. It does not
-instantiate the normal database, normal Wisp plugins or real remote tasks.
+instantiate the normal database, normal SuperScience plugins or real remote tasks.
 
 Browser tests explicitly distinguish a native-backend mock (no primary
 iframe) from legacy iframe regression. They cover mount/suspend/rebuild,

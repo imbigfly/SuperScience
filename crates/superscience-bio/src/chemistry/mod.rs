@@ -266,7 +266,7 @@ pub(super) fn join_url(base: &str, path: &str) -> String {
 }
 
 pub(super) fn ncbi_identity(bio: &NativeBio) -> Vec<(String, String)> {
-    let mut params = vec![("tool".into(), "wisp-science".into())];
+    let mut params = vec![("tool".into(), "SuperScience".into())];
     if let Some(email) = bio.credential("NCBI_EMAIL") {
         params.push(("email".into(), email.to_string()));
     }

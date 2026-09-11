@@ -19,39 +19,6 @@ pub(crate) fn normalized_settings(mut cfg: Settings) -> Settings {
     cfg
 }
 
-pub(crate) fn project_sync_backend_configured(cfg: &Settings) -> bool {
-    match cfg.sync_backend.as_str() {
-        "folder" => !cfg.sync_folder.trim().is_empty(),
-        "relay" => {
-            !cfg.sync_relay_url.trim().is_empty()
-                && (cfg.has_sync_relay_token || !cfg.sync_relay_token.trim().is_empty())
-        }
-        _ => false,
-    }
-}
-
-#[cfg(test)]
-mod project_sync_backend_tests {
-    use super::{project_sync_backend_configured, Settings};
-
-    #[test]
-    fn requires_a_complete_configuration_for_the_selected_backend() {
-        let mut settings = Settings::default();
-        assert!(!project_sync_backend_configured(&settings));
-
-        settings.sync_relay_url = "https://relay.example.test".into();
-        assert!(!project_sync_backend_configured(&settings));
-
-        settings.has_sync_relay_token = true;
-        assert!(project_sync_backend_configured(&settings));
-
-        settings.sync_backend = "folder".into();
-        assert!(!project_sync_backend_configured(&settings));
-
-        settings.sync_folder = "C:\\Wisp Sync".into();
-        assert!(project_sync_backend_configured(&settings));
-    }
-}
 
 #[cfg(test)]
 mod provider_form_tests {
@@ -1012,6 +979,7 @@ pub(crate) fn profile_to_entry(m: &ModelProfile) -> ModelFormEntry {
             128_000
         },
         reasoning_effort: m.reasoning_effort.clone(),
+        service_tier: m.service_tier.clone(),
         image_size: m.image_size.clone(),
         image_quality: m.image_quality.clone(),
         image_aspect_ratio: m.image_aspect_ratio.clone(),
@@ -1416,7 +1384,6 @@ pub(crate) fn settings_section_label(loc: Locale, section: &str) -> String {
         "general" => t(loc, "settings.nav.general"),
         "session" => t(loc, "settings.nav.session"),
         "appearance" => t(loc, "settings.nav.appearance"),
-        "pet" => t(loc, "settings.nav.pet"),
         "environments" => t(loc, "settings.nav.environments"),
         "models" => t(loc, "settings.nav.models"),
         "quick-actions" => t(loc, "settings.nav.quick_actions"),

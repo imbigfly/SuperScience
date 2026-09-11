@@ -3097,8 +3097,8 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string;
               directory: mockPetDirectory,
               error: null,
               asset: mockPetEnabled ? {
-                id: "wispy",
-                displayName: "Wispy",
+                id: "superscience-pet",
+                displayName: "SuperScience Pet",
                 description: "A cheerful neon terminal spirit.",
                 spriteVersionNumber: 2,
                 spritesheetDataUrl: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z0mAAAAAASUVORK5CYII=",
@@ -4203,9 +4203,9 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string;
             const name = source.package_path.split("/").at(-1);
             await new Promise(resolve => setTimeout(resolve, 150));
             if (skills.some(skill => skill.name === name)) throw new Error("Name conflict; existing files preserved");
-            skills.push({ name, description: "Research handoff", tags: ["handoff"], scope: "global", enabled: true, builtin: false, dir: "/home/test/.wisp/skills/" + name });
+            skills.push({ name, description: "Research handoff", tags: ["handoff"], scope: "global", enabled: true, builtin: false, dir: "/home/test/.superscience/skills/" + name });
             ((window as any).__skillStoreOrigins ??= {})[name] = source;
-            return { name, directory: "/home/test/.wisp/skills/" + name, notice: null };
+            return { name, directory: "/home/test/.superscience/skills/" + name, notice: null };
           }
           case "get_skill_install_source":
             return (window as any).__skillStoreOrigins?.[String(arg("name"))] ?? null;
@@ -4391,7 +4391,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string;
                   skip_approvals: mockBioMartSkip,
                   description: "Query Ensembl BioMart for genomic annotations, identifier translation and cross-references.",
                   description_zh: "通过 Ensembl BioMart 查询基因组注释、转换标识符并查找交叉引用。",
-                  maintainer: "Wisp Science",
+                  maintainer: "SuperScience",
                   links: [
                     { label: "Ensembl BioMart", url: "https://www.ensembl.org/info/data/biomart/index.html" },
                     { label: "Ensembl usage terms", url: "https://www.ensembl.org/info/about/legal/disclaimer.html" },
@@ -4803,7 +4803,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string;
               return {
                 path: "artifact-version:resource-version-bib",
                 mime: "text/x-bibtex",
-                text: "@article{wisp,\n  title = {Wisp Science}\n}",
+                text: "@article{superscience,\n  title = {SuperScience}\n}",
                 base64: null,
               };
             }
@@ -4846,7 +4846,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string;
             if ((window as any).__trajectoryExportError) {
               throw new Error(String((window as any).__trajectoryExportError));
             }
-            return "/mock/wisp-trajectory.html";
+            return "/mock/superscience-trajectory.html";
           case "save_share_image":
             return "/mock/wisp-share.png";
           case "save_share_html":
@@ -6619,7 +6619,7 @@ export function parallelMock(): void {
           case "export_session": return "/mock/export.zip";
           case "export_session_trajectory":
             if ((window as any).__trajectoryExportCancel) return null;
-            return "/mock/wisp-trajectory.html";
+            return "/mock/superscience-trajectory.html";
           case "import_session_archive": return {
             frame_id: "imported-frame", status: "imported",
             message_count: 3, artifact_count: 0, missing_artifacts: [],

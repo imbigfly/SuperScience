@@ -94,6 +94,7 @@ pub(crate) fn scan_workspace(
             .git_global(false)
             .git_exclude(false)
             .require_git(false)
+            .add_custom_ignore_filename(".superscienceignore")
             .add_custom_ignore_filename(".wispignore");
     }
     builder.filter_entry(move |entry| {
@@ -258,19 +259,22 @@ mod tests {
     }
 
     #[test]
-    fn scan_honors_gitignore_wispignore_and_generated_directory_exclusions() {
+    fn scan_honors_gitignore_branded_and_legacy_ignore_files() {
         let root = std::env::temp_dir().join(format!(
             "wisp_workspace_scan_ignore_{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(root.join("private")).unwrap();
+        std::fs::create_dir_all(root.join("legacy-private")).unwrap();
         std::fs::create_dir_all(root.join("nested/.pixi/cache")).unwrap();
         std::fs::write(root.join(".gitignore"), b"ignored.txt\n*.tmp\n!keep.tmp\n").unwrap();
-        std::fs::write(root.join(".wispignore"), b"private/\n").unwrap();
+        std::fs::write(root.join(".superscienceignore"), b"private/\n").unwrap();
+        std::fs::write(root.join(".wispignore"), b"legacy-private/\n").unwrap();
         std::fs::write(root.join("ignored.txt"), b"ignored").unwrap();
         std::fs::write(root.join("drop.tmp"), b"ignored").unwrap();
         std::fs::write(root.join("keep.tmp"), b"kept").unwrap();
         std::fs::write(root.join("private/secret.txt"), b"ignored").unwrap();
+        std::fs::write(root.join("legacy-private/secret.txt"), b"ignored").unwrap();
         std::fs::write(root.join("nested/.pixi/cache/package"), b"ignored").unwrap();
         std::fs::write(root.join("visible.txt"), b"visible").unwrap();
 
@@ -288,12 +292,14 @@ mod tests {
             .map(|node| node.relative_path.as_str())
             .collect::<Vec<_>>();
         assert!(paths.contains(&".gitignore"));
+        assert!(paths.contains(&".superscienceignore"));
         assert!(paths.contains(&".wispignore"));
         assert!(paths.contains(&"keep.tmp"));
         assert!(paths.contains(&"visible.txt"));
         assert!(!paths.contains(&"ignored.txt"));
         assert!(!paths.contains(&"drop.tmp"));
         assert!(!paths.iter().any(|path| path.starts_with("private")));
+        assert!(!paths.iter().any(|path| path.starts_with("legacy-private")));
         assert!(!paths.iter().any(|path| path.contains(".pixi")));
         let _ = std::fs::remove_dir_all(root);
     }

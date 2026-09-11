@@ -549,7 +549,7 @@ async fn clinvar_search_encodes_identity_and_reports_missing_and_truncation() {
         traffic.contains("api_key=synthetic-key%26value"),
         "{traffic}"
     );
-    assert!(traffic.contains("tool=wisp-science"), "{traffic}");
+    assert!(traffic.contains("tool=SuperScience"), "{traffic}");
     assert_eq!(result["source"], "NCBI ClinVar");
     assert_eq!(result["total"], 3);
     assert_eq!(result["truncated"], true);

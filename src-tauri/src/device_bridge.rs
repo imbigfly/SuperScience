@@ -1253,8 +1253,8 @@ mod tests {
         fs::write(
             directory.join("pet.json"),
             serde_json::json!({
-                "id": "wispy",
-                "displayName": "Wispy",
+                "id": "superscience-pet",
+                "displayName": "SuperScience Pet",
                 "description": "test pet",
                 "spriteVersionNumber": 2,
                 "spritesheetPath": spritesheet_path,
@@ -1489,8 +1489,8 @@ mod tests {
         assert_eq!(manifest["type"], "pet_manifest");
         assert_eq!(manifest["protocol"], 1);
         assert_eq!(manifest["enabled"], true);
-        assert_eq!(manifest["id"], "wispy");
-        assert_eq!(manifest["displayName"], "Wispy");
+        assert_eq!(manifest["id"], "superscience-pet");
+        assert_eq!(manifest["displayName"], "SuperScience Pet");
         assert_eq!(manifest["format"], "png");
         assert_eq!(manifest["frameWidth"], PET_FRAME_WIDTH);
         assert_eq!(manifest["frameHeight"], PET_FRAME_HEIGHT);
@@ -1574,7 +1574,7 @@ mod tests {
 
         let mut pet_json: Value =
             serde_json::from_slice(&fs::read(directory.join("pet.json")).unwrap()).unwrap();
-        pet_json["displayName"] = json!("Wispy revised");
+        pet_json["displayName"] = json!("SuperScience Pet revised");
         fs::write(directory.join("pet.json"), pet_json.to_string()).unwrap();
         let stale = client
             .get(format!(

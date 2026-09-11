@@ -228,7 +228,7 @@ Move, shorten, or stagger until the scan is clean, re-saving each time.
 
 **2. Visual pass.** Geometry can't see a low-contrast label, crossing
 leaders, or two confusable series colours. Crop each panel to its own file
-and inspect every crop with Wisp's `view_image` tool:
+and inspect every crop with SuperScience's `view_image` tool:
 
 ```python
 from PIL import Image

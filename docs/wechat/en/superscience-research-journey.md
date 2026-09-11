@@ -1,12 +1,12 @@
-# Wisp Science Tips: Research Journey, a trace for every day of discovery
+# SuperScience Tips: Research Journey, a trace for every day of discovery
 
 How did you produce last week's figure? Why did you choose method B? Yesterday's experiment failed; where should you pick up today?
 
 Research often spans several conversations, runs, and file versions. Before a lab meeting or while writing a paper, you need to reconnect them: what happened on a particular day, which results it produced, what supported your decisions, and what still needs validation.
 
-The theme of Wisp Science v1.11.0 is **Research Journey**. This tutorial starts at the home research calendar, takes you into a project's daily history, and shows how to inspect sources, add research notes, and organize selected evidence for a manuscript.
+The theme of SuperScience v1.11.0 is **Research Journey**. This tutorial starts at the home research calendar, takes you into a project's daily history, and shows how to inspect sources, add research notes, and organize selected evidence for a manuscript.
 
-> This tutorial applies to v1.11.0. Screenshots show the actual Wisp Science frontend with a fixed date and simulated data; no model or server connection is needed. Files, experiments, and findings are teaching examples. The publication screenshot uses a separate demonstration dataset; it does not imply that the earlier results were transferred automatically.
+> This tutorial applies to v1.11.0. Screenshots show the actual SuperScience frontend with a fixed date and simulated data; no model or server connection is needed. Files, experiments, and findings are teaching examples. The publication screenshot uses a separate demonstration dataset; it does not imply that the earlier results were transferred automatically.
 
 ## Three views to know
 
@@ -16,7 +16,7 @@ The theme of Wisp Science v1.11.0 is **Research Journey**. This tutorial starts 
 | Research journey in the project sidebar | What happened in this project, and which run produced an output? |
 | A conversation's trajectory | Which tools did this conversation call, and what happened at each step? |
 
-To inspect tool arguments or an error, see the [trajectory tutorial](wisp-science-trajectory.md). Research Journey provides the project and date view for reviewing work across conversations.
+To inspect tool arguments or an error, see the [trajectory tutorial](superscience-trajectory.md). Research Journey provides the project and date view for reviewing work across conversations.
 
 ## Step 1: Find the day's work in the calendar
 
@@ -106,10 +106,10 @@ For revision, capsule, and verification details, see the [Publication Evidence W
 
 At the start of work, use the calendar to review yesterday and find the questions still awaiting validation. Before finishing, open today's Research Journey, check the versions and sources of key outputs, and add a note with evidence and a next step.
 
-When a meeting or manuscript deadline arrives, follow the dates back to the original results, runs, and reasoning. The context available still depends on the outputs, inputs, and notes you actually registered. Wisp does not automatically generate daily scientific summaries or treat every file in a directory as a research result.
+When a meeting or manuscript deadline arrives, follow the dates back to the original results, runs, and reasoning. The context available still depends on the outputs, inputs, and notes you actually registered. SuperScience does not automatically generate daily scientific summaries or treat every file in a directory as a research result.
 
 **A trace for every day of discovery.**
 
-Project and downloads: [Wisp Science](https://github.com/xuzhougeng/wisp-science) · [v1.11.0](https://github.com/xuzhougeng/wisp-science/releases/tag/v1.11.0)
+Project and downloads: [SuperScience](https://www.tctoken.cn/) · [GitHub](https://github.com/imbigfly/SuperScience)
 
-Continue reading: [Quick Start](wisp-science-quick-start.md) · [Trajectories](wisp-science-trajectory.md) · [Import, Export, and Sharing](wisp-science-transfer.md)
+Continue reading: [Quick Start](superscience-quick-start.md) · [Trajectories](superscience-trajectory.md) · [Import, Export, and Sharing](superscience-transfer.md)

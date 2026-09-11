@@ -450,7 +450,7 @@ fn api_base(bio: &NativeBio, credential: &str, default: &str) -> String {
 }
 
 fn ncbi_identity(bio: &NativeBio) -> Vec<(String, String)> {
-    let mut params = vec![("tool".into(), "wisp-science".into())];
+    let mut params = vec![("tool".into(), "SuperScience".into())];
     if let Some(key) = bio.credential("NCBI_API_KEY") {
         params.push(("api_key".into(), key.to_string()));
     }

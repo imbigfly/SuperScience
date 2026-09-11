@@ -423,8 +423,8 @@ mod tests {
         fs::write(
             directory.join("pet.json"),
             serde_json::json!({
-                "id": "wispy",
-                "displayName": "Wispy",
+                "id": "superscience-pet",
+                "displayName": "SuperScience Pet",
                 "description": "test pet",
                 "spriteVersionNumber": version,
                 "spritesheetPath": sprite_path,
@@ -445,7 +445,7 @@ mod tests {
         .unwrap();
 
         let pet = load_pet_asset(&dir).unwrap();
-        assert_eq!(pet.id, "wispy");
+        assert_eq!(pet.id, "superscience-pet");
         assert_eq!(pet.frame_counts["idle"], 7);
         assert!(pet
             .spritesheet_data_url

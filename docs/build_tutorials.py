@@ -14,12 +14,12 @@ from markdown_it import MarkdownIt
 DOCS = Path(__file__).resolve().parent
 START = "<!-- BEGIN GENERATED TUTORIALS -->"
 END = "<!-- END GENERATED TUTORIALS -->"
-REPOSITORY = "https://github.com/xuzhougeng/wisp-science/blob/main/docs/"
+REPOSITORY = "https://github.com/imbigfly/SuperScience/blob/main/docs/"
 READING_ORDER = [
-    "wisp-science-quick-start", "wisp-science-models", "wisp-science-browser",
-    "wisp-science-servers-cli", "wisp-science-transfer", "wisp-science-mcp",
-    "wisp-science-skills", "wisp-science-trajectory", "wisp-science-research-journey", "wisp-science-cli",
-    "wisp-science-acp",
+    "superscience-quick-start", "superscience-models", "superscience-browser",
+    "superscience-servers-cli", "superscience-transfer", "superscience-mcp",
+    "superscience-skills", "superscience-trajectory", "superscience-research-journey", "superscience-cli",
+    "superscience-acp",
 ]
 
 
@@ -68,7 +68,7 @@ def render_article(source, articles, language):
     title = tokens[1].content
     prefix, separator, short = title.partition("：" if language == "zh" else ":")
     short = short.strip() if separator else title
-    category = (prefix.replace("Wisp Science", "").strip() if separator
+    category = (prefix.replace("SuperScience", "").replace("天成科研助手", "").strip() if separator
                 else ("教程" if language == "zh" else "Tutorial"))
     tokens = tokens[3:]
     # Rewrite parsed links/images only; keep code examples intact.
@@ -131,8 +131,8 @@ def render_tutorials(directory=None):
              + "\n".join(cards) + "\n</div>\n" + END + after}
     head, footer = article_shell(directory)
     for index, (anchor, zh, en) in enumerate(entries):
-        zh_title = zh["short"] + " · 教程 | Wisp Science"
-        en_title = en["short"] + " · Tutorials | Wisp Science"
+        zh_title = zh["short"] + " · 教程 | 天成科研助手"
+        en_title = en["short"] + " · Tutorials | SuperScience"
         article_head = re.sub(r"<title>.*?</title>", lambda _: f"<title>{escape(zh_title)}</title>", head)
         article_head = re.sub(r'<meta name="description" content="[^"]*">',
                               lambda _: f'<meta name="description" content="{escape(zh["title"])}">', article_head)

@@ -37,7 +37,7 @@ bundle、另行批准 adapter 工作，或把依赖范围标为 blocked。
 
 本 Skill 后段的 Gate 4 与安全移交只服务于本流程产出的候选：MRULE-005 评测本元 Skill
 自身获准且 matching 的物化版本；MRULE-006 只处理同一流程中已由 Gate 4 接受的候选，
-不能作为通用 eval、Git、发布或 Wisp 部署能力触发。
+不能作为通用 eval、Git、发布或 SuperScience 部署能力触发。
 
 ## 分类决策
 

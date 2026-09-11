@@ -39,7 +39,7 @@ pub struct ExtensionPackage {
 /// Copy the bundled extension into a stable application-data directory.
 ///
 /// Chrome remembers the directory used by "Load unpacked". Release resource
-/// paths can move between Wisp installs, so the shared browser extension must
+/// paths can move between SuperScience installs, so the shared browser extension must
 /// point at this managed copy instead. Replacement is staged and verified
 /// before the old copy is moved out of the way.
 pub fn sync(
@@ -150,7 +150,9 @@ pub fn inspect(dir: &Path, expected_extension_id: &str) -> Result<ExtensionPacka
         .and_then(Value::as_str)
         .ok_or_else(|| "browser extension manifest has no signing key".to_string())?;
     if extension_id_from_key(key)? != expected_extension_id {
-        return Err("browser extension signing key does not match Wisp's extension id".into());
+        return Err(
+            "browser extension signing key does not match SuperScience's extension id".into(),
+        );
     }
     let protocol = fs::read_to_string(dir.join("protocol.js"))
         .map_err(|error| format!("read browser extension protocol: {error}"))?;

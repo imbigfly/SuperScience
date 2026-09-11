@@ -898,7 +898,7 @@ struct BioDomain {
 /// Built-in domain inventory comes from the same native catalog as dispatch.
 fn bio_domains() -> Vec<BioDomain> {
     let mut map = BTreeMap::<String, Vec<String>>::new();
-    for (domain, schema) in wisp_bio::catalog() {
+    for (domain, schema) in superscience_bio::catalog() {
         map.entry(domain.into())
             .or_default()
             .push(schema.function.name);
@@ -5241,12 +5241,15 @@ async fn wire_runtimes_and_mcp(
     } else {
         let pkg = superscience_paths::env_product_or_wisp("WISP_MCP_PKG")
             .unwrap_or_else(|| "mcp_bio".into());
-        let native_selected = wisp_bio::selected_by_package(&pkg);
+        let native_selected = superscience_bio::selected_by_package(&pkg);
         if native_selected {
-            match wisp_bio::NativeBio::with_proxy(&service_env, &network::mcp_proxy()) {
+            match superscience_bio::NativeBio::with_proxy(&service_env, &network::mcp_proxy()) {
                 Ok(client) => {
-                    for tool in wisp_bio::tools_for_package(std::sync::Arc::new(client), &pkg) {
-                        let domain = wisp_bio::domain_for_tool(tool.name()).unwrap_or_default();
+                    for tool in
+                        superscience_bio::tools_for_package(std::sync::Arc::new(client), &pkg)
+                    {
+                        let domain =
+                            superscience_bio::domain_for_tool(tool.name()).unwrap_or_default();
                         if disabled.contains(domain)
                             || connector_allow.is_some_and(|allow| !allow.contains(domain))
                         {
@@ -5546,7 +5549,7 @@ fn acp_bridge_launch(
     allowed_tools: Option<&[String]>,
 ) -> Result<(String, Vec<String>), String> {
     let exe = std::env::current_exe()
-        .map_err(|e| format!("Cannot locate Wisp executable for MCP bridge: {e}"))?
+        .map_err(|e| format!("Cannot locate SuperScience executable for MCP bridge: {e}"))?
         .display()
         .to_string();
     let mut bridge_args = vec![
@@ -6598,9 +6601,9 @@ async fn side_chat_http_provider(
 }
 
 fn list_mcp_servers(_root: &std::path::Path) -> Vec<String> {
-    let mut out = wisp_bio::catalog()
+    let mut out = superscience_bio::catalog()
         .into_iter()
-        .map(|(domain, _)| wisp_bio::package_name(domain))
+        .map(|(domain, _)| superscience_bio::package_name(domain))
         .collect::<Vec<_>>();
     out.sort();
     out.dedup();
@@ -6980,14 +6983,9 @@ fn spawn_deferred_startup(
 
         #[cfg(target_os = "windows")]
         {
-            let pet_enabled = store
-                .get_setting("pet_enabled")
-                .await
-                .ok()
-                .flatten()
-                .is_some_and(|value| value == "true");
-            if let Err(error) = desktop_lifecycle::sync_pet_window(&app, pet_enabled) {
-                tracing::warn!(target: "wisp", %error, "failed to initialize pet window");
+            // Desktop pet UI removed — always hide any leftover pet window.
+            if let Err(error) = desktop_lifecycle::sync_pet_window(&app, false) {
+                tracing::warn!(target: "wisp", %error, "failed to hide pet window");
             }
         }
 
@@ -7785,12 +7783,46 @@ pub fn run() {
             specialists::remove_specialist,
             specialists::set_session_specialist,
             specialists::get_session_specialist,
+            specialists::save_specialist_instructions,
+            specialists::reset_specialist_instructions,
+            get_pii_firewall_enabled,
+            set_pii_firewall_enabled,
+            get_handwriting_extract_vision_model,
+            set_handwriting_extract_vision_model,
+            get_handwriting_extract_calibration_model,
+            set_handwriting_extract_calibration_model,
+            set_frame_vision_model,
+            get_pii_custom_terms,
+            set_pii_custom_terms,
+            tctoken::tctoken_session_cmd,
+            tctoken::tctoken_login_cmd,
+            tctoken::tctoken_login_2fa_cmd,
+            tctoken::tctoken_logout_cmd,
+            tctoken::tctoken_get_remembered_login_cmd,
+            tctoken::tctoken_set_remembered_login_cmd,
+            tctoken::tctoken_clear_remembered_login_cmd,
+            tctoken::tctoken_account_cmd,
+            tctoken::tctoken_logs_cmd,
+            tctoken::tctoken_logs_stat_cmd,
+            tctoken::tctoken_topup_info_cmd,
+            tctoken::tctoken_topup_amount_cmd,
+            tctoken::tctoken_topup_pay_cmd,
+            tctoken::tctoken_topup_redeem_cmd,
+            tctoken::tctoken_topup_orders_cmd,
+            tctoken::tctoken_tokens_cmd,
+            tctoken::tctoken_token_key_cmd,
+            tctoken::tctoken_get_default_token_id_cmd,
+            tctoken::tctoken_set_default_token_cmd,
+            tctoken::tctoken_set_drawing_key_cmd,
+            tctoken::tctoken_provider_url_cmd,
+            ability_card_usage::report_ability_card_usage_cmd,
+            ability_card_usage::set_frame_ability_card_cmd,
             ability_card_usage::maybe_report_ability_card_resume_cmd,
         ];
             handler(invoke)
         })
         .build(tauri::generate_context!())
-        .expect("error while building Wisp")
+        .expect("error while building SuperScience")
         .run(move |_app, _event| {
             #[cfg(target_os = "macos")]
             if matches!(_event, tauri::RunEvent::Reopen { .. }) {

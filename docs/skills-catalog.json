@@ -252,14 +252,14 @@
     "id": "custom-theme",
     "title_zh": "定制界面主题",
     "title_en": "Custom themes",
-    "summary_zh": "按 Wisp 的主题规则编写 CSS，调整界面配色与对话排版。",
-    "summary_en": "Write CSS using Wisp theme rules to customize colors and transcript presentation."
+    "summary_zh": "按 天成科研助手 的主题规则编写 CSS，调整界面配色与对话排版。",
+    "summary_en": "Write CSS using SuperScience theme rules to customize colors and transcript presentation."
   },
   {
     "group": "extension",
     "id": "self-awareness",
-    "title_zh": "了解 Wisp 能力",
-    "title_en": "Wisp capability guidance",
+    "title_zh": "了解 天成科研助手 能力",
+    "title_en": "SuperScience capability guidance",
     "summary_zh": "帮助 Agent 判断可用工具、运行边界与合适的任务执行方式。",
     "summary_en": "Help the agent identify available tools, runtime boundaries, and suitable ways to execute a task."
   },

@@ -1,10 +1,10 @@
-# Wisp Science Basics: Skills
+# SuperScience Basics: Skills
 
 When using AI for research, some requirements come up repeatedly: verify literature sources, retain raw plotting data, record analysis parameters, and distinguish authors' conclusions from your own interpretation.
 
-Repeating all of these requirements from scratch makes omissions likely. A Skill lets you save a tested method so Wisp Science can read and apply it to relevant tasks.
+Repeating all of these requirements from scratch makes omissions likely. A Skill lets you save a tested method so SuperScience can read and apply it to relevant tasks.
 
-The preceding tutorial introduced [MCP](wisp-science-mcp.md). Here we explain Skills, how to use them in Wisp, and how to preserve your own research practices as reusable instructions.
+The preceding tutorial introduced [MCP](superscience-mcp.md). Here we explain Skills, how to use them in SuperScience, and how to preserve your own research practices as reusable instructions.
 
 **A Skill is a method package the agent can read.**
 
@@ -17,7 +17,7 @@ A literature-review Skill might require the agent to:
 - Compare supporting and opposing evidence and explain differences between studies.
 - Organize conclusions around the question, retaining sources and uncertainties.
 
-Wisp can then read this guide and apply the same checks to a new research question.
+SuperScience can then read this guide and apply the same checks to a new research question.
 
 A Skill provides reusable methods and materials. Results still depend on the model, tools, input data, and how specific the guide is.
 
@@ -28,7 +28,7 @@ A Skill provides reusable methods and materials. Results still depend on the mod
 | Your task | Topic, scope, and desired deliverable |
 | Skill | How to search, screen, verify, and organize evidence |
 | MCP tools | Query databases and return paper records and source URLs |
-| Other Wisp tools | Read files, run analyses, and save notes and figures |
+| Other SuperScience tools | Read files, run analyses, and save notes and figures |
 
 For example, `literature-review` guides synthesis, PubMed tools retrieve records, and file tools save the notes.
 
@@ -40,7 +40,7 @@ Open **Settings → Skills** to see names, sources, tags, and enabled status. Us
 
 Click a Skill for its description, source directory, and package files. Read rendered `SKILL.md` or switch to source to inspect metadata. Text resources such as scripts are available for read-only inspection.
 
-Browsing files does not execute scripts. You can inspect disabled Skills before enabling them. See [Wisp Skills](https://github.com/xuzhougeng/wisp-science/blob/main/docs/skills.md) for discovery rules and the interface.
+Browsing files does not execute scripts. You can inspect disabled Skills before enabling them. See [SuperScience Skills](https://github.com/imbigfly/SuperScience/blob/main/docs/skills.md) for discovery rules and the interface.
 
 | Bundled Skill | Suitable work |
 | --- | --- |
@@ -53,7 +53,7 @@ Choose a relevant Skill, read its instructions, and validate it on familiar mate
 
 **Describe the task or attach a Skill manually.**
 
-You can let Wisp discover a Skill from the task:
+You can let SuperScience discover a Skill from the task:
 
 > Review research on plant root-tip single-cell atlases. Find a suitable literature-review Skill first and follow its workflow. Compare study organisms, methods, and findings, with verifiable paper links.
 
@@ -94,10 +94,10 @@ lab-paper-note/
 Add Skill installs or updates a **global Skill** discoverable across projects. For a project-specific workflow, place it under:
 
 ```text
-<project directory>/.wisp/skills/lab-paper-note/SKILL.md
+<project directory>/.superscience/skills/lab-paper-note/SKILL.md
 ```
 
-Click **Reload Skills** afterward. Wisp rescans, and idle session agents use the updated index on their next turn without restarting the app. Newly discovered Skills are enabled by default; previously disabled ones stay disabled.
+Click **Reload Skills** afterward. SuperScience rescans, and idle session agents use the updated index on their next turn without restarting the app. Newly discovered Skills are enabled by default; previously disabled ones stay disabled.
 
 Plugin-provided Skills are managed through their plugin. Use a distinct name such as `lab-paper-note` for your own version. Name collisions have a fixed precedence, with bundled Skills taking priority over identically named alternatives.
 
@@ -146,7 +146,7 @@ This fills the message box with a prompt to extract a Skill. You can add scope a
 
 For example:
 
-> Turn this paper-note workflow into a reusable Skill named lab-paper-note under .wisp/skills/lab-paper-note/ in the current project. Preserve the agreed output template and verification steps. Replace this paper's title, paths, and project names with inputs the user must provide. Explain how to reload and test it.
+> Turn this paper-note workflow into a reusable Skill named lab-paper-note under .superscience/skills/lab-paper-note/ in the current project. Preserve the agreed output template and verification steps. Replace this paper's title, paths, and project names with inputs the user must provide. Explain how to reload and test it.
 
 Review the extracted file for clear applicability, one-off results accidentally retained, machine-specific absolute paths, and whether it works on another input.
 
@@ -154,7 +154,7 @@ Review the extracted file for clear applicability, one-off results accidentally 
 
 A Skill may include Python or R helpers. Importing it does not install interpreters or dependencies. External services may also require networking or credentials.
 
-Wisp gives root-level `runtime.py` and `runtime.r` a specific role: loading helper functions into the persistent Python/R interpreter for reuse. Browsing the Skill or reading its instructions does not automatically execute them; the agent follows loading guidance when helpers are needed.
+SuperScience gives root-level `runtime.py` and `runtime.r` a specific role: loading helper functions into the persistent Python/R interpreter for reuse. Browsing the Skill or reading its instructions does not automatically execute them; the agent follows loading guidance when helpers are needed.
 
 Ordinary scripts under `scripts/` run according to the Skill instructions. For SSH/WSL, verify that scripts and resources are accessible there; a local path does not necessarily exist remotely. A clear text-only guide like the example is enough to start creating your own Skills.
 
@@ -171,4 +171,4 @@ Ordinary scripts under `scripts/` run according to the Skill instructions. For S
 
 Start with a repeated small task: a paper note, a figure check, or data organization. Write down an established method, test it on new material, and revise it into a workflow that fits your research habits.
 
-> This tutorial reflects Wisp documentation and Skill implementation when written. Labels may vary between versions. Examples explain configuration and use; they are not completed research tasks.
+> This tutorial reflects SuperScience documentation and Skill implementation when written. Labels may vary between versions. Examples explain configuration and use; they are not completed research tasks.

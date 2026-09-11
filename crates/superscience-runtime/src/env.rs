@@ -85,25 +85,20 @@ impl PythonEnv {
             .find_map(|name| lookup(name).filter(|path| usable_python_path(path)))
     }
 
-    /// Create the app-managed venv and install the bundled MCP/kernel deps.
+    /// Create the app-managed venv when it is missing.
     ///
-    /// Blocks on a wheel download that can run for minutes on a slow link — only
-    /// call it from the background bootstrap, never from a request path. Use
-    /// [`Self::ensure_venv`] there.
+    /// Call it from the background bootstrap or an explicit local-env setup,
+    /// never from a request path. No Python packages are installed up front.
     pub fn ensure(app_data: &Path) -> Result<Self> {
-        let env = Self::ensure_venv(app_data)?;
-        let uv = Self::find_uv()
-            .ok_or_else(|| anyhow!("uv not found on PATH; install uv or set UV_PATH"))?;
-        Self::install_deps(&uv, &env.python(), &env.venv)?;
-        Ok(env)
+        Self::ensure_venv(app_data)
     }
 
-    /// Create the venv only, skipping the dependency install.
+    /// Create the venv only.
     ///
     /// ponytail: request paths (tool wiring, MCP bridge) need the interpreter
-    /// path, not the wheels. `uv venv` is local and fast; the deps land later
-    /// via the startup bootstrap's `ensure`. Anything that truly needs a
-    /// third-party package fails fast on import instead of stalling the turn.
+    /// path, not third-party wheels. `uv venv` is local and fast; a package
+    /// that is genuinely needed fails fast on import instead of stalling the
+    /// turn behind a download.
     pub fn ensure_venv(app_data: &Path) -> Result<Self> {
         let env = Self::managed(app_data);
         if env.python().exists() {
@@ -123,31 +118,6 @@ impl PythonEnv {
             ));
         }
         Ok(env)
-    }
-
-    fn install_deps(uv: &Path, python: &Path, venv: &Path) -> Result<()> {
-        let Some(req) = superscience_paths::mcp_requirements_path() else {
-            return Ok(());
-        };
-        let marker = venv.join(".superscience_deps_ok");
-        if marker.is_file() {
-            return Ok(());
-        }
-        let mut cmd = Command::new(uv);
-        cmd.args(["pip", "install", "-r"])
-            .arg(&req)
-            .arg("--python")
-            .arg(python);
-        superscience_tools::process::hide_console(&mut cmd);
-        let out = cmd.output()?;
-        if !out.status.success() {
-            return Err(anyhow!(
-                "uv pip install failed: {}",
-                String::from_utf8_lossy(&out.stderr)
-            ));
-        }
-        std::fs::write(&marker, b"ok")?;
-        Ok(())
     }
 }
 
@@ -488,18 +458,6 @@ pub fn resolve_bundled_script(path: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn install_deps_short_circuits_on_marker() {
-        let venv = std::env::temp_dir().join(format!("superscience-env-{}", std::process::id()));
-        std::fs::create_dir_all(&venv).unwrap();
-        std::fs::write(venv.join(".superscience_deps_ok"), b"ok").unwrap();
-        let nope = Path::new("/nonexistent/uv");
-        assert!(PythonEnv::install_deps(nope, Path::new("/nonexistent/python"), &venv).is_ok());
-        std::fs::remove_file(venv.join(".superscience_deps_ok")).unwrap();
-        assert!(PythonEnv::install_deps(nope, Path::new("/nonexistent/python"), &venv).is_err());
-        let _ = std::fs::remove_dir_all(&venv);
-    }
 
     #[test]
     fn locating_managed_python_does_not_create_an_environment() {

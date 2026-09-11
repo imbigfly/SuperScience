@@ -344,7 +344,7 @@ pub(crate) async fn mcp_app_child_request(
             }) {
                 capabilities["serverTools"] = json!({});
             }
-            json!({ "protocolVersion": request.params.get("protocolVersion").and_then(Value::as_str).unwrap_or("2026-01-26"), "hostCapabilities": capabilities, "hostContext": child.host_context, "hostInfo": { "name": "wisp-science", "version": env!("CARGO_PKG_VERSION") } })
+            json!({ "protocolVersion": request.params.get("protocolVersion").and_then(Value::as_str).unwrap_or("2026-01-26"), "hostCapabilities": capabilities, "hostContext": child.host_context, "hostInfo": { "name": "superscience", "version": env!("CARGO_PKG_VERSION") } })
         }
         "tools/list" => {
             let bridge = state.mcp_app_bridge(&child.instance_id).ok_or(STALE)?;
@@ -414,7 +414,12 @@ pub(crate) async fn mcp_app_child_request(
             }
             json!({})
         }
-        _ => return Ok(jsonrpc_error(id, "Capability is not granted by Wisp")),
+        _ => {
+            return Ok(jsonrpc_error(
+                id,
+                "Capability is not granted by SuperScience",
+            ))
+        }
     };
     ensure_current(&state, &child)?;
     Ok(jsonrpc_result(id, result))

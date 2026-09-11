@@ -91,6 +91,6 @@ view the few crops that matter, never the whole render set.
 
 The reference host's LLM helpers (`pdf_scan` page ranking, `pdf_extract`
 sweeps, `pdf_map` per-page summaries) require an in-kernel model bridge
-Wisp doesn't provide, so they don't exist here. For an exhaustive pass,
+SuperScience doesn't provide, so they don't exist here. For an exhaustive pass,
 dump pages to files in chunks (recipe above) and work through them, or hand
 the on-disk text to the `explore` subagent.

@@ -237,7 +237,7 @@ const WISP_PAGES_I18N = {
     "models.respBody": "通过 /v1/responses 使用 OpenAI reasoning / tool-call 模型。需要 API URL、Model ID 和 API key。",
     "models.anthBody": "通过 /v1/messages 使用 Claude API。需要 API URL、Model ID 和 API key。",
     "models.keyBody":
-      "API key 存入系统 keyring；profile 名称、provider、URL、模型 ID 和能力标注存入项目的 .wisp/wisp.sqlite。",
+      "API key 存入系统 keyring；profile 名称、provider、URL、模型 ID 和能力标注存入本机的 superscience.sqlite。",
     "models.fieldsHeading": "常用字段",
     "models.fieldsLead": "桌面版在 Settings -> Models 中配置。多个 profile 可以并存，随时切换 active profile。",
     "models.thField": "字段",
@@ -249,7 +249,7 @@ const WISP_PAGES_I18N = {
     "models.modelHelp": "远程 API 的模型名。",
     "models.urlHelp":
       "远程 API 的 base URL 和密钥。无需追加 /v1、/chat/completions、/responses 或 /v1/messages；天成科研助手 会根据 provider 自动补全请求路径，并为 OpenAI 兼容服务探测常见路径。桌面版密钥不写入 SQLite。",
-    "models.cliLead": "wisp-science headless CLI 使用环境变量配置远程 API provider。",
+    "models.cliLead": "SuperScience headless CLI 使用环境变量配置远程 API provider。",
     "acp.lead":
       "天成科研助手 可作为 ACP Client，启动本机已安装的 Codex / Claude 等 ACP v1 Agent。它与 HTTP 模型 profile 分开：Models 里的「添加模型」管 API，「ACP Agents」管本地 stdio agent 进程。",
     "acp.start": "开始配置",
@@ -526,7 +526,7 @@ const WISP_PAGES_I18N = {
     "mcp.howKicker": "How it works",
     "mcp.nativeTitle": "In-process catalog",
     "mcp.nativeBody":
-      "Desktop, CLI, and the ACP bridge share crates/wisp-bio. Default mcp_bio mounts every implemented domain; WISP_MCP_PKG=mcp_pubmed selects one.",
+      "Desktop, CLI, and the ACP bridge share crates/superscience-bio. Default mcp_bio mounts every implemented domain; WISP_MCP_PKG=mcp_pubmed selects one.",
     "mcp.discoverTitle": "Discover, then call",
     "mcp.discoverBody":
       "The full schema is never copied into every model request. Describe the database or the goal; do not guess tool names. Connection changes apply to new sessions or the next idle-agent rebuild.",
@@ -554,7 +554,7 @@ const WISP_PAGES_I18N = {
       "Use OpenAI reasoning / tool-call models through /v1/responses. Needs an API URL, model ID, and API key.",
     "models.anthBody": "Use the Claude API through /v1/messages. Needs an API URL, model ID, and API key.",
     "models.keyBody":
-      "API keys go in the OS keyring. Profile name, provider, URL, model ID, and capability tags go in the project’s .wisp/wisp.sqlite.",
+      "API keys go in the OS keyring. Profile name, provider, URL, model ID, and capability tags go in the local superscience.sqlite.",
     "models.fieldsHeading": "Common fields",
     "models.fieldsLead":
       "Configure these in Settings -> Models on desktop. Multiple profiles can coexist; switch the active one at any time.",
@@ -567,7 +567,7 @@ const WISP_PAGES_I18N = {
     "models.modelHelp": "The model name on the remote API.",
     "models.urlHelp":
       "Remote API base URL and secret. Do not append /v1, /chat/completions, /responses, or /v1/messages; SuperScience completes the path from the provider and probes common OpenAI-compatible routes. Desktop keys are not written to SQLite.",
-    "models.cliLead": "The wisp-science headless CLI configures the remote API provider with environment variables.",
+    "models.cliLead": "The superscience headless CLI configures the remote API provider with environment variables.",
     "acp.lead":
       "SuperScience can act as an ACP client and launch local ACP v1 agents such as Codex or Claude. This is separate from HTTP model profiles: Add model covers APIs; ACP Agents covers local stdio agent processes.",
     "acp.start": "Start setup",

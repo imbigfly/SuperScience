@@ -3009,7 +3009,7 @@ fn project_approval_overlay_clears_idle_agents_only_for_that_project() {
 
 #[test]
 fn native_connector_inventory_matches_dispatch_without_python_resources() {
-    let catalog = wisp_bio::catalog();
+    let catalog = superscience_bio::catalog();
     let map = super::build_tool_connector_map();
     assert_eq!(map.len(), catalog.len());
     for (domain, schema) in catalog {

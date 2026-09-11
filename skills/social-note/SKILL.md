@@ -1,6 +1,6 @@
 ---
 name: social-note
-description: Turn a scientific conversation, paper takeaway, or figure story into paste-ready social copy. Use when the user asks for 小红书文案, a Xiaohongshu note, 微信/朋友圈, 公众号草稿, a tweet, Twitter/X copy, or share-to-social text from a Wisp session. Ask which platform unless the user already named one.
+description: Turn a scientific conversation, paper takeaway, or figure story into paste-ready social copy. Use when the user asks for 小红书文案, a Xiaohongshu note, 微信/朋友圈, 公众号草稿, a tweet, Twitter/X copy, or share-to-social text from a SuperScience session. Ask which platform unless the user already named one.
 license: Apache-2.0
 ---
 

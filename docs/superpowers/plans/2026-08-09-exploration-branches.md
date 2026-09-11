@@ -212,7 +212,7 @@ abandon_exploration_round
 
 ### 测试
 
-- mainline 被 Wisp 冻结且外部状态未变化时，探索新增/修改/删除文件和 Artifact head 一起采用。
+- mainline 被 SuperScience 冻结且外部状态未变化时，探索新增/修改/删除文件和 Artifact head 一起采用。
 - 原 main frame ID 和普通分支关系保持不变，所选探索在检查点后的上下文被迁回原 main，重建 Agent 后下一轮直接看到探索上下文。
 - 其他探索的消息、Artifact、Run、Decision 不进入主线查询或 prompt。
 - source frame 新消息由统一 guard 拒绝；所选探索涉及的同路径主线文件被外部进程修改时触发 `MainlineAdvanced`，非重叠文件保持原样且不进入冲突预览。

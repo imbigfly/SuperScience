@@ -10,7 +10,7 @@
 
 1. `ExplorationCheckpoint` 冻结一个已完成会话边界，以及该边界对应的文件、ArtifactVersion、终态 Run、Decision/Research Graph 和模型上下文引用。
 2. `Exploration` 拥有持久、独立、可写的工作区；分支产生的项目记录都带 `exploration_id`，普通主线查询不会看到它们。
-3. 探索轮持续冻结 source main 和 Wisp 管理的主线项目写入；只有采用某个候选或显式放弃整轮才能解除冻结。
+3. 探索轮持续冻结 source main 和 SuperScience 管理的主线项目写入；只有采用某个候选或显式放弃整轮才能解除冻结。
 4. `PromotionOperation` 通过项目级独占锁、重新校验、可恢复文件日志和一个 SQLite 事务，把成功探索的增量 fast-forward 回原 main，并清理包括所选探索在内的全部候选；显式放弃则不合并增量，仅清理全部候选。
 
 第一阶段仅保证“从当前已完成主线头创建探索”。当前系统没有逐轮完整文件快照，不能可靠重建升级前任意历史轮次的项目状态；任意历史轮次将在后续通过逐轮 `ProjectStateRevision` 实现，不能用现有 `turn_file_undo` 假装可恢复。
@@ -61,7 +61,7 @@ stateDiagram-v2
 - 小型和普通项目文件的完整隔离，包括未跟踪文件和 `.wisp/memory`。
 - 分支内新增/修改 Artifact、终态 Run、Decision/Research Graph 记录的隔离。
 - 文件、Artifact、Run、Decision 和外部副作用差异预览。
-- 冻结 source main 和所有 Wisp 管理的主线项目写入。
+- 冻结 source main 和所有 SuperScience 管理的主线项目写入。
 - 可恢复 fast-forward，以及失败时不提前解除冻结。
 - 单独丢弃探索和显式放弃完整探索轮。
 - macOS、Windows 和 Linux/WSL 的显式文件策略；自动测试不依赖真实 SSH、WSL、GPU 或网络。
@@ -246,8 +246,8 @@ referenced large/remote resource fingerprint hash
 变更就会错误地阻止晋升。文件系统可能被外部编辑器修改，所以晋升仍必须重新扫描
 manifest，不能只信 generation。
 
-探索轮开启后，统一写 guard 直接拒绝 source frame 新消息、分支创建、移动和删除，并拒绝 Wisp 管理的主线项目写入。带普通对话分支的 main 也不能删除，必须先删除分支。
-外部编辑器和 Wisp 进程外的写入无法由应用锁住，因此文件 manifest 复核仍是晋升的最终安全边界。文件 guard 按所选探索实际改动的路径求交集：同路径变化阻止晋升；非重叠路径属于其他会话或外部生产者，既不进入冲突预览，也不阻止晋升，并在应用探索补丁时原样保留。
+探索轮开启后，统一写 guard 直接拒绝 source frame 新消息、分支创建、移动和删除，并拒绝 SuperScience 管理的主线项目写入。带普通对话分支的 main 也不能删除，必须先删除分支。
+外部编辑器和 SuperScience 进程外的写入无法由应用锁住，因此文件 manifest 复核仍是晋升的最终安全边界。文件 guard 按所选探索实际改动的路径求交集：同路径变化阻止晋升；非重叠路径属于其他会话或外部生产者，既不进入冲突预览，也不阻止晋升，并在应用探索补丁时原样保留。
 
 ### 7. 差异模型
 
@@ -417,7 +417,7 @@ abandon_exploration_round(source_frame_id)
 
 ## 晋升事务与崩溃恢复
 
-跨 SQLite 和普通文件系统不存在真正的单事务。产品层的“原子”定义为：Wisp 内其他 turn 在操作期间不可见中间态；失败或重启后能确定性恢复到晋升前或晋升后。
+跨 SQLite 和普通文件系统不存在真正的单事务。产品层的“原子”定义为：SuperScience 内其他 turn 在操作期间不可见中间态；失败或重启后能确定性恢复到晋升前或晋升后。
 
 顺序：
 
@@ -438,7 +438,7 @@ abandon_exploration_round(source_frame_id)
 - `metadata_committed`：验证已采用 heads 和文件 checksum，完成 runtime 切换；
 - 无法验证时把项目标记 `promotion_recovery_required`，禁止继续写并展示人工恢复信息。
 
-外部编辑器不受 Wisp 锁控制，可能看到短暂的逐文件应用；每个目标文件仍有最后一刻 checksum 检查，检测到变化立即停止并回滚。
+外部编辑器不受 SuperScience 锁控制，可能看到短暂的逐文件应用；每个目标文件仍有最后一刻 checksum 检查，检测到变化立即停止并回滚。
 
 ## UI 设计
 
@@ -450,7 +450,7 @@ abandon_exploration_round(source_frame_id)
 
 ### 主线
 
-- 有活跃探索时显示“主线检查点已用于 N 个探索”，并禁用主线输入框、发送和其他 Wisp 写入口。
+- 有活跃探索时显示“主线检查点已用于 N 个探索”，并禁用主线输入框、发送和其他 SuperScience 写入口。
 - banner 明确给出解除冻结的两条路径：选择一个候选，或右键 source main 放弃整轮。
 - source main 的右键菜单隐藏删除并提供“放弃探索”；普通 main 有对话分支时也隐藏删除。
 - 外部文件变化无法被 UI 锁住，晋升时仍以后端扫描为准。
@@ -509,7 +509,7 @@ AcpExplorationUnsupported
 | Issue 验收 | 设计保证 |
 |---|---|
 | 同节点创建两个探索 | 共享 checkpoint，独立 exploration/workspace |
-| 探索期间主线不前进 | 当前 family generation 有活动候选时，统一 scope guard 拒绝 Wisp 主线写入 |
+| 探索期间主线不前进 | 当前 family generation 有活动候选时，统一 scope guard 拒绝 SuperScience 主线写入 |
 | 同文件互不影响 | 不使用 hard link；各自物化可写文件 |
 | 文件和 Artifact 不泄漏 | `WorkingProject.root` + `artifact_heads.scope_key` + `exploration_id` |
 | 切回主线不变 | 主线 root/heads 从未切换，普通查询排除探索 |

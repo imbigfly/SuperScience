@@ -1,9 +1,9 @@
 //! Stdio MCP bridge exposed to external ACP agents.
 //!
-//! The bridge intentionally exposes Wisp's scientific capabilities (skills,
-//! bundled bio MCP, custom MCP, run contexts) without forwarding Wisp's generic
+//! The bridge intentionally exposes SuperScience's scientific capabilities (skills,
+//! bundled bio MCP, custom MCP, run contexts) without forwarding SuperScience's generic
 //! shell/edit/read tools. Local runners already have their own filesystem tools;
-//! this process is only for Wisp-native capabilities and policy/config reuse.
+//! this process is only for SuperScience-native capabilities and policy/config reuse.
 
 use crate::{
     bio_domains, connect_mcp, load_disabled_connectors, load_disabled_skills,
@@ -47,7 +47,7 @@ struct JsonRpcIn {
 enum Route {
     NativeBio {
         connector_id: String,
-        client: Arc<wisp_bio::NativeBio>,
+        client: Arc<superscience_bio::NativeBio>,
         remote_name: String,
         description: String,
         input_schema: Value,
@@ -81,7 +81,7 @@ impl BridgeServer {
         std::fs::create_dir_all(&cfg.app_data).ok();
         let store = Store::open(&cfg.app_data.join("wisp.sqlite"))
             .await
-            .context("open Wisp store for MCP bridge")?;
+            .context("open SuperScience store for MCP bridge")?;
         crate::network::apply(
             &crate::network::load(&store)
                 .await
@@ -174,15 +174,15 @@ impl BridgeServer {
             get_capabilities_tool_schema(),
             json!({
                 "name": "wisp_list_skills",
-                "description": "List skills currently available from the active Wisp project/profile.",
+                "description": "List skills currently available from the active SuperScience project/profile.",
                 "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
             }),
             json!({
                 "name": "wisp_use_skill",
-                "description": "Load a Wisp skill's SKILL.md guidance plus script/reference file paths.",
+                "description": "Load a SuperScience skill's SKILL.md guidance plus script/reference file paths.",
                 "inputSchema": {
                     "type": "object",
-                    "properties": { "name": { "type": "string", "description": "Wisp skill name" } },
+                    "properties": { "name": { "type": "string", "description": "SuperScience skill name" } },
                     "required": ["name"]
                 }
             }),
@@ -418,7 +418,7 @@ impl BridgeServer {
         if !self.bundled_bio_tools_loaded {
             if std::env::var("WISP_MCP_COMMAND").is_err() {
                 let package = std::env::var("WISP_MCP_PKG").unwrap_or_else(|_| "mcp_bio".into());
-                if !wisp_bio::selected_by_package(&package) {
+                if !superscience_bio::selected_by_package(&package) {
                     return Err(anyhow!("Unknown native bio package: {package}"));
                 }
             }
@@ -499,18 +499,19 @@ impl BridgeServer {
     }
 
     fn register_native_bio_tools(&mut self, package: &str, skip: &mut HashSet<String>) {
-        if !wisp_bio::selected_by_package(package) {
+        if !superscience_bio::selected_by_package(package) {
             return;
         }
-        let catalog = wisp_bio::catalog();
+        let catalog = superscience_bio::catalog();
         let enabled: Vec<_> = catalog
             .iter()
             .filter(|(domain, schema)| {
-                wisp_bio::package_selects(package, domain) && !skip.contains(&schema.function.name)
+                superscience_bio::package_selects(package, domain)
+                    && !skip.contains(&schema.function.name)
             })
             .collect();
         if !enabled.is_empty() {
-            match wisp_bio::NativeBio::with_proxy(
+            match superscience_bio::NativeBio::with_proxy(
                 &crate::models::service_env(),
                 &crate::network::mcp_proxy(),
             ) {
@@ -537,7 +538,7 @@ impl BridgeServer {
         }
         // A failed or disabled native operation never falls back to Python.
         skip.extend(catalog.into_iter().filter_map(|(domain, schema)| {
-            wisp_bio::package_selects(package, domain).then_some(schema.function.name)
+            superscience_bio::package_selects(package, domain).then_some(schema.function.name)
         }));
     }
 
@@ -637,7 +638,7 @@ impl BridgeServer {
                         ..
                     } => (
                         if description.trim().is_empty() {
-                            format!("Custom Wisp MCP tool `{remote_name}`.")
+                            format!("Custom SuperScience MCP tool `{remote_name}`.")
                         } else {
                             description.clone()
                         },
@@ -664,7 +665,7 @@ impl BridgeServer {
             .routes
             .get(name)
             .cloned()
-            .ok_or_else(|| anyhow!("unknown Wisp bridge tool '{name}'"))?;
+            .ok_or_else(|| anyhow!("unknown SuperScience bridge tool '{name}'"))?;
         let (client, remote_name) = match route {
             Route::NativeBio {
                 client,
@@ -694,7 +695,7 @@ impl BridgeServer {
 
     fn list_skills_text(&self) -> String {
         if self.skills.is_empty() {
-            return "No Wisp skills are currently available. If this is a portable build, verify the skills/ resource directory is next to superscience-tauri.exe.".into();
+            return "No SuperScience skills are currently available. If this is a portable build, verify the skills/ resource directory is next to superscience-tauri.exe.".into();
         }
         self.skills
             .all()
@@ -960,7 +961,7 @@ async fn filter_skills(
 }
 
 fn pretty_json(value: &Value) -> Result<String> {
-    serde_json::to_string_pretty(value).context("serialize Wisp bridge response")
+    serde_json::to_string_pretty(value).context("serialize SuperScience bridge response")
 }
 
 fn bounded_i64(args: &Value, name: &str, default: i64, min: i64, max: i64) -> i64 {
@@ -1066,7 +1067,7 @@ fn truncate_catalog_description(value: &str) -> String {
 fn search_tools_tool_schema() -> Value {
     json!({
         "name": "wisp_search_tools",
-        "description": "Search enabled Wisp scientific and custom MCP tools. Returns only matching input schemas instead of exposing the full catalog on every request.",
+        "description": "Search enabled SuperScience scientific and custom MCP tools. Returns only matching input schemas instead of exposing the full catalog on every request.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1082,7 +1083,7 @@ fn search_tools_tool_schema() -> Value {
 fn use_tool_tool_schema() -> Value {
     json!({
         "name": "wisp_use_tool",
-        "description": "Call a Wisp MCP tool found by wisp_search_tools. tool_input must match the returned input_schema.",
+        "description": "Call a SuperScience MCP tool found by wisp_search_tools. tool_input must match the returned input_schema.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1098,7 +1099,7 @@ fn use_tool_tool_schema() -> Value {
 fn get_capabilities_tool_schema() -> Value {
     json!({
         "name": "wisp_get_capabilities",
-        "description": "Describe the project-scoped Wisp Harness capabilities granted to this ACP session, including intentionally unavailable write operations.",
+        "description": "Describe the project-scoped SuperScience Harness capabilities granted to this ACP session, including intentionally unavailable write operations.",
         "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
     })
 }
@@ -1119,7 +1120,7 @@ fn acp_question_body(args: &Value) -> Result<Value, String> {
 fn ask_user_tool_schema() -> Value {
     json!({
         "name": "ask_user",
-        "description": "Ask the Wisp user a question and wait for their decision. Use it when you hit \
+        "description": "Ask the SuperScience user a question and wait for their decision. Use it when you hit \
              a real fork only they can settle — a destructive step, a choice between approaches, \
              missing requirements — not for confirmations you can infer. Offer the plausible choices \
              as options and leave freeform on unless the answer must be one of them. This call blocks \
@@ -1182,7 +1183,7 @@ fn search_memory_tool_schema() -> Value {
 fn list_artifacts_tool_schema() -> Value {
     json!({
         "name": "wisp_list_artifacts",
-        "description": "List persisted artifacts owned by the active Wisp project, optionally filtering by filename.",
+        "description": "List persisted artifacts owned by the active SuperScience project, optionally filtering by filename.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1197,7 +1198,7 @@ fn list_artifacts_tool_schema() -> Value {
 fn get_research_graph_tool_schema() -> Value {
     json!({
         "name": "wisp_get_research_graph",
-        "description": "Read the active project's Wisp research graph (nodes and edges).",
+        "description": "Read the active project's SuperScience research graph (nodes and edges).",
         "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
     })
 }
@@ -1205,7 +1206,7 @@ fn get_research_graph_tool_schema() -> Value {
 fn list_execution_contexts_tool_schema() -> Value {
     json!({
         "name": "wisp_list_execution_contexts",
-        "description": "List Wisp execution contexts and probe/capability summaries without exposing stored connection configuration.",
+        "description": "List SuperScience execution contexts and probe/capability summaries without exposing stored connection configuration.",
         "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
     })
 }
@@ -1213,7 +1214,7 @@ fn list_execution_contexts_tool_schema() -> Value {
 fn run_in_context_tool_schema() -> Value {
     json!({
         "name": "wisp_run_in_context",
-        "description": "Submit a persisted background Wisp Run in an execution context (`local`, `ssh:<alias>`, or `wsl:<distro>`). For Python/R work, declare a safe preflight for interpreter, package, file, and syntax checks; it never installs packages or executes the requested command as a dry run. Set wait_for_completion=true for direct model-free waiting, or call wisp_monitor_run with the returned id. If wisp_monitor_run returns wait_interrupted, the Run is still running: respond, then call it again with the same id. Do not resubmit. Never poll with wisp_get_run. Dangerous commands require approval and are rejected in this non-interactive bridge.",
+        "description": "Submit a persisted background SuperScience Run in an execution context (`local`, `ssh:<alias>`, or `wsl:<distro>`). For Python/R work, declare a safe preflight for interpreter, package, file, and syntax checks; it never installs packages or executes the requested command as a dry run. Set wait_for_completion=true for direct model-free waiting, or call wisp_monitor_run with the returned id. If wisp_monitor_run returns wait_interrupted, the Run is still running: respond, then call it again with the same id. Do not resubmit. Never poll with wisp_get_run. Dangerous commands require approval and are rejected in this non-interactive bridge.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1295,7 +1296,7 @@ fn get_run_tool_schema() -> Value {
 fn monitor_run_tool_schema() -> Value {
     json!({
         "name": "wisp_monitor_run",
-        "description": "Monitor one existing long-running Run until it finishes or mid-turn user guidance arrives. Call this instead of repeatedly calling wisp_get_run; Wisp waits without repeated model calls or token use. If wait_interrupted is true, the Run is still running: respond, then call wisp_monitor_run again with the same id. Do not resubmit.",
+        "description": "Monitor one existing long-running Run until it finishes or mid-turn user guidance arrives. Call this instead of repeatedly calling wisp_get_run; SuperScience waits without repeated model calls or token use. If wait_interrupted is true, the Run is still running: respond, then call wisp_monitor_run again with the same id. Do not resubmit.",
         "inputSchema": {
             "type": "object",
             "properties": { "run_id": { "type": "string" } },
@@ -1501,9 +1502,9 @@ pub fn run_mcp_bridge_cli() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .expect("create Wisp MCP bridge runtime");
+        .expect("create SuperScience MCP bridge runtime");
     if let Err(e) = rt.block_on(run_stdio(cfg)) {
-        eprintln!("Wisp MCP bridge error: {e:?}");
+        eprintln!("SuperScience MCP bridge error: {e:?}");
         std::process::exit(1);
     }
 }
@@ -1534,14 +1535,14 @@ mod tests {
         let mut skip = HashSet::new();
         server.register_native_bio_tools("mcp_not_a_domain", &mut skip);
         assert!(server.routes.is_empty());
-        let mut disabled = wisp_bio::catalog()
+        let mut disabled = superscience_bio::catalog()
             .into_iter()
             .map(|(_, schema)| schema.function.name)
             .collect();
         server.register_native_bio_tools("mcp_bio", &mut disabled);
         assert!(server.routes.is_empty());
         server.register_native_bio_tools("mcp_bio", &mut skip);
-        let native: std::collections::BTreeSet<_> = wisp_bio::catalog()
+        let native: std::collections::BTreeSet<_> = superscience_bio::catalog()
             .into_iter()
             .map(|(_, schema)| schema.function.name)
             .collect();

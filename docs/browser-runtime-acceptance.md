@@ -1,6 +1,6 @@
 # Browser Runtime acceptance
 
-Use a Wisp build that bundles extension **0.3.1**. Load the unpacked extension from `browser_setup.extension_path` before testing.
+Use a SuperScience build that bundles extension **0.3.1**. Load the unpacked extension from `browser_setup.extension_path` before testing.
 
 For #1107, test on Windows, macOS, and Linux with automatic launch enabled:
 close daily Chrome, call `browser_setup` with no action, and verify its normal

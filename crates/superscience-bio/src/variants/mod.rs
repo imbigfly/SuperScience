@@ -428,7 +428,7 @@ fn contact_email(bio: &NativeBio) -> Result<String> {
 
 fn ncbi_identity(bio: &NativeBio) -> Result<Vec<(String, String)>> {
     let mut params = vec![
-        ("tool".into(), "wisp-science".into()),
+        ("tool".into(), "SuperScience".into()),
         ("email".into(), contact_email(bio)?),
     ];
     if let Some(key) = bio

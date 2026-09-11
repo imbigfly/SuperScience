@@ -394,3 +394,52 @@ test("floating menu inside a modal stays anchored to its trigger", async ({ page
     { x: menuBox.x + menuBox.width / 2, y: menuBox.y + menuBox.height / 2 });
   expect(hit).toBe(true);
 });
+
+// The sidebar splits into a fixed chrome column (nav) and one flexible scroll
+// region (the session list). A long list used to enter the flex shrink math via
+// its content height, so it kept most of the height and crushed the nav into its
+// own scroll box — only the first few entries stayed reachable.
+test("a long session list never squeezes the sidebar nav", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.addInitScript(() => {
+    const bridge = (window as any).__TAURI__.core;
+    const invoke = bridge.invoke;
+    bridge.invoke = async (cmd: string, args: any) => {
+      if (cmd === "list_sessions_page") {
+        return {
+          items: Array.from({ length: 40 }, (_, i) => ({
+            id: `long-list-${i}`,
+            title: `Session ${i}`,
+            ts: Date.now() - i * 60_000,
+            running: false,
+            pinned: false,
+            has_user_turn: true,
+          })),
+          next_cursor: null,
+          running_ids: [],
+        };
+      }
+      return invoke(cmd, args);
+    };
+  });
+  await enterApp(page);
+  await expect(page.locator(".side-list .side-item").first()).toBeVisible();
+
+  const nav = page.locator(".sidebar > .nav");
+  const navBox = (await nav.boundingBox())!;
+  // The nav scrolls only when the window cannot hold it — not because of the list.
+  const navScroll = await nav.evaluate((el) => ({ scrollH: el.scrollHeight, clientH: el.clientHeight }));
+  expect(navScroll.scrollH).toBeLessThanOrEqual(navScroll.clientH + 1);
+
+  for (const label of ["New session", "Library"]) {
+    const box = (await nav.getByRole("button", { name: label }).boundingBox())!;
+    expect(box.y).toBeGreaterThanOrEqual(navBox.y - 1);
+    expect(box.y + box.height).toBeLessThanOrEqual(navBox.y + navBox.height + 1);
+  }
+
+  // The list still owns the leftover height and scrolls on its own.
+  const list = page.locator(".side-list");
+  const listBox = (await list.boundingBox())!;
+  expect(listBox.height).toBeGreaterThan(100);
+  expect(await list.evaluate((el) => el.scrollHeight)).toBeGreaterThan(listBox.height);
+});

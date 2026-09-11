@@ -123,7 +123,6 @@ for (const locale of ["en", "zh"]) {
 
     for (const [label, first, second, filename] of [
       [zh ? "记忆" : "Memory", "memory-project-card", "memory-global-card", "memory"],
-      [zh ? "远程接入" : "Remote Access", "project-sync-card", "channels-overview", "remote"],
     ]) {
       await page.setViewportSize({ width: 1440, height: 1000 });
       await page.locator(".settings-nav").getByRole("button", { name: label, exact: true }).click();
@@ -139,16 +138,15 @@ for (const locale of ["en", "zh"]) {
       expect(narrowB.y).toBeGreaterThanOrEqual(narrowA.y + narrowA.height);
       await fits(page.locator(".settings-content"));
     }
-    const sync = page.getByTestId("project-sync-card");
-    await sync.getByRole("button", { name: zh ? "保存" : "Save", exact: true }).scrollIntoViewIfNeeded();
-    await fits(page.getByTestId("remote-settings-pane"));
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.locator(".settings-nav").getByRole("button", { name: zh ? "远程接入" : "Remote Access", exact: true }).click();
+    await expect(page.getByTestId("channels-overview")).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath(`remote-${locale}.png`), animations: "disabled" });
     await page.getByTestId("feishu-channel-row").click();
-    await expect(page.getByTestId("project-sync-card")).toHaveCount(0);
     await expect(page.getByTestId("feishu-channel-card")).toBeVisible();
     // One immediate Escape closes only the channel detail, retaining Settings.
     await page.keyboard.press("Escape");
     await expect(page.getByTestId("channels-overview")).toBeVisible();
-    await expect(page.getByTestId("project-sync-card")).toBeVisible();
   });
 }
 

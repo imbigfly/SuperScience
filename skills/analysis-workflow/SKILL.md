@@ -59,7 +59,7 @@ Every output must have one producing script or recorded command. Use
 deterministic filenames that identify the analysis and content. Keep temporary
 files outside the final output directories or name them clearly as temporary.
 
-Script persistence and process lifetime are separate concerns. Wisp's `python`
+Script persistence and process lifetime are separate concerns. SuperScience's `python`
 and `r` runtimes retain variables and loaded objects across calls and can execute
 saved scripts. `shell` and `run_in_context` execute commands in fresh processes.
 Choose according to the user's workflow, state reuse, script requirements, and

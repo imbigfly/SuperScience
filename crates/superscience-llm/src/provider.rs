@@ -370,7 +370,7 @@ pub fn normalize_user_agent(value: &str) -> std::result::Result<String, String> 
 
 pub fn effective_user_agent(value: &str) -> &str {
     match value.trim() {
-        "" => "wisp-science",
+        "" => "SuperScience",
         value => value,
     }
 }
@@ -636,12 +636,12 @@ mod tests {
         let expected: Vec<_> = (0..3)
             .flat_map(|_| {
                 [
-                    "wisp-science",
-                    "wisp-science",
+                    "SuperScience",
+                    "SuperScience",
                     "research-client/1.0",
                     "research-client/1.0",
-                    "wisp-science",
-                    "wisp-science",
+                    "SuperScience",
+                    "SuperScience",
                 ]
             })
             .collect();

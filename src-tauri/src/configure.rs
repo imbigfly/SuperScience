@@ -261,7 +261,7 @@ impl Tool for ConfigureTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "configure",
-            "Read or change Wisp app settings from this conversation, or report disk storage for the current project. \
+            "Read or change SuperScience app settings from this conversation, or report disk storage for the current project. \
 Use this instead of sending the user to Settings for allowlisted preferences. \
 Examples: bigger UI text → set ui_font_size to \"+2\"; switch to dark theme → set theme to \"dark\"; \
 import a custom theme → set custom_css to the stylesheet text; \
@@ -586,7 +586,7 @@ async fn snapshot(store: &Store, keys: &[String]) -> Result<String, String> {
 
     let current = current_values(store).await?;
     let mut lines = vec![
-        "Wisp configuration (allowlisted; secrets and model profiles are not included)."
+        "SuperScience configuration (allowlisted; secrets and model profiles are not included)."
             .to_string(),
         String::new(),
     ];

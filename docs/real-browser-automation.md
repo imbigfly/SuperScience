@@ -1,4 +1,4 @@
-> **Runtime note (0.3.1):** see [browser-runtime-architecture.md](browser-runtime-architecture.md) and [browser-runtime-acceptance.md](browser-runtime-acceptance.md). The extension is Protocol v2. Shared Chrome stays on `ws://127.0.0.1:18765`; workspace Chrome uses a dedicated profile and `18766`. Wisp prepares a verified stable extension directory and automatically reloads compatible versions; older versions receive a guided one-time Reload fallback.
+> **Runtime note (0.3.1):** see [browser-runtime-architecture.md](browser-runtime-architecture.md) and [browser-runtime-acceptance.md](browser-runtime-acceptance.md). The extension is Protocol v2. Shared Chrome stays on `ws://127.0.0.1:18765`; workspace Chrome uses a dedicated profile and `18766`. SuperScience prepares a verified stable extension directory and automatically reloads compatible versions; older versions receive a guided one-time Reload fallback.
 
 # Real-browser automation
 
@@ -80,7 +80,7 @@ stable extension ID are accepted.
 
 When `web_scan` detects an **Are you a robot?** page together with a request to
 confirm that the visitor is human or complete a CAPTCHA challenge, it returns
-`human_intervention.required=true` and marks that tab `needs_human`. Wisp shows
+`human_intervention.required=true` and marks that tab `needs_human`. SuperScience shows
 a prompt asking you to complete the challenge in the visible browser tab. The
 Agent must stop browser automation, must not call `ask_user`, and must not
 click the challenge. After you confirm in the app, it scans the same tab again

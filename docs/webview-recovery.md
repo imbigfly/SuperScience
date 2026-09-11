@@ -1,11 +1,11 @@
 # Recovering an unresponsive window
 
-When a Wisp window no longer accepts clicks, native recovery actions remain
+When a SuperScience window no longer accepts clicks, native recovery actions remain
 available without asking the page's JavaScript to handle the click:
 
-- **Windows:** right-click the Wisp notification-area icon. Choose **Stop agent
+- **Windows:** right-click the SuperScience notification-area icon. Choose **Stop agent
   in last active window** or **Reload last active window**. The target is the
-  most recently focused Wisp workspace window, excluding the desktop pet. If
+  most recently focused SuperScience workspace window, excluding the desktop pet. If
   that window was closed, the main window is used.
 - **macOS:** use the native **Window** menu's **Stop current agent** or **Reload
   current window** action. Only the focused window handles the action.
@@ -14,7 +14,7 @@ available without asking the page's JavaScript to handle the click:
 
 Stop targets only that window's active session and uses the existing native/ACP
 cancellation path. A window without an active session does nothing. Reload
-recreates only that window's page; it does not restart Wisp, cancel a Run, or
+recreates only that window's page; it does not restart SuperScience, cancel a Run, or
 terminate a remote SSH job. In-memory editor drafts and MCP App selections can
 be lost on reload. Persisted sessions can be reopened, and backend agents and
 the Run Manager remain alive. This does not guarantee survival of arbitrary
@@ -93,7 +93,7 @@ Run the optional native smoke from the repository root:
 
 ```powershell
 $env:WISP_CATALOG_OFFLINE="1"
-cargo run -p wisp-tauri --example webview_recovery_smoke
+cargo run -p superscience-tauri --example webview_recovery_smoke
 ```
 
 This opens two hidden, disposable **real WebView2** windows on Windows (the
@@ -110,7 +110,7 @@ tray's stop and reload entries. Check the target label in the log, the first
 window's unchanged state, and existing Run records. For a stopped heartbeat,
 check that another window's healthy heartbeat cannot suppress target recovery.
 
-For the five-hour Windows report, record the installed Wisp and WebView2
+For the five-hour Windows report, record the installed SuperScience and WebView2
 versions and compare `webview health` samples before and near the stall while
 repeating the actual workload for at least six hours. Track host Blob counts
 alongside the renderer's memory in Task Manager. Also compare an idle session.

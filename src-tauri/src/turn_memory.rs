@@ -228,7 +228,7 @@ pub(crate) fn candidate_prompts(
             snapshot.tool_calls,
             snapshot.failure_rate(),
         ),
-        ProposalTrigger::Explicit => "The user explicitly asked Wisp to remember something. Preserve the requested habit or preference faithfully. Use global scope only for a stable cross-project user habit; otherwise use project scope.".into(),
+        ProposalTrigger::Explicit => "The user explicitly asked SuperScience to remember something. Preserve the requested habit or preference faithfully. Use global scope only for a stable cross-project user habit; otherwise use project scope.".into(),
         ProposalTrigger::Manual => "Summarize the durable, reusable outcome of this one turn: a user preference, project convention, verified lesson, or non-obvious fix. Omit routine steps and ephemeral state. Use global scope only for an explicitly stated stable cross-project habit.".into(),
     };
     let system = format!(

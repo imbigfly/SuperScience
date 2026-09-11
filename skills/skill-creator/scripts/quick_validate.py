@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate a Wisp skill folder: frontmatter shape, naming, and length limits.
+"""Validate a SuperScience skill folder: frontmatter shape, naming, and length limits.
 
 Usage: python quick_validate.py <skill-directory>
 

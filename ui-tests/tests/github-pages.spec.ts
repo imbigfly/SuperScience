@@ -89,7 +89,7 @@ async function serveTutorialSite(page: import("@playwright/test").Page) {
   await page.route("**/*", (route) => {
     const url = new URL(route.request().url());
     if (url.origin !== "https://tutorials.test") return route.abort();
-    const file = resolve(repositoryRoot, "docs", url.pathname.replace(/^\/wisp-science\//, "") || "index.html");
+    const file = resolve(repositoryRoot, "docs", url.pathname.replace(/^\/SuperScience\//, "") || "index.html");
     return existsSync(file) ? route.fulfill({ path: file }) : route.abort();
   });
 }
@@ -97,7 +97,7 @@ async function serveTutorialSite(page: import("@playwright/test").Page) {
 test("Skills follows MCP in navigation and presents every bundled skill in both languages", async ({ page }) => {
   await serveTutorialSite(page);
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto("https://tutorials.test/wisp-science/index.html");
+  await page.goto("https://tutorials.test/SuperScience/index.html");
   const link = page.locator('.nav-links [data-i18n="nav.mcp"] + a');
   await expect(link).toHaveText("SKILLS");
   await link.click();
@@ -107,7 +107,7 @@ test("Skills follows MCP in navigation and presents every bundled skill in both 
   await expect(page.locator(".skill-card")).toHaveCount(ids.length);
   expect(await page.locator(".skill-card").evaluateAll(cards => cards.map(card => card.getAttribute("data-skill-id")).sort())).toEqual(ids.sort());
   for (const id of ids) {
-    await expect(page.locator(`[data-skill-id="${id}"] > a`)).toHaveAttribute("href", `https://github.com/xuzhougeng/wisp-science/blob/main/skills/${id}/SKILL.md`);
+    await expect(page.locator(`[data-skill-id="${id}"] > a`)).toHaveAttribute("href", `https://github.com/imbigfly/SuperScience/blob/main/skills/${id}/SKILL.md`);
   }
   await page.screenshot({ path: test.info().outputPath("skills-zh.png") });
   for (const lang of ["en", "zh"]) {
@@ -125,9 +125,9 @@ test("Skills follows MCP in navigation and presents every bundled skill in both 
 test("tutorial directory stays compact and links to independent articles", async ({ page }) => {
   await serveTutorialSite(page);
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto("https://tutorials.test/wisp-science/index.html");
+  await page.goto("https://tutorials.test/SuperScience/index.html");
   await page.locator('.nav-links a[href^="tutorials.html"]').click();
-  await expect(page).toHaveTitle("教程 | Wisp Science");
+  await expect(page).toHaveTitle("教程 | 天成科研助手");
   const sources = readdirSync(resolve(repositoryRoot, "docs/wechat")).filter((name) => name.endsWith(".md"));
   await expect(page.locator(".tutorial-card")).toHaveCount(sources.length);
   await expect(page.locator(".tutorial-article")).toHaveCount(0);
@@ -137,7 +137,7 @@ test("tutorial directory stays compact and links to independent articles", async
     await page.setViewportSize({ width, height: 900 });
     for (const lang of ["en", "zh"]) {
       await page.locator(`button[data-lang="${lang}"]`).click();
-      await expect(page).toHaveTitle(lang === "en" ? "Tutorials | Wisp Science" : "教程 | Wisp Science");
+      await expect(page).toHaveTitle(lang === "en" ? "Tutorials | SuperScience" : "教程 | 天成科研助手");
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       const links = page.locator(".nav-links");
       if (await links.isVisible()) {
@@ -157,7 +157,7 @@ for (const name of readdirSync(resolve(repositoryRoot, "docs/wechat")).filter((n
   const id = name.replace(/\.md$/, "");
   test(`tutorial ${id} opens alone, keeps its images, and returns to the directory`, async ({ page }) => {
     await serveTutorialSite(page);
-    await page.goto("https://tutorials.test/wisp-science/tutorials.html");
+    await page.goto("https://tutorials.test/SuperScience/tutorials.html");
     await page.locator(`.tutorial-card#${id}`).click();
     await expect(page).toHaveURL(new RegExp(`/tutorials/${id}\\.html\\?lang=zh$`));
     const title = readRepositoryFile(`docs/wechat/${name}`).split("\n")[0].replace(/^# /, "");
@@ -196,7 +196,7 @@ for (const name of readdirSync(resolve(repositoryRoot, "docs/wechat")).filter((n
 
 test("article links, previous and next navigation, and browser back stay within the series", async ({ page }) => {
   await serveTutorialSite(page);
-  await page.goto("https://tutorials.test/wisp-science/tutorials/wisp-science-quick-start.html");
+  await page.goto("https://tutorials.test/SuperScience/tutorials/superscience-quick-start.html");
   await expect(page.locator(".tutorial-previous")).toHaveCount(0);
   await page.locator(".tutorial-next").click();
   await expect(page.locator("h1")).toContainText("模型配置");
@@ -204,15 +204,15 @@ test("article links, previous and next navigation, and browser back stay within 
   await expect(page.locator("h1")).toContainText("浏览器使用");
   await page.locator(".tutorial-previous").click();
   await expect(page.locator("h1")).toContainText("模型配置");
-  await page.goto("https://tutorials.test/wisp-science/tutorials/wisp-science-acp.html");
+  await page.goto("https://tutorials.test/SuperScience/tutorials/superscience-acp.html");
   await expect(page.locator(".tutorial-next")).toHaveCount(0);
-  await expect(page.locator("h1")).toHaveText("Wisp Science高级：ACP配置");
+  await expect(page.locator("h1")).toHaveText("天成科研助手高级：ACP配置");
   await page.locator(".tutorial-previous").click();
-  await expect(page.locator("h1")).toHaveText("Wisp Science进阶");
+  await expect(page.locator("h1")).toHaveText("天成科研助手进阶");
   await page.locator(".tutorial-previous").click();
   await expect(page.locator("h1")).toContainText("研究历程");
   await page.locator(".tutorial-previous").click();
-  await page.locator('.tutorial-body:visible p a[href^="wisp-science-skills.html"]').click();
+  await page.locator('.tutorial-body:visible p a[href^="superscience-skills.html"]').click();
   await expect(page.locator("h1")).toContainText("Skills");
   await expect(page.locator(".tutorial-body:visible pre").filter({ hasText: "name: lab-paper-note" })).toContainText("# 实验室论文阅读笔记");
   await page.goBack();
@@ -224,13 +224,13 @@ test("article reading and returning to the directory work without JavaScript", a
   const context = await browser.newContext({ javaScriptEnabled: false, viewport: { width: 390, height: 844 } });
   const page = await context.newPage();
   await serveTutorialSite(page);
-  await page.goto("https://tutorials.test/wisp-science/index.html");
+  await page.goto("https://tutorials.test/SuperScience/index.html");
   await page.locator('.footer-links a[href^="tutorials.html"]').click();
-  await page.locator(".tutorial-card#wisp-science-skills").click();
+  await page.locator(".tutorial-card#superscience-skills").click();
   await expect(page.locator("h1")).toContainText("Skills");
   await expect(page.locator(".tutorial-article")).toHaveCount(1);
   await page.locator(".tutorial-breadcrumb a").click();
-  await expect(page.locator("#wisp-science-skills")).toBeInViewport();
+  await expect(page.locator("#superscience-skills")).toBeInViewport();
   await context.close();
 });
 
@@ -239,24 +239,24 @@ test("English links preserve language without storage and old configuration page
     Object.defineProperty(window, "localStorage", { get() { throw new Error("storage disabled"); } });
   });
   await serveTutorialSite(page);
-  await page.goto("https://tutorials.test/wisp-science/index.html?lang=en");
+  await page.goto("https://tutorials.test/SuperScience/index.html?lang=en");
   const quickStart = page.locator('.hero-actions a[data-i18n="hero.quickStart"]');
   await expect(quickStart).toHaveText("Quick Start");
   await quickStart.click();
-  await expect(page).toHaveURL(/wisp-science-quick-start\.html\?lang=en$/);
-  await expect(page.locator("h1")).toHaveText("Wisp Science Basics: Quick Start");
+  await expect(page).toHaveURL(/superscience-quick-start\.html\?lang=en$/);
+  await expect(page.locator("h1")).toHaveText("SuperScience Basics: Quick Start");
   await page.locator(".tutorial-next").click();
-  await expect(page.locator("h1")).toHaveText("Wisp Science Basics: Model Configuration");
+  await expect(page.locator("h1")).toHaveText("SuperScience Basics: Model Configuration");
   await page.locator(".tutorial-breadcrumb a").click();
-  await expect(page.locator(".tutorial-card#wisp-science-models h2")).toHaveText("Model Configuration");
-  await page.locator(".tutorial-card#wisp-science-acp").click();
-  await expect(page.locator("h1")).toHaveText("Wisp Science Advanced: ACP Configuration");
+  await expect(page.locator(".tutorial-card#superscience-models h2")).toHaveText("Model Configuration");
+  await page.locator(".tutorial-card#superscience-acp").click();
+  await expect(page.locator("h1")).toHaveText("SuperScience Advanced: ACP Configuration");
   await page.screenshot({ path: test.info().outputPath("acp-english.png") });
   await page.locator('.lang-switch [data-lang="zh"]').click();
-  await expect(page.locator("h1")).toHaveText("Wisp Science高级：ACP配置");
+  await expect(page.locator("h1")).toHaveText("天成科研助手高级：ACP配置");
   await expect(page.locator('.tutorial-body[lang="en"]')).toBeHidden();
   await page.locator(".tutorial-breadcrumb a").click();
-  await expect(page.locator(".tutorial-card#wisp-science-acp h2")).toHaveText("ACP配置");
+  await expect(page.locator(".tutorial-card#superscience-acp h2")).toHaveText("ACP配置");
   expect(existsSync(resolve(repositoryRoot, "docs/model-configuration.html"))).toBe(false);
   expect(existsSync(resolve(repositoryRoot, "docs/acp-agents.html"))).toBe(false);
   for (const name of ["index.html", "tutorials.html", "mcp.html"]) {
@@ -277,7 +277,7 @@ for (const readme of ["README.md", "README_zh.md"]) {
     const picture = readRepositoryFile(readme).match(/<picture>[\s\S]*?<\/picture>/)?.[0];
     expect(picture).toBeTruthy();
     await page.setContent(`<base href="https://wordmark.test/">${picture}`);
-    const logo = page.getByRole("img", { name: "Wisp Science", exact: true });
+    const logo = page.getByRole("img", { name: "SuperScience", exact: true });
     for (const mode of ["light", "dark"] as const) {
       await page.emulateMedia({ colorScheme: mode });
       await expect.poll(() => logo.evaluate((el: HTMLImageElement) => el.currentSrc))
@@ -298,7 +298,7 @@ test("website hero wordmark and bilingual title fit desktop and mobile", async (
   await page.goto("https://wordmark.test/");
   const logo = page.locator(".hero-wordmark");
   await expect(logo).toHaveAttribute("src", "assets/wordmark-light.svg");
-  await expect(logo).toHaveAccessibleName("Wisp Science");
+  await expect(logo).toHaveAccessibleName("SuperScience");
   await expect.poll(() => logo.evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth > 0)).toBe(true);
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 900 });
@@ -308,8 +308,8 @@ test("website hero wordmark and bilingual title fit desktop and mobile", async (
     expect(box.x + box.width).toBeLessThanOrEqual(width);
     expect(box.width / box.height).toBeCloseTo(520 / 344, 2);
     for (const [lang, title] of [
-      ["zh", "严谨做科研， Wisp Science 在身边。"],
-      ["en", "Let rigor be your guide, with Wisp Science by your side."],
+      ["zh", "严谨做科研， 天成科研助手 在身边。"],
+      ["en", "Let rigor be your guide, with SuperScience by your side."],
     ]) {
       await page.locator(`button[data-lang="${lang}"]`).click();
       const heading = page.locator(".hero h1");

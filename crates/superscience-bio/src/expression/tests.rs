@@ -180,7 +180,7 @@ fn catalog_registers_gtex_and_panglaodb_tools() {
                 schema.function.name
             );
             assert!(
-                schema.function.description.contains("wisp-science"),
+                schema.function.description.contains("SuperScience"),
                 "{}",
                 schema.function.name
             );

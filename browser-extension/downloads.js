@@ -7,7 +7,7 @@ async function downloadAsset(spec) {
   }
   var filename = (spec.filename || url.split("?")[0].split("/").pop() || "download.bin").replace(/[\\/:*?"<>|]/g, "_");
   if (filename.length > 180) filename = filename.slice(-180);
-  var target = "WispBrowserStaging/" + filename;
+  var target = "SuperScienceBrowserStaging/" + filename;
   var referrer = spec.referrer || "";
 
   var waitDownload = function (downloadId, timeoutMs) {

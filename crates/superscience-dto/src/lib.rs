@@ -3415,6 +3415,10 @@ pub struct ModelFormEntry {
     pub max_tokens: u64,
     pub context_window: u64,
     pub reasoning_effort: String,
+    /// Per-model priority ("Fast") tier; empty means the provider default. It
+    /// stays on the entry, not the form, so one card can be Fast while its
+    /// sibling models on the same Base URL keep the default tier.
+    pub service_tier: String,
     pub image_size: String,
     pub image_quality: String,
     pub image_aspect_ratio: String,

@@ -245,7 +245,7 @@ Instructions in **Project Settings → Agent Context** live in
 
 ### Native biological tools and custom MCP
 
-Native biological retrieval lives in `crates/wisp-bio/`. `NativeBio` is the
+Native biological retrieval lives in `crates/superscience-bio/`. `NativeBio` is the
 shared client (HTTP + 设置→凭据 / CLI env). Each domain is a module with
 `catalog()` and `call()`; the native catalog is the only built-in inventory.
 `mcp_bio` selects every implemented domain; `WISP_MCP_PKG=mcp_<domain>` selects
@@ -334,7 +334,7 @@ into every model request.
 Desktop users add remote MCP (Notion, Parallel Search, …) under
 **Settings → Connections**. Connector detail pages show introductions, expandable
 tool descriptions and input schemas, plus source/documentation links. Native
-introductions are maintained in `crates/wisp-bio/src/domains.json`; their domain
+introductions are maintained in `crates/superscience-bio/src/domains.json`; their domain
 coverage is checked against `catalog()`. Tool descriptions and schemas come
 from that same dispatch catalog. Custom MCP tools retain the server's description,
 `inputSchema` and optional `outputSchema`; absent metadata is left absent.
@@ -353,10 +353,10 @@ SuperScience/
 │  ├─ superscience-skills/  SKILL.md discovery + search_skills/use_skill progressive loading
 │  ├─ superscience-runtime/ project-scoped Python/R runtime manager + REPL tools
 │  ├─ superscience-mcp/     stdio/HTTP MCP client + McpTool adapter (custom servers)
-│  ├─ wisp-bio/             Native biological database clients shared by all hosts
+│  ├─ superscience-bio/    Native biological database clients shared by all hosts
 │  ├─ superscience-acp/     ACP v1 stdio client for external coding agents
 │  ├─ superscience-sync/    Encrypted snapshot protocol + self-hosted relay server
-│  ├─ wisp-runs/            Run control plane (run_in_context / monitor_run / harvest)
+│  ├─ superscience-runs/   Run control plane (run_in_context / monitor_run / harvest)
 │  └─ superscience-cli/     `superscience` headless binary
 ├─ src-tauri/       Tauri v2 desktop shell (commands + agent event stream)
 ├─ ui/              Leptos CSR frontend (built by Trunk, loaded in WebView2)
@@ -397,14 +397,14 @@ serde alias on the parser.
 - **Python/R REPLs** (`superscience-runtime`): one manager-owned process per
   project/context/language keeps its namespace across cells and conversations;
   local, WSL, and SSH contexts share one versioned protocol.
-- **MCP** (`wisp-mcp`): a newline-JSON-RPC client launches any stdio MCP
+- **MCP** (`superscience-mcp`): a newline-JSON-RPC client launches any stdio MCP
   server; remote schemas stay behind `search_mcp_tools` / `use_mcp_tool`
   until a task needs them.
 
 ## Testing
 
 - **Rust unit tests** — `cargo test --workspace`
-- **MCP client smoke** — `cargo run -p wisp-mcp --example smoke` launches the
+- **MCP client smoke** — `cargo run -p superscience-mcp --example smoke` launches the
   bundled mock MCP server via `uv` and round-trips `tools/list` + `tools/call`.
 - **UI E2E (Playwright + Tauri mock)** — `ui-tests/` runs the Leptos UI in a
   headless browser against `trunk serve`, with a mocked `window.__TAURI__`:

@@ -752,7 +752,7 @@ async fn encodes_ncbi_identity_and_rejects_mgnify_ambiguous_search() {
     assert!(form.contains("term=GSE1%5BACCN%5D+%26+liver"), "{form}");
     assert!(form.contains("api_key=synthetic-key%26value"), "{form}");
     assert!(form.contains("email=operator%40example.test"), "{form}");
-    assert!(form.contains("tool=wisp-science"), "{form}");
+    assert!(form.contains("tool=SuperScience"), "{form}");
     assert_eq!(result["returned"], 0);
     assert!(!result.to_string().contains("synthetic-key"));
     assert!(error.contains("exactly one"), "{error}");

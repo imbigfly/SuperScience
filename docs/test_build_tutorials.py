@@ -50,28 +50,28 @@ class TutorialBuildTests(unittest.TestCase):
 
     def test_sibling_navigation_follows_reading_order(self):
         pages = build_tutorials.render_tutorials()
-        first = pages["tutorials/wisp-science-quick-start.html"]
-        last = pages["tutorials/wisp-science-acp.html"]
+        first = pages["tutorials/superscience-quick-start.html"]
+        last = pages["tutorials/superscience-acp.html"]
         self.assertNotIn('class="tutorial-previous"', first)
-        self.assertIn('class="tutorial-next" href="wisp-science-models.html"', first)
+        self.assertIn('class="tutorial-next" href="superscience-models.html"', first)
         self.assertNotIn('class="tutorial-next"', last)
-        self.assertIn('class="tutorial-previous" href="wisp-science-cli.html"', last)
-        self.assertIn('<title>快速开始 · 教程 | Wisp Science</title>', first)
+        self.assertIn('class="tutorial-previous" href="superscience-cli.html"', last)
+        self.assertIn('<title>快速开始 · 教程 | 天成科研助手</title>', first)
         self.assertIn('src="../assets/i18n.js"', first)
 
     def test_cli_is_a_separate_tutorial_from_server_setup(self):
         pages = build_tutorials.render_tutorials()
-        cli = pages["tutorials/wisp-science-cli.html"]
-        server = pages["tutorials/wisp-science-servers-cli.html"]
-        self.assertIn('data-text-zh="Wisp Science进阶"', cli)
-        self.assertIn('data-text-en="Wisp Science Advanced"', cli)
-        self.assertIn('WISP_API_KEY', cli)
-        self.assertIn('wisp-science run --output jsonl', cli)
+        cli = pages["tutorials/superscience-cli.html"]
+        server = pages["tutorials/superscience-servers-cli.html"]
+        self.assertIn('data-text-zh="天成科研助手进阶"', cli)
+        self.assertIn('data-text-en="SuperScience Advanced"', cli)
+        self.assertIn('SUPERSCIENCE_API_KEY', cli)
+        self.assertIn('superscience run --output jsonl', cli)
         self.assertIn('Get-Credential', cli)
-        self.assertNotIn('WISP_API_KEY', server)
-        self.assertNotIn('wisp-science run --output jsonl', server)
-        self.assertIn('href="wisp-science-cli.html"', server)
-        self.assertIn('href="tutorials/wisp-science-cli.html"', pages["tutorials.html"])
+        self.assertNotIn('SUPERSCIENCE_API_KEY', server)
+        self.assertNotIn('superscience run --output jsonl', server)
+        self.assertIn('href="superscience-cli.html"', server)
+        self.assertIn('href="tutorials/superscience-cli.html"', pages["tutorials.html"])
 
     def test_every_tutorial_has_a_complete_english_source_and_language_metadata(self):
         root = build_tutorials.DOCS / "wechat"

@@ -173,7 +173,7 @@
     },
     {
       "case_id": "nontrigger-004",
-      "prompt": "请直接帮我把一个与图书蒸馏无关的现有 Skill 初始化 Git、公开并部署到 Wisp。",
+      "prompt": "请直接帮我把一个与图书蒸馏无关的现有 Skill 初始化 Git、公开并部署到 SuperScience。",
       "expected_reason": "这是通用工程与部署任务；MRULE-006 只处理本流程产出且经 Gate 4 接受的同一候选。",
       "stable_task_ids": [
         "meta-stable-task-distill-concept-books"

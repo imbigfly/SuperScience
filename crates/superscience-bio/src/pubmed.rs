@@ -135,7 +135,7 @@ impl PubMed {
     }
 
     pub(super) fn ncbi_identity(&self) -> Vec<(String, String)> {
-        let mut params = vec![("tool".into(), "wisp-science".into())];
+        let mut params = vec![("tool".into(), "SuperScience".into())];
         if let Some(key) = &self.api_key {
             params.push(("api_key".into(), key.clone()));
         }

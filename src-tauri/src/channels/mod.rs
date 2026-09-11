@@ -468,7 +468,8 @@ pub(super) fn render_approval_request(request: &crate::ConfirmRequest) -> String
         format!("\n详情:\n{preview}\n")
     };
     format!(
-        "⚠️ Wisp 等待审批\n\n编号: {code}\n会话: {}\n工具: {tool}\n{detail}\n回复:\n/approve {code}\n/reject {code} 原因",
+        "⚠️ {} 等待审批\n\n编号: {code}\n会话: {}\n工具: {tool}\n{detail}\n回复:\n/approve {code}\n/reject {code} 原因",
+        superscience_paths::PRODUCT_NAME_ZH,
         short_id(&request.frame_id)
     )
 }

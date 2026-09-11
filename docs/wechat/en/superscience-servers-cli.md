@@ -1,8 +1,8 @@
-# Wisp Science Basics: Server Environment Setup
+# SuperScience Basics: Server Environment Setup
 
 Research files and computation often live on different machines: a laptop for reading papers, a lab server for data, and a remote Python, R, or GPU environment for analysis. It is easy to lose track of which machine you are using and which filesystem a path belongs to.
 
-Wisp Science registers servers, attaches execution environments to conversations, and opens interactive terminals for commands you run yourself. This tutorial starts with an SSH host, then covers selecting a conversation's environment and using the terminal inside the app.
+SuperScience registers servers, attaches execution environments to conversations, and opens interactive terminals for commands you run yourself. This tutorial starts with an SSH host, then covers selecting a conversation's environment and using the terminal inside the app.
 
 > Screenshots show the real frontend in English with simulated server, GPU, and terminal information. `gpu.example.org` is a placeholder, not a server to connect to. The images do not demonstrate a real SSH connection.
 
@@ -10,10 +10,10 @@ Wisp Science registers servers, attaches execution environments to conversations
 
 | Entry point | Who operates it | Suitable tasks |
 | --- | --- | --- |
-| A conversation's execution environment | You describe the task; Wisp calls tools in the selected environment | Read remote data, run analyses, and submit structured tasks |
-| Wisp's interactive terminal | You enter commands and the shell executes them | Inspect directories, debug environments, and monitor output |
+| A conversation's execution environment | You describe the task; SuperScience calls tools in the selected environment | Read remote data, run analyses, and submit structured tasks |
+| SuperScience's interactive terminal | You enter commands and the shell executes them | Inspect directories, debug environments, and monitor output |
 
-Server configuration identifies which machine Wisp may use. An interactive terminal lets you type commands yourself. For using the Wisp agent directly from a system terminal, see [Wisp Science Advanced](wisp-science-cli.md).
+Server configuration identifies which machine SuperScience may use. An interactive terminal lets you type commands yourself. For using the SuperScience agent directly from a system terminal, see [SuperScience Advanced](superscience-cli.md).
 
 **Prepare connection details.**
 
@@ -21,7 +21,7 @@ Ask the administrator for the hostname, account, SSH port, and authentication me
 
 | Detail | Example | Meaning |
 | --- | --- | --- |
-| Name / alias | `gpu-lab` | How the server appears in Wisp |
+| Name / alias | `gpu-lab` | How the server appears in SuperScience |
 | Hostname | `gpu.example.org` | Replace with the actual address |
 | User | `researcher` | The remote account, which may differ from your local username |
 | Port | `22` | Use the server's configured port |
@@ -45,7 +45,7 @@ Click **Test connection** and add the host after success. Back in the environmen
 
 Being able to log in and having a usable analysis environment are separate checks. If the connection succeeds but Python or R is missing from the probe, check installation and the remote PATH. Use **Configure runtime interpreters** to specify a remote executable path where necessary.
 
-If you already maintain `~/.ssh/config`, import its hosts and test and probe them individually. Private-key contents are not copied into Wisp's SQLite database; sensitive password values use the operating system keyring.
+If you already maintain `~/.ssh/config`, import its hosts and test and probe them individually. Private-key contents are not copied into SuperScience's SQLite database; sensitive password values use the operating system keyring.
 
 **Attach the environment to the conversation and specify the data path.**
 
@@ -96,21 +96,21 @@ You can open several terminals for one environment. Switching tabs or collapsing
 
 **Keep durable records for long computations.**
 
-An interactive terminal is useful for debugging. An analysis running for hours also needs status, cancellation, logs, and output locations. Ask Wisp to use a structured Run instead of waiting indefinitely inside an ordinary shell call:
+An interactive terminal is useful for debugging. An analysis running for hours also needs status, cancellation, logs, and output locations. Ask SuperScience to use a structured Run instead of waiting indefinitely inside an ordinary shell call:
 
 > Check the environment on gpu-lab and prepare a plan for analysis/run_qc.py. List input paths, output directory, and resource requirements. Wait for my confirmation before submitting through a structured Run. If this machine requires a scheduler, use its required submission method and record the job ID.
 
 Submit only when the environment and execution method match the task. Registering a GPU host does not automatically make every script use a GPU, and attaching a server does not convert arbitrary commands into scheduler jobs.
 
-Review Run status, logs, files, and the [trajectory](wisp-science-trajectory.md) together. A terminal reporting that a command was sent does not prove the computation succeeded.
+Review Run status, logs, files, and the [trajectory](superscience-trajectory.md) together. A terminal reporting that a command was sent does not prove the computation succeeded.
 
 **Check the machine before the command.**
 
 | Symptom | Check first |
 | --- | --- |
 | SSH connection fails | Hostname, port, account, VPN/jump host, and authentication |
-| System SSH login works but Wisp's probe fails | Login startup scripts, restricted shells, and whether non-interactive commands execute |
-| Wisp still uses the local machine | Session attachment, conversation default, and the task's explicit environment |
+| System SSH login works but SuperScience's probe fails | Login startup scripts, restricted shells, and whether non-interactive commands execute |
+| SuperScience still uses the local machine | Session attachment, conversation default, and the task's explicit environment |
 | File not found | Whether the path is local or remote and the terminal's current directory |
 | Python/R package missing | Which interpreter is actually running and whether the package is installed there |
 

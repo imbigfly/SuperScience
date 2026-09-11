@@ -5,9 +5,10 @@ For package authors, see the [Skill authoring guide](skill-authoring.md) and
 
 ## Community store and GitHub installation
 
-**Settings → Skills → Browse community Skills** opens a searchable, tag-filtered
-free directory. **Add from GitHub** accepts a public repository, Skill directory,
-or `SKILL.md` file URL. Repository links use GitHub's reported default branch;
+**Settings → Skills → Add skill → Browse community Skills** opens a searchable,
+tag-filtered free directory. **Add skill → Add from GitHub** accepts a public
+repository, Skill directory, or `SKILL.md` file URL. Repository links use
+GitHub's reported default branch;
 ambiguous branch/tag boundaries require an explicit ref. All refs resolve to a
 full commit SHA before preview and installation. Select one package from the
 results, inspect the full SKILL.md source, dependencies, validation feedback,

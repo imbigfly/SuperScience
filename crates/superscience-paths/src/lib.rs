@@ -198,10 +198,6 @@ pub fn r_dir() -> Option<PathBuf> {
     existing_dir(&resource_root(), "r")
 }
 
-pub fn bio_tools_dir() -> Option<PathBuf> {
-    existing_dir(&resource_root(), "mcp-servers/bio-tools")
-}
-
 pub fn seed_dir() -> Option<PathBuf> {
     existing_dir(&resource_root(), "seed")
 }
@@ -222,12 +218,6 @@ pub fn r_kernel_worker_path() -> Option<PathBuf> {
         .filter(|p| p.is_file())
 }
 
-pub fn mcp_requirements_path() -> Option<PathBuf> {
-    python_dir()
-        .map(|d| d.join("requirements-mcp.txt"))
-        .filter(|p| p.is_file())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,7 +228,6 @@ mod tests {
         assert!(python_dir().is_some());
         assert!(r_dir().is_some());
         assert!(r_kernel_worker_path().is_some());
-        assert!(bio_tools_dir().is_some());
         assert!(seed_dir().is_some());
         assert!(browser_extension_dir().is_some());
     }

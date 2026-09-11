@@ -1,6 +1,6 @@
 use super::{
     build_provider_config, clear_idle_agents, desktop_lifecycle, effective_api_key, load_locale,
-    load_settings, models, normalized_provider, pet_commands::load_pet_asset, AppState, Settings,
+    load_settings, models, normalized_provider, AppState, Settings,
 };
 use serde_json::json;
 use std::{
@@ -138,14 +138,7 @@ pub(super) async fn get_settings(state: State<'_, AppState>) -> Result<Settings,
         tokio::task::spawn_blocking(|| Secret::get(SYNC_RELAY_TOKEN).is_ok())
             .await
             .unwrap_or(false);
-    let pet_enabled = state
-        .store
-        .get_setting("pet_enabled")
-        .await
-        .ok()
-        .flatten()
-        .map(|value| value == "true")
-        .unwrap_or(false);
+    let pet_enabled = false;
     let pet_directory = state
         .store
         .get_setting("pet_directory")
@@ -246,16 +239,8 @@ pub(super) async fn set_settings(
     if !workspace_dir.is_empty() && !Path::new(workspace_dir).is_absolute() {
         return Err("Workspace directory must be an absolute path.".into());
     }
+    // Desktop pet UI removed; never enable or validate pet assets from settings.
     let pet_directory = settings.pet_directory.trim();
-    if !pet_directory.is_empty() && !Path::new(pet_directory).is_absolute() {
-        return Err("Pet directory must be an absolute path.".into());
-    }
-    if settings.pet_enabled {
-        if pet_directory.is_empty() {
-            return Err("Choose a pet directory before enabling the pet.".into());
-        }
-        load_pet_asset(Path::new(pet_directory))?;
-    }
     tracing::info!(
         target: "wisp",
         provider = %provider,
@@ -312,14 +297,7 @@ pub(super) async fn set_settings(
     }
     state
         .store
-        .set_setting(
-            "pet_enabled",
-            if settings.pet_enabled {
-                "true"
-            } else {
-                "false"
-            },
-        )
+        .set_setting("pet_enabled", "false")
         .await
         .map_err(|e| e.to_string())?;
     state
@@ -380,7 +358,7 @@ pub(super) async fn set_settings(
         .map_err(|e| e.to_string())?;
     // Network preferences have an independent save path. A stale general/model
     // settings form must never overwrite the current network configuration.
-    desktop_lifecycle::sync_pet_window(&app, settings.pet_enabled)?;
+    desktop_lifecycle::sync_pet_window(&app, false)?;
 
     // Workspace directory: persist an absolute, creatable path. Takes effect on
     // next launch (AppState.root is fixed at startup — restart, not hot-swap).

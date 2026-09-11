@@ -16601,7 +16601,6 @@ fn App() -> impl IntoView {
                 default_execution_context, runtime_interpreter_form, probing_context_id,
                 delete_confirm, tctoken_session,
             }
-            open_project=switch_project
             go_settings_section=Callback::new(move |section: String| go_settings_section(&section))
             close_settings_subpage=Callback::new(move |_: ()| close_settings_subpage())
             check_updates=Callback::new(check_updates)

@@ -31,9 +31,9 @@ jobs:
           cache-on-failure: true
           shared-key: headless-agent-${{ matrix.os }}
 
-      # wisp-cli now links wisp-store, whose Linux keyring backend needs libdbus
-      # at compile time even though debug builds persist secrets to a JSON file.
-      # The rust job gets this transitively via webkit/gtk; this job does not.
+      # superscience-cli now links superscience-store, whose Linux keyring backend
+      # needs libdbus at compile time even though debug builds persist secrets to
+      # a JSON file. The rust job gets this transitively via webkit/gtk; this job does not.
       - name: Install Linux keyring build deps
         if: runner.os == 'Linux'
         env:
@@ -47,13 +47,13 @@ jobs:
           sudo apt-get install -y libdbus-1-dev pkg-config
 
       - name: Run MCP process-tree shutdown regression
-        run: cargo test -p wisp-mcp --test process_tree_shutdown
+        run: cargo test -p superscience-mcp --test process_tree_shutdown
 
       # Interpreters are often launchers: Windows Rscript.exe re-launches
       # bin\x64\Rscript.exe through cmd.exe. Stopping a runtime must reclaim
       # that whole tree, which only a real per-OS process tree can prove.
       - name: Run runtime worker process-tree regression
-        run: cargo test -p wisp-runtime --test worker_process_tree
+        run: cargo test -p superscience-runtime --test worker_process_tree
 
       # Exercise the Python worker and standalone skill helpers on all three
       # OSes, including process handling and project-relative planner paths.
@@ -67,7 +67,7 @@ jobs:
         run: python -m unittest discover -s python -p "test_*.py" -v
 
       - name: Run deterministic headless agent suite
-        run: cargo run -p wisp-cli -- eval --artifacts target/headless-agent-eval --save target/headless-agent-eval/report.json
+        run: cargo run -p superscience-cli -- eval --artifacts target/headless-agent-eval --save target/headless-agent-eval/report.json
 
       - name: Upload headless eval artifacts
         if: always()

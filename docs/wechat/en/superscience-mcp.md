@@ -1,8 +1,8 @@
-# Wisp Science Basics: MCP
+# SuperScience Basics: MCP
 
 Research often means switching between tools: PubMed for papers, GEO for datasets, and project notes for organizing results. To help with this work, an AI needs access to the relevant data sources and tools.
 
-MCP provides a common way to connect them. In Wisp Science, you can use built-in research connectors or add your own MCP services so that searching, reading, and organizing results happen in the same conversation.
+MCP provides a common way to connect them. In SuperScience, you can use built-in research connectors or add your own MCP services so that searching, reading, and organizing results happen in the same conversation.
 
 This tutorial introduces the concept, then uses two examples to configure and verify connections.
 
@@ -10,15 +10,15 @@ This tutorial introduces the concept, then uses two examples to configure and ve
 
 MCP stands for **Model Context Protocol**, an open standard connecting AI applications to external systems such as data sources, tools, and workflows. Its official introduction compares it to USB-C: a common interface lets different systems connect. See the [MCP introduction](https://modelcontextprotocol.io/docs/getting-started/intro).
 
-In Wisp, the responsibilities are:
+In SuperScience, the responsibilities are:
 
 | Participant | Responsibility |
 | --- | --- |
 | Language model | Understand your request, select tools, and interpret results |
-| Wisp Science | Manage connections, organize calls, handle permissions, and display results |
+| SuperScience | Manage connections, organize calls, handle permissions, and display results |
 | MCP service | Provide capabilities such as webpage reading, note search, or database queries |
 
-For a literature request, Wisp can pass the model's chosen query to the appropriate tool, then let the model organize the returned records.
+For a literature request, SuperScience can pass the model's chosen query to the appropriate tool, then let the model organize the returned records.
 
 MCP server capabilities include **Tools**, **Resources**, and **Prompts**. Support depends on each server and client. This tutorial focuses on connecting services and calling tools. See [MCP server capabilities](https://modelcontextprotocol.io/specification/2025-06-18/server/index).
 
@@ -26,9 +26,9 @@ For research, request actual PMIDs, dataset identifiers, and source URLs so you 
 
 **Start with a built-in research connector.**
 
-Wisp includes connectors for sources such as PubMed, GEO, and UniProt. Open a project and go to **Settings → Connections** to inspect and enable them.
+SuperScience includes connectors for sources such as PubMed, GEO, and UniProt. Open a project and go to **Settings → Connections** to inspect and enable them.
 
-Click a connector to see its description, sources, and tool list. Expand a tool for parameters, required fields, and defaults. The [research connector catalog](https://xuzhougeng.github.io/wisp-science/mcp.html) describes coverage.
+Click a connector to see its description, sources, and tool list. Expand a tool for parameters, required fields, and defaults. The [research connector catalog](../../mcp.html) describes coverage.
 
 After configuring a working model, try:
 
@@ -73,7 +73,7 @@ Fill in Add connection:
 
 Click **Test**, then **Save** after success, and verify that the connection is enabled. The first run may download dependencies and take longer.
 
-If a terminal finds `uvx` but Wisp cannot, enter its full executable path. Find it with `command -v uvx` on macOS/Linux or `(Get-Command uvx).Source` in Windows PowerShell.
+If a terminal finds `uvx` but SuperScience cannot, enter its full executable path. Find it with `command -v uvx` on macOS/Linux or `(Get-Command uvx).Source` in Windows PowerShell.
 
 For Windows encoding errors, the Fetch documentation suggests the environment variable `PYTHONIOENCODING` with value `utf-8`.
 
@@ -104,7 +104,7 @@ Search and reading are useful initial checks of authorization scope. When you la
 
 Other remote services may use API keys instead of OAuth. Fill request headers according to their documentation. For a required Bearer token, use `Authorization` with value `Bearer YOUR_ACTUAL_KEY`. Such manual-header configurations normally select authentication **None**, meaning no OAuth flow; the header still authenticates the request.
 
-Wisp stores connection-level environment values, header values, and OAuth tokens in the OS keyring. When editing, leaving an existing secret blank preserves it; removing its row clears it. See [Basic Configuration](https://github.com/xuzhougeng/wisp-science/blob/main/docs/basic-configuration.md).
+SuperScience stores connection-level environment values, header values, and OAuth tokens in the OS keyring. When editing, leaving an existing secret blank preserves it; removing its row clears it. See [Basic Configuration](https://github.com/imbigfly/SuperScience/blob/main/docs/basic-configuration.md).
 
 **Specify the source, task, and deliverable.**
 
@@ -118,7 +118,7 @@ For a saved literature list:
 
 > Use PubMed tools to find ten candidate papers on plant root cell atlases. Save titles, years, PMIDs, links, and screening reasons to a Markdown file in the project, then report its location.
 
-The connector retrieves information; other Wisp tools can organize and save it. One research task can combine several tools without a single MCP service doing every step.
+The connector retrieves information; other SuperScience tools can organize and save it. One research task can combine several tools without a single MCP service doing every step.
 
 After changing connections, validate in a new session to avoid an older agent's connection state. Disable a service under **Settings → Connections**, then create a new session or wait for an idle agent rebuild. Tool details also offer Allow, Ask, and Deny permission rules.
 
@@ -137,4 +137,4 @@ For proxies, check **Settings → General → Network** for MCP settings. Existi
 
 Start with a familiar small task: five papers, a public webpage, or a note search. Inspect the called tool and returned results, then continue from those results to build a useful research workflow.
 
-> This tutorial reflects Wisp documentation and implementation when written. Labels may vary by version. Example prompts demonstrate usage, not searches already executed.
+> This tutorial reflects SuperScience documentation and implementation when written. Labels may vary by version. Example prompts demonstrate usage, not searches already executed.

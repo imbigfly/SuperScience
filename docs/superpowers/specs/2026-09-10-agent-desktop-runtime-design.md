@@ -8,7 +8,7 @@
 
 ## 结论
 
-Wisp Science Desktop Runtime 采用 **Codex 的 PiP 交互方式 + BetterGI 的 ChildSession 隔离思想**：
+SuperScience Desktop Runtime 采用 **Codex 的 PiP 交互方式 + BetterGI 的 ChildSession 隔离思想**：
 
 - 用户看到的只有 **Agent Desktop**。默认缩成右下角 PiP：实时画面、Agent 状态、暂停、接管、展开。
 - 用户不需要理解 Session、RDP、VM、ChildSession、ScreenCaptureKit。
@@ -27,7 +27,7 @@ VS
 而要做成：
 
 ```text
-                Wisp Science
+                SuperScience
                      │
               Desktop Runtime
                      │
@@ -98,9 +98,9 @@ Codex 当前暴露的问题也说明 **PiP ≠ 隔离**：
 - 跨应用时 scrolling / input control 丢失（[openai/codex#38508](https://github.com/openai/codex/issues/38508)）。
 - 隐藏 PiP 无法停止失控的 Computer Use service，甚至可以拖垮 `launchservicesd` / WindowServer（[openai/codex#38760](https://github.com/openai/codex/issues/38760)）。
 
-独立 Desktop Session 在这些点上更强，但把第二桌面直接暴露给用户，理解成本过高。Wisp 的产品选择是：**底层做强隔离，上层做得像 PiP 一样轻。**
+独立 Desktop Session 在这些点上更强，但把第二桌面直接暴露给用户，理解成本过高。SuperScience 的产品选择是：**底层做强隔离，上层做得像 PiP 一样轻。**
 
-| 层 | Codex 风格 | BetterGI 风格 | Wisp 选择 |
+| 层 | Codex 风格 | BetterGI 风格 | SuperScience 选择 |
 | --- | --- | --- | --- |
 | 用户界面 | **PiP** | RDP / 桌面分身窗口 | **Agent Desktop PiP** |
 | 截图 | ScreenCaptureKit 等 | ChildSession 屏幕 | 平台 adapter |
@@ -133,7 +133,7 @@ Codex 当前暴露的问题也说明 **PiP ≠ 隔离**：
 └─────────────────┘
 ```
 
-点击 **展开** 才看到完整 Agent Desktop。展开后的窗口仍然是 Wisp 的监督/接管表面，不是系统远程桌面客户端。
+点击 **展开** 才看到完整 Agent Desktop。展开后的窗口仍然是 SuperScience 的监督/接管表面，不是系统远程桌面客户端。
 
 ### 控件语义
 
@@ -267,7 +267,7 @@ Windows ChildSession
 
 ```text
 Codex:     Same Desktop → Computer Use → PiP
-Wisp Win:  Isolated Desktop → Computer Use → PiP Monitor
+SuperScience Win:  Isolated Desktop → Computer Use → PiP Monitor
 ```
 
 ### macOS：默认不要开 VM

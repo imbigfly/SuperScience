@@ -1,6 +1,6 @@
 [package]
-name = "wisp-bio"
-description = "Native biological data retrieval for Wisp hosts."
+name = "superscience-bio"
+description = "Native biological data retrieval for SuperScience hosts."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -20,8 +20,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 tokio = { workspace = true }
-# The crate keeps its upstream name, but the fork's workspace renames the
-# shared crates, so depend on the fork's package names here.
+# The fork renames every upstream `wisp-*` crate to `superscience-*`, package
+# and directory alike, so a merge never has to special-case one crate.
 superscience-llm = { workspace = true }
 superscience-tools = { workspace = true }
 
