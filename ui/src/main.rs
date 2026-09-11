@@ -499,9 +499,6 @@ fn App() -> impl IntoView {
     let settings = create_rw_signal(Settings::default());
     let follow_up_questions = create_rw_signal(HashMap::<String, Vec<String>>::new());
     let follow_up_generation = create_rw_signal(HashMap::<String, u64>::new());
-    // This mirrors the last persisted sync configuration. Keep it separate
-    // from `settings`, which also holds unsaved edits while Settings is open.
-    let sync_actions_available = create_rw_signal(false);
     let pet_status = create_rw_signal(PetStatus::default());
     let run_records = create_rw_signal::<Vec<RunSummary>>(vec![]);
     // A transcript row is remounted when a later turn changes its keyed
@@ -1015,6 +1012,7 @@ fn App() -> impl IntoView {
     let skills_search = extensions.skills_search;
     let skills_msg = extensions.skills_msg;
     let skill_filter_tag = extensions.skill_filter_tag;
+    let skills_view_mode = extensions.skills_view_mode;
     let plugins_list = extensions.plugins_list;
     let plugins_msg = extensions.plugins_msg;
     let update_check_busy = create_rw_signal(false);
@@ -2408,7 +2406,6 @@ fn App() -> impl IntoView {
         }
         let v = invoke("get_settings", JsValue::UNDEFINED).await;
         if let Ok(cfg) = serde_wasm_bindgen::from_value::<Settings>(v) {
-            sync_actions_available.set(project_sync_backend_configured(&cfg));
             let loc = Locale::from_code(&cfg.locale);
             locale.set(loc);
             set_document_lang(loc);
@@ -5417,6 +5414,7 @@ fn App() -> impl IntoView {
 
     let go_settings_section = move |sec: &str| {
         close_settings_subpage();
+        let sec = if sec == "pet" { "general" } else { sec };
         settings_section.set(sec.into());
         match sec {
             "models" => refresh_models(),
@@ -5527,7 +5525,6 @@ fn App() -> impl IntoView {
                 cfg.has_sync_relay_token = true;
                 cfg.sync_relay_token.clear();
             }
-            sync_actions_available.set(project_sync_backend_configured(&cfg));
             busy.set(false);
             show.set(false);
             status_msg.set(t(loc.get(), "status.settings_saved").into());
@@ -10638,7 +10635,7 @@ fn App() -> impl IntoView {
             state=ProjectLandingState {
                 show_projects, demo_mode, items, active_session, project_open_error,
                 demos, modal_artifact, locale, running, approval_pending,
-                sync_actions_available, command_palette_open, project_transfer,
+                command_palette_open, project_transfer,
                 privacy_mode_active, privacy_hidden_project_ids,
                 menu_new_project, menu_import_project, home_calendar_open, home_dialog_open,
             }
@@ -16597,10 +16594,10 @@ fn App() -> impl IntoView {
                 quick_actions, workflow_templates, workflow_studio: workflow_studio_state,
                 selected_workflow_template,
                 specialist_form_open, memory_view, memory_editor, memory_msg, skills_list,
-                skill_filter_tag, skills_search, skills_msg, plugins_list, plugins_msg, plugin_install_open, cred_status, cred_inputs,
+                skill_filter_tag, skills_view_mode, skills_search, skills_msg, plugins_list, plugins_msg, plugin_install_open, cred_status, cred_inputs,
                 custom_credentials, cred_msg, approval_grants, conns_view, conn_form_open,
                 conn_form_kind, conn_test_msg, custom_conn_tools, custom_conn_tools_loading,
-                custom_conn_tool_errors, pet_status, ssh_hosts, execution_contexts,
+                custom_conn_tool_errors, ssh_hosts, execution_contexts,
                 default_execution_context, runtime_interpreter_form, probing_context_id,
                 delete_confirm, tctoken_session,
             }
