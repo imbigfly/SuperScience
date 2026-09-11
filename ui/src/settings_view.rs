@@ -16,7 +16,7 @@ use crate::bindings::{invoke, invoke_checked, is_mac, is_windows, open_external_
 use crate::dto::*;
 use crate::i18n::{
     brand_visible_copy, localize_backend, set_document_lang, specialist_display_description,
-    specialist_display_name, t, tf, use_locale, Locale,
+    specialist_display_name, t, tf, use_locale, Locale, BRAND_GITHUB_REPO,
 };
 use crate::knowledge_settings::{
     list_knowledge_settings_bases, load_knowledge_settings, persist_knowledge_settings,
@@ -2475,7 +2475,6 @@ fn ProjectApprovalSettings(
 pub(super) fn SettingsView(
     state: SettingsViewState,
     external_link_confirm: RwSignal<Option<String>>,
-    open_project: Callback<String>,
     go_settings_section: Callback<String>,
     close_settings_subpage: Callback<()>,
     check_updates: Callback<web_sys::MouseEvent>,
@@ -2918,10 +2917,6 @@ pub(super) fn SettingsView(
             }
         });
     });
-    let joining = create_rw_signal(false);
-    let join_code = create_rw_signal(String::new());
-    let join_busy = create_rw_signal(false);
-    let join_error = create_rw_signal(None::<String>);
     let plugin_checksum = create_rw_signal(String::new());
     let plugin_source = create_rw_signal(String::new());
     let plugin_url = create_rw_signal(String::new());
