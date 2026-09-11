@@ -768,12 +768,6 @@ body:has(.window-titlebar) .caps-fullscreen {
   margin: 0 auto;
   display: flex; flex-direction: column; gap: 18px;
 }
-.cap-intro-pair {
-  display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
-  gap: 18px;
-  align-items: stretch;
-}
 .cap-intro-block {
   display: flex; flex-direction: column; gap: 16px;
   padding: 22px 24px;
@@ -924,7 +918,6 @@ body:has(.window-titlebar) .caps-fullscreen {
   .cap-intro-action-row { width: 100%; }
   .cap-intro-action-row { flex-wrap: wrap; }
   .cap-intro-body { padding: 16px; }
-  .cap-intro-pair,
   .cap-intro-value-grid,
   .cap-intro-how-grid { grid-template-columns: 1fr; }
 }

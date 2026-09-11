@@ -1527,67 +1527,20 @@ fn capability_intro_sections(
     say_label: bool,
 ) -> impl IntoView {
     view! {
-        <div class="cap-intro-pair">
-            <section class="cap-intro-block cap-intro-block-scenario" data-testid="cap-intro-scenario" aria-labelledby="cap-intro-scenario-title">
-                <header class="cap-intro-block-head">
-                    <span class="cap-intro-kicker">"01"</span>
-                    <h3 id="cap-intro-scenario-title">{move || t(locale.get(), "caps.intro.scenario")}</h3>
-                </header>
-                <div class="cap-intro-prose-stack">
-                    {move || intro_lines(intro.scenario.get(locale.get())).map(|line| {
-                        view! { <p class="cap-intro-prose">{line.to_string()}</p> }
-                    }).collect_view()}
-                </div>
-            </section>
-            <section class="cap-intro-block cap-intro-block-problems" data-testid="cap-intro-problems" aria-labelledby="cap-intro-problems-title">
-                <header class="cap-intro-block-head">
-                    <span class="cap-intro-kicker">"02"</span>
-                    <h3 id="cap-intro-problems-title">{move || t(locale.get(), "caps.intro.problems")}</h3>
-                </header>
-                <ol class="cap-intro-dots">
-                    {move || intro_lines(intro.problems.get(locale.get())).enumerate().map(|(idx, line)| {
-                        view! {
-                            <li>
-                                <span class="cap-intro-dot-n">{format!("{:02}", idx + 1)}</span>
-                                <p>{line.to_string()}</p>
-                            </li>
-                        }
-                    }).collect_view()}
-                </ol>
-            </section>
-        </div>
-        <section class="cap-intro-block cap-intro-block-value" data-testid="cap-intro-value" aria-labelledby="cap-intro-value-title">
+        <section class="cap-intro-block cap-intro-block-scenario" data-testid="cap-intro-scenario" aria-labelledby="cap-intro-scenario-title">
             <header class="cap-intro-block-head">
-                <span class="cap-intro-kicker">"03"</span>
-                <h3 id="cap-intro-value-title">{move || t(locale.get(), "caps.intro.value")}</h3>
+                <span class="cap-intro-kicker">"01"</span>
+                <h3 id="cap-intro-scenario-title">{move || t(locale.get(), "caps.intro.scenario")}</h3>
             </header>
-            {move || {
-                let items: Vec<String> = intro_lines(intro.value.get(locale.get()))
-                    .map(|line| line.to_string())
-                    .collect();
-                view! {
-                    <ol class="cap-intro-value-grid">
-                        {items.into_iter().enumerate().map(|(idx, line)| {
-                            let (title, body) = intro_value_parts(&line);
-                            let title = title.to_string();
-                            let body = body.map(str::to_string);
-                            view! {
-                                <li class="cap-intro-value-item">
-                                    <span class="cap-intro-step-n">{format!("{:02}", idx + 1)}</span>
-                                    <div class="cap-intro-value-copy">
-                                        <strong>{title}</strong>
-                                        {body.map(|text| view! { <p>{text}</p> })}
-                                    </div>
-                                </li>
-                            }
-                        }).collect_view()}
-                    </ol>
-                }
-            }}
+            <div class="cap-intro-prose-stack">
+                {move || intro_lines(intro.scenario.get(locale.get())).map(|line| {
+                    view! { <p class="cap-intro-prose">{line.to_string()}</p> }
+                }).collect_view()}
+            </div>
         </section>
         <section class="cap-intro-block cap-intro-block-how" data-testid="cap-intro-how" aria-labelledby="cap-intro-how-title">
             <header class="cap-intro-block-head">
-                <span class="cap-intro-kicker">"04"</span>
+                <span class="cap-intro-kicker">"02"</span>
                 <h3 id="cap-intro-how-title">{move || t(locale.get(), "caps.intro.how")}</h3>
             </header>
             <div class="cap-intro-how-grid">
@@ -1615,6 +1568,51 @@ fn capability_intro_sections(
                     </div>
                 </div>
             </div>
+        </section>
+        <section class="cap-intro-block cap-intro-block-problems" data-testid="cap-intro-problems" aria-labelledby="cap-intro-problems-title">
+            <header class="cap-intro-block-head">
+                <span class="cap-intro-kicker">"03"</span>
+                <h3 id="cap-intro-problems-title">{move || t(locale.get(), "caps.intro.problems")}</h3>
+            </header>
+            <ol class="cap-intro-dots">
+                {move || intro_lines(intro.problems.get(locale.get())).enumerate().map(|(idx, line)| {
+                    view! {
+                        <li>
+                            <span class="cap-intro-dot-n">{format!("{:02}", idx + 1)}</span>
+                            <p>{line.to_string()}</p>
+                        </li>
+                    }
+                }).collect_view()}
+            </ol>
+        </section>
+        <section class="cap-intro-block cap-intro-block-value" data-testid="cap-intro-value" aria-labelledby="cap-intro-value-title">
+            <header class="cap-intro-block-head">
+                <span class="cap-intro-kicker">"04"</span>
+                <h3 id="cap-intro-value-title">{move || t(locale.get(), "caps.intro.value")}</h3>
+            </header>
+            {move || {
+                let items: Vec<String> = intro_lines(intro.value.get(locale.get()))
+                    .map(|line| line.to_string())
+                    .collect();
+                view! {
+                    <ol class="cap-intro-value-grid">
+                        {items.into_iter().enumerate().map(|(idx, line)| {
+                            let (title, body) = intro_value_parts(&line);
+                            let title = title.to_string();
+                            let body = body.map(str::to_string);
+                            view! {
+                                <li class="cap-intro-value-item">
+                                    <span class="cap-intro-step-n">{format!("{:02}", idx + 1)}</span>
+                                    <div class="cap-intro-value-copy">
+                                        <strong>{title}</strong>
+                                        {body.map(|text| view! { <p>{text}</p> })}
+                                    </div>
+                                </li>
+                            }
+                        }).collect_view()}
+                    </ol>
+                }
+            }}
         </section>
     }
 }
