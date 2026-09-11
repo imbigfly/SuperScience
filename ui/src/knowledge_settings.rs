@@ -232,7 +232,11 @@ fn KnowledgeBasePicker(
         }
         let inside = picker
             .get_untracked()
-            .zip(event.target().and_then(|t| t.dyn_into::<web_sys::Node>().ok()))
+            .zip(
+                event
+                    .target()
+                    .and_then(|t| t.dyn_into::<web_sys::Node>().ok()),
+            )
             .is_some_and(|(root, target)| root.contains(Some(&target)));
         if !inside {
             open.set(false);
@@ -243,7 +247,9 @@ fn KnowledgeBasePicker(
     // 为包含块，坐标按祖先算、还会被祖先的 overflow 裁掉（.modal 的入场动画曾
     // 如此，见 visual-polish.spec.ts 的 floating menu 用例）。
     let menu_style = move || {
-        let Some(rect) = trigger.get_untracked().map(|el| el.get_bounding_client_rect())
+        let Some(rect) = trigger
+            .get_untracked()
+            .map(|el| el.get_bounding_client_rect())
         else {
             return String::new();
         };
@@ -461,21 +467,19 @@ pub(crate) fn KnowledgeSettingsOverlay(
         }
         busy.set(true);
         spawn_local(async move {
-            match list_knowledge_settings_bases(
-                settings.get_untracked(),
-                api_key.get_untracked(),
-            )
-            .await
+            match list_knowledge_settings_bases(settings.get_untracked(), api_key.get_untracked())
+                .await
             {
                 Ok(listed) => {
                     let count = listed.len();
                     bases.set(listed);
                     msg.set(Some((
                         true,
-                        tf(locale.get_untracked(), "knowledge.weknora.kb_refreshed", &[(
-                            "count",
-                            &count.to_string(),
-                        )]),
+                        tf(
+                            locale.get_untracked(),
+                            "knowledge.weknora.kb_refreshed",
+                            &[("count", &count.to_string())],
+                        ),
                     )));
                 }
                 Err(err) => msg.set(Some((false, err))),

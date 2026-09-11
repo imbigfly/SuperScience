@@ -1487,7 +1487,7 @@ pub(super) async fn preview_claude_session(
 
 async fn import_sessions(
     state: State<'_, AppState>,
-    window: tauri::WebviewWindow,
+    window: crate::workspace_surface::WorkspaceSurface,
     paths: Vec<String>,
     context_id: Option<String>,
     provider: ImportProvider,
@@ -1573,7 +1573,7 @@ async fn import_sessions(
 #[tauri::command]
 pub(super) async fn import_codex_sessions(
     state: State<'_, AppState>,
-    window: tauri::WebviewWindow,
+    window: crate::workspace_surface::WorkspaceSurface,
     paths: Vec<String>,
     context_id: Option<String>,
 ) -> Result<ExternalImportSummary, String> {
@@ -1583,7 +1583,7 @@ pub(super) async fn import_codex_sessions(
 #[tauri::command]
 pub(super) async fn import_claude_sessions(
     state: State<'_, AppState>,
-    window: tauri::WebviewWindow,
+    window: crate::workspace_surface::WorkspaceSurface,
     paths: Vec<String>,
     context_id: Option<String>,
 ) -> Result<ExternalImportSummary, String> {

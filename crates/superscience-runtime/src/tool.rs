@@ -135,8 +135,8 @@ pub struct RTool {
     session_id: String,
 }
 
-const PYTHON_TOOL_DESCRIPTION: &str = "Execute inline Python code or a project-local .py script in the same persistent REPL. Variables, imports, and loaded data persist per conversation and execution context; parallel conversations never share interpreter state. Prefer script_path for reproducible analysis source that depends on already-loaded large objects; use required_objects to fail instead of silently starting an empty replacement runtime. Return values of expressions are printed. Local and WSL REPLs start in the project root; SSH REPLs use the execution context workdir and receive the script content. Use this for analysis, data loading, plotting, and computation when required packages already exist. Do not use this as a package installer; if dependencies are missing, set up a project-local pixi environment or use local-env-setup first.";
-const R_TOOL_DESCRIPTION: &str = "Execute inline R code or a project-local .R script in the same persistent REPL. Variables, libraries, and loaded data persist per conversation and execution context; parallel conversations never share interpreter state. Prefer script_path for reproducible analysis source that depends on already-loaded large objects; use required_objects to fail instead of silently starting an empty replacement runtime. The final visible value is printed. Local and WSL REPLs start in the project root; SSH REPLs use the execution context workdir and receive the script content. Write plots explicitly with png(), pdf(), ggsave(), or another file device. Rscript and the jsonlite package must already exist in that context; this tool does not install packages.";
+const PYTHON_TOOL_DESCRIPTION: &str = "Execute inline Python code or a project-local .py script in the same persistent REPL. Variables, imports, and loaded data persist per conversation and execution context; parallel conversations never share interpreter state. This supports interactive work and reuse of in-memory state. For scripts requiring a fresh process, shell or run_in_context can be used when available. Choose according to state reuse, script requirements, and task lifecycle. Prefer script_path for reproducible analysis source that depends on already-loaded large objects; use required_objects to fail instead of silently starting an empty replacement runtime. Return values of expressions are printed. Local and WSL REPLs start in the project root; SSH REPLs use the execution context workdir and receive the script content. Use this for stateful analysis when required packages already exist. Do not use this as a package installer; if dependencies are missing, set up a project-local pixi environment or use local-env-setup first.";
+const R_TOOL_DESCRIPTION: &str = "Execute inline R code or a project-local .R script in the same persistent REPL. Variables, libraries, and loaded data persist per conversation and execution context; parallel conversations never share interpreter state. This supports interactive work and reuse of in-memory state. For scripts requiring a fresh process, shell or run_in_context can be used when available. Choose according to state reuse, script requirements, and task lifecycle. Prefer script_path for reproducible analysis source that depends on already-loaded large objects; use required_objects to fail instead of silently starting an empty replacement runtime. The final visible value is printed. Local and WSL REPLs start in the project root; SSH REPLs use the execution context workdir and receive the script content. Write plots explicitly with png(), pdf(), ggsave(), or another file device. Rscript and the jsonlite package must already exist in that context; this tool does not install packages.";
 
 impl ReplTool {
     pub fn new(manager: RuntimeManager, project_id: impl Into<String>) -> Self {
@@ -398,6 +398,9 @@ fn required_objects_arg(args: &serde_json::Value) -> Result<Vec<String>, String>
     Ok(names)
 }
 
+// Retain strict guards for legacy callers, but do not advertise this host-state
+// precondition in model schemas: models may fill optional integers with a
+// guessed 1, which prevents a first cell from lazily starting its runtime.
 fn expected_generation_arg(args: &serde_json::Value) -> Result<Option<u64>, String> {
     let Some(value) = args.get("expected_runtime_generation") else {
         return Ok(None);
@@ -540,7 +543,6 @@ impl Tool for ReplTool {
                     "code": { "type": "string", "description": "Python code to execute (statements or a single expression). Provide exactly one of code or script_path" },
                     "script_path": { "type": "string", "description": "Project-relative .py file whose exact UTF-8 content is executed in this persistent runtime. Provide exactly one of code or script_path. The path is always resolved in the local project root, so an ssh: context needs the script present locally; only its content crosses the connection" },
                     "required_objects": { "type": "array", "items": { "type": "string" }, "maxItems": 64, "description": "Top-level binding names (not attribute paths such as adata.X) that must already exist in this runtime before execution; a missing/dead/restarted runtime fails instead of lazy-starting empty" },
-                    "expected_runtime_generation": { "type": "integer", "minimum": 1, "description": "Optional generation guard from a previous runtime-script result" },
                     "context_id": { "type": "string", "description": "Execution context id; defaults to local (for example local, ssh:gpu, or wsl:Ubuntu)" }
                 }
             }),
@@ -600,7 +602,6 @@ impl Tool for RTool {
                     "code": { "type": "string", "description": "R code to execute (one or more expressions). Provide exactly one of code or script_path" },
                     "script_path": { "type": "string", "description": "Project-relative .R file whose exact UTF-8 content is executed in this persistent runtime. Provide exactly one of code or script_path. The path is always resolved in the local project root, so an ssh: context needs the script present locally; only its content crosses the connection" },
                     "required_objects": { "type": "array", "items": { "type": "string" }, "maxItems": 64, "description": "Top-level binding names (not attribute paths such as obj$slot) that must already exist in this runtime before execution; a missing/dead/restarted runtime fails instead of lazy-starting empty" },
-                    "expected_runtime_generation": { "type": "integer", "minimum": 1, "description": "Optional generation guard from a previous runtime-script result" },
                     "context_id": { "type": "string", "description": "Execution context id; defaults to local (for example local, ssh:gpu, or wsl:Ubuntu)" }
                 }
             }),
@@ -682,6 +683,19 @@ mod tests {
     }
 
     #[test]
+    fn language_tools_distinguish_standalone_scripts_from_stateful_analysis() {
+        for description in [PYTHON_TOOL_DESCRIPTION, R_TOOL_DESCRIPTION] {
+            assert!(description.contains("reuse of in-memory state"));
+            assert!(description.contains("scripts requiring a fresh process"));
+            assert!(description.contains("state reuse, script requirements, and task lifecycle"));
+            assert!(!description.contains("default to"));
+            assert!(!description.contains("CSV/JSON"));
+            assert!(!description.contains("report/HTML"));
+            assert!(description.contains("already-loaded large objects"));
+        }
+    }
+
+    #[test]
     fn r_description_requires_existing_runtime_dependencies_and_explicit_plots() {
         assert!(R_TOOL_DESCRIPTION.contains("Rscript"));
         assert!(R_TOOL_DESCRIPTION.contains("jsonlite"));
@@ -727,13 +741,8 @@ mod tests {
                 "{parameters}"
             );
             let properties = parameters["properties"].as_object().unwrap();
-            for name in [
-                "code",
-                "script_path",
-                "required_objects",
-                "expected_runtime_generation",
-                "context_id",
-            ] {
+            assert!(!properties.contains_key("expected_runtime_generation"));
+            for name in ["code", "script_path", "required_objects", "context_id"] {
                 assert!(properties.contains_key(name), "missing {name}");
             }
             for name in ["code", "script_path"] {
@@ -861,6 +870,72 @@ mod tests {
             expected_generation_arg(&serde_json::json!({"expected_runtime_generation": 0}))
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn guessed_first_generation_reports_recovery_and_preserves_legacy_guards() {
+        let root = unique_tmp("runtime_guessed_generation");
+        let env = recording_env(root.clone());
+        for language in ["python", "r"] {
+            let launcher = EchoLauncher::default();
+            let manager = RuntimeManager::new(Arc::new(launcher.clone()));
+            let (tool, key): (Box<dyn Tool>, _) = if language == "python" {
+                (
+                    Box::new(ReplTool::new(manager.clone(), "p")),
+                    RuntimeKey::local_python("p"),
+                )
+            } else {
+                (
+                    Box::new(RTool::new(manager.clone(), "p")),
+                    RuntimeKey::r("p", LOCAL_CONTEXT_ID),
+                )
+            };
+            // Original failing assistant arguments, including empty optional fields.
+            let mut args = serde_json::json!({
+                "code": "1 + 1",
+                "context_id": "local",
+                "expected_runtime_generation": 1,
+                "required_objects": [],
+                "script_path": ""
+            });
+            let result = tool.run(&args, &env).await;
+            assert!(!result.success);
+            assert!(result.content.contains("expected_runtime_generation=1"));
+            assert!(result
+                .content
+                .contains("omit expected_runtime_generation on the first call"));
+            assert!(!result.content.contains("load the required objects"));
+            assert!(manager.list().is_empty());
+            assert!(launcher.seen.lock().unwrap().is_empty());
+
+            args.as_object_mut()
+                .unwrap()
+                .remove("expected_runtime_generation");
+            let result = tool.run(&args, &env).await;
+            assert!(result.success, "{}", result.content);
+            assert_eq!(launcher.seen.lock().unwrap().len(), 1);
+
+            // A known generation still works for old callers. A stale one must
+            // never be ignored or replaced with the currently registered value.
+            args["expected_runtime_generation"] = serde_json::json!(1);
+            assert!(tool.run(&args, &env).await.success);
+            let replacement = manager.restart(key.clone(), root.clone()).await.unwrap();
+            assert!(replacement.generation > 1);
+            let result = tool.run(&args, &env).await;
+            assert!(!result.success);
+            assert!(result.content.contains("expected_runtime_generation"));
+            assert!(result.content.contains("runtime generation changed"));
+            assert_eq!(launcher.seen.lock().unwrap().len(), 2);
+
+            manager.stop(&key).await.unwrap();
+            manager.dismiss_dead(&replacement.runtime_id).unwrap();
+            let result = tool.run(&args, &env).await;
+            assert!(!result.success);
+            assert!(manager.list().is_empty());
+            assert_eq!(launcher.seen.lock().unwrap().len(), 2);
+            manager.shutdown_all().await;
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

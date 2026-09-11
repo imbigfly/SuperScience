@@ -47,15 +47,55 @@ async fn list_skill_infos_for_project(
 #[tauri::command]
 pub(super) async fn list_skills(
     state: State<'_, AppState>,
-    window: tauri::WebviewWindow,
+    window: crate::workspace_surface::WorkspaceSurface,
 ) -> Result<Vec<SkillInfo>, String> {
     list_skill_infos_for_project(&state, window.label()).await
 }
 
 #[tauri::command]
+pub(super) async fn list_skill_files(
+    state: State<'_, AppState>,
+    window: crate::workspace_surface::WorkspaceSurface,
+    name: String,
+) -> Result<Vec<String>, String> {
+    let ap = state.require_active(window.label())?;
+    let (catalog, _) = project_skill_catalog(&state.store, &ap).await;
+    let root = catalog
+        .get(&name)
+        .ok_or("Skill not found in this project.")?
+        .dir
+        .clone();
+    tokio::task::spawn_blocking(move || superscience_skills::files::list_skill_files(&root))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub(super) async fn read_skill_file(
+    state: State<'_, AppState>,
+    window: crate::workspace_surface::WorkspaceSurface,
+    name: String,
+    path: String,
+) -> Result<superscience_dto::SkillFileContent, String> {
+    let ap = state.require_active(window.label())?;
+    let (catalog, _) = project_skill_catalog(&state.store, &ap).await;
+    let root = catalog
+        .get(&name)
+        .ok_or("Skill not found in this project.")?
+        .dir
+        .clone();
+    tokio::task::spawn_blocking(move || {
+        let content = superscience_skills::files::read_skill_file(&root, &path)?;
+        Ok(superscience_dto::SkillFileContent { path, content })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub(super) async fn reload_skills(
     state: State<'_, AppState>,
-    window: tauri::WebviewWindow,
+    window: crate::workspace_surface::WorkspaceSurface,
 ) -> Result<Vec<SkillInfo>, String> {
     let label = window.label();
     let mut project = state.require_active(label)?;
@@ -152,7 +192,7 @@ async fn update_skills_enabled(
 #[tauri::command]
 pub(super) async fn set_skill_enabled(
     state: State<'_, AppState>,
-    window: tauri::WebviewWindow,
+    window: crate::workspace_surface::WorkspaceSurface,
     name: String,
     enabled: bool,
 ) -> Result<(), String> {
@@ -162,7 +202,7 @@ pub(super) async fn set_skill_enabled(
 #[tauri::command]
 pub(super) async fn set_skills_enabled(
     state: State<'_, AppState>,
-    window: tauri::WebviewWindow,
+    window: crate::workspace_surface::WorkspaceSurface,
     names: Vec<String>,
     enabled: bool,
 ) -> Result<(), String> {
@@ -214,7 +254,7 @@ pub(super) fn validate_skill_name(name: &str) -> Result<(), String> {
 #[tauri::command]
 pub(super) async fn install_skill(
     state: State<'_, AppState>,
-    window: tauri::WebviewWindow,
+    window: crate::workspace_surface::WorkspaceSurface,
     src_path: String,
 ) -> Result<String, String> {
     let src = PathBuf::from(&src_path);
@@ -322,7 +362,7 @@ fn find_archived_skill_dir(root: &Path) -> Result<PathBuf, String> {
 #[tauri::command]
 pub(super) async fn remove_skill(
     state: State<'_, AppState>,
-    window: tauri::WebviewWindow,
+    window: crate::workspace_surface::WorkspaceSurface,
     name: String,
 ) -> Result<(), String> {
     validate_skill_name(&name)?;

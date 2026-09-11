@@ -1,5 +1,9 @@
 # AGENTS.md
 
+## Communication
+
+Always reply to the user in Chinese (中文), for the entire interaction. This applies to all prose the user reads, including summaries, findings, plans, status updates, and follow-up suggestions. Code, identifiers, file paths, command names, and quoted logs stay as-is.
+
 ## Project Orientation
 
 wisp-science is a Rust/Tauri/Leptos local-first scientific computing agent. The long-term product direction is a research workbench: local, WSL, SSH servers, GPU hosts, schedulers, literature tools, runs, data assets, artifacts, papers, and decisions should be represented as one project-level control plane. The durable product nouns are `Project`, `ExecutionContext`, `DataAsset`, `Run`, `Artifact`, `Paper`, and `Decision`.

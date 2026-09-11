@@ -6,12 +6,15 @@ use crate::ability_cards::{
 #[component]
 pub(crate) fn ProjectsScreen(
     locale: RwSignal<Locale>,
+    calendar_open: RwSignal<bool>,
+    dialog_open: RwSignal<bool>,
     running: RwSignal<HashSet<String>>,
     approval_pending: ReadSignal<HashSet<String>>,
     sync_actions_available: ReadSignal<bool>,
     open_error: RwSignal<Option<String>>,
     on_open: Callback<String>,
     on_open_session: Callback<(String, String)>,
+    on_open_journey: Callback<(String, i64)>,
     on_open_artifact: Callback<(String, String, String)>,
     on_open_settings: Callback<()>,
     on_open_user_center: Callback<()>,
@@ -47,6 +50,7 @@ pub(crate) fn ProjectsScreen(
     let new_ctx = create_rw_signal(String::new());
     let import_options_open = create_rw_signal(false);
     let opening_in_place = create_rw_signal(false);
+    let workspace_projects = create_rw_signal(None::<Vec<ProjectSummary>>);
     let recovery_preview = create_rw_signal(None::<WorkspaceSessionRecoveryPreview>);
     let recovery_name = create_rw_signal(String::new());
     let recovery_busy = create_rw_signal(false);
@@ -446,6 +450,23 @@ pub(crate) fn ProjectsScreen(
             let Ok(Some(path)) = serde_wasm_bindgen::from_value::<Option<String>>(value) else {
                 return;
             };
+            let args = to_value(&serde_json::json!({ "workspaceDir": path })).unwrap();
+            let matches = match invoke_checked("list_workspace_projects", args).await {
+                Ok(value) => serde_wasm_bindgen::from_value::<Vec<ProjectSummary>>(value)
+                    .map_err(|error| error.to_string()),
+                Err(error) => Err(js_error_text(error)),
+            };
+            match matches {
+                Ok(matches) if !matches.is_empty() => {
+                    workspace_projects.set(Some(matches));
+                    return;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    open_error.set(Some(localize_backend(locale.get_untracked(), &error)));
+                    return;
+                }
+            }
             let name = path
                 .trim_end_matches(['/', '\\'])
                 .rsplit(['/', '\\'])
@@ -587,6 +608,24 @@ pub(crate) fn ProjectsScreen(
         });
     });
 
+    // The root Escape stack closes the calendar only after these visually
+    // higher, component-owned dialogs have had their turn.
+    create_effect(move |_| {
+        dialog_open.set(
+            confirm_delete_data.get()
+                || settings_confirm_context.get()
+                || settings_project_id.get().is_some()
+                || workspace_projects.get().is_some()
+                || recovery_preview.get().is_some()
+                || import_options_open.get()
+                || pending_delete.get().is_some()
+                || sync_conflict_project.get().is_some()
+                || search_open.get()
+                || creating.get(),
+        );
+    });
+    on_cleanup(move || dialog_open.set(false));
+
     // Local Escape stack — ProjectsScreen owns its own modals, so the App
     // window listener cannot see `creating` / `pending_delete`. Opening a
     // project disposes this component, so the listener has to go with it:
@@ -614,6 +653,12 @@ pub(crate) fn ProjectsScreen(
             ev.prevent_default();
             settings_confirm_context.set(false);
             settings_project_id.set(None);
+            return;
+        }
+        if workspace_projects.get().is_some() {
+            ev.prevent_default();
+            ev.stop_propagation();
+            workspace_projects.set(None);
             return;
         }
         if recovery_preview.get().is_some() {
@@ -660,7 +705,7 @@ pub(crate) fn ProjectsScreen(
             }
             ev.prevent_default();
         }>
-            <div class="projects-head">
+            <div class="projects-head" prop:inert=move ||calendar_open.get()>
                 <div class="projects-brand">
                     <div class="projects-brand-row">
                         <img class="projects-brand-mark" src="logo.png" alt="" width="32" height="32" />
@@ -671,6 +716,10 @@ pub(crate) fn ProjectsScreen(
                     </p>
                 </div>
                 <div class="projects-actions">
+                    <button type="button" class="projects-icon-btn" data-testid="open-research-calendar"
+                        title=move || crate::research_journey::j(locale.get(), "Research calendar", "研究日历")
+                        aria-label=move || crate::research_journey::j(locale.get(), "Research calendar", "研究日历")
+                        on:click=move |_| calendar_open.set(true)>{compose_icon("calendar")}</button>
                     <button type="button" class="projects-icon-btn"
                         title=move || t(locale.get(), "sidebar.library")
                         aria-label=move || t(locale.get(), "sidebar.library")
@@ -1013,6 +1062,50 @@ pub(crate) fn ProjectsScreen(
                     </div>
                 }
             })}
+            {move || workspace_projects.get().map(|matches| view! {
+                <div class="overlay" data-testid="workspace-project-picker">
+                    <div class="modal proj-settings-modal" role="dialog" aria-modal="true"
+                        aria-label=move || t(locale.get(), "projects.existing_title")>
+                        <div class="ps-head">
+                            <h2>{move || t(locale.get(), "projects.existing_title")}</h2>
+                            <button type="button" class="ps-close"
+                                title=move || t(locale.get(), "projects.cancel")
+                                on:click=move |_| workspace_projects.set(None)>
+                                {compose_icon("close")}
+                            </button>
+                        </div>
+                        <p class="project-in-place-hint">
+                            {move || t(locale.get(), "projects.existing_hint")}
+                        </p>
+                        <div class="workspace-project-options">
+                            {matches.into_iter().filter(|project| !project_is_hidden(&project.id)).map(|project| {
+                                let id = project.id.clone();
+                                view! {
+                                    <button type="button" class="project-import-option"
+                                        data-project-id=project.id.clone()
+                                        on:click=move |_| {
+                                            workspace_projects.set(None);
+                                            on_open.call(id.clone());
+                                        }>
+                                        <strong>{project.name}</strong>
+                                        <span>{project.workspace_dir}</span>
+                                        <span class="workspace-project-id">{format!("ID: {}", project.id)}</span>
+                                        <span>{move || tf(locale.get(), "projects.sessions_n", &[("n", &project.session_count.to_string())])}</span>
+                                    </button>
+                                }
+                            }).collect_view()}
+                        </div>
+                        {move || privacy_mode_active.get().then(|| view! {
+                            <p class="ps-hint">{move || t(locale.get(), "projects.existing_privacy")}</p>
+                        })}
+                        <div class="row">
+                            <button type="button" on:click=move |_| workspace_projects.set(None)>
+                                {move || t(locale.get(), "projects.cancel")}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            })}
             {move || creating.get().then(|| view! {
                 <div class="overlay">
                     <div class="modal proj-settings-modal" role="dialog" aria-modal="true">
@@ -1174,6 +1267,15 @@ pub(crate) fn ProjectsScreen(
                     </div>
                 </div>
             })}
+            {move || calendar_open.get().then(|| view! {<div class="home-calendar-page">
+            <crate::research_calendar::ResearchCalendar
+                locale=locale
+                projects=Signal::derive(move || projects.get().into_iter().filter(|p| !project_is_hidden(&p.id)).collect())
+                on_open_journey=on_open_journey
+                on_close=Callback::new(move |_|calendar_open.set(false))
+                project_transfer=project_transfer.read_only()
+            />
+            </div>})}
             <crate::capabilities_home::CapabilitySceneTabs
                 locale=locale
                 on_activate=on_capability_action
@@ -1200,7 +1302,7 @@ pub(crate) fn ProjectsScreen(
                 </button>
                 <p class="director-cta-hint">{move || t(locale.get(), "home.director_cta_hint")}</p>
             </div>
-            <div class="projects-cols">
+            <div class="projects-cols" prop:inert=move ||calendar_open.get()>
                 <div class="projects-col">
                     <h2>{move || t(locale.get(), "projects.title")}</h2>
                     <button type="button" class="proj-card proj-example" on:click=move |_| on_open_demo.call(())>
@@ -1446,6 +1548,13 @@ pub(crate) fn ProjectsScreen(
                         }
                     }).collect_view()}
                 </div>
+            </div>
+            <div class="projects-footer" prop:inert=move ||calendar_open.get()>
+                <span>{move || t(locale.get(), "projects.star_hint")}</span>
+                <button type="button" class="projects-star-link"
+                    on:click=move |_| open_external_url("https://github.com/imbigfly/SuperScience".into())>
+                    {move || t(locale.get(), "projects.star_link")}
+                </button>
             </div>
             {move || sync_notice.get().map(|(ok, text)| view! {
                 <div class="projects-sync-notice" class:ok=move || ok>{text}</div>

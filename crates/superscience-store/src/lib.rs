@@ -28,9 +28,11 @@ mod project_sync;
 mod project_transfer;
 mod projects;
 mod provenance;
+mod publication_sources;
 mod publications;
 mod remote_staging;
 mod research;
+mod research_journey;
 mod resources;
 mod runs;
 mod schedules;
@@ -176,7 +178,12 @@ const RUN_REVIEW_DISMISSED_MIGRATION: &str = "0052_run_review_dismissed";
 const ABILITY_CARD_USAGE_MIGRATION: &str = "0053_ability_card_usage";
 const ABILITY_CARD_USAGE_MIGRATION_SQL: &str =
     include_str!("../migrations/0053_ability_card_usage.sql");
+// The fork inserted 0053_ability_card_usage, so upstream's service-tier
+// migration keeps the 0054 name already recorded on shipped local databases;
+// upstream's own 0054/0055 shift up by two to avoid a version collision.
 const SESSION_SERVICE_TIER_MIGRATION: &str = "0054_session_service_tier";
+const RESEARCH_JOURNAL_MIGRATION: &str = "0055_research_journal";
+const EXPLORATION_HISTORY_MIGRATION: &str = "0056_exploration_history";
 
 #[derive(Clone)]
 pub struct Store {
@@ -222,9 +229,7 @@ impl Store {
         }
         Self::migrate(&pool).await?;
         let store = Self { pool };
-        store
-            .upsert_execution_context(&ExecutionContext::new("local", "Local")?)
-            .await?;
+        store.ensure_local_execution_context().await?;
         Ok(store)
     }
 
@@ -719,6 +724,28 @@ impl Store {
             Self::add_columns_if_missing(pool, "frames", &[("service_tier", "TEXT")]).await?;
             Self::record_migration(pool, SESSION_SERVICE_TIER_MIGRATION).await?;
         }
+        // Append-only daily notes are separate from scientific decisions.
+        if !Self::migration_applied(pool, RESEARCH_JOURNAL_MIGRATION).await? {
+            Self::execute_sql_script(
+                pool,
+                include_str!("../migrations/0055_research_journal.sql"),
+            )
+            .await?;
+            Self::record_migration(pool, RESEARCH_JOURNAL_MIGRATION).await?;
+        }
+
+        if !Self::migration_applied(pool, EXPLORATION_HISTORY_MIGRATION).await? {
+            Self::add_columns_if_missing(
+                pool,
+                "exploration_checkpoints",
+                &[("source_ui_event_head_seq", "INTEGER")],
+            )
+            .await?;
+            sqlx::query("UPDATE exploration_checkpoints SET source_ui_event_head_seq=source_ui_event_seq WHERE source_ui_event_head_seq IS NULL")
+                .execute(pool).await?;
+            Self::record_migration(pool, EXPLORATION_HISTORY_MIGRATION).await?;
+        }
+
         // Re-apply additive DDL even when a migration marker is already
         // recorded. Jumping many releases can leave a table/column that was
         // later folded into 0000_init.sql (or into an already-shipped apply_*

@@ -230,6 +230,7 @@ fn transfer_progress(
         .filter(|_| completed_bytes < total_bytes)
         .map(|rate| total_bytes.saturating_sub(completed_bytes).div_ceil(rate));
     superscience_store::RunProgress {
+        indeterminate: false,
         phase: phase.into(),
         direction: direction.into(),
         completed_bytes: completed_bytes.min(total_bytes),
@@ -2285,7 +2286,7 @@ fn local_command(context_id: &str, script: &str, cwd: Option<PathBuf>) -> RunCom
         script: script.into(),
         cwd,
         stdin: None,
-        envs: Vec::new(),
+        envs: superscience_tools::network::command_proxy_env(),
     }
 }
 
@@ -2298,7 +2299,7 @@ fn local_command(context_id: &str, script: &str, cwd: Option<PathBuf>) -> RunCom
         script: script.into(),
         cwd,
         stdin: None,
-        envs: Vec::new(),
+        envs: superscience_tools::network::command_proxy_env(),
     }
 }
 

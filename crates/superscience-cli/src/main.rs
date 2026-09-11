@@ -974,10 +974,8 @@ async fn main() -> Result<()> {
     let compute = superscience_runs::cli_compute_section(&run_store).await;
     agent.seed_system_prompt(&skills, Some(compute));
 
-    // Provision a uv venv once; shared by the Python REPL and the bundled
-    // bio-tools MCP server. Skipped silently if uv isn't installed.
+    // Python is prepared on demand through local-env-setup.
     let app_data = root.join(".superscience");
-    let py_env = superscience_runtime::PythonEnv::ensure(&app_data).ok();
 
     // Python REPL: needs a kernel_worker path. Default to the bundled worker.
     let worker = {
@@ -1008,18 +1006,11 @@ async fn main() -> Result<()> {
         vec![],
     );
     if worker_path.is_file() {
-        if py_env.is_some() {
-            agent.add_tool(Box::new(superscience_runtime::ReplTool::new(
-                runtime_manager.clone(),
-                root.to_string_lossy(),
-            )));
-            setup_message(jsonl, format_args!("python repl wired ({worker})."));
-        } else {
-            setup_message(
-                jsonl,
-                format_args!("python repl skipped: uv venv unavailable"),
-            );
-        }
+        agent.add_tool(Box::new(superscience_runtime::ReplTool::new(
+            runtime_manager.clone(),
+            root.to_string_lossy(),
+        )));
+        setup_message(jsonl, format_args!("python repl wired ({worker})."));
     } else {
         setup_message(
             jsonl,
@@ -1044,9 +1035,30 @@ async fn main() -> Result<()> {
         );
     }
 
-    // MCP server: SUPERSCIENCE_MCP_COMMAND overrides; otherwise SUPERSCIENCE_MCP_PKG
-    // launches the bundled bio-tools server (<pkg> e.g. mcp_pubmed) via the venv python.
+    let bio_package = env("WISP_MCP_PKG", "mcp_bio");
     let mcp_command = env("WISP_MCP_COMMAND", "");
+    let native_bio = mcp_command.is_empty() && wisp_bio::selected_by_package(&bio_package);
+    if native_bio {
+        let credentials: Vec<_> = std::env::vars()
+            .filter(|(key, value)| {
+                !value.is_empty()
+                    && (key.ends_with("_API_KEY")
+                        || key.ends_with("_EMAIL")
+                        || key.ends_with("_TOKEN")
+                        || key == "NCBI_EMAIL")
+            })
+            .collect();
+        match wisp_bio::NativeBio::new(&credentials) {
+            Ok(client) => {
+                for tool in wisp_bio::tools_for_package(std::sync::Arc::new(client), &bio_package) {
+                    agent.add_tool(tool);
+                }
+            }
+            Err(error) => setup_message(jsonl, format_args!("native bio: {error}")),
+        }
+    }
+
+    // Explicit stdio override; WISP_MCP_PKG selects native tools above.
     if !mcp_command.is_empty() {
         let parts: Vec<String> = mcp_command
             .split_whitespace()
@@ -1064,30 +1076,11 @@ async fn main() -> Result<()> {
             let args: Vec<String> = parts[1..].to_vec();
             wire_mcp(&mut agent, &parts[0], &args, jsonl).await;
         }
-    } else if let Some(py_env) = &py_env {
-        let pkg = {
-            let value = env("WISP_MCP_PKG", "");
-            if value.is_empty() {
-                "mcp_bio".into()
-            } else {
-                value
-            }
-        };
-        match superscience_mcp::McpClient::launch_bio_tools(&py_env.python(), &pkg, &[]).await {
-            Ok(client) => {
-                register_mcp_tools(
-                    &mut agent,
-                    std::sync::Arc::new(client),
-                    &format!("bio-tools:{pkg}"),
-                    jsonl,
-                )
-                .await
-            }
-            Err(e) => setup_message(
-                jsonl,
-                format_args!("mcp bio-tools:{pkg} launch failed: {e}"),
-            ),
-        }
+    } else if !wisp_bio::selected_by_package(&bio_package) {
+        setup_message(
+            jsonl,
+            format_args!("Unknown native bio package: {bio_package}"),
+        );
     }
 
     let out = CliOutput;

@@ -23,6 +23,7 @@ uuid = { workspace = true }
 async-trait = "0.1"
 superscience-runtime = { workspace = true }
 superscience-mcp = { workspace = true }
+wisp-bio = { workspace = true }
 superscience-llm = { workspace = true }
 superscience-core = { workspace = true }
 superscience-skills = { workspace = true }

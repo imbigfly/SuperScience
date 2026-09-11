@@ -17,3 +17,11 @@ walkdir = { workspace = true }
 superscience-llm = { workspace = true }
 superscience-tools = { workspace = true }
 superscience-paths = { workspace = true }
+superscience-dto = { workspace = true }
+url = { workspace = true }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+uuid = { workspace = true }
+regex = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

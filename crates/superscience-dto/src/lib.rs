@@ -11,9 +11,30 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+mod mcp_app_child;
+pub use mcp_app_child::*;
+
 /// Identifies a stopped ACP turn in persisted errors and invoke rejections.
 /// The UI must not offer native HTTP transcript recovery for these errors.
 pub const ACP_TURN_ERROR_PREFIX: &str = "ACP turn failed: ";
+
+/// Bounded numeric renderer diagnostics. Never includes user or plugin content.
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct UiHealthSnapshot {
+    pub timer_lag_ms: u32,
+    pub long_tasks: u32,
+    pub longest_task_ms: u32,
+    pub script_errors: u32,
+    pub unhandled_rejections: u32,
+    pub active_apps: u32,
+    pub parked_apps: u32,
+    pub app_messages: u32,
+    pub drag_overlays: u32,
+    pub media_blob_urls: u32,
+    pub media_blob_bytes: u64,
+    pub media_owners: u32,
+}
 
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
 pub struct ContextUsage {
@@ -1161,6 +1182,7 @@ mod session_context_window_tests {
             context_window,
             reasoning_effort: String::new(),
             service_tier: String::new(),
+            user_agent: String::new(),
             supports_vision: false,
             use_for_vision: false,
             use_for_image_generation: false,
@@ -1644,6 +1666,8 @@ pub struct Settings {
     #[serde(default)]
     pub service_tier: String,
     #[serde(default)]
+    pub user_agent: String,
+    #[serde(default)]
     pub proxy_url: String,
     #[serde(default)]
     pub supports_vision: bool,
@@ -1998,6 +2022,7 @@ impl Default for Settings {
             max_tokens: 8192,
             reasoning_effort: String::new(),
             service_tier: String::new(),
+            user_agent: String::new(),
             proxy_url: String::new(),
             supports_vision: false,
             sync_backend: "relay".into(),
@@ -2530,7 +2555,8 @@ pub struct LoadedPresentation {
 pub struct TranscriptPageState {
     pub next_before_seq: Option<i64>,
     pub user_offset: usize,
-    pub loading: bool,
+    /// Identity of the active UI paging request; replacement pages clear it.
+    pub loading_request: Option<u64>,
     pub window_user_start: usize,
 }
 
@@ -2845,6 +2871,8 @@ pub struct ModelProfile {
     #[serde(default)]
     pub service_tier: String,
     #[serde(default)]
+    pub user_agent: String,
+    #[serde(default)]
     pub supports_vision: bool,
     #[serde(default)]
     pub use_for_vision: bool,
@@ -3054,6 +3082,73 @@ pub struct SkillUpdatePreview {
     pub errors: Vec<String>,
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct SkillFileContent {
+    pub path: String,
+    pub content: String,
+}
+
+/// Public directory metadata is separate from the controlled SKILL.md YAML.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct CommunitySkillEntry {
+    pub name: String,
+    pub description: String,
+    pub author: String,
+    pub license: String,
+    pub tags: Vec<String>,
+    pub repository: String,
+    pub git_ref: String,
+    pub package_path: String,
+    pub responsibilities: String,
+    pub when_to_use: String,
+    pub inputs: String,
+    pub outputs: String,
+    pub out_of_scope: String,
+    pub required_dependencies: Vec<String>,
+    pub optional_dependencies: Vec<String>,
+    pub operation_boundary: String,
+    pub supported_wisp: String,
+    pub verified_wisp: Option<String>,
+    pub known_limits: String,
+    pub feedback_url: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct SkillInstallSource {
+    pub repository: String,
+    pub source_url: String,
+    pub git_ref: String,
+    pub commit: String,
+    pub package_path: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct SkillStoreCandidate {
+    pub name: String,
+    pub description: String,
+    pub tags: Vec<String>,
+    pub source: SkillInstallSource,
+    pub markdown: String,
+    pub format_errors: Vec<String>,
+    pub resource_errors: Vec<String>,
+    pub warnings: Vec<String>,
+    pub conflict: Option<String>,
+    pub installed_source: Option<SkillInstallSource>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct CommunitySkillCatalog {
+    pub entries: Vec<CommunitySkillEntry>,
+    pub notice: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct SkillInstallResult {
+    pub name: String,
+    pub directory: String,
+    pub notice: Option<String>,
+}
+
 #[derive(Clone, serde::Deserialize, PartialEq)]
 pub struct PluginRow {
     pub id: String,
@@ -3193,15 +3288,24 @@ pub struct ConnView {
 fn default_tool_mode() -> String {
     "allow".into()
 }
-#[derive(Clone, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct ConnectorTool {
     pub name: String,
     #[serde(default = "default_tool_mode")]
     pub mode: String,
     #[serde(default)]
     pub description: String,
+    #[serde(default, alias = "inputSchema")]
+    pub input_schema: Option<serde_json::Value>,
+    #[serde(default, alias = "outputSchema")]
+    pub output_schema: Option<serde_json::Value>,
 }
-#[derive(Clone, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct ConnectorLink {
+    pub label: String,
+    pub url: String,
+}
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct ConnectorInfo {
     pub key: String,
     pub name: String,
@@ -3212,12 +3316,20 @@ pub struct ConnectorInfo {
     pub subtitle: String,
     #[serde(default)]
     pub auth: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub description_zh: String,
+    #[serde(default)]
+    pub maintainer: String,
+    #[serde(default)]
+    pub links: Vec<ConnectorLink>,
     pub tools: Vec<ConnectorTool>,
 }
-#[derive(Clone, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct ConnectorsView {
     pub connectors: Vec<ConnectorInfo>,
-    /// Global approval scope: "full" | "auto" | "ask".
+    /// This window's project approval scope, or its inherited global default.
     pub scope: String,
 }
 
@@ -3342,6 +3454,7 @@ mod image_generation_model_tests {
             context_window: 128_000,
             reasoning_effort: String::new(),
             service_tier: String::new(),
+            user_agent: String::new(),
             supports_vision: false,
             use_for_vision: false,
             use_for_image_generation: false,
@@ -3395,6 +3508,7 @@ mod video_generation_model_tests {
             context_window: 128_000,
             reasoning_effort: String::new(),
             service_tier: String::new(),
+            user_agent: String::new(),
             supports_vision: false,
             use_for_vision: false,
             use_for_image_generation: false,
@@ -3462,6 +3576,7 @@ pub struct ModelForm {
     pub context_window: u64,
     pub reasoning_effort: String,
     pub service_tier: String,
+    pub user_agent: String,
     pub supports_vision: bool,
     pub use_for_vision: bool,
     pub use_for_image_generation: bool,
@@ -3555,15 +3670,24 @@ pub struct TurnMemoryProposal {
     pub global_memories: Vec<GlobalMemory>,
 }
 
-#[derive(Deserialize, Clone)]
+/// Paths found without launching interpreters or installing packages.
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+pub struct LocalEnvironmentStatus {
+    pub paths: std::collections::BTreeMap<String, String>,
+    pub warning: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 pub struct BootstrapStatus {
     pub skills_loaded: usize,
     pub python_ok: bool,
     #[serde(default)]
-    pub python_initializing: bool,
+    pub local_environment: Option<LocalEnvironmentStatus>,
     pub mcp_catalog: usize,
     pub uv_ok: bool,
     pub node_ok: bool,
+    #[serde(default)]
+    pub npm_ok: bool,
     pub sci_ok: bool,
     pub pixi_ok: bool,
     #[serde(default)]
@@ -3749,6 +3873,27 @@ pub struct PublicationInfo {
     pub description: String,
 }
 
+/// A bounded, project-scoped source choice. File choices name an immutable
+/// ArtifactVersion; message previews start at byte zero of persisted text.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct PublicationSourceChoice {
+    pub kind: String,
+    pub id: String,
+    pub title: String,
+    pub detail: String,
+    pub text: Option<String>,
+    #[serde(default)]
+    pub text_sha256: Option<String>,
+    pub frame_id: Option<String>,
+    pub message_seq: Option<i64>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct PublicationSourcePage {
+    pub sources: Vec<PublicationSourceChoice>,
+    pub has_more: bool,
+}
+
 #[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct PublicationRevisionInfo {
     pub id: String,
@@ -3870,6 +4015,12 @@ pub struct PublicationLineageInfo {
     pub checksum: Option<String>,
     pub capture_timing: Option<String>,
     pub producing_run_id: Option<String>,
+    #[serde(default)]
+    pub producing_run_title: Option<String>,
+    #[serde(default)]
+    pub input_labels: Vec<String>,
+    #[serde(default)]
+    pub code_labels: Vec<String>,
     pub run_input_count: usize,
     pub run_output_count: usize,
     pub code_snapshot_count: usize,
@@ -4803,6 +4954,9 @@ pub struct MethodSearchProgressView {
 
 #[derive(Deserialize, Clone)]
 pub struct RunProgress {
+    /// The transport cannot report byte-level progress for this phase.
+    #[serde(default)]
+    pub indeterminate: bool,
     pub phase: String,
     pub direction: String,
     pub completed_bytes: u64,
@@ -5087,3 +5241,19 @@ mod mcp_secret_entry_tests {
         assert!(entry.has_value);
     }
 }
+/// Independently saved network preferences. Empty proxies inherit platform /
+/// environment defaults; `none` forces direct connections. Mirrors are agent
+/// installation guidance, not a network access policy.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NetworkSettings {
+    pub model_proxy_url: String,
+    pub mcp_proxy_url: String,
+    pub command_proxy_url: String,
+    pub conda_mirror_url: String,
+    pub pip_index_url: String,
+    pub ca_bundle_path: String,
+}
+
+mod research_journey;
+pub use research_journey::*;

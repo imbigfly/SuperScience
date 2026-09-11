@@ -285,6 +285,7 @@ pub(crate) struct ActiveProject {
 /// instance stale instead of pinning the server process.
 #[derive(Clone)]
 pub(crate) struct McpAppToolBridge {
+    pub(crate) generation: u64,
     pub(crate) frame_id: String,
     pub(crate) server: Arc<dyn superscience_tools::McpAppServer>,
     pub(crate) limiter: Arc<McpAppCallLimiter>,
@@ -300,11 +301,25 @@ pub(crate) const MCP_APP_CALL_WINDOW: std::time::Duration = std::time::Duration:
 #[derive(Default)]
 pub(crate) struct McpAppBridges {
     bridges: StdMutex<HashMap<String, McpAppToolBridge>>,
+    next_generation: std::sync::atomic::AtomicU64,
 }
 
 impl McpAppBridges {
-    pub(crate) fn register(&self, instance_id: String, bridge: McpAppToolBridge) {
+    pub(crate) fn register(&self, instance_id: String, mut bridge: McpAppToolBridge) {
+        bridge.generation = self.next_generation.fetch_add(1, Ordering::SeqCst) + 1;
         self.bridges.lock().unwrap().insert(instance_id, bridge);
+    }
+
+    pub(crate) fn close_generation(&self, instance_id: &str, generation: Option<u64>) -> bool {
+        let mut bridges = self.bridges.lock().unwrap();
+        if bridges
+            .get(instance_id)
+            .is_some_and(|b| Some(b.generation) == generation)
+        {
+            bridges.remove(instance_id);
+            return true;
+        }
+        false
     }
 
     pub(crate) fn get(&self, instance_id: &str) -> Option<McpAppToolBridge> {
@@ -428,6 +443,7 @@ impl ProjectActivityLocks {
 }
 
 pub(crate) struct AppState {
+    pub(crate) desktop: tauri::AppHandle,
     pub(crate) app_data: PathBuf,
     pub(crate) store: Store,
     pub(crate) library: LibraryStore,
@@ -553,6 +569,7 @@ impl AppState {
         self.active_frame.read().unwrap().get(label).cloned()
     }
     pub(crate) fn set_active_frame(&self, label: &str, frame: Option<String>) {
+        let changed = self.active_frame(label) != frame;
         match frame {
             Some(f) => {
                 self.active_frame
@@ -563,6 +580,12 @@ impl AppState {
             None => {
                 self.active_frame.write().unwrap().remove(label);
             }
+        }
+        // Drop active_frame before touching the child registry. Native
+        // suspend is a no-op when the isolation manager is not installed
+        // (unit tests without a full desktop runtime).
+        if changed {
+            crate::mcp_app_child_commands::suspend_owner(&self.desktop, label);
         }
     }
     pub(crate) fn set_notification_window(&self, frame_id: &str, label: &str) {
@@ -586,6 +609,7 @@ impl AppState {
     /// Revoke every app bridge owned by a conversation (session delete).
     pub(crate) fn remove_mcp_app_bridges_for_frame(&self, frame_id: &str) {
         self.mcp_app_tool_bridges.remove_for_frame(frame_id);
+        crate::mcp_app_child_commands::remove_frame(&self.desktop, frame_id);
     }
     pub(crate) fn preferred_notification_window(
         &self,

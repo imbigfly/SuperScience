@@ -8,6 +8,7 @@ members = [
     "crates/superscience-skills",
     "crates/superscience-runtime",
     "crates/superscience-mcp",
+    "crates/wisp-bio",
     "crates/superscience-acp",
     "crates/superscience-cli",
     "crates/wisp-runs",
@@ -19,7 +20,7 @@ members = [
 default-members = ["crates/superscience-cli"]
 
 [workspace.package]
-version = "1.9.0"
+version = "1.11.0"
 edition = "2021"
 rust-version = "1.88"
 license = "AGPL-3.0-only"
@@ -68,6 +69,7 @@ superscience-store = { path = "crates/superscience-store" }
 superscience-skills = { path = "crates/superscience-skills" }
 superscience-runtime = { path = "crates/superscience-runtime" }
 superscience-mcp = { path = "crates/superscience-mcp" }
+wisp-bio = { path = "crates/wisp-bio" }
 superscience-acp = { path = "crates/superscience-acp" }
 superscience-runs = { path = "crates/wisp-runs" }
 superscience-paths = { path = "crates/superscience-paths" }

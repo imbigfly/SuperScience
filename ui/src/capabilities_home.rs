@@ -2,13 +2,13 @@
 //! fullscreen Capabilities overlay.
 
 use crate::ability_cards::{ability_card_by_id, spawn_report_ability_card_usage};
+use crate::app_support::js_error_text;
 use crate::app_support::{compose_icon, save_view_pref};
 use crate::bindings::{invoke, invoke_checked};
 use crate::capability_intros::{
     help, intro_for, intro_lines, intro_value_parts, CapabilityHelp, CapabilityIntro,
 };
 use crate::dto::{is_image_generation_model, ModelProfile, ProjectSummary};
-use crate::app_support::js_error_text;
 use crate::i18n::{localize_backend, t, tf, Locale};
 use crate::knowledge_settings::{probe_knowledge_ready, KnowledgeSettingsOverlay};
 use crate::text::{event_target_checked, event_target_value};
@@ -1711,10 +1711,7 @@ async fn load_image_gen_picks() -> (Vec<ModelProfile>, String, Option<ModelProfi
     let pick = assigned_image_gen_id(&candidates)
         .or_else(|| candidates.first().map(|model| model.id.clone()))
         .unwrap_or_default();
-    let selected = candidates
-        .iter()
-        .find(|model| model.id == pick)
-        .cloned();
+    let selected = candidates.iter().find(|model| model.id == pick).cloned();
     (candidates, pick, selected)
 }
 
@@ -2441,7 +2438,12 @@ mod tests {
                 .filter(|tile| tile.card_settings.is_some())
                 .map(|tile| tile.id)
                 .collect::<Vec<_>>(),
-            vec!["ai-drawing", "pii-firewall", "handwriting-extract", "knowledge"]
+            vec![
+                "ai-drawing",
+                "pii-firewall",
+                "handwriting-extract",
+                "knowledge"
+            ]
         );
         assert!(!ids.contains(&"nature-shared"));
         assert!(!ids.contains(&"academic-research"));

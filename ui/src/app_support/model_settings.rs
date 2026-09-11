@@ -178,6 +178,7 @@ impl ModelSettingsState {
                     "context_window": profile.context_window,
                     "reasoning_effort": effort,
                     "service_tier": profile.service_tier,
+                    "user_agent": profile.user_agent,
                     "supports_vision": profile.supports_vision,
                     "use_for_vision": profile.use_for_vision,
                     "use_for_image_generation": profile.use_for_image_generation,
@@ -448,8 +449,10 @@ impl ModelSettingsState {
                 let (max_tokens, context_window) =
                     catalog_limits_or_default(&provider, &effective_api_url, entry.model.trim())
                         .await;
-                let image = entry.use_for_image_generation && is_image_generation_model(&entry.model);
-                let video = entry.use_for_video_generation && is_video_generation_model(&entry.model);
+                let image =
+                    entry.use_for_image_generation && is_image_generation_model(&entry.model);
+                let video =
+                    entry.use_for_video_generation && is_video_generation_model(&entry.model);
                 let media = image || video;
                 let profile = serde_json::json!({
                     "id": "",
@@ -462,6 +465,7 @@ impl ModelSettingsState {
                     "context_window": context_window,
                     "reasoning_effort": "",
                     "service_tier": "",
+                    "user_agent": form.user_agent,
                     "supports_vision": entry.supports_vision && !media,
                     "use_for_vision": entry.use_for_vision && !media,
                     "use_for_image_generation": image,

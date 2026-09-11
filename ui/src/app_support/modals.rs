@@ -43,13 +43,19 @@ pub(crate) enum UiConfirm {
     DeleteFolder(String),
     DeleteSessions(Vec<String>),
     AbandonExploration(String),
-    DeleteFileEntry { path: String, is_dir: bool },
+    DeleteFileEntry {
+        path: String,
+        is_dir: bool,
+    },
     ReloadProjectRules(String),
     SaveAgentContext,
     DeleteUserDemo(String),
     /// Confirm discarding the user-edited instructions for a built-in
     /// specialist and reverting to the compiled rubric.
-    ResetSpecialistInstructions { id: String, name: String },
+    ResetSpecialistInstructions {
+        id: String,
+        name: String,
+    },
 }
 
 #[derive(Clone)]

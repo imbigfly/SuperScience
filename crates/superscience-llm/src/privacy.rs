@@ -546,7 +546,8 @@ mod tests {
         .unwrap()];
         let src = "联系 协和医院 的 jane@lab.org";
         let out = anonymize_text_with_terms(&vault, src, &terms);
-        assert!(out.contains("〔词1〕"), "{out}");
+        // The user-supplied placeholder is the token the model sees.
+        assert!(out.contains("医院A"), "{out}");
         assert!(out.contains("EMAIL_1"), "{out}");
         assert!(!out.contains("协和医院"), "{out}");
         assert!(!out.contains("jane@lab.org"), "{out}");

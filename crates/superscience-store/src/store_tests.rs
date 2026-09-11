@@ -3365,6 +3365,7 @@ async fn delete_project_clears_later_child_tables_and_ignores_orphan_schedules()
             source_message_seq: 1,
             source_frame_head_seq: 1,
             source_ui_event_seq: 0,
+            source_ui_event_head_seq: 0,
             source_family_generation: 0,
             source_state_generation: 0,
             workspace_snapshot_id: "gone-snap".into(),
@@ -4626,6 +4627,8 @@ async fn store_open_records_migrations_and_seeds_local_context() {
             RUN_REVIEW_DISMISSED_MIGRATION.to_string(),
             ABILITY_CARD_USAGE_MIGRATION.to_string(),
             SESSION_SERVICE_TIER_MIGRATION.to_string(),
+            RESEARCH_JOURNAL_MIGRATION.to_string(),
+            EXPLORATION_HISTORY_MIGRATION.to_string(),
         ]
     );
     let first_open_migrations = store.schema_migrations().await.unwrap();
@@ -6033,6 +6036,7 @@ async fn run_manager_roundtrip_and_lifecycle() {
     run.output_specs_json = r#"[{"glob":"results/*.tsv","kind":"table"}]"#.into();
     run.timeout_secs = Some(900);
     run.progress_json = serde_json::to_string(&RunProgress {
+        indeterminate: false,
         phase: "uploading".into(),
         direction: "upload".into(),
         completed_bytes: 512,
@@ -6262,6 +6266,7 @@ async fn conditional_terminal_update_does_not_overwrite_winner() {
         .await
         .unwrap());
     let progress = RunProgress {
+        indeterminate: false,
         phase: "uploading".into(),
         direction: "upload".into(),
         completed_bytes: 4,
@@ -8277,6 +8282,7 @@ async fn create_exploration_checkpoint_fixture(store: &Store) {
             source_message_seq: 2,
             source_frame_head_seq: 2,
             source_ui_event_seq: 0,
+            source_ui_event_head_seq: 0,
             source_family_generation: 0,
             source_state_generation: 0,
             workspace_snapshot_id: "snapshot".into(),
@@ -8288,6 +8294,39 @@ async fn create_exploration_checkpoint_fixture(store: &Store) {
         })
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn exploration_history_migration_backfills_heads_and_is_idempotent() {
+    let (store, tmp) = exploration_store_fixture("history-migration").await;
+    create_exploration_checkpoint_fixture(&store).await;
+    sqlx::query("UPDATE exploration_checkpoints SET source_ui_event_seq=7")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE exploration_checkpoints DROP COLUMN source_ui_event_head_seq")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM superscience_schema_migrations WHERE version=?")
+        .bind(EXPLORATION_HISTORY_MIGRATION)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    store.pool.close().await;
+    for _ in 0..2 {
+        let reopened = Store::open(&tmp).await.unwrap();
+        let checkpoint = reopened
+            .get_exploration_checkpoint("checkpoint")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(checkpoint.source_ui_event_head_seq, 7);
+        assert_eq!(checkpoint.source_ui_event_seq, 7);
+        assert_eq!(checkpoint.source_message_seq, 2);
+        reopened.pool.close().await;
+    }
+    let _ = std::fs::remove_file(tmp);
 }
 
 #[tokio::test]
@@ -9130,6 +9169,7 @@ async fn exploration_checkpoint_rejects_stale_mainline_state() {
         source_message_seq: 2,
         source_frame_head_seq: 2,
         source_ui_event_seq: 0,
+        source_ui_event_head_seq: 0,
         source_family_generation: 0,
         source_state_generation: 0,
         workspace_snapshot_id: "snapshot".into(),
@@ -9431,4 +9471,128 @@ async fn exploration_schema_has_no_retained_discard_state() {
 
     store.pool.close().await;
     let _ = std::fs::remove_file(tmp);
+}
+
+#[tokio::test]
+async fn research_journey_notes_follow_exploration_baseline_and_export() {
+    let (store, path) = exploration_store_fixture("journal").await;
+    create_exploration_checkpoint_fixture(&store).await;
+    let main = StateScope::mainline("p");
+    let input = superscience_dto::ResearchJournalInput {
+        title: "Baseline note".into(),
+        body: "Known before branching".into(),
+        category: "progress".into(),
+        occurred_at: 100,
+    };
+    let baseline = store
+        .add_research_journal_entry(&main, &input)
+        .await
+        .unwrap();
+    store
+        .capture_exploration_baseline_entities("checkpoint")
+        .await
+        .unwrap();
+    for (id, frame) in [("explore", "branch"), ("sibling", "sibling-frame")] {
+        if frame != "branch" {
+            store
+                .create_frame(frame, "p", "OPERON", "model")
+                .await
+                .unwrap();
+        }
+        store
+            .create_exploration(&Exploration {
+                id: id.into(),
+                checkpoint_id: "checkpoint".into(),
+                frame_id: frame.into(),
+                name: id.into(),
+                status: ExplorationStatus::Creating,
+                workspace_dir: format!("/tmp/{id}"),
+                workspace_backend: "snapshot".into(),
+                scope_generation: 0,
+                warnings_json: "[]".into(),
+                created_at: 2,
+                updated_at: 2,
+            })
+            .await
+            .unwrap();
+    }
+    let branch = StateScope::exploration("p", "explore");
+    let sibling = StateScope::exploration("p", "sibling");
+    let private = store
+        .add_research_journal_entry(
+            &branch,
+            &superscience_dto::ResearchJournalInput {
+                title: "Private note".into(),
+                ..input.clone()
+            },
+        )
+        .await
+        .unwrap();
+    let later = store
+        .add_research_journal_entry(
+            &main,
+            &superscience_dto::ResearchJournalInput {
+                title: "Later mainline note".into(),
+                ..input.clone()
+            },
+        )
+        .await
+        .unwrap();
+    let entries = store
+        .research_journey(&branch, 0, 86400)
+        .await
+        .unwrap()
+        .entries;
+    assert!(entries.iter().any(|e| e.source_id == baseline));
+    assert!(entries.iter().any(|e| e.source_id == private));
+    assert!(!entries.iter().any(|e| e.source_id == later));
+    assert!(!store
+        .research_journey(&sibling, 0, 86400)
+        .await
+        .unwrap()
+        .entries
+        .iter()
+        .any(|e| e.source_id == private));
+    assert!(!store
+        .research_journey(&main, 0, 86400)
+        .await
+        .unwrap()
+        .entries
+        .iter()
+        .any(|e| e.source_id == private));
+    let calendar = store
+        .research_calendar(&["p".into()], 0, 86400)
+        .await
+        .unwrap();
+    assert_eq!(
+        calendar[0].history,
+        store.research_journey(&main, 0, 86400).await.unwrap()
+    );
+    assert!(!calendar[0]
+        .history
+        .entries
+        .iter()
+        .any(|e| e.source_id == private));
+    assert!(calendar[0]
+        .history
+        .entries
+        .iter()
+        .any(|e| e.source_id == later));
+    let archive = path.with_extension("export.db");
+    let target_path = path.with_extension("target.db");
+    store.export_project_database("p", &archive).await.unwrap();
+    let target = Store::open(&target_path).await.unwrap();
+    target
+        .import_project_database(&archive, "p", std::path::Path::new("/tmp/imported-journal"))
+        .await
+        .unwrap();
+    assert_eq!(
+        target.research_journey(&main, 0, 86400).await.unwrap(),
+        store.research_journey(&main, 0, 86400).await.unwrap()
+    );
+    drop(target);
+    drop(store);
+    for file in [path, archive, target_path] {
+        let _ = std::fs::remove_file(file);
+    }
 }

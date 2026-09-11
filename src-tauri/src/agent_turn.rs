@@ -28,7 +28,7 @@ impl TurnOrigin {
 pub(crate) async fn send_message(
     state: State<'_, AppState>,
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    window: crate::workspace_surface::WorkspaceSurface,
     session_id: Option<String>,
     message: String,
     attachments: Option<Vec<String>>,
@@ -193,6 +193,10 @@ pub(crate) async fn send_message_inner(
         let skills = active_skill_index(&state.store, &ap).await;
         let mut injected_context =
             resolve_composer_references(&state.store, refs, &frame_id, &ap.root, &skills).await?;
+        let package_guidance = network::package_guidance(&network::load(&state.store).await?);
+        if !package_guidance.is_empty() {
+            injected_context.push(package_guidance);
+        }
         if let Some(memory) = memory_commands::global_memory_runtime_injection(&state.store).await {
             injected_context.push(memory);
         }
@@ -446,7 +450,7 @@ pub(crate) async fn send_message_inner(
     let delegation_enabled =
         delegation_runtime::session_delegation_enabled(&state.store, &frame_id).await;
     let plan_mode_enabled = plan_mode::session_plan_mode(&state.store, &frame_id).await;
-    let (provider, api_url, model, api_key, max_tokens, reasoning_effort, service_tier) =
+    let (provider, api_url, model, api_key, max_tokens, reasoning_effort, service_tier, user_agent) =
         match &specialist {
             Some(spec) if !spec.model_id.trim().is_empty() => {
                 specialists::specialist_llm(&state.store, spec).await
@@ -461,6 +465,7 @@ pub(crate) async fn send_message_inner(
         max_tokens,
         &reasoning_effort,
         &service_tier,
+        &user_agent,
     )?;
     let primary_profile_id = specialist
         .as_ref()
@@ -766,7 +771,6 @@ pub(crate) async fn send_message_inner(
             &ap.id,
             frame_scope.scope_key(),
             &frame_id,
-            &state.app_data,
             &state.store,
             None,
             connector_allow.as_ref(),
@@ -791,6 +795,11 @@ pub(crate) async fn send_message_inner(
     let agent = guard
         .as_mut()
         .ok_or_else(|| "Failed to prepare the session agent.".to_string())?;
+    if let Some(message) = agent.ctx.messages.first_mut() {
+        if let superscience_llm::Content::Text(prompt) = &mut message.content {
+            network::sync_package_guidance(prompt, &network::load(&state.store).await?);
+        }
+    }
     let (auto_continue, auto_continue_limit) = load_auto_continue_settings(&state.store).await;
     apply_live_agent_settings(
         agent,
@@ -1400,7 +1409,7 @@ pub(crate) fn spawn_queue_driver(
 pub(crate) async fn enqueue_turn(
     state: State<'_, AppState>,
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    window: crate::workspace_surface::WorkspaceSurface,
     session_id: String,
     id: u64,
     message: String,
@@ -1535,7 +1544,7 @@ pub(crate) fn reclaim_unconsumed_cutin(
 pub(crate) async fn queued_turn_action(
     state: State<'_, AppState>,
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    window: crate::workspace_surface::WorkspaceSurface,
     session_id: String,
     id: u64,
     action: String,

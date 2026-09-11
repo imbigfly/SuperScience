@@ -46,7 +46,10 @@ The composer model picker binds the selected HTTP model to the current
 conversation. Switching one populated conversation asks for confirmation and
 does not change any other conversation. Empty conversations switch immediately
 without a warning. The active profile in Settings remains the default for new
-conversations. Hovering a model row in the picker overlays the reasoning effort
+conversations. In **Settings → AI configuration → Models**, choose **Set as
+default** to save that default immediately; **Default** identifies the selected
+profile. The list has no Save/Cancel footer. Add/edit forms still require Save,
+and cancelling an edit does not undo an earlier default change. Hovering a model row in the picker overlays the reasoning effort
 inside the model information area without reserving a separate column, and
 reveals its **Edit** button. The button opens a flyout to the right of the model
 menu listing the effort levels the model family is documented to support (same
@@ -54,6 +57,18 @@ curated list as the model form in Settings).
 Choosing a level saves it as the profile's default — it applies to every
 conversation using that model and is not scoped to the current conversation.
 Choosing "default" clears the value so the provider decides.
+
+The add/edit model page includes collapsed **Advanced options** with an optional
+**User-Agent** field. Leave it blank to send `wisp-science`, or enter a client
+identifier such as `research-client/1.0` using printable ASCII characters.
+The value is saved per model and used for connection validation, chat and vision
+requests, auxiliary model calls, and image/video model requests. When adding
+several models under one API access, each receives the entered value; you can
+then edit them independently. Clearing the field restores the default.
+
+This changes only the User-Agent header. OpenCode Go also requires a stable
+`x-opencode-session` per conversation; this option alone does not resolve
+[issue #1165](https://github.com/xuzhougeng/wisp-science/issues/1165).
 
 OpenAI Chat Completions and Responses profiles also have a **Fast mode** toggle
 on the model form, next to reasoning effort. Off uses the provider default and

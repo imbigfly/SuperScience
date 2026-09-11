@@ -178,7 +178,7 @@ pub(super) fn list_demos_cmd(state: State<'_, AppState>, locale: Option<String>)
 #[tauri::command(rename = "load_demo")]
 pub(super) fn load_demo_cmd(
     state: State<'_, AppState>,
-    window: tauri::WebviewWindow,
+    window: crate::workspace_surface::WorkspaceSurface,
     id: String,
     locale: Option<String>,
 ) -> Result<Demo, String> {
@@ -984,8 +984,8 @@ mod tests {
     fn chinese_overlay_rewrites_titles_and_request() {
         let en = list_demos(Some("en"));
         let zh = list_demos(Some("zh"));
-        assert_eq!(zh.len(), 7);
-        assert_eq!(en.len(), 7);
+        assert_eq!(zh.len(), 8);
+        assert_eq!(en.len(), 8);
 
         assert_eq!(zh[0].id, "manifest_01_stats_two_way");
         let zh_stats = zh

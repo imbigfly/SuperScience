@@ -1,5 +1,11 @@
 # 天成科研助手
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/wordmark-dark.svg" />
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/wordmark-light.svg" />
+  <img src="docs/assets/wordmark-light.svg" alt="SuperScience" width="360" />
+</picture>
+
 **本地优先的 AI 科研工作台。** 把文献、数据、算力、绘图、写作和决策放在同一个项目里。
 
 当前版本 **v1.9.0**。桌面应用支持 Windows / macOS / Linux；也提供无界面 CLI。
@@ -202,12 +208,19 @@ report/                        本 fork 上游同步记录
 
 | 主题 | 文档 |
 |------|------|
-| 上手 | [基础配置](docs/basic-configuration.md) · [模型](docs/model-configuration.md) · [ACP](docs/acp-agents.md) |
+| 上手 | [快速开始](docs/wechat/wisp-science-quick-start.md) · [基础配置](docs/basic-configuration.md) · [模型](docs/model-configuration.md) · [ACP](docs/acp-agents.md) |
 | 科研 | [探索分支](docs/exploration-branches.zh-CN.md) · [证据胶囊](docs/publication-evidence.md) · [选题库](docs/case-studies.zh-CN.md) |
 | 项目 | [迁移](docs/project-transfer.md) · [同步](docs/project-sync.zh-CN.md) · [全局库](docs/global-library.md) |
 | 算力 | [终端](docs/terminal-sessions.md) · [远程文件](docs/remote-file-browser.md) · [传输](docs/server-transfers.md) |
 | 扩展 | [Skills](docs/skills.md) · [插件](docs/feature-plugins.md) · [委派](docs/agent-delegation.md) · [IM](docs/channels.md) · [浏览器](docs/real-browser-automation.md) |
 | 开发 | [开发指南](docs/development.md) · [更新与发版](docs/app-updates.md) · [功能总览](docs/天成科研助手-完整功能思维导图.md) |
+
+---
+
+## 致谢
+
+感谢所有提交 issue、发 PR，以及在真实项目中试用天成科研助手的用户。
+特别感谢 [SpicyChicken6](https://github.com/xuzhougeng/wisp-science/discussions/1154) 设计的分子字标与三重旋涡桌面图标。
 
 ---
 

@@ -1,8 +1,10 @@
 //! Tauri v2 desktop shell: commands that drive the Wisp agent and stream
 //! events to the webview, plus a settings/confirm surface.
 
+use crate::workspace_surface::WorkspaceManager;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock};
@@ -90,6 +92,7 @@ mod resource_leases;
 mod resource_refs;
 mod review;
 pub(crate) use superscience_runs as run_context;
+mod network;
 mod runtime_commands;
 mod runtime_config_tool;
 mod runtime_launcher;
@@ -106,6 +109,7 @@ mod share_social;
 mod side_chat;
 mod skill_commands;
 mod skill_portfolio;
+mod skill_store;
 mod skill_update;
 pub(crate) use superscience_runs::snapshot_store;
 mod specialist_tool;
@@ -113,6 +117,9 @@ mod specialists;
 pub(crate) use superscience_runs::ssh_guard;
 mod ssh_hosts;
 pub(crate) use superscience_runs::ssh_master;
+mod clipboard_files;
+mod mcp_app_child_commands;
+mod mcp_app_children;
 mod storage_prefs;
 mod tctoken;
 mod terminal_sessions;
@@ -120,11 +127,13 @@ mod trajectory;
 mod trajectory_export;
 mod turn_memory;
 mod turn_undo;
+mod ui_health;
 mod video_generation_tool;
 mod windows_snap;
 mod workspace_manifest;
 mod workspace_scan;
 mod workspace_session_recovery;
+mod workspace_surface;
 mod wsl_contexts;
 
 pub(crate) use agent_turn::*;
@@ -526,7 +535,6 @@ fn approval_grant_key(message: &str) -> Option<ApprovalGrantKey> {
 }
 
 pub(crate) const BUNDLED_DEV_MCP_CONNECTOR_ID: &str = "dev-mcp";
-pub(crate) const BUNDLED_BIO_MCP_CONNECTOR_ID: &str = "mcp_bio";
 
 /// Always-allow key for an MCP App `tools/call`. Empty connector ids are
 /// refused so bundled sources cannot share a `_:{tool}` grant.
@@ -721,9 +729,9 @@ struct McpConnection {
 
 // ── Connectors (multi-level) + per-tool approval ────────────────────────────
 //
-// The bundled `mcp_bio` aggregate serves ~247 tools; `mcp_bio/domains.json`
-// (domain slug -> tool names) partitions them into 23 "connectors". That file
-// is the static connector↔tool map — no server launch needed to build the tree.
+// The native catalog partitions biological tools into domain connectors.
+// Settings and dispatch share this inventory; no resource file or Python
+// server is needed to build the connector tree.
 // User `McpConnection`s are extra "custom" connectors (their tools aren't
 // statically known, so per-tool approval only applies to the bundled ones).
 
@@ -791,7 +799,7 @@ impl Scope {
 }
 
 /// Live approval policy read by `TauriOutput::approval_mode` on every tool call.
-/// `tool_connector` is static (built once from `domains.json`); `tools`/`skip`/
+/// `tool_connector` is static (built once from the native catalog); `tools`/`skip`/
 /// `scope` mirror the persisted settings and are refreshed by the approval
 /// commands.
 #[derive(Clone, Default)]
@@ -880,33 +888,26 @@ impl ApprovalPolicy {
     }
 }
 
-/// One bundled bio-tools connector (a domain from `mcp_bio/domains.json`).
+/// One built-in biological connector from the native catalog.
 #[derive(Clone)]
 struct BioDomain {
     slug: String,
-    name: String,
     tools: Vec<String>,
 }
 
-/// Read the static `mcp_bio/domains.json` connector map. Empty if the bundle is
-/// absent (dev checkouts without the vendored bio-tools).
+/// Built-in domain inventory comes from the same native catalog as dispatch.
 fn bio_domains() -> Vec<BioDomain> {
-    let Some(dir) = superscience_paths::bio_tools_dir() else {
-        return vec![];
-    };
-    let path = dir.join("lib").join("mcp_bio").join("domains.json");
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return vec![];
-    };
-    let Ok(map) = serde_json::from_str::<BTreeMap<String, Vec<String>>>(&text) else {
-        return vec![];
-    };
+    let mut map = BTreeMap::<String, Vec<String>>::new();
+    for (domain, schema) in wisp_bio::catalog() {
+        map.entry(domain.into())
+            .or_default()
+            .push(schema.function.name);
+    }
+    for tools in map.values_mut() {
+        tools.sort();
+    }
     map.into_iter()
-        .map(|(slug, tools)| BioDomain {
-            name: domain_display_name(&slug),
-            slug,
-            tools,
-        })
+        .map(|(slug, tools)| BioDomain { slug, tools })
         .collect()
 }
 
@@ -2039,6 +2040,8 @@ struct Settings {
     /// OpenAI-compatible HTTP `service_tier`. Empty = omit; `priority` = Fast.
     #[serde(default)]
     service_tier: String,
+    #[serde(default)]
+    user_agent: String,
     /// LLM HTTP proxy. Empty = follow system/env proxy; `none` = force direct;
     /// otherwise a proxy URL (http://, https://, socks5://).
     #[serde(default)]
@@ -2214,28 +2217,7 @@ const fn default_notifications_enabled() -> bool {
     true
 }
 
-#[derive(Serialize, Clone)]
-struct BootstrapStatus {
-    skills_loaded: usize,
-    python_ok: bool,
-    python_initializing: bool,
-    mcp_catalog: usize,
-    uv_ok: bool,
-    node_ok: bool,
-    npm_ok: bool,
-    sci_ok: bool,
-    pixi_ok: bool,
-    r_ok: bool,
-    officecli_ok: bool,
-    sci_key_ok: bool,
-    app_version: String,
-    os: String,
-    arch: String,
-    workspace: String,
-    /// Launch timings for bug reports; see `StartupReport`.
-    startup: String,
-    errors: Vec<String>,
-}
+use superscience_dto::BootstrapStatus;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NotificationWindowSelection {
@@ -2536,6 +2518,17 @@ async fn call_mcp_app_tool(
     name: String,
     arguments: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    call_mcp_app_tool_inner(app, &state, instance_id, name, arguments, None).await
+}
+
+async fn call_mcp_app_tool_inner(
+    app: AppHandle,
+    state: &AppState,
+    instance_id: String,
+    name: String,
+    arguments: serde_json::Value,
+    child: Option<&mcp_app_children::Child>,
+) -> Result<serde_json::Value, String> {
     let frame_id = mcp_app_frame_id(&instance_id)?.to_string();
     if name.is_empty() || name.len() > MAX_MCP_APP_TOOL_NAME_BYTES {
         return Err("MCP App tool name is empty or too long.".into());
@@ -2566,6 +2559,12 @@ async fn call_mcp_app_tool(
     };
     if bridge.frame_id != frame_id {
         return Err(MCP_APP_STALE_INSTANCE_ERROR.into());
+    }
+    if let Some(child) = child {
+        mcp_app_child_commands::ensure_current(state, child)?;
+        if child.bridge_generation != Some(bridge.generation) {
+            return Err(MCP_APP_STALE_INSTANCE_ERROR.into());
+        }
     }
     if !bridge.server.visible_to_app(&name) {
         return Err(format!(
@@ -2675,6 +2674,11 @@ async fn call_mcp_app_tool(
             }
         }
     }
+    // Approval may outlive the page that asked for it. Never dispatch a stale
+    // request after an asynchronous policy/user decision.
+    if let Some(child) = child {
+        mcp_app_child_commands::ensure_current(state, child)?;
+    }
     audit_mcp_app_tool(
         "mcp_app.tool_call_approved",
         &instance_id,
@@ -2693,6 +2697,9 @@ async fn call_mcp_app_tool(
     .await
     {
         Ok(result) => {
+            if let Some(child) = child {
+                mcp_app_child_commands::ensure_current(state, child)?;
+            }
             let result_bytes = serde_json::to_vec(&result)
                 .map_err(|error| format!("Invalid MCP App tool result: {error}"))?
                 .len();
@@ -2780,7 +2787,7 @@ async fn mcp_app_has_server_tools(
     let frame_id = mcp_app_frame_id(&instance_id)?;
     Ok(state
         .mcp_app_bridge(&instance_id)
-        .is_some_and(|bridge| bridge.frame_id == frame_id))
+        .is_some_and(|bridge| bridge.frame_id == frame_id && bridge.server.is_connected()))
 }
 
 /// Revoke an MCP App instance's host-side bridge when the iframe tears down
@@ -3079,6 +3086,7 @@ impl Output for TauriOutput {
                 self.app.state::<AppState>().register_mcp_app_bridge(
                     instance_id,
                     McpAppToolBridge {
+                        generation: 0,
                         frame_id: self.frame_id.clone(),
                         server,
                         limiter: McpAppCallLimiter::new(),
@@ -3581,9 +3589,26 @@ fn mac_menu_action(id: &str, focused: bool) -> Option<&'static str> {
 }
 
 #[cfg(target_os = "macos")]
-fn wire_macos_menu_events(window: &tauri::WebviewWindow) {
+fn wire_macos_menu_events(window: &crate::workspace_surface::WorkspaceSurface) {
     window.on_menu_event(|window, event| {
         // Tauri invokes every window's menu handler for each native action.
+        if window.is_focused().unwrap_or(false) {
+            match event.id().as_ref() {
+                "recovery.stop-agent" => {
+                    if let Some(target) = window.app_handle().workspace_surface(window.label()) {
+                        ui_health::stop_window_agent(&target);
+                    }
+                    return;
+                }
+                "recovery.reload-window" => {
+                    if let Some(target) = window.app_handle().workspace_surface(window.label()) {
+                        ui_health::reload_window(&target, "native menu");
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
         if let Some(action) =
             mac_menu_action(event.id().as_ref(), window.is_focused().unwrap_or(false))
         {
@@ -3824,6 +3849,33 @@ fn install_macos_app_menu(app: &AppHandle, locale_tag: &str) -> Result<(), Strin
 
     let window_menu = SubmenuBuilder::new(app, labels.window)
         .item(
+            &build_menu_item(
+                app,
+                "recovery.stop-agent",
+                if locale_tag.starts_with("zh") {
+                    "停止当前 Agent"
+                } else {
+                    "Stop current agent"
+                },
+                None,
+            )
+            .map_err(|error| error.to_string())?,
+        )
+        .item(
+            &build_menu_item(
+                app,
+                "recovery.reload-window",
+                if locale_tag.starts_with("zh") {
+                    "重载当前窗口"
+                } else {
+                    "Reload current window"
+                },
+                None,
+            )
+            .map_err(|error| error.to_string())?,
+        )
+        .separator()
+        .item(
             &PredefinedMenuItem::minimize(app, Some(labels.minimize))
                 .map_err(|error| error.to_string())?,
         )
@@ -3953,7 +4005,7 @@ pub(crate) async fn load_settings(store: &Store) -> (String, String, String, Str
 async fn load_session_settings(
     store: &Store,
     frame_id: &str,
-) -> (String, String, String, String, u64, String, String) {
+) -> (String, String, String, String, u64, String, String, String) {
     let profile_id = models::session_profile_id(store, frame_id).await;
     let (
         provider,
@@ -3963,11 +4015,12 @@ async fn load_session_settings(
         max_tokens,
         profile_reasoning_effort,
         profile_service_tier,
+        user_agent,
     ) = match models::profile_llm(store, &profile_id).await {
         Some(config) => config,
         None => {
             let (provider, api_url, model, api_key) = load_settings(store).await;
-            let (max_tokens, reasoning_effort, service_tier) =
+            let (max_tokens, reasoning_effort, service_tier, user_agent) =
                 models::active_llm_advanced(store).await;
             (
                 provider,
@@ -3977,6 +4030,7 @@ async fn load_session_settings(
                 max_tokens,
                 reasoning_effort,
                 service_tier,
+                user_agent,
             )
         }
     };
@@ -3993,6 +4047,7 @@ async fn load_session_settings(
         max_tokens,
         reasoning_effort,
         service_tier,
+        user_agent,
     )
 }
 
@@ -4418,7 +4473,7 @@ async fn persist_skip_connectors_overlay(
     Ok(project_id)
 }
 
-/// tool name -> bundled connector (domain slug). Static; built from domains.json.
+/// tool name -> bundled connector (domain slug). Built from the native catalog.
 fn build_tool_connector_map() -> HashMap<String, String> {
     let mut m = HashMap::new();
     for d in bio_domains() {
@@ -4799,13 +4854,21 @@ async fn connect_mcp(conn: &McpConnection) -> anyhow::Result<superscience_mcp::M
                     cmd.current_dir(dir);
                 }
             }
+            cmd.envs(superscience_tools::network::proxy_env(&network::mcp_proxy()));
             superscience_tools::process::hide_console_async(&mut cmd);
             superscience_mcp::McpClient::launch_with_command(cmd).await
         }
         McpTransport::Http { url, auth, .. } => {
             let headers = mcp_secrets::hydrate_headers(conn);
             match auth {
-                McpHttpAuth::None => superscience_mcp::McpClient::connect_http(url, &headers).await,
+                McpHttpAuth::None => {
+                    superscience_mcp::McpClient::connect_http_with_proxy(
+                        url,
+                        &headers,
+                        &network::mcp_proxy(),
+                    )
+                    .await
+                }
                 McpHttpAuth::OAuth => mcp_oauth::connect(&conn.id, url, &headers).await,
             }
         }
@@ -4828,7 +4891,7 @@ fn default_model(provider: &str) -> &'static str {
     }
 }
 
-/// Process-wide LLM proxy override, mirroring the `proxy_url` setting. A
+/// Process-wide LLM proxy override, mirroring NetworkSettings.model_proxy_url. A
 /// global (like the env vars it replaces) so every provider construction site
 /// picks it up without threading store access through each caller. Loaded at
 /// startup, updated on settings save.
@@ -4851,6 +4914,7 @@ fn build_provider_config(
     max_tokens: u64,
     reasoning_effort: &str,
     service_tier: &str,
+    user_agent: &str,
 ) -> Result<ProviderConfig, String> {
     let provider = normalized_provider(provider);
     let api_url = api_url.trim();
@@ -4878,6 +4942,7 @@ fn build_provider_config(
         service_tier,
         &provider,
     );
+    cfg.user_agent = superscience_llm::provider::normalize_user_agent(user_agent)?;
     cfg.proxy = llm_proxy();
     Ok(cfg)
 }
@@ -4908,20 +4973,6 @@ fn add_configured_video_generation_tool(
     }
 }
 
-pub(crate) async fn build_vision_provider_config(store: &Store) -> Option<ProviderConfig> {
-    let (provider, api_url, model, api_key, max_tokens, reasoning_effort, service_tier) =
-        models::vision_config(store).await?;
-    vision_provider_config_from_parts(
-        &provider,
-        &api_url,
-        &model,
-        &api_key,
-        max_tokens,
-        &reasoning_effort,
-        &service_tier,
-    )
-}
-
 pub(crate) async fn build_assigned_vision_provider_config(
     store: &Store,
     profile_id: &str,
@@ -4940,26 +4991,22 @@ pub(crate) async fn build_assigned_vision_provider_config(
         max_tokens,
         &reasoning_effort,
         "",
+        "",
     )
 }
 
-fn vision_provider_config_from_parts(
-    provider: &str,
-    api_url: &str,
-    model: &str,
-    api_key: &str,
-    max_tokens: u64,
-    reasoning_effort: &str,
-    service_tier: &str,
-) -> Option<ProviderConfig> {
+async fn build_vision_provider_config(store: &Store) -> Option<ProviderConfig> {
+    let (provider, api_url, model, api_key, max_tokens, reasoning_effort, service_tier, user_agent) =
+        models::vision_config(store).await?;
     match build_provider_config(
-        provider,
-        api_url,
-        api_key,
-        model,
+        &provider,
+        &api_url,
+        &api_key,
+        &model,
         max_tokens,
-        reasoning_effort,
-        service_tier,
+        &reasoning_effort,
+        &service_tier,
+        &user_agent,
     ) {
         Ok(cfg) => Some(cfg),
         Err(e) => {
@@ -5064,7 +5111,7 @@ fn r_kernel_worker_path() -> PathBuf {
     superscience_runtime::resolve_bundled_script(&configured)
 }
 
-/// Wire language runtimes, bundled bio-tools MCP, and user-configured MCP
+/// Wire language runtimes, native bio tools, and user-configured MCP
 /// connections into a freshly built tool registry.
 #[derive(Default)]
 struct ToolWiringResult {
@@ -5083,7 +5130,6 @@ async fn wire_runtimes_and_mcp(
     project_id: &str,
     scope_key: &str,
     frame_id: &str,
-    app_data: &std::path::Path,
     store: &Store,
     runtime_allow: Option<&HashSet<String>>,
     connector_allow: Option<&HashSet<String>>,
@@ -5110,26 +5156,6 @@ async fn wire_runtimes_and_mcp(
     }
 
     let disabled = load_disabled_connectors(store).await;
-    let domains = bio_domains();
-    let bio_granted = domains.iter().any(|domain| {
-        !disabled.contains(&domain.slug)
-            && connector_allow.is_none_or(|allow| allow.contains(&domain.slug))
-    });
-    let needs_python_env = runtime_granted("python") || bio_granted;
-    let py_env = if needs_python_env {
-        // Venv only: `ensure` would block the turn on a multi-minute wheel
-        // download (#477). The startup bootstrap installs deps in background.
-        match superscience_runtime::PythonEnv::ensure_venv(app_data) {
-            Ok(env) => Some(env),
-            Err(e) => {
-                result.errors.push(format!("Python environment: {e}"));
-                None
-            }
-        }
-    } else {
-        None
-    };
-
     let service_env = models::service_env();
     let worker_path = kernel_worker_path();
     if runtime_granted("python") && worker_path.is_file() {
@@ -5177,9 +5203,8 @@ async fn wire_runtimes_and_mcp(
         ));
     }
 
-    // Bundled bio-tools. Per-connector (domain) enable is the only gate now:
-    // the `WISP_MCP_COMMAND` / `SUPERSCIENCE_MCP_COMMAND` dev override always
-    // applies; otherwise mcp_bio launches unless every domain is disabled.
+    // Native bio domains obey connector settings and grants. The explicit
+    // WISP_MCP_COMMAND override selects an external MCP server instead.
     if let Some(cmdline) = superscience_paths::env_product_or_wisp("WISP_MCP_COMMAND") {
         if connector_allow.is_some_and(|allow| !allow.contains("dev-mcp")) {
             return finish_custom_mcp_wiring(result, registry, store, project_id, connector_allow)
@@ -5213,47 +5238,88 @@ async fn wire_runtimes_and_mcp(
                 Err(e) => result.errors.push(format!("MCP command: {e}")),
             }
         }
-    } else if let Some(env) = &py_env {
+    } else {
         let pkg = superscience_paths::env_product_or_wisp("WISP_MCP_PKG")
             .unwrap_or_else(|| "mcp_bio".into());
-        // mcp_bio serves all 247 tools; drop disabled domains' tools at
-        // registration. Skip the launch entirely if every domain is off.
-        let blocked = |slug: &str| {
-            disabled.contains(slug) || connector_allow.is_some_and(|allow| !allow.contains(slug))
-        };
-        let all_off = if connector_allow.is_some() {
-            domains.is_empty() || domains.iter().all(|domain| blocked(&domain.slug))
-        } else {
-            !domains.is_empty() && domains.iter().all(|domain| blocked(&domain.slug))
-        };
-        let skip: HashSet<String> = domains
-            .iter()
-            .filter(|d| blocked(&d.slug))
-            .flat_map(|d| d.tools.iter().cloned())
-            .collect();
-        if !all_off {
-            match superscience_mcp::McpClient::launch_bio_tools(&env.python(), &pkg, &service_env)
-                .await
-            {
+        let native_selected = wisp_bio::selected_by_package(&pkg);
+        if native_selected {
+            match wisp_bio::NativeBio::with_proxy(&service_env, &network::mcp_proxy()) {
                 Ok(client) => {
-                    match register_mcp_filtered(
-                        registry,
-                        std::sync::Arc::new(client),
-                        BUNDLED_BIO_MCP_CONNECTOR_ID,
-                        &skip,
-                    )
-                    .await
-                    {
-                        Ok(names) => result.added_tools.extend(names),
-                        Err(error) => result.errors.push(error),
+                    for tool in wisp_bio::tools_for_package(std::sync::Arc::new(client), &pkg) {
+                        let domain = wisp_bio::domain_for_tool(tool.name()).unwrap_or_default();
+                        if disabled.contains(domain)
+                            || connector_allow.is_some_and(|allow| !allow.contains(domain))
+                        {
+                            continue;
+                        }
+                        if registry.get(tool.name()).is_some() {
+                            result
+                                .errors
+                                .push(format!("tool name collision: {}", tool.name()));
+                        } else {
+                            result.added_tools.push(tool.name().into());
+                            registry.add(tool);
+                        }
                     }
                 }
-                Err(e) => result.errors.push(format!("MCP {pkg}: {e}")),
+                Err(error) => result.errors.push(format!("Native bio: {error}")),
             }
+        }
+        if !native_selected {
+            result
+                .errors
+                .push(format!("Unknown native bio package: {pkg}"));
         }
     }
 
     finish_custom_mcp_wiring(result, registry, store, project_id, connector_allow).await
+}
+
+/// Host environment keys copied into a plugin MCP child after `env_clear()`.
+/// Keep this a non-secret allowlist: runtime plumbing plus user-config
+/// directories. Do not add `GH_TOKEN`, `GITHUB_TOKEN`, or other secrets.
+const PLUGIN_MCP_ENV_PASSTHROUGH: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "LANG",
+    "LC_ALL",
+    "SYSTEMROOT",
+    "SYSTEMDRIVE",
+    "PATHEXT",
+    "COMSPEC",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+];
+
+fn plugin_mcp_passthrough_env_from<F>(mut lookup: F) -> Vec<(OsString, OsString)>
+where
+    F: FnMut(&str) -> Option<OsString>,
+{
+    PLUGIN_MCP_ENV_PASSTHROUGH
+        .iter()
+        .filter_map(|&key| lookup(key).map(|value| (OsString::from(key), value)))
+        .collect()
+}
+
+fn plugin_mcp_passthrough_env() -> Vec<(OsString, OsString)> {
+    plugin_mcp_passthrough_env_from(|key| std::env::var_os(key))
 }
 
 async fn connect_plugin_mcp(
@@ -5264,30 +5330,15 @@ async fn connect_plugin_mcp(
         .args(&launch.args)
         .current_dir(&launch.cwd)
         .env_clear();
-    // Preserve only the small platform environment needed by common runtimes.
-    // Package-declared variables are added below; no shell is involved.
-    const PASSTHROUGH: &[&str] = &[
-        "PATH",
-        "HOME",
-        "TMPDIR",
-        "TEMP",
-        "TMP",
-        "LANG",
-        "LC_ALL",
-        "SYSTEMROOT",
-        "SYSTEMDRIVE",
-        "PATHEXT",
-        "COMSPEC",
-    ];
-    for key in PASSTHROUGH {
-        if let Some(value) = std::env::var_os(key) {
-            command.env(key, value);
-        }
-    }
+    // Preserve only the small platform environment needed by common runtimes
+    // and user-config directories. Package-declared variables are added below;
+    // no shell is involved, and host token variables are not copied.
+    command.envs(plugin_mcp_passthrough_env());
     command
         .envs(&launch.env)
         .env("WISP_PLUGIN_ROOT", &launch.install_root)
         .env("CLAUDE_PLUGIN_ROOT", &launch.install_root);
+    command.envs(superscience_tools::network::proxy_env(&network::mcp_proxy()));
     superscience_tools::process::hide_console_async(&mut command);
     superscience_mcp::McpClient::launch_with_command(command).await
 }
@@ -5407,34 +5458,6 @@ async fn register_mcp_with_approval(
     connector_id: &str,
     require_approval: bool,
 ) -> Result<Vec<String>, String> {
-    register_mcp_filtered_with_approval(
-        registry,
-        client,
-        connector_id,
-        &HashSet::new(),
-        require_approval,
-    )
-    .await
-}
-
-/// Like `register_mcp`, but skips any tool whose name is in `skip` (used to drop
-/// disabled bio-tools domains from the shared `mcp_bio` aggregate).
-async fn register_mcp_filtered(
-    registry: &mut superscience_tools::Registry,
-    client: std::sync::Arc<superscience_mcp::McpClient>,
-    connector_id: &str,
-    skip: &HashSet<String>,
-) -> Result<Vec<String>, String> {
-    register_mcp_filtered_with_approval(registry, client, connector_id, skip, false).await
-}
-
-async fn register_mcp_filtered_with_approval(
-    registry: &mut superscience_tools::Registry,
-    client: std::sync::Arc<superscience_mcp::McpClient>,
-    connector_id: &str,
-    skip: &HashSet<String>,
-    require_approval: bool,
-) -> Result<Vec<String>, String> {
     if connector_id.trim().is_empty() {
         tracing::warn!(
             "registering MCP tools with an empty connector_id; Always-allow grants will not be offered"
@@ -5444,24 +5467,15 @@ async fn register_mcp_filtered_with_approval(
         Ok(tools) => {
             let collisions: Vec<_> = tools
                 .iter()
-                .filter(|tool| {
-                    tool.visible_to_model()
-                        && !skip.contains(&tool.name)
-                        && registry.get(&tool.name).is_some()
-                })
+                .filter(|tool| tool.visible_to_model() && registry.get(&tool.name).is_some())
                 .map(|tool| tool.name.clone())
                 .collect();
             if !collisions.is_empty() {
                 return Err(format!("tool name collision: {}", collisions.join(", ")));
             }
-            // Shared catalog for App bridges: skipped (disabled-domain) tools
-            // stay out so an App cannot call a connector the user turned off.
-            let catalog = std::sync::Arc::new(
-                tools
-                    .into_iter()
-                    .filter(|tool| !skip.contains(&tool.name))
-                    .collect::<Vec<_>>(),
-            );
+            // Keep UI-only tools available to App bridges; model visibility is
+            // checked below when adding tools to the agent registry.
+            let catalog = std::sync::Arc::new(tools);
             let mut names = Vec::new();
             for t in catalog.iter() {
                 if !t.visible_to_model() {
@@ -5889,8 +5903,16 @@ async fn generate_review_with_backend(
             if let Some(review::ReviewBackendConfig::HttpModel { profile_id }) = backend {
                 reviewer.model_id = profile_id;
             }
-            let (provider, api_url, model, api_key, max_tokens, reasoning_effort, service_tier) =
-                specialists::specialist_llm(&state.store, &reviewer).await;
+            let (
+                provider,
+                api_url,
+                model,
+                api_key,
+                max_tokens,
+                reasoning_effort,
+                service_tier,
+                user_agent,
+            ) = specialists::specialist_llm(&state.store, &reviewer).await;
             let cfg = build_provider_config(
                 &provider,
                 &api_url,
@@ -5899,6 +5921,7 @@ async fn generate_review_with_backend(
                 max_tokens,
                 &reasoning_effort,
                 &service_tier,
+                &user_agent,
             )?;
             let llm = superscience_llm::build(cfg);
             let reviewer_model = llm.model().to_string();
@@ -6242,7 +6265,7 @@ struct ReviewerBackendTestResult {
 #[tauri::command]
 async fn test_reviewer_backend(
     state: State<'_, AppState>,
-    window: tauri::WebviewWindow,
+    window: crate::workspace_surface::WorkspaceSurface,
     mut reviewer: specialists::Specialist,
 ) -> Result<ReviewerBackendTestResult, String> {
     if reviewer.id != "reviewer" {
@@ -6295,7 +6318,7 @@ async fn test_reviewer_backend(
 async fn review_session(
     state: State<'_, AppState>,
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    window: crate::workspace_surface::WorkspaceSurface,
     session_id: Option<String>,
 ) -> Result<(), String> {
     let frame_id = match session_id.as_deref().filter(|s| !s.is_empty()) {
@@ -6417,7 +6440,7 @@ async fn generate_follow_up_questions(
         .await
         .map_err(|error| error.to_string())?;
     let specialist = specialists::session_specialist(&state.store, &session_id).await;
-    let (provider, api_url, model, api_key, max_tokens, reasoning_effort, service_tier) =
+    let (provider, api_url, model, api_key, max_tokens, reasoning_effort, service_tier, user_agent) =
         match specialist {
             Some(ref specialist) if !specialist.model_id.trim().is_empty() => {
                 specialists::specialist_llm(&state.store, specialist).await
@@ -6432,6 +6455,7 @@ async fn generate_follow_up_questions(
         max_tokens.min(512),
         &reasoning_effort,
         &service_tier,
+        &user_agent,
     )?);
     let completion = llm
         .complete(
@@ -6456,7 +6480,7 @@ fn branch_title(raw: Option<&str>) -> Option<String> {
 #[tauri::command]
 async fn side_chat(
     state: State<'_, AppState>,
-    window: tauri::WebviewWindow,
+    window: crate::workspace_surface::WorkspaceSurface,
     session_id: Option<String>,
     question: String,
     acp_agent_id: Option<String>,
@@ -6507,7 +6531,7 @@ async fn side_chat(
     }
     let http_llm = side_chat_http_provider(&state).await;
     let intent = match &http_llm {
-        Ok(llm) => side_chat::classify_intent(llm.as_ref(), question).await?,
+        Ok(llm) => side_chat::classify_intent(llm.as_ref(), question).await,
         Err(error) => {
             if acp_agent_id.as_deref().is_some_and(|id| !id.is_empty()) {
                 side_chat::SideChatIntent::session_fallback(question)
@@ -6558,7 +6582,7 @@ async fn side_chat_http_provider(
     state: &AppState,
 ) -> Result<Box<dyn superscience_llm::Provider>, String> {
     let (provider, api_url, model, api_key) = load_settings(&state.store).await;
-    let (max_tokens, reasoning_effort, service_tier) =
+    let (max_tokens, reasoning_effort, service_tier, user_agent) =
         models::active_llm_advanced(&state.store).await;
     let cfg = build_provider_config(
         &provider,
@@ -6568,28 +6592,18 @@ async fn side_chat_http_provider(
         max_tokens,
         &reasoning_effort,
         &service_tier,
+        &user_agent,
     )?;
     Ok(superscience_llm::build(cfg))
 }
 
-fn mcp_lib_dir(_root: &std::path::Path) -> Option<PathBuf> {
-    superscience_paths::bio_tools_dir().map(|d| d.join("lib"))
-}
-
-fn list_mcp_servers(root: &std::path::Path) -> Vec<String> {
-    let Some(lib) = mcp_lib_dir(root) else {
-        return vec![];
-    };
-    let mut out = vec![];
-    if let Ok(rd) = std::fs::read_dir(&lib) {
-        for ent in rd.flatten() {
-            let name = ent.file_name().to_string_lossy().into_owned();
-            if name.starts_with("mcp_") && ent.path().join("server.py").is_file() {
-                out.push(name);
-            }
-        }
-    }
+fn list_mcp_servers(_root: &std::path::Path) -> Vec<String> {
+    let mut out = wisp_bio::catalog()
+        .into_iter()
+        .map(|(domain, _)| wisp_bio::package_name(domain))
+        .collect::<Vec<_>>();
     out.sort();
+    out.dedup();
     out
 }
 
@@ -6663,7 +6677,7 @@ async fn build_project_info(state: &AppState, label: &str) -> Result<ProjectInfo
 /// Tell the webview whether we're in dev (keep native context menu / DevTools).
 fn set_dev_flag(app: &tauri::AppHandle) {
     let dev = cfg!(debug_assertions);
-    let Some(window) = app.get_webview_window("main") else {
+    let Some(window) = app.workspace_surface("main") else {
         return;
     };
     let _ = window.eval(&format!("window.__WISP_DEV__ = {};", dev));
@@ -6822,78 +6836,6 @@ pub(crate) fn startup_report_summary() -> String {
         .lock()
         .map(|report| report.summary())
         .unwrap_or_default()
-}
-
-/// Frontend `ui_heartbeat` timer. Silence on a focused window means the
-/// renderer died; reload recovers because sessions live in SQLite.
-static UI_HEARTBEAT: StdMutex<Option<std::time::Instant>> = StdMutex::new(None);
-static UI_WATCHDOG_LAST_RELOAD: StdMutex<Option<std::time::Instant>> = StdMutex::new(None);
-const UI_HEARTBEAT_STALE: std::time::Duration = std::time::Duration::from_secs(60);
-const UI_WATCHDOG_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(120);
-
-#[tauri::command]
-fn ui_heartbeat() {
-    if let Ok(mut last) = UI_HEARTBEAT.lock() {
-        *last = Some(std::time::Instant::now());
-    }
-}
-
-fn ui_watchdog_requires_reload(
-    secs_since_beat: Option<u64>,
-    secs_since_reload: Option<u64>,
-) -> bool {
-    match secs_since_beat {
-        Some(secs) if secs >= UI_HEARTBEAT_STALE.as_secs() => match secs_since_reload {
-            Some(secs) => secs >= UI_WATCHDOG_COOLDOWN.as_secs(),
-            None => true,
-        },
-        _ => false,
-    }
-}
-
-/// Backgrounded webviews throttle JS timers, so elapsed time is not a death
-/// signal. Refresh the clock while unfocused so a later focus does not look
-/// immediately stale. Leave `None` alone: that means "wait for a real beat".
-fn ui_watchdog_note_unfocused(last_beat: &mut Option<std::time::Instant>) {
-    if last_beat.is_some() {
-        *last_beat = Some(std::time::Instant::now());
-    }
-}
-
-async fn run_ui_watchdog(app: tauri::AppHandle) {
-    loop {
-        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-        let secs_since_beat = UI_HEARTBEAT
-            .lock()
-            .ok()
-            .and_then(|last| last.map(|instant| instant.elapsed().as_secs()));
-        let secs_since_reload = UI_WATCHDOG_LAST_RELOAD
-            .lock()
-            .ok()
-            .and_then(|last| last.map(|instant| instant.elapsed().as_secs()));
-        if !ui_watchdog_requires_reload(secs_since_beat, secs_since_reload) {
-            continue;
-        }
-        let Some(window) = app.get_webview_window("main") else {
-            continue;
-        };
-        if !window.is_focused().unwrap_or(false) {
-            if let Ok(mut last) = UI_HEARTBEAT.lock() {
-                ui_watchdog_note_unfocused(&mut last);
-            }
-            continue;
-        }
-        tracing::warn!(target: "wisp", secs_since_beat = secs_since_beat.unwrap_or_default(),
-            "main webview stopped heartbeating; reloading to recover the UI");
-        if window.reload().is_ok() {
-            if let Ok(mut last) = UI_WATCHDOG_LAST_RELOAD.lock() {
-                *last = Some(std::time::Instant::now());
-            }
-            if let Ok(mut last) = UI_HEARTBEAT.lock() {
-                *last = None;
-            }
-        }
-    }
 }
 
 /// Windows creates the main WebView2 before `setup` runs but cannot service it
@@ -7123,6 +7065,7 @@ pub fn run() {
     let macos_exit_for_setup = Arc::clone(&macos_exit_in_progress);
 
     tauri::Builder::default()
+        .manage(mcp_app_children::McpAppChildren::default())
         // Keep this first so a repeated launch is intercepted before other plugins
         // and application state are initialized in a second process.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -7134,11 +7077,19 @@ pub fn run() {
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::Focused(focused) => {
                 record_window_focus(window.label(), *focused);
+                ui_health::note_focus(window.label(), *focused);
                 if *focused {
                     drain_pending_notify_target(window);
                 }
             }
-            tauri::WindowEvent::Destroyed => record_window_focus(window.label(), false),
+            tauri::WindowEvent::Destroyed => {
+                mcp_app_child_commands::reset_owner(window.app_handle(), window.label(), true);
+                record_window_focus(window.label(), false);
+                ui_health::remove_window(window.label());
+            }
+            tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. } => {
+                mcp_app_children::hide_owner(window.app_handle(), window.label());
+            }
             _ => {}
         })
         // The blank window ends when the main webview finishes loading its
@@ -7146,6 +7097,11 @@ pub fn run() {
         // `setup` total next to a huge `window_ready` moves the search from the
         // backend to WebView2 and asset loading.
         .on_page_load(|webview, payload| {
+            if workspace_surface::is_primary_document(webview.window().label(), webview.label())
+                && matches!(payload.event(), tauri::webview::PageLoadEvent::Started)
+            {
+                mcp_app_child_commands::reset_owner(webview.app_handle(), webview.label(), false);
+            }
             if webview.label() != "main"
                 || !matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
             {
@@ -7183,7 +7139,7 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             let main_builder = main_builder.decorations(false).shadow(true);
             main_builder.build().expect("create main window");
-            tauri::async_runtime::spawn(run_ui_watchdog(app.handle().clone()));
+            tauri::async_runtime::spawn(ui_health::run_watchdog(app.handle().clone()));
             let mut startup = StartupTimeline::default();
             if let Ok(res) = app.path().resource_dir() {
                 superscience_paths::set_resource_root(res);
@@ -7279,12 +7235,8 @@ pub fn run() {
             );
             let root = ensure_writable(root, &app_data);
 
-            set_llm_proxy(
-                &tauri::async_runtime::block_on(store.get_setting("proxy_url"))
-                    .ok()
-                    .flatten()
-                    .unwrap_or_default(),
-            );
+            network::apply(&tauri::async_runtime::block_on(network::load(&store))
+                .unwrap_or_default());
 
             let skills = Arc::new(startup.record("skills", || load_skill_index(&root)));
             let memory = Arc::new(MemoryManager::new(&root));
@@ -7318,6 +7270,7 @@ pub fn run() {
                 store.clone(),
             ));
             let state = AppState {
+                desktop: app.handle().clone(),
                 app_data,
                 store,
                 library,
@@ -7382,21 +7335,21 @@ pub fn run() {
                     device_bridge::autostart(handle).await;
                 });
             }
-            app_commands::start_python_bootstrap(app.handle());
+            app_commands::start_environment_detection(app.handle());
             set_dev_flag(app.handle());
             #[cfg(target_os = "windows")]
             {
                 startup.record("windows_shell", || {
                     desktop_lifecycle::install_windows_shell(app, &locale)
                 })?;
-                if let Some(window) = app.get_webview_window("main") {
+                if let Some(window) = app.workspace_surface("main") {
                     let _ = window.set_decorations(false);
                     let _ = window.set_shadow(true);
                     windows_snap::install_for_window(&window);
                 }
             }
             #[cfg(target_os = "macos")]
-            if let Some(window) = app.get_webview_window("main") {
+            if let Some(window) = app.workspace_surface("main") {
                 wire_macos_menu_events(&window);
                 let app_handle = app.handle().clone();
                 let label = window.label().to_string();
@@ -7417,13 +7370,28 @@ pub fn run() {
             // Dev runs the bare debug binary, which does not grab focus on macOS.
             // release launches from the .app bundle and activates normally.
             #[cfg(debug_assertions)]
-            if let Some(w) = app.get_webview_window("main") {
+            if let Some(w) = app.workspace_surface("main") {
                 let _ = w.set_focus();
             }
             startup.finish();
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(|invoke| {
+            if !mcp_app_children::child_command_allowed(invoke.message.webview().label(), invoke.message.command()) {
+                invoke.resolver.reject("MCP App child command is not permitted");
+                return true;
+            }
+            let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+            mcp_app_child_commands::mcp_app_host_info,
+            mcp_app_child_commands::open_mcp_app_child,
+            mcp_app_child_commands::update_mcp_app_child_bounds,
+            mcp_app_child_commands::mcp_app_child_bootstrap,
+            mcp_app_child_commands::mcp_app_child_ready,
+            mcp_app_child_commands::mcp_app_child_request,
+            mcp_app_child_commands::request_mcp_app_child_action,
+            mcp_app_child_commands::mcp_app_child_action_reply,
+            mcp_app_child_commands::close_mcp_app_child,
+            clipboard_files::read_clipboard_file_paths,
             agent_turn::send_message,
             feedback::send_feedback_email,
             update_mcp_app_context,
@@ -7562,6 +7530,10 @@ pub fn run() {
             storage_prefs::get_context_storage_prefs,
             storage_prefs::set_context_storage_prefs,
             project_commands::get_research_graph,
+            project_commands::get_research_journey,
+            project_commands::get_research_calendar,
+            project_commands::add_research_journal_entry,
+            project_commands::get_research_journey_source,
             session_commands::delete_session,
             session_commands::rename_session,
             session_commands::set_session_pinned,
@@ -7574,6 +7546,7 @@ pub fn run() {
             session_commands::list_recent_sessions,
             session_commands::latest_used_session,
             project_commands::list_projects,
+            project_commands::list_workspace_projects,
             app_commands::pick_directory,
             app_commands::pick_executable_file,
             app_commands::download_file,
@@ -7609,6 +7582,7 @@ pub fn run() {
             project_commands::set_default_capability_project,
             project_commands::update_project,
             publication_commands::get_publication_workspace,
+            publication_commands::list_publication_sources,
             publication_commands::create_publication_workspace,
             publication_commands::save_publication_item,
             publication_commands::bind_publication_evidence,
@@ -7618,13 +7592,20 @@ pub fn run() {
             publication_commands::verify_publication_revision,
             publication_capsule::build_publication_capsule,
             publication_freeze::freeze_publication_revision,
+            publication_freeze::check_publication_revision,
             session_commands::load_session,
             session_commands::load_session_trajectory,
             trajectory_export::export_session_trajectory,
             session_commands::rewind_session,
             turn_undo::preview_turn_undo,
             turn_undo::undo_turn,
+            skill_store::list_community_skills,
+            skill_store::preview_github_skills,
+            skill_store::install_github_skill,
+            skill_store::get_skill_install_source,
             skill_commands::list_skills,
+            skill_commands::list_skill_files,
+            skill_commands::read_skill_file,
             skill_commands::reload_skills,
             skill_commands::set_skill_tags,
             skill_commands::set_skills_enabled,
@@ -7667,6 +7648,8 @@ pub fn run() {
             browser_bridge::list_pending_browser_needs_human,
             browser_bridge::confirm_browser_needs_human,
             browser_bridge::focus_browser_needs_human,
+            network::get_network_settings,
+            network::set_network_settings,
             settings_commands::get_settings,
             settings_commands::set_settings,
             knowledge::get_knowledge_settings,
@@ -7763,6 +7746,8 @@ pub fn run() {
             app_commands::get_onboarding_state,
             app_commands::dismiss_onboarding,
             app_commands::get_bootstrap_status,
+            app_commands::detect_local_environment,
+            app_commands::save_local_environment_paths,
             runtime_provision::get_runtime_provision_state,
             runtime_provision::start_runtime_provision,
             runtime_provision::cancel_runtime_provision,
@@ -7777,7 +7762,7 @@ pub fn run() {
             app_commands::browser_extension_status,
             app_commands::update_browser_extension,
             app_commands::extension_connected,
-            ui_heartbeat,
+            ui_health::ui_heartbeat,
             app_commands::reveal_in_file_manager,
             app_commands::reveal_browser_extension_dir,
             app_commands::open_workspace_path,
@@ -7800,42 +7785,10 @@ pub fn run() {
             specialists::remove_specialist,
             specialists::set_session_specialist,
             specialists::get_session_specialist,
-            specialists::save_specialist_instructions,
-            specialists::reset_specialist_instructions,
-            get_pii_firewall_enabled,
-            set_pii_firewall_enabled,
-            get_handwriting_extract_vision_model,
-            set_handwriting_extract_vision_model,
-            get_handwriting_extract_calibration_model,
-            set_handwriting_extract_calibration_model,
-            set_frame_vision_model,
-            get_pii_custom_terms,
-            set_pii_custom_terms,
-            tctoken::tctoken_session_cmd,
-            tctoken::tctoken_login_cmd,
-            tctoken::tctoken_login_2fa_cmd,
-            tctoken::tctoken_logout_cmd,
-            tctoken::tctoken_get_remembered_login_cmd,
-            tctoken::tctoken_set_remembered_login_cmd,
-            tctoken::tctoken_clear_remembered_login_cmd,
-            tctoken::tctoken_account_cmd,
-            tctoken::tctoken_logs_cmd,
-            tctoken::tctoken_logs_stat_cmd,
-            tctoken::tctoken_topup_info_cmd,
-            tctoken::tctoken_topup_amount_cmd,
-            tctoken::tctoken_topup_pay_cmd,
-            tctoken::tctoken_topup_redeem_cmd,
-            tctoken::tctoken_topup_orders_cmd,
-            tctoken::tctoken_tokens_cmd,
-            tctoken::tctoken_token_key_cmd,
-            tctoken::tctoken_get_default_token_id_cmd,
-            tctoken::tctoken_set_default_token_cmd,
-            tctoken::tctoken_set_drawing_key_cmd,
-            tctoken::tctoken_provider_url_cmd,
-            ability_card_usage::report_ability_card_usage_cmd,
-            ability_card_usage::set_frame_ability_card_cmd,
             ability_card_usage::maybe_report_ability_card_resume_cmd,
-        ])
+        ];
+            handler(invoke)
+        })
         .build(tauri::generate_context!())
         .expect("error while building Wisp")
         .run(move |_app, _event| {

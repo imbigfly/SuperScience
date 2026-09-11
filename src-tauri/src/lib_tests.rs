@@ -11,14 +11,38 @@ use super::{
     reclaim_unconsumed_cutin, resolve_acp_artifact_references, resolve_composer_references,
     resolve_reader_references, resolve_review_backend, resolve_workspace, session_runtime_status,
     session_turn_in_flight, should_hide_app_on_macos_close, should_persist_ui_event,
-    ui_watchdog_note_unfocused, ui_watchdog_requires_reload, user_message_start, AgentEvent,
-    ComposerReferenceArg, McpConnection, McpHttpAuth, McpTransport, ProjectActivityLocks,
-    QueuedItem, SessionRuntime, SkillInfo, StartupReport, StartupTimeline, TurnInFlight,
-    MAX_PENDING_UI_EVENT_BYTES, UI_STREAM_OUTPUT_MAX_BYTES, UI_TOOL_RESULT_MAX_CHARS,
+    user_message_start, AgentEvent, ComposerReferenceArg, McpConnection, McpHttpAuth, McpTransport,
+    ProjectActivityLocks, QueuedItem, SessionRuntime, SkillInfo, StartupReport, StartupTimeline,
+    TurnInFlight, MAX_PENDING_UI_EVENT_BYTES, UI_STREAM_OUTPUT_MAX_BYTES, UI_TOOL_RESULT_MAX_CHARS,
 };
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::{atomic::AtomicBool, Arc};
+
+#[test]
+fn model_user_agent_is_validated_before_building_a_provider() {
+    let config = |value| {
+        super::build_provider_config(
+            "openai",
+            "https://example.test/v1",
+            "test-key",
+            "test-model",
+            1024,
+            "",
+            "",
+            value,
+        )
+    };
+    assert_eq!(
+        config("  research-client/1.0  ").unwrap().user_agent,
+        "research-client/1.0"
+    );
+    assert_eq!(config("").unwrap().user_agent, "");
+    assert!(config("client\r\nX-Injected: value")
+        .unwrap_err()
+        .contains("User-Agent"));
+}
 
 #[tokio::test]
 async fn exploration_creation_shares_project_activity_but_serializes_round_initialization() {
@@ -124,8 +148,7 @@ fn mcp_app_approval_grant_key_separates_bundled_connectors() {
     assert!(super::mcp_app_approval_grant_key("   ", "echo").is_none());
     let dev =
         super::mcp_app_approval_grant_key(super::BUNDLED_DEV_MCP_CONNECTOR_ID, "echo").unwrap();
-    let bio =
-        super::mcp_app_approval_grant_key(super::BUNDLED_BIO_MCP_CONNECTOR_ID, "echo").unwrap();
+    let bio = super::mcp_app_approval_grant_key("mcp_bio", "echo").unwrap();
     assert_eq!(dev.target, "dev-mcp:echo");
     assert_eq!(bio.target, "mcp_bio:echo");
     assert_ne!(dev, bio);
@@ -182,6 +205,7 @@ impl superscience_tools::McpAppServer for FakeAppServer {
 
 fn fake_app_bridge(frame_id: &str, connector_id: &str, tool: &str) -> super::McpAppToolBridge {
     super::McpAppToolBridge {
+        generation: 0,
         frame_id: frame_id.into(),
         server: Arc::new(FakeAppServer {
             connector_id: connector_id.into(),
@@ -241,6 +265,25 @@ async fn parallel_mcp_app_instances_keep_separate_bridges() {
     assert!(bridges.get(motif).is_some());
     bridges.remove_for_frame("session-b");
     assert!(bridges.get(motif).is_none());
+}
+
+#[test]
+fn mcp_app_stale_cleanup_cannot_remove_replacement_generation() {
+    let bridges = super::McpAppBridges::default();
+    let id = "mcp-app:session-a:figures";
+    bridges.register(
+        id.into(),
+        fake_app_bridge("session-a", "figure-library", "preview"),
+    );
+    let old = bridges.get(id).unwrap().generation;
+    bridges.register(
+        id.into(),
+        fake_app_bridge("session-a", "figure-library", "preview"),
+    );
+    let new = bridges.get(id).unwrap().generation;
+    assert_ne!(old, new);
+    assert!(!bridges.close_generation(id, Some(old)));
+    assert!(bridges.close_generation(id, Some(new)));
 }
 
 #[tokio::test]
@@ -2091,50 +2134,105 @@ fn specialist_section_marker_detects_prior_append() {
 }
 
 #[test]
-fn python_bootstrap_success_marks_initialization_complete() {
-    let mut status =
-        crate::app_commands::initial_bootstrap(std::path::Path::new("/tmp/workspace"), 3);
-    assert!(status.python_initializing);
+fn manual_environment_paths_validate_files_without_executing_them() {
+    let root =
+        std::env::temp_dir().join(format!("wisp-manual-validation-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    let executable = root.join("custom python.exe");
+    std::fs::write(&executable, b"not an executable; must never be run").unwrap();
+    let paths = [
+        (
+            "python_executable".into(),
+            format!(" {} ", executable.display()),
+        ),
+        ("npm_executable".into(), String::new()),
+    ]
+    .into();
+    assert!(crate::app_commands::validate_local_environment_paths(&paths).is_ok());
+    for invalid in [&root, &root.join("missing.exe")] {
+        let paths = [(
+            "python_executable".into(),
+            invalid.to_string_lossy().into_owned(),
+        )]
+        .into();
+        assert!(
+            crate::app_commands::validate_local_environment_paths(&paths)
+                .unwrap_err()
+                .contains("file not found")
+        );
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn missing_optional_environment_does_not_fail_startup() {
+    let root = std::env::temp_dir().join(format!("wisp-no-python-{}", uuid::Uuid::new_v4()));
+    let mut status = crate::app_commands::initial_bootstrap(&root, 3);
+    assert!(status.local_environment.is_none());
+    crate::app_commands::finish_environment_detection(&mut status, Default::default());
+    assert!(status.errors.is_empty());
+    assert!(status.local_environment.is_some());
     assert!(!status.python_ok);
+    assert!(!root.exists());
+    let payload = serde_json::to_value(status).unwrap();
+    let ui: superscience_dto::BootstrapStatus = serde_json::from_value(payload).unwrap();
+    assert!(ui.local_environment.unwrap().paths.is_empty());
+}
 
-    crate::app_commands::finish_python_bootstrap(&mut status, Ok(()));
-
-    assert!(!status.python_initializing);
+#[test]
+fn environment_detection_failure_is_advisory_and_paths_are_reported() {
+    let mut status = crate::app_commands::initial_bootstrap(std::path::Path::new("unused"), 3);
+    crate::app_commands::finish_environment_detection(
+        &mut status,
+        superscience_dto::LocalEnvironmentStatus {
+            paths: [
+                ("python_executable".into(), "/existing/python".into()),
+                ("rscript_executable".into(), "/existing/Rscript".into()),
+            ]
+            .into(),
+            warning: Some("Could not save detected paths".into()),
+        },
+    );
+    assert!(status.errors.is_empty());
     assert!(status.python_ok);
+    assert!(!status.uv_ok);
+    assert!(status.local_environment.unwrap().warning.is_some());
 }
 
 #[test]
-fn initial_bootstrap_reports_r_and_officecli_gaps() {
-    let status = crate::app_commands::initial_bootstrap(std::path::Path::new("/tmp/workspace"), 3);
-    assert!(
-        status.r_ok
-            || status
-                .errors
-                .iter()
-                .any(|error| error.contains("Rscript not found"))
+fn environment_detection_reports_the_configured_interpreter_instead_of_another_install() {
+    let root = std::env::temp_dir().join(format!("wisp-path-report-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    let configured = root.join("custom python");
+    std::fs::write(&configured, b"path-only fixture").unwrap();
+    let config = serde_json::json!({"python_path": configured});
+    let other = Some(root.join("other python"));
+    assert_eq!(
+        crate::app_commands::configured_or_detected_path(
+            &config,
+            "python_executable",
+            other.clone()
+        ),
+        Some(configured.clone())
     );
-    assert!(
-        status.officecli_ok
-            || status
-                .errors
-                .iter()
-                .any(|error| error.contains("officecli not found"))
+    std::fs::remove_file(&configured).unwrap();
+    assert_eq!(
+        crate::app_commands::configured_or_detected_path(
+            &config,
+            "python_executable",
+            other.clone()
+        ),
+        None
     );
-}
-
-#[test]
-fn python_bootstrap_failure_is_reported_after_initialization() {
-    let mut status =
-        crate::app_commands::initial_bootstrap(std::path::Path::new("/tmp/workspace"), 3);
-
-    crate::app_commands::finish_python_bootstrap(&mut status, Err("download failed".into()));
-
-    assert!(!status.python_initializing);
-    assert!(!status.python_ok);
-    assert!(status
-        .errors
-        .iter()
-        .any(|error| error == "Python environment: download failed"));
+    assert_eq!(
+        crate::app_commands::configured_or_detected_path(
+            &serde_json::json!({}),
+            "python_executable",
+            other.clone()
+        ),
+        other
+    );
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -2209,9 +2307,13 @@ fn project_window_url_carries_the_target_session() {
 fn default_capability_grants_ipc_to_blank_windows() {
     let spec: serde_json::Value =
         serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
-    let windows: Vec<&str> = spec["windows"]
+    assert!(
+        spec.get("windows").is_none(),
+        "window-scoped grants would leak to MCP child WebViews"
+    );
+    let windows: Vec<&str> = spec["webviews"]
         .as_array()
-        .expect("default capability lists windows")
+        .expect("default capability lists primary WebViews")
         .iter()
         .filter_map(|value| value.as_str())
         .collect();
@@ -2738,70 +2840,24 @@ fn navigation_guard_allows_only_app_origins() {
 }
 
 #[test]
-fn desktop_app_icon_is_full_bleed_with_an_inset_mark() {
+fn desktop_app_icon_keeps_the_fork_mark_without_the_upstream_catalog() {
+    // The fork ships its own desktop icon masters. Upstream's three-wisp
+    // masters and the compiled macOS 26 icon catalog are upstream branding,
+    // so they are not bundled here.
     let svg = include_str!("../icons/app-icon.svg");
     let rounded = include_str!("../icons/app-icon-rounded.svg");
-    let script = include_str!("../gen-icons.ps1");
+    for source in [svg, rounded] {
+        assert!(
+            source.contains("#b71c22") && source.contains("#00497b"),
+            "the fork mark keeps its red/blue palette"
+        );
+    }
+    let macos: serde_json::Value =
+        serde_json::from_str(include_str!("../tauri.macos.conf.json")).unwrap();
     assert!(
-        !svg.contains("<clipPath"),
-        "macOS master must be full-bleed; Dock applies the squircle mask"
+        macos["bundle"]["macOS"]["files"]["Resources/Assets.car"].is_null(),
+        "the upstream-branded macOS icon catalog must not be bundled"
     );
-    assert!(
-        svg.contains("scale(0.60)"),
-        "keep the DNA mark inset so Dock/Launchpad does not fill the tile"
-    );
-    assert!(
-        rounded.contains("<clipPath") && rounded.contains("rx=\"58\""),
-        "Windows/Linux launchers draw the bitmap as-is and need baked rounding"
-    );
-    assert!(
-        rounded.contains("scale(0.60)"),
-        "rounded launcher icon must keep the same inset mark"
-    );
-    assert!(
-        script
-            .lines()
-            .any(|line| line.contains("Resolve-Path") && line.contains("icons/app-icon.svg")),
-        "icon generation must use the desktop master, not the in-app logo"
-    );
-    assert!(
-        script.lines().any(
-            |line| line.contains("Resolve-Path") && line.contains("icons/app-icon-rounded.svg")
-        ),
-        "Windows/Linux icons must come from the rounded master"
-    );
-    assert!(
-        !script.lines().any(|line| {
-            let trimmed = line.trim_start();
-            !trimmed.starts_with('#') && line.contains("ui/logo.svg")
-        }),
-        "do not pass the in-app logo (canvas-filling badge) to cargo tauri icon"
-    );
-}
-
-#[test]
-fn ui_watchdog_reload_decision() {
-    // Never fired a beat (fresh boot, or beat cleared after a reload): the
-    // watchdog must wait for fresh beats, not reload on startup silence.
-    assert!(!ui_watchdog_requires_reload(None, None));
-    // Healthy stream.
-    assert!(!ui_watchdog_requires_reload(Some(5), None));
-    // Freshly reloaded, still loading: inside the cooldown.
-    assert!(!ui_watchdog_requires_reload(Some(120), Some(30)));
-    // Dead renderer, first recovery.
-    assert!(ui_watchdog_requires_reload(Some(120), None));
-    // Dead again after the cooldown expired.
-    assert!(ui_watchdog_requires_reload(Some(120), Some(180)));
-}
-
-#[test]
-fn ui_watchdog_unfocused_silence_is_not_stale() {
-    let mut beat = Some(std::time::Instant::now() - std::time::Duration::from_secs(120));
-    ui_watchdog_note_unfocused(&mut beat);
-    assert!(beat.unwrap().elapsed() < std::time::Duration::from_secs(1));
-    let mut none = None;
-    ui_watchdog_note_unfocused(&mut none);
-    assert!(none.is_none());
 }
 
 async fn open_temp_store(prefix: &str) -> (superscience_store::Store, PathBuf) {
@@ -2949,4 +3005,162 @@ fn project_approval_overlay_clears_idle_agents_only_for_that_project() {
         other_runtime.agent_config_generation.load(Ordering::SeqCst),
         0
     );
+}
+
+#[test]
+fn native_connector_inventory_matches_dispatch_without_python_resources() {
+    let catalog = wisp_bio::catalog();
+    let map = super::build_tool_connector_map();
+    assert_eq!(map.len(), catalog.len());
+    for (domain, schema) in catalog {
+        assert_eq!(
+            map.get(&schema.function.name).map(String::as_str),
+            Some(domain)
+        );
+    }
+    let servers = super::list_mcp_servers(std::path::Path::new("nonexistent-wisp-project"));
+    assert!(servers.contains(&"mcp_pubmed".to_string()));
+    assert_eq!(servers.len(), super::bio_domains().len());
+}
+
+#[test]
+fn plugin_mcp_passthrough_allowlist_keeps_user_dirs_and_excludes_github_tokens() {
+    for key in [
+        "HOME",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+    ] {
+        assert!(
+            super::PLUGIN_MCP_ENV_PASSTHROUGH.contains(&key),
+            "{key} must stay on the plugin MCP allowlist"
+        );
+    }
+    for key in ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN"] {
+        assert!(
+            !super::PLUGIN_MCP_ENV_PASSTHROUGH.contains(&key),
+            "{key} must not be copied into plugin MCP children"
+        );
+    }
+}
+
+#[test]
+fn plugin_mcp_passthrough_copies_user_dirs_without_github_tokens() {
+    let env = super::plugin_mcp_passthrough_env_from(|key| match key {
+        "USERPROFILE" => Some(OsString::from(r"C:\Users\wisp-plugin-test")),
+        "APPDATA" => Some(OsString::from(r"C:\Users\wisp-plugin-test\AppData\Roaming")),
+        "LOCALAPPDATA" => Some(OsString::from(r"C:\Users\wisp-plugin-test\AppData\Local")),
+        "HOMEDRIVE" => Some(OsString::from("C:")),
+        "HOMEPATH" => Some(OsString::from(r"\Users\wisp-plugin-test")),
+        "HOME" => Some(OsString::from("/home/wisp-plugin-test")),
+        "XDG_CONFIG_HOME" => Some(OsString::from("/home/wisp-plugin-test/.config")),
+        "GH_TOKEN" | "GITHUB_TOKEN" => Some(OsString::from("should-not-leak")),
+        _ => None,
+    });
+    let map = env
+        .into_iter()
+        .map(|(key, value)| (key.into_string().unwrap(), value.into_string().unwrap()))
+        .collect::<HashMap<_, _>>();
+    assert_eq!(map["USERPROFILE"], r"C:\Users\wisp-plugin-test");
+    assert_eq!(map["APPDATA"], r"C:\Users\wisp-plugin-test\AppData\Roaming");
+    assert_eq!(
+        map["LOCALAPPDATA"],
+        r"C:\Users\wisp-plugin-test\AppData\Local"
+    );
+    assert_eq!(map["HOME"], "/home/wisp-plugin-test");
+    assert_eq!(map["XDG_CONFIG_HOME"], "/home/wisp-plugin-test/.config");
+    assert!(!map.contains_key("GH_TOKEN"));
+    assert!(!map.contains_key("GITHUB_TOKEN"));
+    assert!(!map.values().any(|value| value.contains("should-not-leak")));
+}
+
+#[test]
+fn plugin_mcp_subprocess_sees_user_dirs_but_not_github_tokens() {
+    let pairs = super::plugin_mcp_passthrough_env_from(|key| match key {
+        "USERPROFILE" => Some(OsString::from(r"C:\Users\wisp-plugin-test")),
+        "APPDATA" => Some(OsString::from(r"C:\Users\wisp-plugin-test\AppData\Roaming")),
+        "LOCALAPPDATA" => Some(OsString::from(r"C:\Users\wisp-plugin-test\AppData\Local")),
+        "HOME" => Some(OsString::from("/home/wisp-plugin-test")),
+        "XDG_CONFIG_HOME" => Some(OsString::from("/home/wisp-plugin-test/.config")),
+        "GH_TOKEN" | "GITHUB_TOKEN" => Some(OsString::from("should-not-leak")),
+        "PATH" | "SYSTEMROOT" | "SYSTEMDRIVE" | "PATHEXT" | "COMSPEC" | "TEMP" | "TMP"
+        | "TMPDIR" | "LANG" | "LC_ALL" => std::env::var_os(key),
+        _ => None,
+    });
+
+    let mut command = std::process::Command::new("unused");
+    command.env("GH_TOKEN", "should-not-leak");
+    command.env("GITHUB_TOKEN", "should-not-leak");
+    command.env_clear();
+    command.envs(pairs.iter().cloned());
+    let assigned = command
+        .get_envs()
+        .map(|(key, value)| {
+            (
+                key.to_string_lossy().into_owned(),
+                value.map(|value| value.to_string_lossy().into_owned()),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    assert_eq!(
+        assigned.get("APPDATA").and_then(Option::as_deref),
+        Some(r"C:\Users\wisp-plugin-test\AppData\Roaming")
+    );
+    assert_eq!(
+        assigned.get("USERPROFILE").and_then(Option::as_deref),
+        Some(r"C:\Users\wisp-plugin-test")
+    );
+    assert!(!assigned.contains_key("GH_TOKEN"));
+    assert!(!assigned.contains_key("GITHUB_TOKEN"));
+
+    let dump = dump_child_env(&pairs);
+    assert!(
+        dump.lines().any(|line| line
+            .eq_ignore_ascii_case(r"APPDATA=C:\Users\wisp-plugin-test\AppData\Roaming")
+            || line == r"APPDATA=C:\Users\wisp-plugin-test\AppData\Roaming"),
+        "child missing APPDATA: {dump}"
+    );
+    assert!(
+        dump.lines().any(|line| line
+            .eq_ignore_ascii_case(r"USERPROFILE=C:\Users\wisp-plugin-test")
+            || line == r"USERPROFILE=C:\Users\wisp-plugin-test"),
+        "child missing USERPROFILE: {dump}"
+    );
+    assert!(
+        !dump.contains("should-not-leak"),
+        "child leaked a GitHub token: {dump}"
+    );
+    assert!(
+        !dump
+            .lines()
+            .any(|line| line.to_ascii_uppercase().starts_with("GH_TOKEN=")
+                || line.to_ascii_uppercase().starts_with("GITHUB_TOKEN=")),
+        "child inherited a GitHub token variable: {dump}"
+    );
+}
+
+fn dump_child_env(pairs: &[(OsString, OsString)]) -> String {
+    let mut command = if cfg!(windows) {
+        let comspec = std::env::var_os("COMSPEC")
+            .unwrap_or_else(|| OsString::from(r"C:\Windows\System32\cmd.exe"));
+        let mut command = std::process::Command::new(comspec);
+        command.args(["/C", "set"]);
+        command
+    } else {
+        std::process::Command::new("/usr/bin/env")
+    };
+    command.env_clear();
+    command.envs(pairs.iter().cloned());
+    let output = command.output().expect("spawn plugin MCP env dump");
+    assert!(
+        output.status.success(),
+        "env dump failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
 }
