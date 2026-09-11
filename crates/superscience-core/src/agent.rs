@@ -305,21 +305,7 @@ async fn agent_loop_inner(
         // Guide (#410): fold mid-turn user guidance into the context at the
         // iteration boundary, so this request already sees it. on_message
         // persists the row and emits the User event the UI promotes on.
-        if let Some(queue) = guidance {
-            let drained: Vec<(u64, String)> = std::mem::take(&mut *queue.lock().unwrap());
-            if !drained.is_empty() {
-                // User injection is new information. Re-issuing monitor_run
-                // after a wait_interrupted return is expected progress, not a
-                // stuck loop (#907).
-                recent_observations.clear();
-            }
-            for (_, text) in drained {
-                ctx.append_user(&text);
-                if let Some(m) = ctx.messages.last() {
-                    output.on_message(m);
-                }
-            }
-        }
+        drain_mid_turn_guidance(ctx, output, guidance, &mut recent_observations);
         iteration += 1;
         let (schemas, schema_origins) = tools.schemas_with_origins();
         let fixed_request_tokens = ContextManager::estimated_tool_tokens(&schemas);
@@ -472,6 +458,14 @@ async fn agent_loop_inner(
         );
 
         if comp.tool_calls.is_empty() {
+            // A cut-in / guide message can arrive while this final answer
+            // streams. Folding it in here keeps the "guide now" promise instead
+            // of finishing the turn and re-running the message as a fresh one.
+            if !iteration_limit_reached(iteration, max_iter)
+                && drain_mid_turn_guidance(ctx, output, guidance, &mut recent_observations)
+            {
+                continue;
+            }
             return Ok(AgentLoopOutcome::Completed);
         }
 
@@ -668,6 +662,36 @@ async fn agent_loop_inner(
 }
 
 const INTERRUPTED_BY_USER: &str = "interrupted by user";
+
+/// Fold every queued mid-turn guidance message (#410) into the context as a
+/// user turn. Returns whether anything landed, so the caller can decide to
+/// keep looping instead of finishing.
+///
+/// User injection is new information: a repeated `monitor_run` after a
+/// `wait_interrupted` return is expected progress, not a stuck loop (#907), so
+/// the stuck-detection window is cleared whenever we inject.
+fn drain_mid_turn_guidance(
+    ctx: &mut ContextManager,
+    output: &dyn Output,
+    guidance: Option<&GuidanceQueue>,
+    recent_observations: &mut VecDeque<[u8; 32]>,
+) -> bool {
+    let Some(queue) = guidance else {
+        return false;
+    };
+    let drained: Vec<(u64, String)> = std::mem::take(&mut *queue.lock().unwrap());
+    if drained.is_empty() {
+        return false;
+    }
+    recent_observations.clear();
+    for (_, text) in drained {
+        ctx.append_user(&text);
+        if let Some(m) = ctx.messages.last() {
+            output.on_message(m);
+        }
+    }
+    true
+}
 
 fn append_synthetic_tool_results(
     ctx: &mut ContextManager,
@@ -3217,6 +3241,110 @@ mod tests {
                     .contains("still on phase 2; continuing to wait")
         }));
         assert!(provider.stream_calls.load(Ordering::SeqCst) >= interrupts + 2);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// Parks a cut-in message while its first (final) answer streams, then
+    /// answers it on the next request.
+    struct CutInDuringFinalAnswerProvider {
+        queue: Arc<GuidanceQueue>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl CutInDuringFinalAnswerProvider {
+        fn next(&self) -> Completion {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                // The user clicks "guide now" while this answer is streaming:
+                // the loop has already passed its iteration boundary, so only a
+                // drain at the end of the turn can still fold this in.
+                self.queue
+                    .lock()
+                    .unwrap()
+                    .push((1, "make it shorter".into()));
+                Completion {
+                    content: "here is the long answer".into(),
+                    finish_reason: Some("stop".into()),
+                    ..Completion::default()
+                }
+            } else {
+                Completion {
+                    content: "shorter answer".into(),
+                    finish_reason: Some("stop".into()),
+                    ..Completion::default()
+                }
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Provider for CutInDuringFinalAnswerProvider {
+        fn name(&self) -> &str {
+            "cut-in-final-answer"
+        }
+        fn model(&self) -> &str {
+            "cut-in-final-answer"
+        }
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+        ) -> superscience_llm::Result<Completion> {
+            Ok(self.next())
+        }
+        async fn stream(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+            _sink: &mut dyn superscience_llm::StreamSink,
+        ) -> superscience_llm::Result<Completion> {
+            Ok(self.next())
+        }
+    }
+
+    #[tokio::test]
+    async fn guidance_arriving_with_the_final_answer_is_still_folded_in() {
+        let queue = Arc::new(GuidanceQueue::default());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = CutInDuringFinalAnswerProvider {
+            queue: queue.clone(),
+            calls: calls.clone(),
+        };
+        let tools = Registry::builtins().filtered(&[]);
+        let mut ctx = ContextManager::new(100_000);
+        let root = std::env::temp_dir().join(format!(
+            "superscience-core-cutin-final-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let outcome = agent_loop_with_images(
+            &mut ctx,
+            &provider,
+            None,
+            &tools,
+            &root,
+            &NullOutput,
+            "summarize the results",
+            &[],
+            false,
+            0,
+            None,
+            Some(queue.as_ref()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome, AgentLoopOutcome::Completed);
+        // The cut-in turned the would-be final answer into another iteration
+        // instead of ending the turn and re-running the message separately.
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert!(ctx.messages.iter().any(|message| {
+            message.role == Role::User && message.content.as_text() == "make it shorter"
+        }));
+        assert!(ctx.messages.iter().any(|message| {
+            message.role == Role::Assistant && message.content.as_text() == "shorter answer"
+        }));
+        assert!(queue.lock().unwrap().is_empty());
         std::fs::remove_dir_all(root).ok();
     }
 

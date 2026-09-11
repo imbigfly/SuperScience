@@ -348,3 +348,47 @@ test("inline mid-paragraph strong does not get the section-lead bar", async ({ p
   expect(await inlineMid.locator("strong").evaluate((el) => getComputedStyle(el).borderLeftWidth))
     .toBe("0px");
 });
+
+// The knowledge-base picker renders its menu with `position: fixed` plus the
+// trigger's viewport rect, so it floats over the modal's scroll area. That only
+// holds while no ancestor is a containing block for fixed descendants: a
+// `transform` keyframe animation on `.modal` keeps the modal as one even after
+// it ends, which placed the menu in the modal's coordinate space (down and to
+// the right, clipped by the modal's overflow) instead of under its trigger.
+test("floating menu inside a modal stays anchored to its trigger", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByTestId("capability-scene")).toBeVisible();
+  await page.getByRole("tab", { name: "Efficiency tools" }).click();
+  await page.getByTestId("cap-tile-settings-knowledge").click();
+
+  const overlay = page.getByTestId("knowledge-settings-overlay");
+  await expect(overlay).toBeVisible();
+  const modal = overlay.locator(".modal");
+  // The modal enters via a transition, so its box is only final once it settles.
+  await modal.evaluate(async (el) => {
+    await Promise.all(el.getAnimations().map((animation) => animation.finished));
+  });
+
+  // No reachable WeKnora in the mocked backend, so the menu lists its empty state.
+  const trigger = overlay.getByTestId("knowledge-base-select");
+  await trigger.click();
+  const menu = overlay.getByTestId("knowledge-base-menu");
+  await expect(menu).toBeVisible();
+  await expect(overlay.getByTestId("knowledge-bases-empty")).toBeVisible();
+
+  const triggerBox = (await trigger.boundingBox())!;
+  const menuBox = (await menu.boundingBox())!;
+  const modalBox = (await modal.boundingBox())!;
+
+  expect(Math.abs(menuBox.x - triggerBox.x)).toBeLessThanOrEqual(2);
+  expect(Math.abs(menuBox.y - (triggerBox.y + triggerBox.height + 4))).toBeLessThanOrEqual(2);
+  expect(menuBox.x).toBeGreaterThanOrEqual(modalBox.x - 1);
+  expect(menuBox.x + menuBox.width).toBeLessThanOrEqual(modalBox.x + modalBox.width + 1);
+  expect(menuBox.y + menuBox.height).toBeLessThanOrEqual(modalBox.y + modalBox.height + 1);
+
+  // A menu clipped away by the modal still reports a bounding box, so hit-test it.
+  const hit = await page.evaluate(({ x, y }) =>
+    Boolean(document.elementFromPoint(x, y)?.closest("[data-testid='knowledge-base-menu']")),
+    { x: menuBox.x + menuBox.width / 2, y: menuBox.y + menuBox.height / 2 });
+  expect(hit).toBe(true);
+});

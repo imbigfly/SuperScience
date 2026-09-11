@@ -238,7 +238,10 @@ fn KnowledgeBasePicker(
             open.set(false);
         }
     });
-    // 菜单用 fixed 定位跟随触发器，避免被设置面板的 overflow-y 裁剪。
+    // 菜单用 fixed 定位跟随触发器，避免被设置面板的 overflow-y 裁剪。前提是
+    // 触发器和菜单之间没有 transform/filter 祖先：一旦有，fixed 会改以那个祖先
+    // 为包含块，坐标按祖先算、还会被祖先的 overflow 裁掉（.modal 的入场动画曾
+    // 如此，见 visual-polish.spec.ts 的 floating menu 用例）。
     let menu_style = move || {
         let Some(rect) = trigger.get_untracked().map(|el| el.get_bounding_client_rect())
         else {

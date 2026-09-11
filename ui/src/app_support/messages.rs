@@ -625,6 +625,9 @@ pub(crate) enum QueueOp {
 /// Queue (#433): one parked follow-up in the composer card. `id == 0` is a
 /// transient cut-in (no controls). `can_cut_in` is false for ACP sessions.
 /// Reorder controls stay hidden when the queue has only one item.
+/// `cut_in_pending` marks the item whose cut-in is already in flight: the
+/// command resolves only when the running turn ends, so the pill has to show
+/// that wait instead of looking like a dead button.
 #[component]
 pub(crate) fn QueuedMessage(
     id: u64,
@@ -632,6 +635,7 @@ pub(crate) fn QueuedMessage(
     user_index: usize,
     can_cut_in: bool,
     can_reorder: bool,
+    cut_in_pending: bool,
     on_queue: Callback<QueueOp>,
 ) -> impl IntoView {
     let locale = use_locale();
@@ -645,9 +649,16 @@ pub(crate) fn QueuedMessage(
                     <div class="queue-actions">
                         {can_cut_in.then(|| view! {
                             <button type="button" class="queue-cut-in"
+                                disabled=cut_in_pending
+                                aria-busy=cut_in_pending.to_string()
                                 on:click=move |_| on_queue.call(QueueOp::CutIn(id))>
-                                {compose_icon("bolt")}
-                                <span>{move || t(locale.get(), "queue.cut_in")}</span>
+                                <span class=("spin", cut_in_pending)>
+                                    {compose_icon(if cut_in_pending { "loader" } else { "bolt" })}
+                                </span>
+                                <span>{move || t(
+                                    locale.get(),
+                                    if cut_in_pending { "queue.cut_in_pending" } else { "queue.cut_in" },
+                                )}</span>
                             </button>
                         })}
                         {can_reorder.then(|| view! {
@@ -690,6 +701,7 @@ pub(crate) fn ComposerQueue(
     items: RwSignal<Vec<ChatItem>>,
     user_offset: Signal<usize>,
     can_cut_in: Signal<bool>,
+    cut_in_pending: Signal<Option<u64>>,
     on_queue: Callback<QueueOp>,
 ) -> impl IntoView {
     let locale = use_locale();
@@ -699,6 +711,7 @@ pub(crate) fn ComposerQueue(
             let len = rows.len();
             let can_cut_in = can_cut_in.get();
             let can_reorder = len > 1;
+            let pending = cut_in_pending.get();
             let loc = locale.get();
             (!rows.is_empty()).then(move || view! {
                 <div class="composer-queue" data-testid="composer-queue"
@@ -717,6 +730,7 @@ pub(crate) fn ComposerQueue(
                                     user_index=row.user_index
                                     can_cut_in=can_cut_in
                                     can_reorder=can_reorder
+                                    cut_in_pending=pending == Some(row.id)
                                     on_queue=on_queue
                                 />
                             }

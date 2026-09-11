@@ -798,6 +798,12 @@ button.tool-btn.card-copy { margin-left: auto; flex: 0 0 auto; padding: 2px 8px;
 }
 .composer-queue .queue-cut-in:hover { background: var(--clay); color: var(--on-clay); }
 .composer-queue .queue-cut-in svg { width: 14px; height: 14px; }
+/* Cut-in in flight: the command waits on the running turn, so the pill reports
+   the wait instead of looking like an inert button. */
+.composer-queue .queue-cut-in[disabled] { cursor: progress; opacity: .72; }
+.composer-queue .queue-cut-in[disabled]:hover { background: var(--clay-soft); color: var(--clay-strong); }
+.composer-queue .queue-cut-in .spin { display: inline-flex; animation: queue-cut-in-spin .9s linear infinite; }
+@keyframes queue-cut-in-spin { to { transform: rotate(360deg); } }
 .composer-queue .queue-remove:hover { color: var(--err); }
 .tool-input, .tool-output { color: var(--text-muted); white-space: pre-wrap; max-height: 260px; overflow: auto; font-family: var(--font-mono); font-size: 12px; line-height: 1.5; margin: 0 0 8px; padding: 8px 10px; background: var(--bg-app); border: 1px solid var(--border); border-radius: var(--radius-xs); }
 .tool-output { margin-bottom: 0; }

@@ -188,6 +188,7 @@ pub(crate) async fn send_message_inner(
             None => runtime.workflow.clone().lock_owned().await,
         };
         runtime.cancel.store(false, Ordering::SeqCst);
+        let _turn_in_flight = TurnInFlight::begin(&runtime);
         let refs = references.as_deref().unwrap_or_default();
         let skills = active_skill_index(&state.store, &ap).await;
         let mut injected_context =
@@ -395,6 +396,9 @@ pub(crate) async fn send_message_inner(
             return Ok(frame_id);
         }
     }
+    // A consumed guide send returned above without running a turn; from here on
+    // this call owns a real turn, tail included.
+    let _turn_in_flight = TurnInFlight::begin(&rt);
     let mut guard = rt.agent.lock().await;
     rt.discard_stale_agent(&mut guard);
     let _progress_subscription =
@@ -1440,11 +1444,37 @@ pub(crate) async fn enqueue_turn(
     Ok(())
 }
 
-/// Queue (#433): edit / cancel / cut-in a parked follow-up by id.
-/// - `edit`   → replace the item's text (runs with the latest when it drains).
-/// - `cancel` → drop it from the queue.
-/// - `cutin`  → pull it out and fold it into the *running* turn via the guide
-///   path (#410); if nothing is running it stays queued and runs normally.
+/// Marks a session's turn as in flight for as long as this guard lives.
+///
+/// `AppState::running_turns` is cleared as soon as the agent loop returns, but
+/// the turn keeps the session workflow lock through persist, provenance join
+/// and possible compaction. A queue cut-in waits on that lock, so it must test
+/// the same window the lock covers — otherwise a click landing in the tail is
+/// silently dropped and the item just runs later as an ordinary turn.
+pub(crate) struct TurnInFlight(Arc<SessionRuntime>);
+
+impl TurnInFlight {
+    pub(crate) fn begin(rt: &Arc<SessionRuntime>) -> Self {
+        rt.turn_activity.fetch_add(1, Ordering::SeqCst);
+        Self(rt.clone())
+    }
+}
+
+impl Drop for TurnInFlight {
+    fn drop(&mut self) {
+        self.0.turn_activity.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// True while a turn for this session is in flight: the agent loop and the
+/// persist/compaction tail that follows it.
+pub(crate) fn session_turn_in_flight(rt: &SessionRuntime) -> bool {
+    rt.turn_activity.load(Ordering::SeqCst) > 0
+}
+
+/// Pull a parked item out of the queue and park its text for the running loop
+/// to fold in (#410). The item is returned so an unconsumed guidance entry can
+/// be put back at the front of the queue.
 pub(crate) fn begin_queued_cutin(rt: &SessionRuntime, id: u64) -> Option<(u64, QueuedItem)> {
     let item = {
         let mut queued = rt.queued.lock().unwrap();
@@ -1495,6 +1525,12 @@ pub(crate) fn reclaim_unconsumed_cutin(
     unconsumed
 }
 
+/// Queue (#433): edit / cancel / cut-in / reorder a parked follow-up by id.
+/// - `edit`   → replace the item's text (runs with the latest when it drains).
+/// - `cancel` → drop it from the queue.
+/// - `cutin`  → pull it out and fold it into the *running* turn via the guide
+///   path (#410); if nothing is running it stays queued and runs normally.
+/// - `move_up` / `move_down` → swap with the neighbour, clamped at the ends.
 #[tauri::command]
 pub(crate) async fn queued_turn_action(
     state: State<'_, AppState>,
@@ -1525,26 +1561,25 @@ pub(crate) async fn queued_turn_action(
             rt.queued.lock().unwrap().retain(|it| it.id != id);
         }
         "cutin" => {
-            let running = state.running_turns.lock().await.contains(&session_id);
-            if running {
-                // ponytail: cut-in folds only text into the turn, matching the
-                // guide path; attachments on a cut-in item are dropped.
-                if let Some((guidance_id, item)) = begin_queued_cutin(&rt, id) {
-                    // Wait until the running turn reaches an iteration boundary
-                    // or ends. If it ended without consuming the guidance, put
-                    // the item back at the front and let the normal driver run it.
-                    let guard = rt.workflow.clone().lock_owned().await;
-                    let unconsumed = reclaim_unconsumed_cutin(&rt, guidance_id, item);
-                    drop(guard);
-                    if unconsumed {
-                        if !rt.draining.swap(true, Ordering::SeqCst) {
-                            spawn_queue_driver(
-                                app,
-                                rt.clone(),
-                                session_id,
-                                window.label().to_string(),
-                            );
-                        }
+            // A cut-in is only meaningful while a turn for this session owns the
+            // workflow lock. `running_turns` drops earlier than that lock, so
+            // gating on it turned every click in the turn's tail into a silent
+            // no-op; with no turn in flight the item simply runs normally.
+            if !session_turn_in_flight(&rt) {
+                return Ok(());
+            }
+            // ponytail: cut-in folds only text into the turn, matching the
+            // guide path; attachments on a cut-in item are dropped.
+            if let Some((guidance_id, item)) = begin_queued_cutin(&rt, id) {
+                // Wait until the running turn reaches an iteration boundary
+                // or ends. If it ended without consuming the guidance, put
+                // the item back at the front and let the normal driver run it.
+                let guard = rt.workflow.clone().lock_owned().await;
+                let unconsumed = reclaim_unconsumed_cutin(&rt, guidance_id, item);
+                drop(guard);
+                if unconsumed {
+                    if !rt.draining.swap(true, Ordering::SeqCst) {
+                        spawn_queue_driver(app, rt.clone(), session_id, window.label().to_string());
                     }
                 }
             }

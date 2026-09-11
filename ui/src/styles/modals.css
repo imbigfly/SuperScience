@@ -125,7 +125,16 @@ body:has(.window-titlebar) .feedback-modal { border-top: 1px solid var(--border)
 /* Cap height to the viewport (overlay has 20px padding each side) and scroll
    internally, so a long confirm/approval message can't push the button row
    off-screen and out of reach (#63). .modal-wide overrides height below. */
-.modal { background: var(--bg-elev); border: 1px solid var(--border-strong); border-radius: var(--radius); box-shadow: var(--shadow); padding: 22px; width: 100%; max-width: 480px; display: flex; flex-direction: column; gap: 14px; max-height: calc(100vh - 40px); overflow-y: auto; transform-origin: 50% 38%; animation: motion-surface-in var(--motion-duration-medium) var(--motion-ease-decelerate) both; }
+.modal { background: var(--bg-elev); border: 1px solid var(--border-strong); border-radius: var(--radius); box-shadow: var(--shadow); padding: 22px; width: 100%; max-width: 480px; display: flex; flex-direction: column; gap: 14px; max-height: calc(100vh - 40px); overflow-y: auto; transform-origin: 50% 38%; transition: opacity var(--motion-duration-medium) var(--motion-ease-decelerate), transform var(--motion-duration-medium) var(--motion-ease-decelerate); }
+/* Entrance as a transition + @starting-style instead of a `transform` keyframe
+   animation: once an animation drives `transform`, the modal stays a containing
+   block for `position: fixed` descendants even after it ends, so floating menus
+   rendered inside it (e.g. the knowledge-base picker) are placed in the modal's
+   coordinate space and clipped by the modal's overflow. A finished transition
+   leaves `transform: none`. */
+@starting-style {
+  .modal { opacity: 0; transform: translate3d(0, var(--motion-distance-sm), 0) scale(0.985); }
+}
 .modal .ps-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .modal .ps-close {
   display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;

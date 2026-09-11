@@ -566,6 +566,8 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "composer.cut_in_now") => Some("Cut in (this turn)"),
         (Locale::En, "composer.interrupt_replace") => Some("Interrupt & replace"),
         (Locale::En, "queue.cut_in") => Some("Guide now"),
+        (Locale::En, "queue.cut_in_pending") => Some("Guiding…"),
+        (Locale::En, "queue.cut_in_failed") => Some("Could not guide now: {msg}"),
         (Locale::En, "queue.edit") => Some("Edit"),
         (Locale::En, "queue.remove") => Some("Remove"),
         (Locale::En, "queue.move_up") => Some("Move up"),
@@ -3800,7 +3802,9 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "composer.queue_button") => Some("排队…"),
         (Locale::Zh, "composer.cut_in_now") => Some("插队(本回合)"),
         (Locale::Zh, "composer.interrupt_replace") => Some("中断并替换"),
-        (Locale::Zh, "queue.cut_in") => Some("立刻引导"),
+        (Locale::Zh, "queue.cut_in") => Some("立刻"),
+        (Locale::Zh, "queue.cut_in_pending") => Some("引导中…"),
+        (Locale::Zh, "queue.cut_in_failed") => Some("无法立刻引导：{msg}"),
         (Locale::Zh, "queue.edit") => Some("编辑"),
         (Locale::Zh, "queue.remove") => Some("移除"),
         (Locale::Zh, "queue.move_up") => Some("上移"),
@@ -7431,8 +7435,19 @@ mod queue_label_tests {
 
     #[test]
     fn queued_bubble_actions_use_guide_and_edit() {
-        assert_eq!(t(Locale::Zh, "queue.cut_in"), "立刻引导");
+        assert_eq!(t(Locale::Zh, "queue.cut_in"), "立刻");
         assert_eq!(t(Locale::En, "queue.cut_in"), "Guide now");
+        // The pill reports its own in-flight state instead of looking inert.
+        assert_eq!(t(Locale::En, "queue.cut_in_pending"), "Guiding…");
+        assert_eq!(t(Locale::Zh, "queue.cut_in_pending"), "引导中…");
+        assert_eq!(
+            tf(Locale::En, "queue.cut_in_failed", &[("msg", "boom")]),
+            "Could not guide now: boom"
+        );
+        assert_eq!(
+            tf(Locale::Zh, "queue.cut_in_failed", &[("msg", "失败")]),
+            "无法立刻引导：失败"
+        );
         assert_eq!(t(Locale::Zh, "queue.edit"), "编辑");
         assert_eq!(t(Locale::En, "queue.edit"), "Edit");
         assert_eq!(t(Locale::Zh, "queue.remove"), "移除");

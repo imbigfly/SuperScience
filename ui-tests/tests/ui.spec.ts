@@ -14319,6 +14319,41 @@ test("editing a queued follow-up restores it to the composer", async ({ page }) 
   )).toEqual(["cancel"]);
 });
 
+test("cutting a queued follow-up into the running turn reports the wait and folds it in (#433)", async ({ page }) => {
+  await page.addInitScript(parallelMock);
+  await page.goto("/");
+  await page.locator(".proj-card-main").first().click();
+  await expect(newSessionButton(page)).toBeVisible();
+
+  // alpha keeps the session busy for ~5s, so the next send parks in the queue.
+  await composer(page).fill("alpha");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(assistantReplyQuoting(page, "alpha")).toBeVisible({ timeout: 10_000 });
+
+  await composer(page).fill("what is QC?");
+  await page.getByRole("button", { name: "Queue…" }).click();
+  const queued = page.locator(".msg.user.queued", { hasText: "what is QC?" });
+  await expect(queued).toBeVisible({ timeout: 1_000 });
+
+  await queued.getByRole("button", { name: "Guide now" }).click();
+
+  // The command only resolves when the running turn ends, so the pill has to
+  // report the wait instead of looking like a dead button.
+  await expect(queued.getByRole("button", { name: "Guiding…" })).toBeDisabled();
+  await expect.poll(async () => page.evaluate(() =>
+    ((window as any).__sendInvokeLog ?? [])
+      .filter((c: any) => c.cmd === "queued_turn_action")
+      .map((c: any) => c.args?.action),
+  )).toEqual(["cutin"]);
+
+  // Folded into the running turn: the bubble promotes and gets its answer
+  // while alpha is still streaming, and the queue card goes away.
+  await expect(assistantReplyQuoting(page, "what is QC?")).toBeVisible({ timeout: 3_000 });
+  await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeVisible();
+  await expect(page.getByTestId("composer-queue")).toHaveCount(0);
+  await expect(queued).toHaveCount(0);
+});
+
 test("project removal offers a files-preserving action in the in-app dialog (#96)", async ({ page }) => {
   // Native window.confirm() is a no-op in this webview (wry's WKUIDelegate has
   // no JS confirm panel), so the ✕ silently did nothing. Deletion now goes

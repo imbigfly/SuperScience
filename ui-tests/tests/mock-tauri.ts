@@ -6199,6 +6199,9 @@ export function parallelMock(): void {
   }
   const folders: { id: string; name: string }[] = [];
   const queues: Record<string, Promise<void>> = {};
+  // Queue (#433): parked follow-ups per session, keyed by the frontend id the
+  // queue card and the edit/cancel/cut-in commands share.
+  const queuedTurns: Record<string, { id: number; message: string; consumed: boolean }[]> = {};
 
   const project = { id: "default", name: "superscience", root: "/mock/root", skill_count: 12, mcp_server_count: 8, memory_file_count: 2, has_api_key: true };
 
@@ -6484,7 +6487,13 @@ export function parallelMock(): void {
             // immediately (the real command is fast and non-blocking).
             const fid = (args && (args.sessionId ?? args.session_id)) || "t1";
             const msg = (args && args.message) || "";
+            const entry = { id: Number(args?.id ?? 0), message: msg, consumed: false };
+            (queuedTurns[fid] ??= []).push(entry);
             const run = async () => {
+              // Dropped or folded into the running turn before the driver got
+              // here: the backend queue item no longer exists.
+              if (entry.consumed) return;
+              entry.consumed = true;
               emit("agent", { kind: "User", frame_id: fid, text: msg });
               emit("agent", { kind: "Text", frame_id: fid, delta: `echo:${msg}` });
               await new Promise((resolve) => setTimeout(resolve, 50));
@@ -6495,7 +6504,31 @@ export function parallelMock(): void {
             queues[fid] = current.catch(() => undefined);
             return null;
           }
-          case "queued_turn_action": return null;
+          case "queued_turn_action": {
+            const fid = (args && (args.sessionId ?? args.session_id)) || "t1";
+            const qid = Number(args?.id ?? 0);
+            const action = String(args?.action ?? "");
+            const list = (queuedTurns[fid] ??= []);
+            const index = list.findIndex((entry) => entry.id === qid);
+            if (action === "cutin") {
+              // Cut-in (#433): the backend pulls the item out of the queue and
+              // the running loop folds its text in at its next iteration
+              // boundary, emitting the User event the bubble promotes on — the
+              // turn itself keeps running. The command then waits on the turn's
+              // workflow lock, so it does not resolve until the turn ends.
+              if (index >= 0 && !list[index].consumed) {
+                const entry = list.splice(index, 1)[0];
+                entry.consumed = true;
+                await new Promise((resolve) => setTimeout(resolve, 400));
+                emit("agent", { kind: "User", frame_id: fid, text: entry.message });
+                emit("agent", { kind: "Text", frame_id: fid, delta: `echo:${entry.message}` });
+              }
+              await (queues[fid] ?? Promise.resolve());
+            } else if (action === "cancel" && index >= 0) {
+              list.splice(index, 1)[0].consumed = true;
+            }
+            return null;
+          }
           case "open_external_url":
             if (arg("url")) window.open(String(arg("url")), "_blank", "noopener,noreferrer");
             return null;

@@ -34,6 +34,11 @@ pub(crate) struct SessionRuntime {
     /// Guide (#410): mid-turn messages the running loop drains into user
     /// messages at its next iteration; ids let queued senders detect that.
     pub(crate) pending_guidance: superscience_core::GuidanceQueue,
+    /// Turns in flight for this session, counted from the moment a turn owns
+    /// the workflow lock through the persist/compaction tail. `AppState::
+    /// running_turns` is dropped *before* that tail, so the queue cut-in, which
+    /// must fold into a turn that is still running, consults this instead.
+    pub(crate) turn_activity: std::sync::atomic::AtomicUsize,
     pub(crate) guidance_seq: std::sync::atomic::AtomicU64,
     /// Where the last cancelled turn started, so an InterruptReplace send can
     /// roll the model context back to before the abandoned task.
@@ -75,6 +80,7 @@ impl SessionRuntime {
             deleted: AtomicBool::new(false),
             last_seq: StdMutex::new(0),
             pending_guidance: superscience_core::GuidanceQueue::default(),
+            turn_activity: std::sync::atomic::AtomicUsize::new(0),
             guidance_seq: std::sync::atomic::AtomicU64::new(0),
             interrupted_turn_start: StdMutex::new(None),
             mcp_app_contexts: StdMutex::new(HashMap::new()),

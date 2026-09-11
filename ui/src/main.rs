@@ -978,6 +978,10 @@ fn App() -> impl IntoView {
     // Queue (#433): monotonic key for optimistic queued follow-ups, shared with the
     // backend queue item so edit/cancel/cut-in target the same row.
     let queue_seq = create_rw_signal(0u64);
+    // Queue (#433): the row whose cut-in command is in flight. The command only
+    // resolves when the running turn ends, so the pill shows this wait instead
+    // of appearing inert.
+    let cut_in_pending = create_rw_signal::<Option<u64>>(None);
     let side_chat_input = create_rw_signal(String::new());
     let side_chat_quotes = create_rw_signal::<Vec<ComposerQuote>>(vec![]);
     let side_chat_items = create_rw_signal::<Vec<SideChatItem>>(vec![]);
@@ -4666,6 +4670,11 @@ fn App() -> impl IntoView {
             transcript_projection_epoch.update(|revision| {
                 *revision = revision.wrapping_add(1);
             });
+        } else {
+            // The command resolves only when the running turn releases the
+            // session (it waits on the turn's workflow lock), so show the wait
+            // rather than leaving the pill looking inert.
+            cut_in_pending.set(Some(id));
         }
         spawn_local(async move {
             let args = to_value(&QueuedTurnActionArgs {
@@ -4675,7 +4684,22 @@ fn App() -> impl IntoView {
                 message,
             })
             .unwrap();
-            let _ = invoke("queued_turn_action", args).await;
+            let result = invoke_checked("queued_turn_action", args).await;
+            if action != "cutin" {
+                return;
+            }
+            cut_in_pending.update(|pending| {
+                if *pending == Some(id) {
+                    *pending = None;
+                }
+            });
+            if let Err(error) = result {
+                status.set(tf(
+                    locale.get(),
+                    "queue.cut_in_failed",
+                    &[("msg", &localize_backend(locale.get(), &js_error_text(error)))],
+                ));
+            }
         });
     });
     let composer_queue_offset = Signal::derive(move || {
@@ -12587,6 +12611,7 @@ fn App() -> impl IntoView {
                         items=items
                         user_offset=composer_queue_offset
                         can_cut_in=composer_queue_can_cut_in
+                        cut_in_pending=cut_in_pending.read_only().into()
                         on_queue=on_queue
                     />
                 })}

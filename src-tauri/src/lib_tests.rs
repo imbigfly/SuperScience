@@ -10,11 +10,11 @@ use super::{
     persist_ui_events, provenance_ui_file_changes, receive_confirm_decision,
     reclaim_unconsumed_cutin, resolve_acp_artifact_references, resolve_composer_references,
     resolve_reader_references, resolve_review_backend, resolve_workspace, session_runtime_status,
-    should_hide_app_on_macos_close, should_persist_ui_event, ui_watchdog_note_unfocused,
-    ui_watchdog_requires_reload, user_message_start, AgentEvent, ComposerReferenceArg,
-    McpConnection, McpHttpAuth, McpTransport, ProjectActivityLocks, QueuedItem, SessionRuntime,
-    SkillInfo, StartupReport, StartupTimeline, MAX_PENDING_UI_EVENT_BYTES,
-    UI_STREAM_OUTPUT_MAX_BYTES, UI_TOOL_RESULT_MAX_CHARS,
+    session_turn_in_flight, should_hide_app_on_macos_close, should_persist_ui_event,
+    ui_watchdog_note_unfocused, ui_watchdog_requires_reload, user_message_start, AgentEvent,
+    ComposerReferenceArg, McpConnection, McpHttpAuth, McpTransport, ProjectActivityLocks,
+    QueuedItem, SessionRuntime, SkillInfo, StartupReport, StartupTimeline, TurnInFlight,
+    MAX_PENDING_UI_EVENT_BYTES, UI_STREAM_OUTPUT_MAX_BYTES, UI_TOOL_RESULT_MAX_CHARS,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -2570,6 +2570,51 @@ fn consumed_cutin_is_not_queued_again() {
     });
 
     let (guidance_id, item) = begin_queued_cutin(&rt, 8).unwrap();
+    rt.pending_guidance.lock().unwrap().clear();
+    assert!(!reclaim_unconsumed_cutin(&rt, guidance_id, item));
+    assert!(rt.queued.lock().unwrap().is_empty());
+}
+
+// Queue (#433): the cut-in gate tracks the turn's own lifetime. `running_turns`
+// is cleared before the turn releases its workflow lock (persist / provenance /
+// compaction tail), so gating on it dropped every click that landed there.
+#[test]
+fn cutin_gate_tracks_the_whole_turn_not_running_turns() {
+    let rt = Arc::new(SessionRuntime::new());
+    assert!(!session_turn_in_flight(&rt));
+    {
+        let _in_flight = TurnInFlight::begin(&rt);
+        assert!(session_turn_in_flight(&rt));
+    }
+    assert!(
+        !session_turn_in_flight(&rt),
+        "the guard must clear the marker when the turn returns"
+    );
+}
+
+// The whole cut-in composition the command runs while a turn is in flight:
+// pull the item out, park its text for the loop, and only put it back when the
+// loop never consumed it.
+#[test]
+fn cutin_while_a_turn_is_in_flight_parks_guidance_and_empties_the_queue() {
+    let rt = Arc::new(SessionRuntime::new());
+    rt.queued.lock().unwrap().push(QueuedItem {
+        id: 9,
+        message: "how large is it".into(),
+        attachments: vec![],
+        references: vec![],
+    });
+    let _in_flight = TurnInFlight::begin(&rt);
+
+    assert!(session_turn_in_flight(&rt));
+    let (guidance_id, item) = begin_queued_cutin(&rt, 9).unwrap();
+    assert!(rt.queued.lock().unwrap().is_empty());
+    assert_eq!(
+        rt.pending_guidance.lock().unwrap().as_slice(),
+        &[(guidance_id, "how large is it".to_string())]
+    );
+
+    // The running loop drained it at its next boundary: no requeue.
     rt.pending_guidance.lock().unwrap().clear();
     assert!(!reclaim_unconsumed_cutin(&rt, guidance_id, item));
     assert!(rt.queued.lock().unwrap().is_empty());
