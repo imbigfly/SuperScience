@@ -1679,7 +1679,11 @@ pub(super) fn FeedbackOverlay(
                             {compose_icon("close")}
                         </button>
                     </div>
-                    <p class="feedback-subtitle">{move || t(locale.get(), "feedback.subtitle")}</p>
+                    <ol class="feedback-hints">
+                        <li>{move || t(locale.get(), "feedback.hint1")}</li>
+                        <li>{move || t(locale.get(), "feedback.hint2")}</li>
+                        <li>{move || t(locale.get(), "feedback.hint3")}</li>
+                    </ol>
                     <div class="feedback-compose"
                         class:dragover=move || drag_over.get()
                         on:dragover=on_drag_over
