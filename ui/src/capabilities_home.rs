@@ -949,17 +949,16 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
             ),
         ),
         // —— 数据清洗 ——
-        specialist_tile(
+        guided_tile(
             "data-cleaning",
             CapabilityGroup::DataCleaning,
             "caps.tile.data_cleaning.title",
             "caps.tile.data_cleaning.blurb",
             "caps.prompt.data_cleaning",
-            "data_cleaning",
             "plan",
             help(
-                "Send a spreadsheet or a file path. It looks at the table, cleans messy columns, and gives you a file ready for analysis.",
-                "把表格或文件路径发给它。它先看表，再清洗乱列，最后给你一份能直接分析的数据。",
+                "Send a spreadsheet or a file path. It inspects the table, confirms how you want it processed, then cleans and returns an analysis-ready file.",
+                "把表格或文件路径发给它。它先看表并跟你确认处理方式，再清洗并交出能直接分析的数据。",
             ),
         ),
         CapabilityTile {

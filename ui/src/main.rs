@@ -6808,11 +6808,6 @@ fn App() -> impl IntoView {
         );
     };
 
-    let open_capabilities = move |_| {
-        show_capabilities.set(true);
-        refresh_capabilities(caps);
-    };
-
     let start_specialist_chat = Callback::new(move |ev: web_sys::MouseEvent| {
         if demo_mode.get_untracked() {
             return;
@@ -10839,7 +10834,6 @@ fn App() -> impl IntoView {
                     locale.get(),
                 )));
             })
-            open_capabilities=Callback::new(open_capabilities)
             open_issue_report=Callback::new(move |_| start_issue_report.call(()))
             open_settings=Callback::new(open_settings)
             open_user_center=Callback::new(move |_| show_user_center.set(true))

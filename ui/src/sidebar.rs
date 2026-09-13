@@ -79,7 +79,6 @@ pub(super) fn Sidebar(
         bool,
     )>,
     open_folder_actions: Callback<(web_sys::MouseEvent, String, String)>,
-    open_capabilities: Callback<web_sys::MouseEvent>,
     open_settings: Callback<web_sys::MouseEvent>,
     open_issue_report: Callback<web_sys::MouseEvent>,
     open_user_center: Callback<web_sys::MouseEvent>,
@@ -831,7 +830,6 @@ pub(super) fn Sidebar(
                             ])}</span>
                         </div>
                     }})}
-                    <button class="side-btn" title=move || t(locale.get(), "sidebar.capabilities") on:click=move |ev| open_capabilities.call(ev)>{compose_icon("grid")}{move || t(locale.get(), "sidebar.capabilities")}</button>
                     <button class="side-btn" data-testid="report-problem-entry" title=move || t(locale.get(), "issue_report.sidebar") on:click=move |ev| open_issue_report.call(ev)>{compose_icon("chat")}{move || t(locale.get(), "issue_report.sidebar")}</button>
                     <button class="side-btn" title=move || t(locale.get(), "sidebar.settings") on:click=move |ev| open_settings.call(ev)>{compose_icon("gear")}{move || t(locale.get(), "sidebar.settings")}</button>
                     <button class="side-btn user-center-entry" data-testid="user-center-entry"
