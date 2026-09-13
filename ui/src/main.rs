@@ -5627,10 +5627,33 @@ fn App() -> impl IntoView {
         move |_: ()| {
             let model = active_model_label(&models.get_untracked())
                 .unwrap_or_else(|| "not configured".into());
+            let cfg = settings.get_untracked();
+            let session = tctoken_session.get_untracked();
             feedback_diagnostics.set(issue_report_chat_prompt(
                 locale.get_untracked(),
                 bootstrap.get_untracked().as_ref(),
                 &model,
+                &FeedbackSystemConfig {
+                    locale: locale.get_untracked().code().to_string(),
+                    theme: theme_mode.get_untracked(),
+                    notifications_enabled: cfg.notifications_enabled,
+                    update_check_enabled: update_check_enabled.get_untracked(),
+                    max_iter: cfg.max_iter,
+                    auto_compact: cfg.auto_compact,
+                    auto_continue: cfg.auto_continue,
+                    follow_up_questions: cfg.follow_up_questions,
+                    resume_last_session: cfg.resume_last_session,
+                    provider: cfg.provider.clone(),
+                    model_id: cfg.model.clone(),
+                    has_api_key: cfg.has_api_key,
+                },
+                &FeedbackAccountSnapshot {
+                    logged_in: session.logged_in,
+                    user_id: session.user_id,
+                    username: session.username.clone(),
+                    display_name: session.display_name.clone(),
+                    group: session.group.clone(),
+                },
             ));
             show_feedback_dialog.set(true);
         }

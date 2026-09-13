@@ -9,7 +9,7 @@
 
 use base64::Engine;
 use lettre::message::header::ContentType;
-use lettre::message::{Attachment, Mailbox, MultiPart, SinglePart};
+use lettre::message::{Attachment, Mailbox, MultiPart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::transport::smtp::client::{Tls, TlsParameters};
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
@@ -269,16 +269,126 @@ pub fn inferred_subject(message: &str) -> Option<String> {
 }
 
 pub fn build_feedback_body(message: &str, diagnostics: Option<&str>) -> String {
-    let mut body = message.trim().to_string();
+    build_feedback_plain(message, diagnostics)
+}
+
+pub fn build_feedback_plain(message: &str, diagnostics: Option<&str>) -> String {
+    let mut body = String::from("【用户反馈】\n");
+    body.push_str(message.trim());
+    body.push('\n');
     if let Some(diagnostics) = diagnostics.map(str::trim).filter(|s| !s.is_empty()) {
-        if !body.is_empty() {
-            body.push_str("\n\n");
-        }
-        body.push_str("---\n");
-        body.push_str(diagnostics);
         body.push('\n');
+        body.push_str(diagnostics);
+        if !diagnostics.ends_with('\n') {
+            body.push('\n');
+        }
     }
     body
+}
+
+fn html_escape(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn section_title_from_heading(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    trimmed
+        .strip_prefix("## ")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+fn push_html_section_table(html: &mut String, title: &str, rows: &[(String, String)]) {
+    html.push_str("<h2 style=\"margin:24px 0 10px;font-size:15px;font-weight:600;color:#111827;border-bottom:1px solid #e5e7eb;padding-bottom:6px;\">");
+    html.push_str(&html_escape(title));
+    html.push_str("</h2>\n");
+    if rows.is_empty() {
+        return;
+    }
+    html.push_str("<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"width:100%;border-collapse:collapse;font-size:13px;\">\n");
+    for (idx, (key, value)) in rows.iter().enumerate() {
+        let bg = if idx % 2 == 0 { "#f9fafb" } else { "#ffffff" };
+        html.push_str("<tr style=\"background:");
+        html.push_str(bg);
+        html.push_str(";\">");
+        html.push_str("<td style=\"width:38%;padding:8px 10px;color:#6b7280;vertical-align:top;border-bottom:1px solid #f3f4f6;\">");
+        html.push_str(&html_escape(key));
+        html.push_str("</td><td style=\"padding:8px 10px;color:#111827;vertical-align:top;border-bottom:1px solid #f3f4f6;word-break:break-word;\">");
+        html.push_str(&html_escape(value));
+        html.push_str("</td></tr>\n");
+    }
+    html.push_str("</table>\n");
+}
+
+/// Build a compact HTML body for support inboxes. Diagnostics use `## Section`
+/// headings and `Key: Value` rows produced by the UI.
+pub fn build_feedback_html(message: &str, diagnostics: Option<&str>) -> String {
+    let mut html = String::from(
+        "<!DOCTYPE html><html><body style=\"margin:0;padding:0;background:#f3f4f6;\">\
+         <div style=\"max-width:680px;margin:0 auto;padding:24px 16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;font-size:14px;line-height:1.55;color:#111827;\">\
+         <div style=\"background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;padding:20px 22px;\">\
+         <h1 style=\"margin:0 0 14px;font-size:18px;font-weight:650;color:#111827;\">天成科研助手 · 用户反馈</h1>\n\
+         <h2 style=\"margin:0 0 8px;font-size:15px;font-weight:600;color:#111827;\">用户反馈</h2>\n\
+         <div style=\"background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px 14px;white-space:pre-wrap;word-break:break-word;\">",
+    );
+    html.push_str(&html_escape(message.trim()));
+    html.push_str("</div>\n");
+
+    if let Some(diagnostics) = diagnostics.map(str::trim).filter(|s| !s.is_empty()) {
+        let mut current_title: Option<String> = None;
+        let mut rows: Vec<(String, String)> = Vec::new();
+        let flush = |html: &mut String, title: &mut Option<String>, rows: &mut Vec<(String, String)>| {
+            if let Some(section) = title.take() {
+                push_html_section_table(html, &section, rows);
+                rows.clear();
+            }
+        };
+        for line in diagnostics.lines() {
+            if let Some(title) = section_title_from_heading(line) {
+                flush(&mut html, &mut current_title, &mut rows);
+                current_title = Some(title.to_string());
+                continue;
+            }
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Some((key, value)) = trimmed
+                .split_once(':')
+                .or_else(|| trimmed.split_once('：'))
+            {
+                rows.push((key.trim().to_string(), value.trim().to_string()));
+            } else if current_title.is_some() {
+                rows.push((String::new(), trimmed.to_string()));
+            }
+        }
+        flush(&mut html, &mut current_title, &mut rows);
+    }
+
+    html.push_str(
+        "</div>\
+         <p style=\"margin:14px 0 0;font-size:12px;color:#9ca3af;\">此邮件由天成科研助手自动发送，请勿直接回复发件地址。</p>\
+         </div></body></html>",
+    );
+    html
+}
+
+fn feedback_body_parts(message: &str, diagnostics: Option<&str>) -> (String, String) {
+    (
+        build_feedback_plain(message, diagnostics),
+        build_feedback_html(message, diagnostics),
+    )
 }
 
 pub fn sanitize_filename(name: &str) -> Result<String, String> {
@@ -391,18 +501,20 @@ pub fn build_feedback_message(
             .or_else(|| inferred_subject(message));
         build_feedback_subject(config, inferred.as_deref())
     };
-    let body = build_feedback_body(message, diagnostics);
-    if body.trim().is_empty() {
+    let trimmed_message = message.trim();
+    if trimmed_message.is_empty() {
         return Err("feedback message is empty".into());
     }
+    let (plain, html) = feedback_body_parts(trimmed_message, diagnostics);
     let prepared = prepare_attachments(attachments)?;
     let builder = Message::builder().from(from).to(to).subject(subject);
+    let alternative = MultiPart::alternative_plain_html(plain, html);
     if prepared.is_empty() {
         return builder
-            .multipart(MultiPart::alternative().singlepart(SinglePart::plain(body)))
+            .multipart(alternative)
             .map_err(|error| format!("build feedback email: {error}"));
     }
-    let mut mixed = MultiPart::mixed().singlepart(SinglePart::plain(body));
+    let mut mixed = MultiPart::mixed().multipart(alternative);
     for (filename, mime, bytes) in prepared {
         let content_type = ContentType::parse(&mime)
             .unwrap_or_else(|_| ContentType::parse("application/octet-stream").expect("octet"));
