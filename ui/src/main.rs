@@ -1863,33 +1863,6 @@ fn App() -> impl IntoView {
         show_right.set(false);
         center_file.set(None);
     });
-    let open_scratch = Callback::new(move |_: ()| {
-        if demo_mode.get_untracked() {
-            return;
-        }
-        command_palette_open.set(false);
-        action_palette_open.set(false);
-        attachments.set(vec![]);
-        composer_references.set(vec![]);
-        composer_quotes.set(vec![]);
-        spawn_local(async move {
-            let id = match invoke_new_session().await {
-                Ok(id) => id,
-                Err(error) => {
-                    status.set(send_failed(locale.get(), &error));
-                    return;
-                }
-            };
-            scratch_open.set(true);
-            show_projects.set(false);
-            active_session.set(Some(id));
-            items.set(vec![]);
-            show_sidebar.set(false);
-            show_right.set(false);
-            center_file.set(None);
-            focus_composer();
-        });
-    });
     // Floating action popup over a text selection: (text, source file path, x, y).
     // The source path is Some only when the selection is inside a file preview —
     // it gates the "annotate" action and names the review sidecar.
@@ -9540,6 +9513,16 @@ fn App() -> impl IntoView {
         refresh_session_history: Callback::new(move |_| refresh_session_history()),
         open_settings: Callback::new(move |section| open_settings_fn(section)),
         open_project: open_project_transition,
+    });
+    // 首页顶栏「开始对话」与能力卡共用 NewChat：先归属「默认项目」再开空会话。
+    let open_scratch = Callback::new(move |_: ()| {
+        if demo_mode.get_untracked() {
+            return;
+        }
+        command_palette_open.set(false);
+        action_palette_open.set(false);
+        scratch_open.set(false);
+        on_capability_action.call(capabilities_home::CapabilityAction::NewChat);
     });
 
     // Dedicated project window (#52): enter through the same serialized,

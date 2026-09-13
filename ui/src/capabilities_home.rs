@@ -24,7 +24,6 @@ pub(crate) enum CapabilityGroup {
     Implement,
     Writing,
     AiDrawing,
-    DataCleaning,
     Efficiency,
     Collab,
 }
@@ -37,7 +36,6 @@ impl CapabilityGroup {
             CapabilityGroup::Implement,
             CapabilityGroup::Writing,
             CapabilityGroup::AiDrawing,
-            CapabilityGroup::DataCleaning,
             CapabilityGroup::Efficiency,
             CapabilityGroup::Collab,
         ]
@@ -50,7 +48,6 @@ impl CapabilityGroup {
             CapabilityGroup::Implement => "caps.group.implement",
             CapabilityGroup::Writing => "caps.group.writing",
             CapabilityGroup::AiDrawing => "caps.group.ai_drawing",
-            CapabilityGroup::DataCleaning => "caps.group.data_cleaning",
             CapabilityGroup::Efficiency => "caps.group.efficiency",
             CapabilityGroup::Collab => "caps.group.collab",
         }
@@ -63,7 +60,6 @@ impl CapabilityGroup {
             CapabilityGroup::Implement => "implement",
             CapabilityGroup::Writing => "writing",
             CapabilityGroup::AiDrawing => "ai_drawing",
-            CapabilityGroup::DataCleaning => "data_cleaning",
             CapabilityGroup::Efficiency => "efficiency",
             CapabilityGroup::Collab => "collab",
         }
@@ -76,12 +72,11 @@ impl CapabilityGroup {
             "implement" => Some(CapabilityGroup::Implement),
             "writing" | "paper_writing" => Some(CapabilityGroup::Writing),
             "ai_drawing" => Some(CapabilityGroup::AiDrawing),
-            "data_cleaning" => Some(CapabilityGroup::DataCleaning),
             "efficiency" => Some(CapabilityGroup::Efficiency),
             "collab" => Some(CapabilityGroup::Collab),
             // Previous tab ids: land on the closest new stage.
             "assets" => Some(CapabilityGroup::Topic),
-            "stats" | "structure" => Some(CapabilityGroup::Implement),
+            "stats" | "structure" | "data_cleaning" => Some(CapabilityGroup::Implement),
             _ => None,
         }
     }
@@ -948,19 +943,6 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
                 "给一个题目或一份材料。它做成能改的原生 PPT（形状、母版、图表）。第一次用会先下载这个技能。",
             ),
         ),
-        // —— 数据清洗 ——
-        guided_tile(
-            "data-cleaning",
-            CapabilityGroup::DataCleaning,
-            "caps.tile.data_cleaning.title",
-            "caps.tile.data_cleaning.blurb",
-            "caps.prompt.data_cleaning",
-            "plan",
-            help(
-                "Send a spreadsheet or a file path. It inspects the table, confirms how you want it processed, then cleans and returns an analysis-ready file.",
-                "把表格或文件路径发给它。它先看表并跟你确认处理方式，再清洗并交出能直接分析的数据。",
-            ),
-        ),
         CapabilityTile {
             id: "pii-firewall",
             group: CapabilityGroup::Efficiency,
@@ -1043,25 +1025,19 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
             ),
         )
         .with_settings(CapabilityCardSettings::Knowledge),
-        CapabilityTile {
-            id: "env-setup",
-            group: CapabilityGroup::DataCleaning,
-            title_key: "caps.tile.env_setup.title",
-            blurb_key: "caps.tile.env_setup.blurb",
-            help: help(
-                "Ask the agent to set up Python, R, Node, sci, pixi, and officecli on this computer. It will check what's missing, propose a plan, and only install after you approve.",
-                "把这台电脑配置 Python、R、Node、sci、pixi、officecli 的需求直接跟助手说：先排查缺什么、再出方案，经你同意后再装。",
-            ),
-            icon: "gear",
-            action: CapabilityAction::GuidedChat {
-                prompt_key: "caps.prompt.env_setup",
-                skill: None,
-                specialist: None,
-            },
-            toggle: None,
-            card_settings: None,
-        },
         // —— 研究实施与数据分析；知识图谱 / 生物库归选题 ——
+        guided_tile(
+            "data-cleaning",
+            CapabilityGroup::Implement,
+            "caps.tile.data_cleaning.title",
+            "caps.tile.data_cleaning.blurb",
+            "caps.prompt.data_cleaning",
+            "plan",
+            help(
+                "Send a spreadsheet or a file path. It inspects the table, confirms how you want it processed, then cleans and returns an analysis-ready file.",
+                "把表格或文件路径发给它。它先看表并跟你确认处理方式，再清洗并交出能直接分析的数据。",
+            ),
+        ),
         skill_tile(
             "nature-statistics",
             CapabilityGroup::Implement,
@@ -1366,6 +1342,24 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
             ),
             icon: "skill",
             action: CapabilityAction::OpenSettings { section: "skills" },
+            toggle: None,
+            card_settings: None,
+        },
+        CapabilityTile {
+            id: "env-setup",
+            group: CapabilityGroup::Collab,
+            title_key: "caps.tile.env_setup.title",
+            blurb_key: "caps.tile.env_setup.blurb",
+            help: help(
+                "Ask the agent to set up Python, R, Node, sci, pixi, and officecli on this computer. It will check what's missing, propose a plan, and only install after you approve.",
+                "把这台电脑配置 Python、R、Node、sci、pixi、officecli 的需求直接跟助手说：先排查缺什么、再出方案，经你同意后再装。",
+            ),
+            icon: "gear",
+            action: CapabilityAction::GuidedChat {
+                prompt_key: "caps.prompt.env_setup",
+                skill: None,
+                specialist: None,
+            },
             toggle: None,
             card_settings: None,
         },
@@ -2488,7 +2482,7 @@ mod tests {
             } => {}
             other => panic!("expected GuidedChat env_setup, got {other:?}"),
         }
-        assert_eq!(env.group, CapabilityGroup::DataCleaning);
+        assert_eq!(env.group, CapabilityGroup::Collab);
         assert_eq!(env_setup_capability_action(), env.action);
         let cleaner = capability_catalog()
             .iter()
@@ -2497,12 +2491,12 @@ mod tests {
         match cleaner.action {
             CapabilityAction::GuidedChat {
                 skill: None,
-                specialist: Some("data_cleaning"),
+                specialist: None,
                 prompt_key: "caps.prompt.data_cleaning",
             } => {}
-            other => panic!("expected GuidedChat with data_cleaning specialist, got {other:?}"),
+            other => panic!("expected GuidedChat for data-cleaning, got {other:?}"),
         }
-        assert_eq!(cleaner.group, CapabilityGroup::DataCleaning);
+        assert_eq!(cleaner.group, CapabilityGroup::Implement);
         let bio_db = capability_catalog()
             .iter()
             .find(|t| t.id == "bio-db")
@@ -2626,7 +2620,7 @@ mod tests {
             .collect();
         assert_eq!(
             implement_ids.iter().take(2).copied().collect::<Vec<_>>(),
-            vec!["nature-statistics", "stats-analysis"]
+            vec!["data-cleaning", "nature-statistics"]
         );
         let python_r = capability_catalog()
             .iter()
@@ -2716,6 +2710,7 @@ mod tests {
         assert_eq!(
             ids(CapabilityGroup::Implement),
             vec![
+                "data-cleaning",
                 "nature-statistics",
                 "stats-analysis",
                 "python-r",
@@ -2744,10 +2739,6 @@ mod tests {
             ]
         );
         assert_eq!(
-            ids(CapabilityGroup::DataCleaning),
-            vec!["data-cleaning", "env-setup"]
-        );
-        assert_eq!(
             ids(CapabilityGroup::Efficiency),
             vec![
                 "pii-firewall",
@@ -2767,6 +2758,7 @@ mod tests {
                 "playwright",
                 "plugins",
                 "skills",
+                "env-setup",
             ]
         );
         let skills = capability_catalog()
@@ -2869,6 +2861,10 @@ mod tests {
             CapabilityGroup::from_id("assets"),
             Some(CapabilityGroup::Topic)
         );
+        assert_eq!(
+            CapabilityGroup::from_id("data_cleaning"),
+            Some(CapabilityGroup::Implement)
+        );
         assert_eq!(CapabilityGroup::from_id(""), None);
         assert_eq!(CapabilityGroup::from_id("caps.group.stats"), None);
         assert_eq!(CapabilityGroup::from_id("unknown"), None);
@@ -2888,7 +2884,6 @@ mod tests {
                 "caps.group.implement",
                 "caps.group.writing",
                 "caps.group.ai_drawing",
-                "caps.group.data_cleaning",
                 "caps.group.efficiency",
                 "caps.group.collab",
             ]
@@ -3168,7 +3163,7 @@ pub(crate) fn CapabilitySceneTabs(
     }
 }
 
-/// 能力 tab 尾部的「默认项目」选择器：能力卡新建的会话归属到这个项目。
+/// 能力 tab 尾部的「默认项目」选择器：首页「开始对话」与能力卡新建的会话归属到这里。
 /// 与 `CapabilitySceneTabs` 同处一套实现，首页与设置-能力自动保持一致。
 #[component]
 fn CapabilityDefaultProjectPicker(locale: RwSignal<Locale>) -> impl IntoView {

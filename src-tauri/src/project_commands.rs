@@ -1001,10 +1001,10 @@ pub(super) async fn get_project_info(
     build_project_info(&state, window.label()).await
 }
 
-/// 首页能力卡「默认项目」设置键：能力卡新建的会话归属到这里。
+/// 首页「默认项目」设置键：开始对话 / 能力卡新建的会话归属到这里。
 pub(crate) const DEFAULT_CAPABILITY_PROJECT_KEY: &str = "default_capability_project_id";
 
-/// 读取用户配置的能力卡默认项目。项目已被删除时返回 None（并顺手清掉失效值）。
+/// 读取用户配置的默认项目。项目已被删除时返回 None（并顺手清掉失效值）。
 #[tauri::command]
 pub(super) async fn get_default_capability_project(
     state: State<'_, AppState>,
@@ -1035,7 +1035,7 @@ pub(super) async fn get_default_capability_project(
     Ok(Some(project_id))
 }
 
-/// 写入能力卡默认项目。空字符串表示恢复为「自动（优先 default 项目）」。
+/// 写入默认项目。空字符串表示恢复为「自动（优先 default 项目）」。
 #[tauri::command]
 pub(super) async fn set_default_capability_project(
     state: State<'_, AppState>,

@@ -198,8 +198,8 @@ pub(crate) fn pick_default_project_id(list: &[ProjectSummary]) -> Option<String>
         .map(|project| project.id.clone())
 }
 
-/// 能力卡新建会话的归属项目：用户配置的默认项目优先，配置缺失或已删除时
-/// 回退到「default 项目优先，否则列表第一项」。
+/// 首页「开始对话」与能力卡新建会话的归属项目：用户配置的默认项目优先，
+/// 配置缺失或已删除时回退到「default 项目优先，否则列表第一项」。
 pub(crate) fn resolve_capability_project_id(
     configured: Option<&str>,
     list: &[ProjectSummary],

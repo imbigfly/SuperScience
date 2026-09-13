@@ -800,8 +800,8 @@ mod runtime_slot_tests {
         let slots = vec![slot("local", "python"), slot("local", "r")];
         let attached = HashSet::new();
         assert_eq!(
-            session_runtime_strip_view(slots.clone(), &local_only, &attached),
-            session_runtime_strip_view(slots, &with_wsl, &attached)
+            session_runtime_strip_view(slots.clone(), &local_only, &attached, Some("p")),
+            session_runtime_strip_view(slots, &with_wsl, &attached, Some("p"))
         );
     }
 
@@ -1180,11 +1180,24 @@ pub(crate) struct SessionRuntimeStripGroup {
     pub chips: Vec<SessionRuntimeStripChip>,
 }
 
+/// Composer strip for the viewed conversation: only the active project's
+/// slots. `list_runtimes` still surfaces other projects' live kernels so the
+/// full Runtimes panel can show them, but the strip keys chips by language
+/// under each host and would otherwise paint "Ready" (other project) next to
+/// "Not started" (current project) for the same Local/Python row.
 pub(crate) fn session_runtime_strip_view(
     slots: Vec<RuntimeSlot>,
     contexts: &[ExecutionContext],
     attached: &HashSet<String>,
+    active_project_id: Option<&str>,
 ) -> Vec<SessionRuntimeStripGroup> {
+    let slots = match active_project_id.map(str::trim).filter(|id| !id.is_empty()) {
+        Some(project_id) => slots
+            .into_iter()
+            .filter(|slot| slot.project_id == project_id)
+            .collect(),
+        None => slots,
+    };
     session_runtime_groups(slots, contexts, attached)
         .into_iter()
         .map(|group| SessionRuntimeStripGroup {
@@ -2227,6 +2240,10 @@ pub(crate) fn SessionRuntimeStrip(
         );
         let attached =
             session_strip_context_ids(&session_execution_contexts.get(), resolved.as_deref());
+        let project_id = active_project
+            .get()
+            .as_ref()
+            .map(|project| project.id.clone());
         session_runtime_strip_view(
             runtime_slots(
                 runtimes.get(),
@@ -2236,6 +2253,7 @@ pub(crate) fn SessionRuntimeStrip(
             ),
             &execution_contexts.get(),
             &attached,
+            project_id.as_deref(),
         )
     });
     view! {

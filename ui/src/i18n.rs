@@ -65,6 +65,8 @@ fn fork_lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "model.cap.vision") => Some("Supports image input"),
         (Locale::Zh, "model.cap.reasoning") => Some("支持推理强度"),
         (Locale::En, "model.cap.reasoning") => Some("Supports reasoning effort"),
+        (Locale::Zh, "home.director_cta") => Some("开始对话"),
+        (Locale::En, "home.director_cta") => Some("Start conversation"),
         (Locale::Zh, "home.director_cta_hint") => Some("把你想要做的事情告诉我，我来引导你得到结果"),
         (Locale::En, "home.director_cta_hint") => {
             Some("Tell me what you want to do, and I will guide you to the result.")
@@ -73,10 +75,10 @@ fn fork_lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::Zh, "caps.default_project.label") => Some("默认项目"),
         (Locale::En, "caps.default_project.label") => Some("Default project"),
         (Locale::Zh, "caps.default_project.hint") => {
-            Some("从能力卡新建的会话都归属到这个项目。")
+            Some("从「开始对话」或能力卡新建的会话都归属到这个项目。")
         }
         (Locale::En, "caps.default_project.hint") => {
-            Some("Sessions started from a capability card belong to this project.")
+            Some("Sessions started from Start conversation or a capability card belong to this project.")
         }
         (Locale::Zh, "caps.default_project.auto") => Some("自动（优先默认项目）"),
         (Locale::En, "caps.default_project.auto") => Some("Automatic (prefer the default project)"),
