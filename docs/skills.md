@@ -88,13 +88,15 @@ conversation history or restarting the persistent Python/R runtime.
 
 **Settings → Skills** includes **Skill auto-update** (default on). When enabled,
 startup and **Check and update now** query allowlisted GitHub sources
-(`nature-skills`, `academic-research-skills`, `humanizer-zh`, and an already
-installed `ppt-master`) and install newer packs into `~/.superscience/skills`.
+(`nature-skills`, `academic-research-skills`, `humanizer-zh`, `officecli`, and an
+already installed `ppt-master`) and install newer packs into `~/.superscience/skills`.
 The signed bundled tree is never rewritten. Failures are logged; the UI stays
 quiet on startup. Semver overlays that fall behind a newer bundled pin are
 dropped so an app upgrade is not pinned by a stale overlay. Academic research
 skills share one `academic-shared` package; auto-update still downloads the
 upstream archive (repo-root `shared/`, or an older per-skill copy) and then lifts it.
+`officecli` tracks the latest OfficeCLI release tag and overlays `officecli*` /
+`morph-ppt*` only (not the CLI binary).
 Agents should author project Skills under `<project>/.superscience/skills`, not
 rewrite the global auto-update overlay directory.
 

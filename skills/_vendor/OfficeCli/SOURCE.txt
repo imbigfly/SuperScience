@@ -1,2 +1,8 @@
-Source: https://github.com/iOfficeAI/OfficeCli
+Source: https://github.com/iOfficeAI/OfficeCLI
+Tag: v1.0.149
+Commit: 6e83afe02750af15521e09aa4ed941ccba71b94e (2026-09-10)
+License: Apache-2.0 (see LICENSE / NOTICE)
 Vendored skill dirs: officecli*, morph-ppt*
+(skills/officecli/LICENSE and NOTICE are copies of the repo-root license files).
+
+Auto-update: allowlisted as pack id `officecli` (LatestSemverTag).

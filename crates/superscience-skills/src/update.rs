@@ -61,6 +61,20 @@ const ACADEMIC_SKILLS: &[&str] = &[
     "deep-research",
 ];
 
+const OFFICECLI_SKILLS: &[&str] = &[
+    "officecli",
+    "officecli-academic-paper",
+    "officecli-data-dashboard",
+    "officecli-docx",
+    "officecli-financial-model",
+    "officecli-pitch-deck",
+    "officecli-pptx",
+    "officecli-word-form",
+    "officecli-xlsx",
+    "morph-ppt",
+    "morph-ppt-3d",
+];
+
 /// Shared contracts package produced by [`normalize_academic_shared_layout`].
 /// Newer upstream tags keep one repo-root `shared/`; older archives still
 /// embed a copy inside each consumer.
@@ -89,7 +103,7 @@ pub const VENDOR_PACKS: &[VendorPackSpec] = &[
         repo: "nature-skills",
         pin_kind: PinKind::Commit,
         pin_source: PinSource::DefaultBranch,
-        bundled_pin: "b1a37a2bf881feb6d71e2587c70f0e4e70b72548",
+        bundled_pin: "2661b53150b537534159a2d4c6e35b1c9056f1e4",
         skills: NATURE_SKILLS,
         vendor_dir: "nature-skills",
     },
@@ -112,6 +126,16 @@ pub const VENDOR_PACKS: &[VendorPackSpec] = &[
         bundled_pin: "91f3d394db8419c20d67ebe22a96cf8fee0a404b",
         skills: &["humanizer-zh"],
         vendor_dir: "humanizer-zh",
+    },
+    VendorPackSpec {
+        id: "officecli",
+        owner: "iOfficeAI",
+        repo: "OfficeCLI",
+        pin_kind: PinKind::Semver,
+        pin_source: PinSource::LatestSemverTag,
+        bundled_pin: "v1.0.149",
+        skills: OFFICECLI_SKILLS,
+        vendor_dir: "OfficeCli",
     },
 ];
 

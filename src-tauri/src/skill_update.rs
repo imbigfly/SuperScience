@@ -404,6 +404,15 @@ fn install_pack_from_archive(
             installed.push(superscience_skills::update::ACADEMIC_SHARED_NAME.to_string());
         }
     }
+    if pack.id == "officecli" {
+        let dest = skills_dir.join("officecli");
+        for name in ["LICENSE", "NOTICE"] {
+            let src = inner.join(name);
+            if src.is_file() && dest.is_dir() {
+                let _ = std::fs::copy(&src, dest.join(name));
+            }
+        }
+    }
     let archive_sha256 = sha256_file(archive).unwrap_or_default();
     write_pack_state(
         skills_dir,
