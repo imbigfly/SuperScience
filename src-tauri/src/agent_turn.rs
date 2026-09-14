@@ -1104,7 +1104,8 @@ pub(crate) async fn send_message_inner(
     };
 
     let (ui_event_handle, ui_event_tx) = {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<SessionUiMessage>();
+        *rt.ui_event_writer.lock().unwrap() = Some(tx.downgrade());
         let store = state.store.clone();
         let fid = frame_id.clone();
         let seq = store
@@ -1122,7 +1123,8 @@ pub(crate) async fn send_message_inner(
     };
 
     let (live_event_handle, live_event_tx) = {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<SessionUiMessage>();
+        *rt.live_event_writer.lock().unwrap() = Some(tx.downgrade());
         let app = app.clone();
         let live_project_id = ap.id.clone();
         let handle = tokio::spawn(coalesce_live_agent_events(

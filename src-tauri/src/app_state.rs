@@ -31,6 +31,11 @@ pub(crate) struct SessionRuntime {
     pub(crate) deleted: AtomicBool,
     /// Last persisted message seq (`COALESCE(MAX(seq),0)`), not a message count.
     pub(crate) last_seq: StdMutex<i64>,
+    /// Weak so navigation cannot keep a completed turn's writer alive.
+    pub(crate) ui_event_writer:
+        StdMutex<Option<tokio::sync::mpsc::WeakUnboundedSender<SessionUiMessage>>>,
+    pub(crate) live_event_writer:
+        StdMutex<Option<tokio::sync::mpsc::WeakUnboundedSender<SessionUiMessage>>>,
     /// Guide (#410): mid-turn messages the running loop drains into user
     /// messages at its next iteration; ids let queued senders detect that.
     pub(crate) pending_guidance: superscience_core::GuidanceQueue,
@@ -79,6 +84,8 @@ impl SessionRuntime {
             cancel: Arc::new(AtomicBool::new(false)),
             deleted: AtomicBool::new(false),
             last_seq: StdMutex::new(0),
+            ui_event_writer: StdMutex::new(None),
+            live_event_writer: StdMutex::new(None),
             pending_guidance: superscience_core::GuidanceQueue::default(),
             turn_activity: std::sync::atomic::AtomicUsize::new(0),
             guidance_seq: std::sync::atomic::AtomicU64::new(0),
