@@ -122,7 +122,7 @@ test("an outdated connected extension gets a verified update and manual reload f
 
 test("extension update banner stays in the composer column and ellipsizes a long path", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
-  const longPath = "C:\\Users\\xuzhougeng\\AppData\\Roaming\\science.wisp-science\\wisp-science\\browser-extension\\unpacked\\very-long-managed-path-segment";
+  const longPath = "C:\\Users\\xuzhougeng\\AppData\\Roaming\\science.superscience\\superscience\\browser-extension\\unpacked\\very-long-managed-path-segment";
   await page.addInitScript((path) => {
     const status = {
       connected: true,

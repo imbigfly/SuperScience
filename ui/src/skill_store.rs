@@ -7,7 +7,7 @@ use leptos::*;
 use serde_wasm_bindgen::{from_value, to_value};
 
 pub(crate) const GUIDE: &str =
-    "https://github.com/xuzhougeng/wisp-science/blob/main/docs/skill-authoring.md";
+    "https://github.com/imbigfly/SuperScience/blob/main/docs/skill-authoring.md";
 
 fn github_path(value: &str) -> String {
     value

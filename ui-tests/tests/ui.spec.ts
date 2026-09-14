@@ -10209,7 +10209,7 @@ test("check for updates shows an available-update modal without a download-page 
     current_version: "0.9.0",
     latest_version: "1.2.3",
     update_available: true,
-    release_url: "https://github.com/xuzhougeng/wisp-science/releases/tag/v1.2.3",
+    release_url: "https://github.com/imbigfly/SuperScience/releases/tag/v1.2.3",
     notes: "<p>1、融入手写图片识别能力</p><p>2、重复图片检测能力</p>",
   });
 
@@ -10255,7 +10255,7 @@ test("macOS update download is verified before a separate install confirmation",
     current_version: "0.27.0",
     latest_version: "0.28.0",
     update_available: true,
-    release_url: "https://github.com/xuzhougeng/wisp-science/releases/tag/v0.28.0",
+    release_url: "https://github.com/imbigfly/SuperScience/releases/tag/v0.28.0",
     notes: "Signed macOS update",
     install_supported: true,
   });
@@ -10298,7 +10298,7 @@ test("update signature failure keeps the current app without a download-page but
   await enterApp(page);
   await globalSettingsButton(page).click();
   const releaseUrl =
-    "https://github.com/xuzhougeng/wisp-science/releases/tag/v0.28.0";
+    "https://github.com/imbigfly/SuperScience/releases/tag/v0.28.0";
   await setMockUpdateCheck(page, {
     latest_version: "0.28.0",
     update_available: true,
@@ -10338,7 +10338,7 @@ test("install is blocked while a task is active", async ({ page }) => {
   await setMockUpdateCheck(page, {
     latest_version: "0.28.0",
     update_available: true,
-    release_url: "https://github.com/xuzhougeng/wisp-science/releases/tag/v0.28.0",
+    release_url: "https://github.com/imbigfly/SuperScience/releases/tag/v0.28.0",
     install_supported: true,
   });
 
@@ -10381,7 +10381,7 @@ test("stale update card refreshes to the latest release before showing it (#521)
     current_version: "0.23.0",
     latest_version: "0.24.0",
     update_available: true,
-    release_url: "https://github.com/xuzhougeng/wisp-science/releases/tag/v0.24.0",
+    release_url: "https://github.com/imbigfly/SuperScience/releases/tag/v0.24.0",
   });
 
   await page.keyboard.press("Control+p");
@@ -10395,7 +10395,7 @@ test("stale update card refreshes to the latest release before showing it (#521)
 
   await setMockUpdateCheck(page, {
     latest_version: "0.25.0",
-    release_url: "https://github.com/xuzhougeng/wisp-science/releases/tag/v0.25.0",
+    release_url: "https://github.com/imbigfly/SuperScience/releases/tag/v0.25.0",
   });
   await page.getByTestId("update-card").click();
 
@@ -13954,8 +13954,8 @@ test("Windows uses the integrated title bar without covering the project landing
   await page.goto("/");
 
   await expect(page.locator(".window-titlebar")).toBeVisible();
-  await expect(page.getByTestId("window-brand-title")).toHaveText("wisp science");
-  await expect(page).toHaveTitle("wisp science");
+  await expect(page.getByTestId("window-brand-title")).toHaveText("SuperScience");
+  await expect(page).toHaveTitle("SuperScience");
   await expect(page.getByRole("button", { name: "Minimize" })).toBeVisible();
   await expect(page.getByTestId("window-maximize")).toBeVisible();
   await expect(page.locator("#titlebar-maximize")).toHaveAttribute("aria-label", "Maximize");
@@ -14069,24 +14069,24 @@ test("window title includes the open project name (#1017)", async ({ browser }) 
   await page.addInitScript(tauriMock);
   await page.goto("/");
 
-  await expect(page.getByTestId("window-brand-title")).toHaveText("wisp science");
-  await expect(page).toHaveTitle("wisp science");
+  await expect(page.getByTestId("window-brand-title")).toHaveText("SuperScience");
+  await expect(page).toHaveTitle("SuperScience");
 
   await page.locator(".proj-card-main").first().click();
   await expect(newSessionButton(page)).toBeVisible();
-  await expect(page.getByTestId("window-brand-title")).toHaveText("wisp science \u2014 wisp-science");
-  await expect(page).toHaveTitle("wisp science \u2014 wisp-science");
+  await expect(page.getByTestId("window-brand-title")).toHaveText("SuperScience \u2014 superscience");
+  await expect(page).toHaveTitle("SuperScience \u2014 superscience");
 
   await page.locator(".proj-switch").click();
   await page.locator(".proj-menu").getByRole("button", { name: "Other project" }).click();
   await expect(page.locator(".proj-name")).toHaveText("Other project");
-  await expect(page.getByTestId("window-brand-title")).toHaveText("wisp science \u2014 Other project");
-  await expect(page).toHaveTitle("wisp science \u2014 Other project");
+  await expect(page.getByTestId("window-brand-title")).toHaveText("SuperScience \u2014 Other project");
+  await expect(page).toHaveTitle("SuperScience \u2014 Other project");
 
   await page.getByRole("button", { name: "Back to projects" }).click();
   await expect(page.locator(".projects-screen")).toBeVisible();
-  await expect(page.getByTestId("window-brand-title")).toHaveText("wisp science");
-  await expect(page).toHaveTitle("wisp science");
+  await expect(page.getByTestId("window-brand-title")).toHaveText("SuperScience");
+  await expect(page).toHaveTitle("SuperScience");
 
   await context.close();
 });
@@ -16181,7 +16181,7 @@ test("a ?project window opens straight into the project, skipping the landing (#
   await expect.poll(async () => page.evaluate(() =>
     ((window as any).__skillInvokeLog ?? []).some((c: any) => c.cmd === "open_project"),
   )).toBe(true);
-  await expect(page).toHaveTitle("wisp science \u2014 wisp-science");
+  await expect(page).toHaveTitle("SuperScience \u2014 superscience");
 });
 
 test("specialists page configures the builtin Reader and saves a custom specialist", async ({ page }) => {
@@ -16685,7 +16685,7 @@ test("bundled connector details show real descriptions, parameters and operator 
   await datasets.getByText("Full input schema", { exact: true }).click();
   await expect(datasets.locator("pre")).toContainText('"required"');
   const sources = detail.getByTestId("connector-source-details");
-  await expect(sources).toContainText("Wisp Science");
+  await expect(sources).toContainText("SuperScience");
   await expect(sources.getByRole("link", { name: "Ensembl usage terms" })).toHaveAttribute("href", "https://www.ensembl.org/info/about/legal/disclaimer.html");
   await sources.getByRole("link", { name: "Ensembl BioMart", exact: true }).click();
   await expect.poll(() => lastInvokeArgs(page, "open_external_url")).toMatchObject({ url: "https://www.ensembl.org/info/data/biomart/index.html" });
@@ -16804,7 +16804,7 @@ for (const platform of ["Linux x86_64", "MacIntel"]) {
   test(`command palette reopens quick setup without resetting settings (${platform})`, async ({ page }) => {
     await page.addInitScript((value) => {
       Object.defineProperty(navigator, "platform", { configurable: true, value });
-      Object.defineProperty(navigator, "userAgent", { configurable: true, value: "wisp-science/Tauri" });
+      Object.defineProperty(navigator, "userAgent", { configurable: true, value: "superscience/Tauri" });
     }, platform);
     await enterApp(page);
     await openSettingsSection(page, "Models");
@@ -16817,7 +16817,7 @@ for (const platform of ["Linux x86_64", "MacIntel"]) {
       await palette.getByText("Quick setup", { exact: true }).click();
       const setup = page.locator(".onboard-overlay");
       await expect(setup).toBeVisible();
-      await expect(setup.getByRole("heading", { name: "Welcome to wisp-science" })).toBeVisible();
+      await expect(setup.getByRole("heading", { name: "Welcome to SuperScience" })).toBeVisible();
       await expect(setup.getByLabel("API key (stored in OS keyring)")).toHaveCount(0);
       await expect(setup.getByTestId("local-environment")).toHaveCount(0);
       // Immediate Escape closes the topmost setup page, preserving Settings.
@@ -16839,21 +16839,21 @@ test("onboarding Enter advances once, respects composition and controls, and fin
   await expect(modal).toBeFocused();
   await page.keyboard.down("Enter");
   await expect(modal.locator(".onboard-dot.active")).toHaveCount(1);
-  await expect(modal.getByRole("heading")).toHaveText("What wisp-science can do");
+  await expect(modal.getByRole("heading")).toHaveText("What SuperScience can do");
   await page.keyboard.down("Enter"); // Auto-repeat must not skip another page.
   await page.keyboard.up("Enter");
-  await expect(modal.getByRole("heading")).toHaveText("What wisp-science can do");
+  await expect(modal.getByRole("heading")).toHaveText("What SuperScience can do");
   await modal.dispatchEvent("keydown", { key: "Enter", isComposing: true, bubbles: true });
   await modal.dispatchEvent("compositionend", { bubbles: true });
   await modal.dispatchEvent("keydown", { key: "Enter", keyCode: 229, bubbles: true });
   await page.keyboard.press("Shift+Enter");
-  await expect(modal.getByRole("heading")).toHaveText("What wisp-science can do");
+  await expect(modal.getByRole("heading")).toHaveText("What SuperScience can do");
   // Native keyboard activation of Back still returns exactly one page.
   await modal.getByRole("button", { name: "Back", exact: true }).focus();
   await page.keyboard.press("Enter");
-  await expect(modal.getByRole("heading")).toHaveText("Welcome to wisp-science");
+  await expect(modal.getByRole("heading")).toHaveText("Welcome to SuperScience");
   await page.keyboard.press("Enter");
-  await expect(modal.getByRole("heading")).toHaveText("What wisp-science can do");
+  await expect(modal.getByRole("heading")).toHaveText("What SuperScience can do");
   await modal.locator(".row > .primary").focus();
   await page.keyboard.press("Enter");
   await expect(modal.getByRole("heading")).toHaveText("Set up your model");
@@ -16918,7 +16918,7 @@ for (const locale of ["en", "zh"]) {
     await page.setViewportSize({ width: 700, height: 620 });
     await page.addInitScript(() => {
       (window as any).__mockLocalEnvironment = { paths: {
-        python_executable: "C:\\Users\\Researcher\\AppData\\Roaming\\science.wisp-science\\wisp-science\\python\\.venv\\Scripts\\python.exe",
+        python_executable: "C:\\Users\\Researcher\\AppData\\Roaming\\science.superscience\\superscience\\python\\.venv\\Scripts\\python.exe",
         rscript_executable: "C:\\Program Files\\R-4.6.1\\bin\\x64\\Rscript.exe",
         uv_executable: "C:\\Users\\Researcher\\AppData\\Local\\Microsoft\\WinGet\\Links\\uv.exe",
         node_executable: "C:\\Program Files\\nodejs\\node.exe",
@@ -16930,8 +16930,8 @@ for (const locale of ["en", "zh"]) {
     await page.goto(`/?mockOnboarding=1&mockLocale=${locale}`);
     const modal = page.locator(".onboard");
     const titles = locale === "zh"
-      ? ["欢迎使用 wisp-science", "wisp-science 能做什么", "配置模型", "本地环境（可选）"]
-      : ["Welcome to wisp-science", "What wisp-science can do", "Set up your model", "Local environment (optional)"];
+      ? ["欢迎使用天成科研助手", "天成科研助手能做什么", "配置模型", "本地环境（可选）"]
+      : ["Welcome to SuperScience", "What SuperScience can do", "Set up your model", "Local environment (optional)"];
     const next = locale === "zh" ? "下一步" : "Next";
     for (let step = 0; step < 4; step++) {
       await expect(modal.getByRole("heading", { name: titles[step], exact: true })).toBeVisible();

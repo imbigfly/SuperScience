@@ -365,7 +365,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string;
     current_version: "0.9.0",
     latest_version: "0.9.0",
     update_available: false,
-    release_url: "https://github.com/xuzhougeng/wisp-science/releases",
+    release_url: "https://github.com/imbigfly/SuperScience/releases",
     notes: "",
     install_supported: false,
     downloaded: false,
@@ -4182,7 +4182,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string;
               mcp_counts: { bundled: 2, project: 1 },
             };
           case "list_community_skills":
-            return { entries: [{"name": "research-handoff", "description": "Prepare a source-linked research handoff from materials supplied by the user.", "author": "Wisp Science contributors", "license": "AGPL-3.0-only", "tags": ["research", "writing", "handoff"], "repository": "example/science-skills", "git_ref": "release/v1", "package_path": "skills/research-handoff", "responsibilities": "Organize supplied observations, decisions, source paths, and unresolved questions into a handoff another researcher can check.", "when_to_use": "When the user asks to hand over an existing research project or summarize its current state.", "inputs": "Required: the user's handoff request and supplied notes or project files. Optional: intended audience and output filename.", "outputs": "A handoff in chat, or a user-requested Markdown file under the active project with verified source paths.", "out_of_scope": "Does not search for new literature, run analyses, invent evidence, or publish to external services.", "required_dependencies": ["A text-capable model", "Wisp read tool when local files are supplied"], "optional_dependencies": ["Wisp write tool for a requested Markdown artifact"], "operation_boundary": "Reads only supplied material. Ask for missing required inputs. Write a file only within the user's request and host approvals. No network, runtime installation, or MCP authorization during installation.", "supported_wisp": "Author declaration: Wisp 1.11.0; uses legacy SKILL.md frontmatter.", "verified_wisp": null, "known_limits": "Parser and package-resource tests only; model execution and scientific validity have not been verified. No vision, Python, R, or remote-host support is required.", "feedback_url": "https://github.com/xuzhougeng/wisp-science/issues"}], notice: arg("refresh") && query.get("mockSkillStore") === "offline" ? "GitHub unavailable. Showing the directory shipped with this app." : null };
+            return { entries: [{"name": "research-handoff", "description": "Prepare a source-linked research handoff from materials supplied by the user.", "author": "SuperScience contributors", "license": "AGPL-3.0-only", "tags": ["research", "writing", "handoff"], "repository": "example/science-skills", "git_ref": "release/v1", "package_path": "skills/research-handoff", "responsibilities": "Organize supplied observations, decisions, source paths, and unresolved questions into a handoff another researcher can check.", "when_to_use": "When the user asks to hand over an existing research project or summarize its current state.", "inputs": "Required: the user's handoff request and supplied notes or project files. Optional: intended audience and output filename.", "outputs": "A handoff in chat, or a user-requested Markdown file under the active project with verified source paths.", "out_of_scope": "Does not search for new literature, run analyses, invent evidence, or publish to external services.", "required_dependencies": ["A text-capable model", "Wisp read tool when local files are supplied"], "optional_dependencies": ["Wisp write tool for a requested Markdown artifact"], "operation_boundary": "Reads only supplied material. Ask for missing required inputs. Write a file only within the user's request and host approvals. No network, runtime installation, or MCP authorization during installation.", "supported_wisp": "Author declaration: Wisp 1.11.0; uses legacy SKILL.md frontmatter.", "verified_wisp": null, "known_limits": "Parser and package-resource tests only; model execution and scientific validity have not been verified. No vision, Python, R, or remote-host support is required.", "feedback_url": "https://github.com/xuzhougeng/wisp-science/issues"}], notice: arg("refresh") && query.get("mockSkillStore") === "offline" ? "GitHub unavailable. Showing the directory shipped with this app." : null };
           case "preview_github_skills": {
             const mode = query.get("mockSkillStore");
             if (mode === "network") throw new Error("GitHub request failed (HTTP 404)");
@@ -6692,7 +6692,7 @@ export function parallelMock(): void {
               current_version: "0.9.0",
               latest_version: "0.9.0",
               update_available: false,
-              release_url: "https://github.com/xuzhougeng/wisp-science/releases",
+              release_url: "https://github.com/imbigfly/SuperScience/releases",
             };
           case "send_message": {
             const fid = (args && (args.sessionId ?? args.session_id)) || "t1";

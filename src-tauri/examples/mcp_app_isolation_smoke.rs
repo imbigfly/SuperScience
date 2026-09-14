@@ -99,7 +99,7 @@ fn mcp_app_child_request(
         .unwrap()
         .push(request.method.clone());
     let result = if request.method == "ui/initialize" {
-        json!({"hostInfo":{"name":"wisp-science"},"hostCapabilities":{},"protocolVersion":"2026-01-26"})
+        json!({"hostInfo":{"name":"superscience"},"hostCapabilities":{},"protocolVersion":"2026-01-26"})
     } else {
         json!({})
     };

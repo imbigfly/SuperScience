@@ -1,6 +1,6 @@
 # Community Skills directory
 
-This is Wisp Science's free, public Skill discovery directory. Entries may point
+This is SuperScience's free, public Skill discovery directory. Entries may point
 to a package in this repository or a third-party public GitHub repository.
 Inclusion means the entry was reviewed for listing; it does not mean official
 maintenance, security certification, scientific correctness, or runtime testing.
@@ -25,12 +25,12 @@ Review checklist:
 
 - Source, license, maintainer and package path can be inspected publicly.
 - Responsibilities include triggers, inputs, outputs, and exclusions.
-- Frontmatter parses under the linked Wisp parser; references resolve inside
+- Frontmatter parses under the linked skill parser; references resolve inside
   the complete package. No symlinks, submodules, or Git LFS pointers are required.
 - Claimed versions, actual verification, known limitations, and dependency setup
   are described separately. Parser success alone is not runtime validation.
 - Tests use fixtures and temporary directories without GitHub credentials or
-  real external infrastructure: `cargo test -p wisp-skills`.
+  real external infrastructure: `cargo test -p superscience-skills`.
 - Maintainers use the normal review process; no automatic publication from a
   user's install operation.
 

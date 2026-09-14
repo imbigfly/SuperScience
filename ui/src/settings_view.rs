@@ -15,7 +15,7 @@ use crate::app_support::{
 use crate::bindings::{invoke, invoke_checked, is_mac, is_windows, open_external_url};
 use crate::dto::*;
 use crate::i18n::{
-    brand_visible_copy, localize_backend, set_document_lang, specialist_display_description,
+    brand_product_name, localize_backend, set_document_lang, specialist_display_description,
     specialist_display_name, t, tf, use_locale, Locale,
 };
 use crate::knowledge_settings::{
@@ -923,10 +923,18 @@ const MODEL_PRESETS: [(&str, &str, &str); 5] = [
     ),
 ];
 
-fn appearance_palette_options(dark: bool) -> [(&'static str, &'static str); 5] {
+fn appearance_palette_options(locale: Locale, dark: bool) -> [(&'static str, &'static str); 5] {
+    let charcoal = match locale {
+        Locale::Zh => "炭黑",
+        Locale::En => "Charcoal",
+    };
+    let paper = match locale {
+        Locale::Zh => "纸白",
+        Locale::En => "Paper",
+    };
     if dark {
         [
-            ("charcoal", "Wisp Charcoal"),
+            ("charcoal", charcoal),
             ("codex", "Codex"),
             ("github", "GitHub Dark"),
             ("catppuccin", "Catppuccin Mocha"),
@@ -934,7 +942,7 @@ fn appearance_palette_options(dark: bool) -> [(&'static str, &'static str); 5] {
         ]
     } else {
         [
-            ("paper", "Wisp Paper"),
+            ("paper", paper),
             ("codex", "Codex"),
             ("github", "GitHub"),
             ("catppuccin", "Catppuccin Latte"),
@@ -3362,7 +3370,7 @@ pub(super) fn SettingsView(
                         </div>
                         </div>
                         <div class="row general-update-actions">
-                                <span class="settings-version">{move || brand_visible_copy(locale.get(), concat!("wisp-science v", env!("CARGO_PKG_VERSION")))}</span>
+                                <span class="settings-version">{move || format!("{} v{}", brand_product_name(locale.get()), env!("CARGO_PKG_VERSION"))}</span>
                                 <button type="button" disabled=move || settings_busy.get() on:click=move |ev| check_updates.call(ev)>{move || t(locale.get(), "settings.check_updates")}</button>
                         </div>
                         </section>
@@ -4226,7 +4234,7 @@ pub(super) fn SettingsView(
                             let accent_ink = if dark && palette == "gruvbox" { "#1D2021" } else { "#FFFFFF" };
                             let background_ink = if dark { "#FFFFFF" } else { "#1F2328" };
                             let foreground_ink = if dark { "#1F2328" } else { "#FFFFFF" };
-                            let options = appearance_palette_options(dark);
+                            let options = appearance_palette_options(locale.get(), dark);
                             view! {
                                 <section class="appearance-config-card">
                                     <div class="appearance-config-head">
@@ -4243,7 +4251,7 @@ pub(super) fn SettingsView(
                                                         dark_palette.get() == value
                                                     } else {
                                                         light_palette.get() == value
-                                                    }>{brand_visible_copy(locale.get(), name)}</option>
+                                                    }>{name}</option>
                                             }).collect_view()}
                                         </select>
                                     </div>

@@ -134,7 +134,7 @@ test("child shell preserves sandbox/CSP and directly forwards guest protocol", a
       if(command==="mcp_app_child_bootstrap") return {handle:{},instanceId:"mcp-app:fake:ui://test",version:"test",hostContext:{theme:"light"},payload:{tool:{name:"test"},resource:{text:`<!doctype html><body><div id="result">waiting</div><script>
       addEventListener('message',e=>{if(e.data.id===1)parent.postMessage({jsonrpc:'2.0',method:'tools/call',id:2,params:{name:'paginate',arguments:{page:2}}},'*');if(e.data.id===2)document.querySelector('#result').textContent=e.data.result.structuredContent.page;});
       parent.postMessage({jsonrpc:'2.0',method:'ui/initialize',id:1,params:{}},'*');<\/script>`},result:{content:[]}}};
-      if(command==="mcp_app_child_request") return {jsonrpc:"2.0",id:args.request.id,result:args.request.method==="tools/call"?{structuredContent:{page:2}}:{hostInfo:{name:"wisp-science"}}};
+      if(command==="mcp_app_child_request") return {jsonrpc:"2.0",id:args.request.id,result:args.request.method==="tools/call"?{structuredContent:{page:2}}:{hostInfo:{name:"superscience"}}};
       return {};
     }};
   });

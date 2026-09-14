@@ -78,7 +78,7 @@ const HELP_ITEMS: &[MenuItem] = &[
 
 /// Brand string used when no project is open. Keep in sync with
 /// `src-tauri` `project_commands::APP_WINDOW_TITLE`.
-pub(crate) const APP_WINDOW_TITLE: &str = "SuperScience";
+pub(crate) const APP_WINDOW_TITLE: &str = superscience_paths::PRODUCT_NAME;
 
 /// Window title shown in the custom Windows titlebar, taskbar, and Alt-Tab.
 pub(crate) fn app_window_title(project_name: Option<&str>) -> String {

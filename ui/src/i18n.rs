@@ -181,6 +181,48 @@ fn fork_lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "browser.offline.path_hint_other") => {
             Some("paste the path into the file name box and press Enter")
         }
+        // 品牌文案：覆盖上游 lookup，避免机械替换产生别扭中文，并与默认 UA 一致。
+        (Locale::En, "models.user_agent_hint") => Some(
+            "Optional client identifier sent with model API requests, including connection validation. Leave blank to use superscience. Use printable ASCII characters.",
+        ),
+        (Locale::Zh, "models.user_agent_hint") => Some(
+            "可选的客户端标识，随模型 API 请求发送，也用于验证连接。留空使用 superscience，仅支持可打印的 ASCII 字符。",
+        ),
+        (Locale::En, "channels.desc") => Some(
+            "Connect Feishu, WeChat, or a StickS3 device to SuperScience. Each access method stays opt-in and has its own security boundary.",
+        ),
+        (Locale::Zh, "channels.desc") => Some(
+            "将飞书、微信或 StickS3 设备接入天成科研助手。每种远程接入都默认关闭，并具有独立的安全边界。",
+        ),
+        (Locale::En, "projects.tagline_brand") => Some("with SuperScience by your side."),
+        (Locale::Zh, "projects.tagline_brand") => Some("天成科研助手在身边。"),
+        (Locale::En, "browser.extension.title") => {
+            Some("SuperScience Real Browser Bridge is out of date")
+        }
+        (Locale::Zh, "browser.extension.title") => {
+            Some("SuperScience Real Browser Bridge 版本过低")
+        }
+        (Locale::En, "browser.extension.manual_body") => Some(
+            "Chrome cannot reload version {current} automatically. On the extension page, reload SuperScience Real Browser Bridge {required}; if it still shows the old version, load the unpacked folder below.",
+        ),
+        (Locale::Zh, "browser.extension.manual_body") => Some(
+            "Chrome 无法自动重新加载版本 {current}。请在扩展管理页重新加载 SuperScience Real Browser Bridge {required}；若仍显示旧版本，请从下方目录“加载已解压的扩展程序”。",
+        ),
+        (Locale::En, "browser.auto_launch_hint") => Some(
+            "When a browser tool needs Chrome/Chromium and it isn't running, start it so the SuperScience extension can reconnect. Uses your existing profile, not a temporary automation browser.",
+        ),
+        (Locale::Zh, "browser.auto_launch_hint") => Some(
+            "使用浏览器工具时，如果 Chrome/Chromium 没有在运行，就启动它，让已安装的天成科研助手扩展重新连上。使用你现有的用户资料，不会另开一套自动化浏览器。",
+        ),
+        (Locale::En, "ssh_check.probe_output_body") => Some(
+            "SSH authentication to `{host}` succeeded, but the account did not execute SuperScience's non-interactive probe commands. Remote command execution is required for Agent, Runtime, Files, and terminal features.",
+        ),
+        (Locale::Zh, "ssh_check.probe_output_body") => Some(
+            "天成科研助手已通过 `{host}` 的 SSH 认证，但该账号没有执行非交互探测命令。Agent、Runtime、Files 和终端功能都需要远程命令执行能力。",
+        ),
+        (Locale::En, "onboard.welcome.title") => Some("Welcome to SuperScience"),
+        (Locale::En, "onboard.title") => Some("Welcome to SuperScience"),
+        (Locale::En, "onboard.features.title") => Some("What SuperScience can do"),
         _ => None,
     }
 }
@@ -8022,7 +8064,7 @@ mod queue_label_tests {
         );
         assert_eq!(
             t(Locale::En, "onboard.welcome.title"),
-            "Welcome to 天成科研助手"
+            "Welcome to SuperScience"
         );
         assert_eq!(
             brand_visible_copy(Locale::Zh, "wisp-science v1.5.0"),

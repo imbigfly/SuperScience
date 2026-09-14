@@ -102,7 +102,7 @@ test("Chinese research journey naming is consistent across navigation and page c
 test("run record separates metadata and logs, fits long content and keeps its close button visible", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1488, height: 1058 });
   await open(page, "?mockLocale=zh&mockJourney=design");
-  const command = "& 'C:\\Users\\researcher\\AppData\\Roaming\\science.wisp-science\\wisp-science\\python\\.venv\\Scripts\\python.exe' plant-sc-papers/scripts/02_filter_classify.py";
+  const command = "& 'C:\\Users\\researcher\\AppData\\Roaming\\science.superscience\\superscience\\python\\.venv\\Scripts\\python.exe' plant-sc-papers/scripts/02_filter_classify.py";
   const output = Array.from({ length: 80 }, (_, i) => `记录 ${i}: ${"normalized_counts_".repeat(12)}`).join("\n");
   await page.evaluate(({ command, output }) => {
     Object.assign((window as any).__mockRuns.find((run: any) => run.id === "run-local-002"), {

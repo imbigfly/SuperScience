@@ -8,9 +8,9 @@ use std::{
 use superscience_dto::{CommunitySkillEntry, SkillInstallSource, SkillStoreCandidate};
 
 pub const GUIDE_URL: &str =
-    "https://github.com/xuzhougeng/wisp-science/blob/main/docs/skill-authoring.md";
+    "https://github.com/imbigfly/SuperScience/blob/main/docs/skill-authoring.md";
 pub const INDEX_URL: &str =
-    "https://raw.githubusercontent.com/xuzhougeng/wisp-science/main/community-skills/index.json";
+    "https://raw.githubusercontent.com/imbigfly/SuperScience/main/community-skills/index.json";
 pub const MAX_ARCHIVE_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
 pub const MAX_EXPANDED_BYTES: u64 = 128 * 1024 * 1024;
@@ -1010,7 +1010,9 @@ mod tests {
         for entry in entries {
             // Third-party entries are schema-checked above; maintainers review
             // their external packages without making CI depend on GitHub.
-            if entry.repository != "xuzhougeng/wisp-science" {
+            if entry.repository != "imbigfly/SuperScience"
+                && entry.repository != "xuzhougeng/wisp-science"
+            {
                 continue;
             }
             let source = SkillInstallSource {

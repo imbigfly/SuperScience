@@ -14,7 +14,7 @@ Do not invent experiments, citations, computed results, or missing decisions.
 ## Inputs and dependencies
 Require a handoff request and user-supplied notes or project files. If absent,
 ask for the missing inputs and pause dependent work. A text-capable model is
-sufficient. Use Wisp's `read` tool only if local input files need reading.
+sufficient. Use SuperScience's `read` tool only if local input files need reading.
 No MCP, network, Python, R, or OS-specific runtime is required.
 
 ## Procedure
@@ -26,7 +26,7 @@ or supplied URL for each substantive observation. Mark unknowns explicitly.
 ## Deliverables and confirmation
 Return the handoff in chat unless the user requested a file. When a file is
 requested, write Markdown within the active project to the requested path and
-follow Wisp's normal write approval. Never infer consent from an unanswered
+follow SuperScience's normal write approval. Never infer consent from an unanswered
 question. Do not upload or submit anything externally.
 After writing, verify the actual file exists, is readable, and has the expected
 path and sections. State separately whether the scientific claims were checked;
