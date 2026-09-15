@@ -15290,6 +15290,42 @@ test("notification navigation opens the project and session that need the user (
   await expect.poll(() => lastInvokeArgs(page, "load_session")).toMatchObject({ id: "pet-frame" });
 });
 
+test("open-session for the project already on screen switches conversations without rebuilding the shell", async ({ page }) => {
+  await page.goto("/");
+  await expect.poll(() => page.evaluate(() =>
+    (window as any).__tauriListenerReady("open-session"),
+  )).toBe(true);
+  await emitTauriEvent(page, "open-session", { projectId: "other", sessionId: "pet-frame" });
+  await expect.poll(() => lastInvokeArgs(page, "load_session")).toMatchObject({ id: "pet-frame" });
+  await expect(page.locator("#chat-scroller")).toBeVisible();
+  const projectOpens = await invokeCount(page, "open_project");
+  const sessionLoads = await invokeCount(page, "load_session");
+  // The backend replays a turn-end notification target on the next window
+  // focus. Tearing the shell down for a conversation that is already visible
+  // is the "page flashes on the first click after a reply" report on Windows.
+  await page.evaluate(() => { (document.getElementById("chat-scroller") as any).__sameNode = true; });
+  await emitTauriEvent(page, "open-session", { projectId: "other", sessionId: "pet-frame" });
+  await emitTauriEvent(page, "open-session", { projectId: "other", sessionId: "pet-frame-2" });
+  await expect.poll(() => lastInvokeArgs(page, "load_session")).toMatchObject({ id: "pet-frame-2" });
+  expect(await invokeCount(page, "load_session")).toBe(sessionLoads + 1);
+  expect(await invokeCount(page, "open_project")).toBe(projectOpens);
+  expect(await page.evaluate(() => (document.getElementById("chat-scroller") as any)?.__sameNode === true)).toBe(true);
+  await expect(page.locator(".app-entering")).toHaveCount(0);
+});
+
+test("a sync conflict requires an explicit authoritative device choice", async ({ page }) => {
+  await page.goto("/");
+  await page.evaluate(() => { (window as any).__failSyncConflict = true; });
+  const projectCard = page.locator(".proj-card:not(.proj-example)").first();
+  await projectCard.hover();
+  await projectCard.getByRole("button", { name: "Sync now" }).click();
+  await expect(page.getByRole("dialog", { name: "Both devices changed this project" })).toBeVisible();
+  await page.getByRole("button", { name: "Use remote version" }).click();
+  await expect.poll(() => lastInvokeArgs(page, "resolve_project_sync")).toMatchObject({
+    id: "default", strategy: "remote",
+  });
+});
+
 test("a second conversation can run in parallel without interleaving transcripts", async ({ page }) => {
   await page.addInitScript(parallelMock);
   await page.goto("/");
