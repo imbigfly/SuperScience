@@ -2595,6 +2595,17 @@ pub(super) fn SettingsView(
     // form directly in the view gate remounts the inputs on every keystroke.
     let model_form_is_edit =
         create_memo(move |_| model_form.get().is_some_and(|form| form.id.is_some()));
+    // The chat/image/video fields must also keep their DOM nodes while values
+    // change, otherwise token edits remount the focused input (#1243).
+    let model_form_media_kind = create_memo(move |_| {
+        let form = model_form.get();
+        let image = form.as_ref().is_some_and(|f| f.is_image_model());
+        let video = !image
+            && form
+                .as_ref()
+                .is_some_and(|f| is_video_generation_model(&f.model));
+        (image, video)
+    });
     let memory_projects = create_rw_signal(Vec::<ProjectSummary>::new());
     let memory_project_menu_open = create_rw_signal(false);
     let global_memory_edit_id = create_rw_signal(None::<String>);
