@@ -2599,7 +2599,9 @@ pub(super) fn SettingsView(
     // change, otherwise token edits remount the focused input (#1243).
     let model_form_media_kind = create_memo(move |_| {
         let form = model_form.get();
-        let image = form.as_ref().is_some_and(|f| f.is_image_model());
+        let image = form
+            .as_ref()
+            .is_some_and(|f| f.use_for_image_generation || is_image_generation_model(&f.model));
         let video = !image
             && form
                 .as_ref()

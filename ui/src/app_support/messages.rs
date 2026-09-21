@@ -50,7 +50,6 @@ pub(crate) fn StreamingAssistantMessage(
     let commit_handle = Rc::new(Cell::new(None::<TimeoutHandle>));
     let active = Rc::new(Cell::new(true));
     let recent_parse_cost_ms = Rc::new(Cell::new(None::<f64>));
-    let project = use_context::<ReadSignal<Option<ProjectInfo>>>();
 
     create_render_effect({
         let commit_handle = Rc::clone(&commit_handle);
@@ -108,15 +107,8 @@ pub(crate) fn StreamingAssistantMessage(
         let artifacts = artifacts.clone();
         move |_| {
             let started_at = js_sys::Date::now();
-            let project_root =
-                project.and_then(|project| project.get().map(|project| project.root));
-            let html = enrich_md_html(
-                md_to_html(&rendered_text.get()),
-                &artifacts,
-                &[],
-                locale.get(),
-                project_root.as_deref(),
-            );
+            let html =
+                enrich_app_markdown(md_to_html(&rendered_text.get()), &artifacts, &[], locale.get());
             let elapsed = (js_sys::Date::now() - started_at).max(0.0);
             let smoothed = recent_parse_cost_ms
                 .get()
@@ -1032,7 +1024,6 @@ pub(crate) fn AssistantMessage(
     let text_for_html = text.clone();
     let project = use_context::<ReadSignal<Option<ProjectInfo>>>();
     let html = create_memo(move |_| {
-        let project_root = project.and_then(|project| project.get().map(|project| project.root));
         // Subscribe to the shared artifact list at row scope: an artifact
         // change recomputes only this memo, and String equality keeps the DOM
         // (plus the highlight/resource effects below) untouched for rows whose
@@ -1040,12 +1031,11 @@ pub(crate) fn AssistantMessage(
         // fingerprint that used to remount every assistant row on any artifact
         // event — the remount storm behind the dead-window reports.
         artifacts.with(|arts| {
-            enrich_md_html(
+            enrich_app_markdown(
                 md_to_html(&text_for_html),
                 arts,
                 &resources_for_html,
                 locale.get(),
-                project_root.as_deref(),
             )
         })
     });
@@ -1450,8 +1440,6 @@ pub(crate) fn ApprovalCard(
     } else {
         vec![]
     };
-    let project_root = use_context::<ReadSignal<Option<ProjectInfo>>>()
-        .and_then(|project| project.get().map(|project| project.root));
     let tool_for_title = tool.clone();
     let title = move || {
         let loc = locale.get();
@@ -1483,12 +1471,11 @@ pub(crate) fn ApprovalCard(
                     view! {
                         <div class="plan-steps">
                             {plan_steps.into_iter().map(|(cls, text)| {
-                                let html = enrich_md_html(
+                                let html = enrich_app_markdown(
                                     md_to_html(&text),
                                     &[],
                                     &[],
                                     locale.get(),
-                                    project_root.as_deref(),
                                 );
                                 let step_artifact = on_artifact.clone();
                                 let step_file = on_file.clone();
