@@ -74,4 +74,8 @@
 
 ## 四、产物
 
-本地 DMG 打包结果见同日打包记录（`scripts/package-macos-local.sh`）。
+- **DMG**：`target/aarch64-apple-darwin/release/bundle/dmg/天成科研助手_1.11.0_aarch64.dmg`
+  - 约 61 MB（63,945,754 字节），`SuperScience Local Codesign` 自签名，签名时间 2026-09-27 00:44:24，打包总耗时 331 秒（完整 release 构建，含前端）
+  - SHA-256：`10cb4fee75f0aa77255099af1d9e0ef60e7221df04f4ee283f64c724ee5d4cd6`
+  - 桌面副本：`~/Desktop/天成科研助手_1.11.0_aarch64.dmg`
+  - 版本号保持 v1.11.0（本次为修复摘取，未引入版本功能，不升版本号）
