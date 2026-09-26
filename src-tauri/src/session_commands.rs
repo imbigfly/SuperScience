@@ -236,8 +236,16 @@ pub(super) async fn summarize_session_branch_merge(
         current_version.as_deref(),
         user_guidance.as_deref(),
     )?;
-    let (provider, api_url, model, api_key, profile_max_tokens, reasoning_effort, service_tier, user_agent) =
-        load_session_settings(&state.store, &id).await;
+    let (
+        provider,
+        api_url,
+        model,
+        api_key,
+        profile_max_tokens,
+        reasoning_effort,
+        service_tier,
+        user_agent,
+    ) = load_session_settings(&state.store, &id).await;
     let config = build_provider_config(
         &provider,
         &api_url,

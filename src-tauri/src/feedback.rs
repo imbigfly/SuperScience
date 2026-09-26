@@ -348,12 +348,13 @@ pub fn build_feedback_html(message: &str, diagnostics: Option<&str>) -> String {
     if let Some(diagnostics) = diagnostics.map(str::trim).filter(|s| !s.is_empty()) {
         let mut current_title: Option<String> = None;
         let mut rows: Vec<(String, String)> = Vec::new();
-        let flush = |html: &mut String, title: &mut Option<String>, rows: &mut Vec<(String, String)>| {
-            if let Some(section) = title.take() {
-                push_html_section_table(html, &section, rows);
-                rows.clear();
-            }
-        };
+        let flush =
+            |html: &mut String, title: &mut Option<String>, rows: &mut Vec<(String, String)>| {
+                if let Some(section) = title.take() {
+                    push_html_section_table(html, &section, rows);
+                    rows.clear();
+                }
+            };
         for line in diagnostics.lines() {
             if let Some(title) = section_title_from_heading(line) {
                 flush(&mut html, &mut current_title, &mut rows);
@@ -364,9 +365,7 @@ pub fn build_feedback_html(message: &str, diagnostics: Option<&str>) -> String {
             if trimmed.is_empty() {
                 continue;
             }
-            if let Some((key, value)) = trimmed
-                .split_once(':')
-                .or_else(|| trimmed.split_once('：'))
+            if let Some((key, value)) = trimmed.split_once(':').or_else(|| trimmed.split_once('：'))
             {
                 rows.push((key.trim().to_string(), value.trim().to_string()));
             } else if current_title.is_some() {

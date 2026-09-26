@@ -7937,10 +7937,8 @@ pub fn run() {
                 // finished" report can name the step it stopped at. Today the log
                 // simply goes quiet here, which is why #1358 stays undiagnosed.
                 let exit_started = std::time::Instant::now();
-                tracing::info!(target: "wisp", step="shutdown-mcp-broker", "app.exit.step");
-                mcp_broker::shutdown();
-                tracing::info!(target: "wisp", step="shutdown-mcp-connections", "app.exit.step");
-                tauri::async_runtime::block_on(mcp_connections::host().shutdown_all());
+                // 本地基线（v1.11）没有上游 v1.12 的 mcp_broker / mcp_connections
+                // 连接管理模块，退出序列跳过这两步，只记录其余步骤。
                 tracing::info!(target: "wisp", step="pause-method-searches", "app.exit.step");
                 let store = _app.state::<AppState>().store.clone();
                 match tauri::async_runtime::block_on(store.pause_method_searches_for_shutdown()) {
