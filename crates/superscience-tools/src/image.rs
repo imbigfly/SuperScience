@@ -211,7 +211,7 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         assert_eq!(unchanged, bytes);
         assert!(result.success, "{}", result.content);
-        let image = &result.images[0];
+        let image = result.image.as_ref().expect("decoded image attached");
         let data = image.data_url.split_once(',').unwrap().1;
         let output = base64::engine::general_purpose::STANDARD
             .decode(data)

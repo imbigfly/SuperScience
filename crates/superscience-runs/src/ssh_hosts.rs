@@ -1358,7 +1358,7 @@ mod tests {
 
     #[test]
     fn managed_ssh_rejects_old_openssh_before_probe_status() {
-        let mut ctx = wisp_store::ExecutionContext::new("ssh:lab", "lab").unwrap();
+        let mut ctx = superscience_store::ExecutionContext::new("ssh:lab", "lab").unwrap();
         ctx.config_json = serde_json::json!({ "alias": "lab" }).to_string();
         ctx.last_probe_status = Some("ok".into());
         let error = require_managed_ssh_ready_checked(&ctx, || {
