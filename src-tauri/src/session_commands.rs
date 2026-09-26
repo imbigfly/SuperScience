@@ -1578,7 +1578,7 @@ mod hydration_tests {
             .await
             .unwrap();
         store
-            .append_message("f", 1, &wisp_llm::Message::user("question"))
+            .append_message("f", 1, &superscience_llm::Message::user("question"))
             .await
             .unwrap();
         let runtime = SessionRuntime::new();

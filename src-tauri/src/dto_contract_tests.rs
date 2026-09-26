@@ -746,16 +746,16 @@ fn native_approval_snapshot_and_resolution_share_the_request_contract() {
         "transfer_between_contexts",
         "CPU3 to local".into(),
     );
-    let loaded: wisp_dto::PendingToolApproval = roundtrip(&request);
+    let loaded: superscience_dto::PendingToolApproval = roundtrip(&request);
     assert_eq!(loaded.approval_id, request.approval_id);
     assert_eq!(loaded.frame_id, "frame");
     assert_eq!(loaded.tool, "transfer_between_contexts");
-    let page: wisp_dto::LoadedSessionPage = serde_json::from_value(json!({
+    let page: superscience_dto::LoadedSessionPage = serde_json::from_value(json!({
         "items": [], "next_before_seq": null, "user_offset": 0, "pending_approvals": [loaded]
     }))
     .unwrap();
     assert_eq!(page.pending_approvals[0].preview, "CPU3 to local");
-    let legacy: wisp_dto::LoadedSessionPage = serde_json::from_value(json!({
+    let legacy: superscience_dto::LoadedSessionPage = serde_json::from_value(json!({
         "items": [], "next_before_seq": null, "user_offset": 0
     }))
     .unwrap();
