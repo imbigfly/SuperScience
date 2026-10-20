@@ -3664,6 +3664,7 @@ fn mac_about_item_title(locale: AppMenuLocale, product: &str) -> String {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn mac_hide_item_title(locale: AppMenuLocale, product: &str) -> String {
     match locale {
         AppMenuLocale::Zh => format!("隐藏{product}"),
@@ -3671,6 +3672,7 @@ fn mac_hide_item_title(locale: AppMenuLocale, product: &str) -> String {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn mac_quit_item_title(locale: AppMenuLocale, product: &str) -> String {
     match locale {
         AppMenuLocale::Zh => format!("退出{product}"),
@@ -3678,6 +3680,7 @@ fn mac_quit_item_title(locale: AppMenuLocale, product: &str) -> String {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn about_app_icon() -> Option<Image<'static>> {
     let bytes = include_bytes!("../icons/128x128.png");
     let img = image::load_from_memory(bytes).ok()?.to_rgba8();
@@ -3685,6 +3688,7 @@ fn about_app_icon() -> Option<Image<'static>> {
     Some(Image::new_owned(img.into_raw(), width, height))
 }
 
+#[cfg(target_os = "macos")]
 fn install_macos_app_menu(app: &AppHandle, locale_tag: &str) -> Result<(), String> {
     let locale = AppMenuLocale::from_tag(locale_tag);
     let labels = mac_menu_labels(locale);
