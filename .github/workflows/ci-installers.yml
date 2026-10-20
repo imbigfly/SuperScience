@@ -22,8 +22,6 @@ jobs:
     runs-on: macos-latest
     strategy:
       fail-fast: false
-      # Serial so the two DMGs do not race the shared cargo cache.
-      max-parallel: 1
       matrix:
         target: [aarch64-apple-darwin, x86_64-apple-darwin]
     steps:
@@ -81,8 +79,32 @@ jobs:
             ui -> target
           cache-on-failure: true
 
+      # The shared install-tauri-tools action asks for trunk-<target>.tar.gz,
+      # but trunk publishes the Windows asset as .zip, so use the native
+      # archive here instead.
       - name: Install Trunk and Tauri CLI
-        uses: ./.github/actions/install-tauri-tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $bin = Join-Path $env:USERPROFILE ".cargo\bin"
+          New-Item -ItemType Directory -Force -Path $bin | Out-Null
+
+          Invoke-WebRequest -UseBasicParsing `
+            -Uri "https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-pc-windows-msvc.zip" `
+            -OutFile trunk.zip
+          Expand-Archive -Path trunk.zip -DestinationPath trunk-dist -Force
+          $trunk = Get-ChildItem trunk-dist -Recurse -Filter trunk.exe | Select-Object -First 1
+          Copy-Item $trunk.FullName (Join-Path $bin "trunk.exe")
+
+          Invoke-WebRequest -UseBasicParsing `
+            -Uri "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.11.4/cargo-tauri-x86_64-pc-windows-msvc.zip" `
+            -OutFile tauri-cli.zip
+          Expand-Archive -Path tauri-cli.zip -DestinationPath tauri-dist -Force
+          $tauri = Get-ChildItem tauri-dist -Recurse -Filter cargo-tauri.exe | Select-Object -First 1
+          Copy-Item $tauri.FullName (Join-Path $bin "cargo-tauri.exe")
+
+          trunk --version
+          cargo-tauri --version
 
       - name: Build Windows installers
         shell: pwsh
