@@ -291,7 +291,7 @@ pub(crate) fn modal_image_nav_targets(
     (prev, next)
 }
 
-pub(crate) const ALL_RIGHT_TABS: [RightTab; 8] = [
+pub(crate) const ALL_RIGHT_TABS: [RightTab; 9] = [
     RightTab::Artifacts,
     RightTab::Agents,
     RightTab::Notebook,
@@ -300,6 +300,7 @@ pub(crate) const ALL_RIGHT_TABS: [RightTab; 8] = [
     RightTab::Provenance,
     RightTab::Hosts,
     RightTab::SideChat,
+    RightTab::SideConversation,
 ];
 
 pub(crate) const DEFAULT_RIGHT_TABS: [RightTab; 4] = [

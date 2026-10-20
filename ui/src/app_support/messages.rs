@@ -107,8 +107,12 @@ pub(crate) fn StreamingAssistantMessage(
         let artifacts = artifacts.clone();
         move |_| {
             let started_at = js_sys::Date::now();
-            let html =
-                enrich_app_markdown(md_to_html(&rendered_text.get()), &artifacts, &[], locale.get());
+            let html = enrich_app_markdown(
+                md_to_html(&rendered_text.get()),
+                &artifacts,
+                &[],
+                locale.get(),
+            );
             let elapsed = (js_sys::Date::now() - started_at).max(0.0);
             let smoothed = recent_parse_cost_ms
                 .get()

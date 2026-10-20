@@ -399,6 +399,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string;
   const nextProjectTransferDelayMs: Record<string, number> = {};
   let failNextProjectOpenId: string | null = null;
   let failNextNewSession: string | null = null;
+  let sideConversationBinding: string | null = null;
   (window as any).__delayNextProjectOpen = (projectId: string, milliseconds: number) => {
     nextProjectOpenDelayMs[String(projectId)] = Math.max(0, Number(milliseconds) || 0);
   };
@@ -5189,6 +5190,28 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string;
             snapshotSessionDefault(id);
             return id;
           }
+          case "create_project_session": {
+            const id = `side-${Math.random().toString(36).slice(2)}`;
+            sessionModels[id] = activeHttpModelId();
+            snapshotSessionDefault(id);
+            mockSessions.unshift({
+              id,
+              title: String(arg("title") ?? "Side conversation"),
+              ts: Date.now(),
+              folder_id: null,
+              has_user_turn: false,
+              running: false,
+            });
+            sideConversationBinding = id;
+            return id;
+          }
+          case "get_side_session_binding":
+            return sideConversationBinding;
+          case "set_side_session_binding": {
+            const value = arg("sessionId") ?? arg("session_id");
+            sideConversationBinding = value == null ? null : String(value);
+            return null;
+          }
           case "rename_session": {
             const session = mockSessions.find((entry) => entry.id === arg("id"));
             if (session) {
@@ -5485,6 +5508,30 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string;
                 emit("agent", { kind: "Done", frame_id: fid, stop_reason: "end_turn" });
               }, 30);
               return fid;
+            }
+            // Mirrors a real reasoning-model literature turn captured from the
+            // persisted side-conversation log: long Reasoning streams between
+            // ToolCall/ToolResult rounds, a long streamed reply that makes the
+            // panel transcript overflow (the flex-shrink regression), and the
+            // turn still running (no Done) while the panel renders it.
+            if (String(msg).includes("SIDEREALRUN")) {
+              setTimeout(() => {
+                emit("agent", { kind: "User", frame_id: fid, text: msg });
+                for (let round = 0; round < 4; round++) {
+                  emit("agent", { kind: "MessageBoundary", frame_id: fid });
+                  for (let i = 0; i < 8; i++) {
+                    emit("agent", { kind: "Reasoning", frame_id: fid, delta: `思考片段 ${round}-${i}：先确认检索词。` });
+                  }
+                  emit("agent", { kind: "MessageBoundary", frame_id: fid });
+                  emit("agent", { kind: "ToolCall", frame_id: fid, name: "search_literature", preview: "query=HFmrEF trial" });
+                  emit("agent", { kind: "ToolResult", frame_id: fid, name: "search_literature", ok: true, content: "3 papers found" });
+                  emit("agent", { kind: "MessageBoundary", frame_id: fid });
+                }
+                emit("agent", { kind: "MessageBoundary", frame_id: fid });
+                const longBody = Array.from({ length: 60 }, (_, i) => `研究段落 ${i}：HFmrEF 与 HFpEF 的异同需要更长的正文让右侧小窗的转写区域溢出，才能覆盖 flex 收缩把工具卡压成横线的回归场景。`).join("\n\n");
+                emit("agent", { kind: "Text", frame_id: fid, delta: longBody });
+              }, 30);
+              return await new Promise<string>(() => {});
             }
             if (String(msg).includes("SHARETHINK")) {
               // Fixture for /share: a turn with a visible thinking block, so

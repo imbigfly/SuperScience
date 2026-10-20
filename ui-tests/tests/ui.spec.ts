@@ -4589,7 +4589,7 @@ test("transcript selections add to the main composer without closing the right p
   const popup = page.locator(".selection-popup");
   await expect(popup.getByRole("button", { name: "Add to chat" })).toBeVisible();
   await expect(popup.getByRole("button", { name: "Ask AI in the conversation" })).toHaveCount(0);
-  await expect(popup.getByRole("button", { name: "Quote in side chat" })).toBeVisible();
+  await expect(popup.getByRole("button", { name: "Quote into side conversation" })).toBeVisible();
   await popup.getByRole("button", { name: "Add to chat" }).click();
   await expect(page.locator(".composer-reference-chips .quote").last())
     .toContainText(selected.slice(0, 30));
@@ -4601,7 +4601,7 @@ test("transcript selections add to the main composer without closing the right p
   const menu = page.locator(".ctx-menu");
   await expect(menu.getByRole("button", { name: "Add to chat" })).toBeVisible();
   await expect(menu.getByRole("button", { name: "Ask AI in the conversation" })).toHaveCount(0);
-  await expect(menu.getByRole("button", { name: "Quote in side chat" })).toBeVisible();
+  await expect(menu.getByRole("button", { name: "Quote into side conversation" })).toBeVisible();
   await menu.getByRole("button", { name: "Add to chat" }).click();
   await expect(page.locator(".composer-reference-chips .quote")).toHaveCount(2);
   await expect(panel).toBeVisible();
@@ -5038,7 +5038,7 @@ test("Workflow graph edits nodes and dependencies directly on the canvas", async
   expect(await byId("fetch_a").count()).toBe(0);
 });
 
-test("selected text can be staged as a removable side-chat quote", async ({ page }) => {
+test("selected text stages a quote into the side conversation and sends a real turn", async ({ page }) => {
   await enterApp(page);
   await expect(page.getByTestId("session-runtime-strip")).toBeVisible();
   await composer(page).fill("STEPSDEMO");
@@ -5048,40 +5048,146 @@ test("selected text can be staged as a removable side-chat quote", async ({ page
   await expect(page.getByRole("button", { name: "Hide follow-up questions" })).toBeVisible();
   const selected = await selectAssistantReplyText(page);
   const popup = page.locator(".selection-popup");
-  await expect(popup.getByRole("button", { name: "Quote in side chat" })).toBeVisible();
+  await expect(popup.getByRole("button", { name: "Quote into side conversation" })).toBeVisible();
   // Follow-scroll / composer resize must not steal the popup while the
   // selection is still live — that is what failed ui-e2e on #1027.
   await page.locator(".chat").evaluate((el) => {
     el.scrollTop = Math.max(0, el.scrollTop - 8);
   });
-  await expect(popup.getByRole("button", { name: "Quote in side chat" })).toBeVisible();
-  await popup.getByRole("button", { name: "Quote in side chat" }).click();
+  await expect(popup.getByRole("button", { name: "Quote into side conversation" })).toBeVisible();
+  await popup.getByRole("button", { name: "Quote into side conversation" }).click();
 
   const panel = page.locator(".rightpane");
   await expect(panel.locator(".sidechat-in-pane")).toBeVisible();
-  const quote = panel.getByTestId("sidechat-quote");
+  const quote = panel.getByTestId("sideconv-quote");
   await expect(quote).toContainText(selected.slice(0, 30));
-  const input = panel.getByPlaceholder("Follow up…");
+  const input = panel.getByPlaceholder("Type instructions…");
   await expect(input).toBeFocused();
 
-  // Removing the staged quote leaves the side-chat draft untouched.
+  // Removing the staged quote leaves the side-conversation draft untouched.
   await quote.getByRole("button", { name: "Remove attachment" }).click();
-  await expect(panel.getByTestId("sidechat-quote")).toHaveCount(0);
+  await expect(panel.getByTestId("sideconv-quote")).toHaveCount(0);
 
   await selectAssistantReplyText(page);
-  await expect(popup.getByRole("button", { name: "Quote in side chat" })).toBeVisible();
-  await popup.getByRole("button", { name: "Quote in side chat" }).click();
-  await input.fill("Why is this important?");
-  await panel.getByRole("button", { name: "Send" }).click();
+  await popup.getByRole("button", { name: "Quote into side conversation" }).click();
+  await input.fill("TOOLONLYDONE 查一下相关文献");
+  await panel.getByTestId("sideconv-send").click();
 
-  await expect.poll(() => lastInvokeArgs(page, "side_chat")).toMatchObject({
-    question: expect.stringContaining("Why is this important?"),
+  // The first send creates (and titles) a real session, then sends the turn
+  // to that session — the center transcript must stay untouched.
+  const created = await lastInvokeArgs(page, "create_project_session");
+  expect(created).toMatchObject({ title: "Side conversation" });
+  await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
+    sessionId: expect.stringMatching(/^side-/),
   });
-  const args = await lastInvokeArgs(page, "side_chat");
-  expect(args.question).toContain(`> ${selected}`);
-  expect(args.question).not.toContain("AI source-edit instruction");
-  await expect(panel.getByTestId("sidechat-quote")).toHaveCount(0);
+  const sent = await lastInvokeArgs(page, "send_message");
+  expect(String(sent.message)).toContain("TOOLONLYDONE");
+  expect(String(sent.message)).toContain(`> ${selected}`);
+
+  // The streamed reply and the tool activity line render in the panel.
+  await expect(
+    panel.locator(".sidechat-answer", { hasText: "I will record the decision first." }),
+  ).toBeVisible({ timeout: 10_000 });
+  await expect(panel.locator(".sideconv-tool", { hasText: "research_graph" })).toBeVisible();
+
+  // The center thread never received the side turn.
+  await expect(page.locator(".thread")).not.toContainText("I will record the decision first.");
   await expect(input).toHaveValue("");
+});
+
+test("side conversation approval card resolves in the panel", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("STEPSDEMO");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText(/60,675 genes/)).toBeVisible({ timeout: 10_000 });
+
+  const selected = await selectAssistantReplyText(page);
+  const popup = page.locator(".selection-popup");
+  await popup.getByRole("button", { name: "Quote into side conversation" }).click();
+  const panel = page.locator(".rightpane");
+  const input = panel.getByPlaceholder("Type instructions…");
+  await input.fill("BLOCKINGCONFIRM 请执行这个变更");
+  await panel.getByTestId("sideconv-send").click();
+
+  // The confirmation routes to the side session and surfaces in the panel.
+  await expect.poll(() => lastInvokeArgs(page, "create_project_session")).not.toBeNull();
+  await expect.poll(() => lastInvokeArgs(page, "send_message")).toMatchObject({
+    sessionId: expect.stringMatching(/^side-/),
+  });
+  const approval = panel.locator(".approval-card");
+  await expect(approval).toBeVisible({ timeout: 10_000 });
+  await expect(approval).toContainText("Remove-Item generated.tmp");
+  // The side turn is blocked on the confirmation: stop is offered, send is not.
+  await expect(panel.getByTestId("sideconv-stop")).toBeVisible();
+  await expect(panel.getByTestId("sideconv-send")).toBeDisabled();
+
+  // Approving answers the side session: the card settles and the turn ends
+  // (the send button stays disabled — the draft was cleared on send).
+  await approval.getByRole("button", { name: "Allow once" }).click();
+  await expect(panel.locator(".approval-card")).toHaveCount(0);
+  await expect(panel.getByTestId("sideconv-stop")).toHaveCount(0, { timeout: 10_000 });
+});
+
+test("side conversation model menu closes before the panel on Escape", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("STEPSDEMO");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText(/60,675 genes/)).toBeVisible({ timeout: 10_000 });
+
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  const panel = page.locator(".rightpane");
+  // Open the side conversation tab through the "+" add-tab menu.
+  await panel.getByRole("button", { name: "Add panel" }).click();
+  await panel.locator(".rp-tab-add-menu").getByRole("button", { name: "Side conversation" }).click();
+  await expect(panel.locator(".sidechat-in-pane")).toBeVisible();
+
+  const menuButton = panel.locator(".sidechat-model-btn");
+  await expect(menuButton).toBeVisible();
+  await menuButton.click();
+  const menu = panel.locator(".sidechat-model-menu");
+  await expect(menu).toBeVisible();
+
+  // One press closes only the topmost layer: the menu stays ahead of the panel.
+  await page.keyboard.press("Escape");
+  await expect(menu).toHaveCount(0);
+  await expect(panel.locator(".sidechat-in-pane")).toBeVisible();
+});
+
+test("side conversation tool cards keep their size when the transcript overflows", async ({ page }) => {
+  await enterApp(page);
+  await composer(page).fill("STEPSDEMO");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText(/60,675 genes/)).toBeVisible({ timeout: 10_000 });
+
+  await page.getByRole("button", { name: "Toggle panel" }).click();
+  const panel = page.locator(".rightpane");
+  await panel.getByRole("button", { name: "Add panel" }).click();
+  await panel.locator(".rp-tab-add-menu").getByRole("button", { name: "Side conversation" }).click();
+  const input = panel.getByPlaceholder("Type instructions…");
+  await input.fill("SIDEREALRUN 帮我查找最新的相关文献，找3篇");
+  await panel.getByTestId("sideconv-send").click();
+
+  // Reasoning rounds, four tool cards, then a long reply that forces the log
+  // past the panel height — the exact state that used to let column flex-shrink
+  // crush the overflow:hidden cards into 2px border-only slivers.
+  await expect(
+    panel.locator(".sidechat-answer", { hasText: "研究段落 59" }),
+  ).toBeVisible({ timeout: 10_000 });
+  const cards = panel.locator(".sideconv-tool");
+  await expect(cards).toHaveCount(4);
+  for (const card of await cards.all()) {
+    await expect(card).toContainText("search_literature");
+    await expect(card).toContainText("Done");
+  }
+  const heights = await cards.evaluateAll((rows) =>
+    rows.map((row) => Math.round(row.getBoundingClientRect().height)),
+  );
+  // A card is ~30px tall (7px padding + 16px text). Anything near 2px is the
+  // collapsed sliver regression; leave generous headroom.
+  expect(heights.length).toBe(4);
+  for (const height of heights) {
+    expect(height, `tool card height ${height}px`).toBeGreaterThanOrEqual(25);
+  }
 });
 
 test("branch in new session starts a new frame from the current session", async ({ page }) => {
@@ -6040,7 +6146,7 @@ test("R scripts expose variables and console and run selected code", async ({ pa
   await expect(popup.getByRole("button")).toHaveText([
     "Run in runtime",
     "Ask AI in the conversation",
-    "Quote in side chat",
+    "Quote into side conversation",
     "Explain in side chat",
   ]);
   await expect(popup.getByRole("button", { name: "Research literature" })).toHaveCount(0);
@@ -14021,7 +14127,7 @@ test("selecting preview text quotes it into chat and saves a review annotation",
   const popup = page.locator(".selection-popup");
   await expect(popup).toBeVisible();
   await expect(popup.getByRole("button", { name: "Ask AI in the conversation" })).toBeVisible();
-  await expect(popup.getByRole("button", { name: "Quote in side chat" })).toBeVisible();
+  await expect(popup.getByRole("button", { name: "Quote into side conversation" })).toBeVisible();
   await expect(popup.getByRole("button", { name: "Add to review" })).toBeVisible();
 
   // The AI handoff opens the conversation and attaches the selection as a

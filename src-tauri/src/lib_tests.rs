@@ -3181,3 +3181,97 @@ fn dump_child_env(pairs: &[(OsString, OsString)]) -> String {
     );
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
+
+#[tokio::test]
+async fn side_session_creation_takes_the_requested_title_without_touching_other_frames() {
+    let base = std::env::temp_dir().join(format!("wisp_side_session_{}", uuid::Uuid::new_v4()));
+    let store = superscience_store::Store::open(&base.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "Project", &base.to_string_lossy())
+        .await
+        .unwrap();
+    store
+        .create_frame("main", "p", "OPERON", "model")
+        .await
+        .unwrap();
+
+    let id = super::session_commands::create_side_session_inner(&store, "p", Some(" 侧边对话 "))
+        .await
+        .unwrap();
+    assert_ne!(id, "main");
+    // An explicitly titled frame is listable, so the sidebar shows it.
+    let listed = store
+        .list_sessions_page("p", None, 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|(frame_id, ..)| frame_id == &id)
+        .expect("titled side session is listable");
+    assert_eq!(listed.1, "侧边对话");
+    let owner = store.frame_project_id(&id).await.unwrap();
+    assert_eq!(owner.as_deref(), Some("p"));
+    // The viewed frame is owned by the window layer; creating a side session
+    // must never repoint it.
+    assert_eq!(
+        store.frame_project_id("main").await.unwrap().as_deref(),
+        Some("p")
+    );
+}
+
+#[tokio::test]
+async fn side_session_binding_roundtrips_and_rejects_foreign_frames() {
+    let base = std::env::temp_dir().join(format!("wisp_side_binding_{}", uuid::Uuid::new_v4()));
+    let store = superscience_store::Store::open(&base.join("wisp.sqlite"))
+        .await
+        .unwrap();
+    store
+        .create_project("p", "Project", &base.to_string_lossy())
+        .await
+        .unwrap();
+    store
+        .create_project("q", "Other", &base.to_string_lossy())
+        .await
+        .unwrap();
+    store
+        .create_frame("side-1", "p", "OPERON", "model")
+        .await
+        .unwrap();
+    store
+        .create_frame("other", "q", "OPERON", "model")
+        .await
+        .unwrap();
+
+    let set =
+        super::session_commands::set_side_session_binding_inner(&store, "p", Some("side-1")).await;
+    assert!(
+        set.is_ok(),
+        "binding a frame of the owning project succeeds"
+    );
+    let bound = super::session_commands::side_session_binding(&store, "p")
+        .await
+        .unwrap();
+    assert_eq!(bound.as_deref(), Some("side-1"));
+
+    // A frame from another project must never become this project's binding.
+    let foreign =
+        super::session_commands::set_side_session_binding_inner(&store, "p", Some("other")).await;
+    assert!(foreign.is_err());
+
+    // Clearing unbinds; whitespace-only ids are treated as absent.
+    super::session_commands::set_side_session_binding_inner(&store, "p", None)
+        .await
+        .unwrap();
+    assert!(super::session_commands::side_session_binding(&store, "p")
+        .await
+        .unwrap()
+        .is_none());
+    super::session_commands::set_side_session_binding_inner(&store, "p", Some("   "))
+        .await
+        .unwrap();
+    assert!(super::session_commands::side_session_binding(&store, "p")
+        .await
+        .unwrap()
+        .is_none());
+}

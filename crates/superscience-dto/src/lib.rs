@@ -4137,6 +4137,7 @@ pub enum RightTab {
     Provenance,
     Hosts,
     SideChat,
+    SideConversation,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]

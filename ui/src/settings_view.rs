@@ -4,13 +4,14 @@ use crate::app_support::{
     bundled_connector_blurb, close_details_ancestor, compose_icon, conn_form_from_row,
     context_capability_summary, cred_group_configured, cred_group_mark, drag_session_id,
     endpoint_has_stored_key, focus_element_soon, format_relative_time, group_models_by_channel,
-    import_custom_css_from_input, join_tags, js_error_text, mcp_tool_brief, save_skill_filter_pref,
-    model_form_entry, new_acp_form, new_conn_form, new_model_form, profiles_to_edit_form,
+    import_custom_css_from_input, join_tags, js_error_text, mcp_tool_brief, model_form_entry,
+    new_acp_form, new_conn_form, new_model_form, profiles_to_edit_form,
     provider_entries_are_pristine, provider_mark_letter, quick_action_label, reviewer_backend_key,
-    reviewer_backend_label, reviewer_missing_acp_profile_id, save_view_pref, select_form_row,
-    set_reviewer_backend, settings_nav_group, settings_section_label, settings_subpage_label,
-    shorten_skill_pin, show_toast, skill_matches_filter, skill_update_result_message,
-    start_session_drag, sync_form_from_selected, DefaultAnalysisSelect, CRED_GROUPS,
+    reviewer_backend_label, reviewer_missing_acp_profile_id, save_skill_filter_pref,
+    save_view_pref, select_form_row, set_reviewer_backend, settings_nav_group,
+    settings_section_label, settings_subpage_label, shorten_skill_pin, show_toast,
+    skill_matches_filter, skill_update_result_message, start_session_drag, sync_form_from_selected,
+    DefaultAnalysisSelect, CRED_GROUPS,
 };
 use crate::bindings::{invoke, invoke_checked, is_mac, is_windows, open_external_url};
 use crate::dto::*;

@@ -27,6 +27,102 @@ pub(super) async fn new_session(
     Ok(id)
 }
 
+/// Create a real session frame for the active project WITHOUT switching the
+/// window's viewed frame. Used by the side-conversation panel: the panel runs
+/// full agent turns while the center keeps showing the current session.
+#[tauri::command]
+pub(super) async fn create_project_session(
+    state: State<'_, AppState>,
+    window: crate::workspace_surface::WorkspaceSurface,
+    title: Option<String>,
+) -> Result<String, String> {
+    let active = state.require_active(window.label())?;
+    let ap = project_commands::load_active_project(&state, &active.id)
+        .await?
+        .0;
+    let _project_activity = state.begin_project_activity(&ap.id)?;
+    create_side_session_inner(&state.store, &ap.id, title.as_deref()).await
+}
+
+pub(super) async fn create_side_session_inner(
+    store: &Store,
+    project_id: &str,
+    title: Option<&str>,
+) -> Result<String, String> {
+    let id = create_session_frame(store, project_id).await?;
+    if let Some(title) = title.map(str::trim).filter(|title| !title.is_empty()) {
+        store
+            .rename_session(&id, project_id, title)
+            .await
+            .map_err(|e| format!("{e}"))?;
+    }
+    Ok(id)
+}
+
+/// The side-conversation panel reuses one real session per project. The
+/// binding survives restarts and project switches so the panel reattaches to
+/// the same conversation instead of piling up anonymous sessions.
+pub(super) fn side_session_binding_key(project_id: &str) -> String {
+    format!("side_conversation:{project_id}")
+}
+
+#[tauri::command]
+pub(super) async fn get_side_session_binding(
+    state: State<'_, AppState>,
+    window: crate::workspace_surface::WorkspaceSurface,
+) -> Result<Option<String>, String> {
+    let ap = state.require_active(window.label())?;
+    side_session_binding(&state.store, &ap.id).await
+}
+
+#[tauri::command]
+pub(super) async fn set_side_session_binding(
+    state: State<'_, AppState>,
+    window: crate::workspace_surface::WorkspaceSurface,
+    session_id: Option<String>,
+) -> Result<(), String> {
+    let ap = state.require_active(window.label())?;
+    set_side_session_binding_inner(&state.store, &ap.id, session_id.as_deref()).await
+}
+
+pub(super) async fn side_session_binding(
+    store: &Store,
+    project_id: &str,
+) -> Result<Option<String>, String> {
+    store
+        .get_setting(&side_session_binding_key(project_id))
+        .await
+        .map(|value| value.filter(|value| !value.trim().is_empty()))
+        .map_err(|e| format!("{e}"))
+}
+
+pub(super) async fn set_side_session_binding_inner(
+    store: &Store,
+    project_id: &str,
+    session_id: Option<&str>,
+) -> Result<(), String> {
+    let key = side_session_binding_key(project_id);
+    match session_id.map(str::trim).filter(|id| !id.is_empty()) {
+        Some(id) => {
+            // Reject bindings that point outside the project so a stale or
+            // hand-edited setting can never leak another project's transcript
+            // into this panel.
+            let owner = store
+                .frame_project_id(id)
+                .await
+                .map_err(|e| format!("{e}"))?;
+            if owner.as_deref() != Some(project_id) {
+                return Err("Side conversation session was not found.".into());
+            }
+            store
+                .set_setting(&key, id)
+                .await
+                .map_err(|e| format!("{e}"))
+        }
+        None => store.delete_setting(&key).await.map_err(|e| format!("{e}")),
+    }
+}
+
 #[tauri::command]
 pub(super) async fn branch_session(
     state: State<'_, AppState>,

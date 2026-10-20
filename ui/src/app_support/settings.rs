@@ -19,7 +19,6 @@ pub(crate) fn normalized_settings(mut cfg: Settings) -> Settings {
     cfg
 }
 
-
 #[cfg(test)]
 mod provider_form_tests {
     use super::{

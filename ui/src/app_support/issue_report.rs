@@ -317,10 +317,7 @@ pub(crate) fn issue_report_chat_prompt(
         } else {
             "Skills / MCP"
         },
-        &format!(
-            "{} / {}",
-            bootstrap.skills_loaded, bootstrap.mcp_catalog
-        ),
+        &format!("{} / {}", bootstrap.skills_loaded, bootstrap.mcp_catalog),
     );
     push_kv(
         &mut out,
@@ -348,7 +345,11 @@ pub(crate) fn issue_report_chat_prompt(
             } else {
                 "Signed in"
             },
-            if locale == Locale::Zh { "已登录" } else { "yes" },
+            if locale == Locale::Zh {
+                "已登录"
+            } else {
+                "yes"
+            },
         );
         if let Some(user_id) = account.user_id {
             push_kv(

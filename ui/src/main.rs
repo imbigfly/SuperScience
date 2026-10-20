@@ -61,8 +61,8 @@ use context_menu::{ContextMenuPortal, CtxMenu};
 use dto::*;
 use i18n::{
     brand_visible_copy, empty_subtitle, empty_title, localize_backend, send_failed,
-    set_document_lang, specialist_display_name, t, tab_count, tf, Locale, EMPTY_SUBTITLE_COUNT,
-    EMPTY_TITLE_COUNT,
+    set_document_lang, specialist_display_name, t, tab_count, tf, use_locale, Locale,
+    EMPTY_SUBTITLE_COUNT, EMPTY_TITLE_COUNT,
 };
 use leptos::{ev, window_event_listener, *};
 use library::{refresh_library, refresh_session_library, HighlightsPane, LibraryScreen};
@@ -123,6 +123,182 @@ const SIDEBAR_RESIZER_WIDTH: f64 = 10.0;
 const THEME_STORAGE_KEY: &str = "wisp-theme";
 const SIDE_CHAT_SCROLLER_ID: &str = "side-chat-scroller";
 const SIDE_CHAT_INPUT_ID: &str = "side-chat-input";
+const SIDE_CONV_SCROLLER_ID: &str = "side-conv-scroller";
+const SIDE_CONV_INPUT_ID: &str = "side-conv-input";
+
+/// Compact right-panel projection of one transcript row for the side
+/// conversation. Deliberately lighter than the center thread's `render_item`:
+/// the panel keeps the side-chat visual language and hides bookkeeping rows
+/// (queued sends, file attributions, branch merges) that have no panel
+/// affordance yet. Cards reuse the center's session-scoped callbacks.
+fn render_side_conv_row(
+    row_index: usize,
+    item: ChatItem,
+    session_id: Option<String>,
+    on_approval: Callback<(String, bool, Option<String>, String)>,
+    on_artifact_select: Callback<usize>,
+    on_file_link: Callback<ModalArtifact>,
+    on_question_answer: Callback<(usize, Option<String>, String)>,
+) -> Option<View> {
+    let locale = use_locale();
+    let session_id = session_id.unwrap_or_default();
+    match item {
+        ChatItem::User(text) => Some(
+            view! {
+                <div class="sidechat-row user"><div class="sidechat-bubble">{text}</div></div>
+            }
+            .into_view(),
+        ),
+        ChatItem::Assistant { text, model, .. } => {
+            if text.trim().is_empty() {
+                return None;
+            }
+            let error = text.starts_with("Error: ");
+            Some(
+                view! {
+                    <div class="sidechat-row assistant">
+                        {model.filter(|_| !error).map(|m| view! { <div class="sidechat-model-label">{m}</div> })}
+                        <div class="sidechat-answer" class:error=error inner_html=md_to_html(&text)></div>
+                    </div>
+                }
+                .into_view(),
+            )
+        }
+        ChatItem::Tool { name, ok, input, output, started_at_ms, .. } => {
+            let running = started_at_ms.is_some();
+            let status = if running {
+                t(locale.get(), "tool.running")
+            } else if ok == Some(true) {
+                t(locale.get(), "sideconv.tool_ok")
+            } else {
+                t(locale.get(), "sideconv.tool_error")
+            };
+            let state = if running {
+                "running"
+            } else if ok == Some(true) {
+                "ok"
+            } else {
+                "error"
+            };
+            let has_input = !input.trim().is_empty();
+            let has_output = !output.trim().is_empty();
+            Some(
+                view! {
+                    <details class="sideconv-tool" data-status=state>
+                        <summary>
+                            <span class="sideconv-tool-name">{name}</span>
+                            <span class="sideconv-tool-state">{status}</span>
+                        </summary>
+                        {has_input.then(|| view! { <pre class="sideconv-tool-io">{input}</pre> })}
+                        {has_output.then(|| view! { <pre class="sideconv-tool-io">{output}</pre> })}
+                    </details>
+                }
+                .into_view(),
+            )
+        }
+        ChatItem::ApprovalPending { tool, preview, message } => Some(
+            view! {
+                <div class="sidechat-row">
+                    <ApprovalCard
+                        tool=tool
+                        preview=preview
+                        message=message
+                        session_id=session_id
+                        on_decide=on_approval
+                        on_artifact=on_artifact_select
+                        on_file=on_file_link
+                    />
+                </div>
+            }
+            .into_view(),
+        ),
+        ChatItem::AcpPermission { request_id, tool, options } => Some(
+            view! {
+                <div class="sidechat-row">
+                    <article class="approval-card" data-testid="acp-permission-card">
+                        <header><strong>{tool}</strong><span>"ACP permission"</span></header>
+                        <footer class="approval-actions">
+                            {options.into_iter().map(|option| {
+                                let request_id = request_id.clone();
+                                let option_id = option.id.clone();
+                                let class = if option.kind.starts_with("allow") { "primary" } else { "" };
+                                view! {
+                                    <button type="button" class=class on:click=move |_| {
+                                        let request_id = request_id.clone();
+                                        let option_id = option_id.clone();
+                                        spawn_local(async move {
+                                            let args = to_value(&serde_json::json!({ "requestId": request_id, "optionId": option_id })).unwrap();
+                                            let _ = invoke_checked("respond_acp_permission", args).await;
+                                        });
+                                    }>{option.name}</button>
+                                }
+                            }).collect_view()}
+                        </footer>
+                    </article>
+                </div>
+            }
+            .into_view(),
+        ),
+        ChatItem::Question(question) => {
+            let pending = question.state == QuestionState::Pending;
+            let answered = question.state == QuestionState::Answered;
+            let expired = question.state == QuestionState::Expired;
+            let request_id = question.request_id.clone();
+            let options = question.options.clone();
+            // A question with no options can only be answered freeform.
+            let allow_freeform = question.allow_freeform || options.is_empty();
+            let freeform = create_rw_signal(String::new());
+            let question_html = md_to_html(&question.question);
+            let request_id_keydown = request_id.clone();
+            let request_id_click = request_id.clone();
+            Some(
+                view! {
+                    <section class="sideconv-question" data-testid="sideconv-question">
+                        <div class="plan-question-text md" inner_html=question_html></div>
+                        {(pending && !options.is_empty()).then(|| view! {
+                            <div class="plan-question-options">{options.into_iter().map(|option| {
+                                let request_id = request_id.clone();
+                                let answer = option.label.clone();
+                                view! {
+                                    <button type="button"
+                                        on:click=move |_| on_question_answer.call((row_index, request_id.clone(), answer.clone()))>
+                                        <strong>{option.label}</strong>
+                                        {(!option.description.is_empty()).then(|| view! { <span>{option.description}</span> })}
+                                    </button>
+                                }
+                            }).collect_view()}</div>
+                        })}
+                        {(pending && allow_freeform).then(|| view! {
+                            <div class="plan-question-freeform">
+                                <input type="text" prop:value=move || freeform.get()
+                                    placeholder=move || t(locale.get(), "plan.question.placeholder")
+                                    on:input=move |event| freeform.set(event_target_value(&event))
+                                    on:keydown=move |event: web_sys::KeyboardEvent| {
+                                        if event.key() == "Enter" && !event.shift_key() {
+                                            event.prevent_default();
+                                            on_question_answer.call((row_index, request_id_keydown.clone(), freeform.get()));
+                                        }
+                                    } />
+                                <button type="button" class="primary" disabled=move || freeform.get().trim().is_empty()
+                                    on:click=move |_| on_question_answer.call((row_index, request_id_click.clone(), freeform.get()))>
+                                    {move || t(locale.get(), "plan.question.send")}
+                                </button>
+                            </div>
+                        })}
+                        {answered.then(|| view! {
+                            <footer class="plan-question-note">{move || t(locale.get(), "plan.answer_sent")}</footer>
+                        })}
+                        {expired.then(|| view! {
+                            <footer class="plan-question-note expired">{move || t(locale.get(), "plan.question.expired")}</footer>
+                        })}
+                    </section>
+                }
+                .into_view(),
+            )
+        }
+        _ => None,
+    }
+}
 
 fn service_tier_enabled(value: &str) -> bool {
     matches!(value.trim(), "priority" | "fast")
@@ -1005,6 +1181,18 @@ fn App() -> impl IntoView {
     let side_chat_model_menu_open = create_rw_signal(false);
     // Side chat routes through this ACP Agent when set; None = the active model.
     let side_chat_acp_agent = create_rw_signal::<Option<String>>(None);
+    // Side conversation: one real, tool-running session per project shown in
+    // the compact right-panel dialog. The panel is a projection of the same
+    // per-session transcript cache the center thread uses, so streaming,
+    // approvals, and ask-user cards arrive through the existing event routing.
+    let side_conv_session = create_rw_signal::<Option<String>>(None);
+    let side_conv_input = create_rw_signal(String::new());
+    let side_conv_quotes = create_rw_signal::<Vec<ComposerQuote>>(vec![]);
+    let side_conv_model_menu_open = create_rw_signal(false);
+    // Routes the side conversation through an ACP Agent when set; None = the
+    // session's own model.
+    let side_conv_acp_agent = create_rw_signal::<Option<String>>(None);
+    let side_conv_busy = create_rw_signal(false);
     // Owned here so the window-level Escape stack can close the confirm before
     // it falls through to closing the whole settings page.
     let delete_confirm = create_rw_signal(None::<DeleteConfirm>);
@@ -4404,6 +4592,335 @@ fn App() -> impl IntoView {
             }
         });
     };
+
+    // --- Side conversation: a real session in the compact right panel ---
+    // The panel projects the same per-session transcript the center thread
+    // uses, so streaming, approvals, and ask-user cards need no new event
+    // plumbing; only the turn send and the session binding are panel-specific.
+    let side_conv_rows = create_rw_signal::<Vec<ChatItem>>(Vec::new());
+    create_effect(move |_| {
+        let rows = match side_conv_session.get() {
+            None => Vec::new(),
+            Some(session_id) => {
+                if active_session.get().as_deref() == Some(session_id.as_str()) {
+                    items.get()
+                } else {
+                    transcripts
+                        .with(|all| all.get(&session_id).cloned())
+                        .unwrap_or_default()
+                }
+            }
+        };
+        side_conv_rows.set(rows);
+    });
+    create_effect(move |_| {
+        let busy = side_conv_session
+            .get()
+            .is_some_and(|session_id| running.get().contains(&session_id));
+        side_conv_busy.set(busy);
+    });
+    create_effect(move |_| {
+        side_conv_rows.with(|rows| rows.len());
+        if !show_right.get() || right_tab.get() != RightTab::SideConversation {
+            return;
+        }
+        request_animation_frame(|| {
+            let Some(scroller) = web_sys::window()
+                .and_then(|window| window.document())
+                .and_then(|document| document.get_element_by_id(SIDE_CONV_SCROLLER_ID))
+                .and_then(|element| element.dyn_into::<web_sys::HtmlElement>().ok())
+            else {
+                return;
+            };
+            scroller.set_scroll_top(scroller.scroll_height());
+        });
+    });
+    // Reattach the bound session (and drop panel-local draft state) whenever
+    // the open project changes. The transcript itself hydrates lazily when the
+    // tab becomes visible and the cache is cold.
+    let side_conv_previous_project = Rc::new(RefCell::new(None::<String>));
+    create_effect(move |_| {
+        let Some(project) = project_info.get() else {
+            return;
+        };
+        let mut previous = side_conv_previous_project.borrow_mut();
+        if previous.as_deref() == Some(project.id.as_str()) {
+            return;
+        }
+        side_conv_input.set(String::new());
+        side_conv_quotes.set(vec![]);
+        side_conv_model_menu_open.set(false);
+        side_conv_acp_agent.set(None);
+        side_conv_session.set(None);
+        *previous = Some(project.id.clone());
+        drop(previous);
+        spawn_local(async move {
+            let bound = invoke_checked("get_side_session_binding", JsValue::UNDEFINED)
+                .await
+                .ok()
+                .and_then(|value| serde_wasm_bindgen::from_value::<Option<String>>(value).ok())
+                .flatten();
+            if let Some(session_id) = bound {
+                side_conv_session.set(Some(session_id));
+            }
+        });
+    });
+    // Snapshot a bound session's persisted transcript into the shared cache
+    // without switching the center thread. The revision double-read mirrors
+    // the center hydration: a snapshot that raced live events is refetched, so
+    // a delta is never replayed twice.
+    let hydrate_side_conversation = {
+        let transcripts = transcripts.clone();
+        let transcript_event_revisions = transcript_event_revisions.clone();
+        let delta_buf = delta_buf.clone();
+        move |session_id: String| {
+            let transcripts = transcripts.clone();
+            let transcript_event_revisions = transcript_event_revisions.clone();
+            let delta_buf = delta_buf.clone();
+            spawn_local(async move {
+                loop {
+                    let revision = transcript_event_revisions
+                        .with_untracked(|all| all.get(&session_id).copied().unwrap_or_default());
+                    let result = invoke_checked(
+                        "load_session",
+                        to_value(&serde_json::json!({ "id": session_id })).unwrap(),
+                    )
+                    .await
+                    .map_err(js_error_text)
+                    .and_then(|value| {
+                        serde_wasm_bindgen::from_value::<LoadedSessionPage>(value)
+                            .map_err(|error| error.to_string())
+                    });
+                    if transcript_event_revisions
+                        .with_untracked(|all| all.get(&session_id).copied().unwrap_or_default())
+                        != revision
+                    {
+                        wait_for_transcript_retry().await;
+                        continue;
+                    }
+                    match result {
+                        Ok(page) => {
+                            let mut chats: Vec<ChatItem> =
+                                page.items.into_iter().map(LoadedItem::into_chat).collect();
+                            settle_question_cards(&mut chats);
+                            // Transient rows routed here while the snapshot was
+                            // in flight are not part of the persisted page.
+                            let live = transcripts.with_untracked(|all| {
+                                all.get(&session_id)
+                                    .map(|rows| {
+                                        rows.iter()
+                                            .filter(|row| {
+                                                matches!(
+                                                    row,
+                                                    ChatItem::QueuedUser { .. }
+                                                        | ChatItem::AcpPermission { .. }
+                                                )
+                                            })
+                                            .cloned()
+                                            .collect::<Vec<_>>()
+                                    })
+                                    .unwrap_or_default()
+                            });
+                            chats.extend(live);
+                            // Flushed deltas are already in the snapshot; drop
+                            // buffered copies so they cannot replay on top.
+                            delta_buf.borrow_mut().remove(&session_id);
+                            transcripts.update(|all| {
+                                all.insert(session_id.clone(), chats);
+                            });
+                        }
+                        Err(error) => {
+                            if error.to_lowercase().contains("not found") {
+                                // The bound session was deleted elsewhere;
+                                // unbind so the next send starts fresh.
+                                side_conv_session.set(None);
+                                let arg =
+                                    to_value(&serde_json::json!({ "sessionId": null })).unwrap();
+                                let _ = invoke_checked("set_side_session_binding", arg).await;
+                            }
+                        }
+                    }
+                    break;
+                }
+            });
+        }
+    };
+    create_effect(move |_| {
+        let Some(session_id) = side_conv_session.get() else {
+            return;
+        };
+        if !show_right.get() || right_tab.get() != RightTab::SideConversation {
+            return;
+        }
+        if active_session.get_untracked().as_deref() == Some(session_id.as_str()) {
+            return;
+        }
+        let cached = transcripts.with_untracked(|all| all.contains_key(&session_id));
+        if cached || side_conv_busy.get_untracked() {
+            return;
+        }
+        hydrate_side_conversation(session_id);
+    });
+    let unbind_side_conversation = move |_: ()| {
+        side_conv_session.set(None);
+        spawn_local(async move {
+            let arg = to_value(&serde_json::json!({ "sessionId": null })).unwrap();
+            let _ = invoke_checked("set_side_session_binding", arg).await;
+        });
+    };
+    let send_side_conversation = move |request: (String, Vec<ComposerQuote>, bool)| {
+        if demo_mode.get_untracked() {
+            return;
+        }
+        let (text, quotes, clear_draft) = request;
+        let message = message_with_composer_context(&text, &[], &[], &quotes);
+        if message.trim().is_empty() || side_conv_busy.get_untracked() {
+            return;
+        }
+        ensure_right_tab(
+            RightTab::SideConversation,
+            show_right,
+            open_right_tabs,
+            right_tab,
+        );
+        if clear_draft {
+            side_conv_input.set(String::new());
+            side_conv_quotes.set(vec![]);
+        }
+        let acp_agent = side_conv_acp_agent.get_untracked();
+        let turn_model = match acp_agent.as_ref() {
+            Some(id) => acp_agents
+                .get_untracked()
+                .into_iter()
+                .find(|agent| &agent.id == id)
+                .map(|agent| agent.label),
+            None => {
+                let list = models.get_untracked();
+                let session_model = side_conv_session
+                    .get_untracked()
+                    .and_then(|sid| session_model_ids.get_untracked().get(&sid).cloned());
+                model_label(&list, session_model.as_deref()).or_else(|| active_model_label(&list))
+            }
+        };
+        spawn_local(async move {
+            // One real session per project, created (and titled) on first send
+            // so quoting without sending never litters the sidebar.
+            let session_id = match side_conv_session.get_untracked() {
+                Some(session_id) => session_id,
+                None => {
+                    let title = t(locale.get_untracked(), "sideconv.title");
+                    let args = to_value(&serde_json::json!({ "title": title })).unwrap();
+                    let created = invoke_checked("create_project_session", args)
+                        .await
+                        .map_err(js_error_text)
+                        .and_then(|value| {
+                            serde_wasm_bindgen::from_value::<String>(value)
+                                .map_err(|error| error.to_string())
+                        });
+                    match created {
+                        Ok(session_id) => {
+                            side_conv_session.set(Some(session_id.clone()));
+                            let bind =
+                                to_value(&serde_json::json!({ "sessionId": session_id.clone() }))
+                                    .unwrap();
+                            let _ = invoke_checked("set_side_session_binding", bind).await;
+                            refresh_session_history();
+                            session_id
+                        }
+                        Err(error) => {
+                            status.set(tf(
+                                locale.get_untracked(),
+                                "status.send_failed",
+                                &[("msg", &localize_backend(locale.get_untracked(), &error))],
+                            ));
+                            return;
+                        }
+                    }
+                }
+            };
+            route_items(active_session, items, transcripts, &session_id, |rows| {
+                rows.push(ChatItem::User(message.clone()));
+                rows.push(ChatItem::Assistant {
+                    text: String::new(),
+                    model: turn_model.clone(),
+                    resources: Vec::new(),
+                });
+            });
+            begin_pending_turn(pending_turns, running, &session_id);
+            let args = to_value(&SendMessageArgs {
+                session_id: Some(session_id.clone()),
+                message: message.clone(),
+                attachments: Vec::new(),
+                references: Vec::new(),
+                resume: false,
+                acp_agent_id: acp_agent.clone(),
+                guide: None,
+                replace: None,
+            })
+            .unwrap();
+            if let Err(error) = invoke_checked("send_message", args).await {
+                let raw = js_error_text(error);
+                route_items(active_session, items, transcripts, &session_id, |rows| {
+                    let (started, message_text) = send_failed_after_start(rows, &message, &raw);
+                    if started {
+                        mark_optimistic_send_failed(rows, &message, message_text);
+                    } else {
+                        remove_optimistic_send_rows(rows, &message);
+                    }
+                });
+                if raw.contains(NO_API_KEY_MARK) {
+                    needs_api_key.set(true);
+                }
+                status.set(tf(
+                    locale.get_untracked(),
+                    "status.send_failed",
+                    &[("msg", &localize_backend(locale.get_untracked(), &raw))],
+                ));
+                if raw.to_lowercase().contains("not found") {
+                    unbind_side_conversation(());
+                }
+            }
+            finish_pending_turn(pending_turns, running, &session_id);
+        });
+    };
+    let stop_side_conversation = move |_: ()| {
+        let Some(session_id) = side_conv_session.get_untracked() else {
+            return;
+        };
+        spawn_local(async move {
+            let arg = to_value(&tauri_args::stop_agent(&Some(session_id))).unwrap();
+            let _ = invoke("stop_agent", arg).await;
+        });
+    };
+    // Panel ask-user answers: request-id cards respond directly; native
+    // ask_user (no id) is answered through the panel composer like the center
+    // thread answers through its own.
+    let on_side_conv_question_answer = Callback::new(
+        move |(row_index, request_id, answer): (usize, Option<String>, String)| {
+            let answer = answer.trim().to_string();
+            if answer.is_empty() {
+                return;
+            }
+            let session_id = side_conv_session.get_untracked().unwrap_or_default();
+            route_items(active_session, items, transcripts, &session_id, |rows| {
+                if let Some(ChatItem::Question(card)) = rows.get_mut(row_index) {
+                    card.state = QuestionState::Answered;
+                }
+            });
+            if let Some(request_id) = request_id {
+                spawn_local(async move {
+                    let args = to_value(&serde_json::json!({
+                        "requestId": request_id,
+                        "answer": answer,
+                    }))
+                    .unwrap();
+                    let _ = invoke_checked("respond_ask_user", args).await;
+                });
+            } else {
+                send_side_conversation((answer, side_conv_quotes.get_untracked(), false));
+            }
+        },
+    );
 
     let on_send = move |ev: web_sys::KeyboardEvent| {
         if (ev.ctrl_key() || ev.meta_key())
@@ -8075,7 +8592,10 @@ fn App() -> impl IntoView {
             let arg = to_value(&serde_json::json!({ "query": "", "limit": 50 })).unwrap();
             let v = invoke("search_sessions", arg).await;
             if let Ok(rows) = serde_wasm_bindgen::from_value::<Vec<SessionSearchInfo>>(v) {
-                let rows: Vec<_> = rows.into_iter().filter(|s| s.status == "needs_you").collect();
+                let rows: Vec<_> = rows
+                    .into_iter()
+                    .filter(|s| s.status == "needs_you")
+                    .collect();
                 if inbox_sessions.with_untracked(|current| current != &rows) {
                     inbox_sessions.set(rows);
                 }
@@ -9045,6 +9565,8 @@ fn App() -> impl IntoView {
                 right_tab_add_menu_open.set(false);
             } else if side_chat_model_menu_open.get() {
                 side_chat_model_menu_open.set(false);
+            } else if side_conv_model_menu_open.get() {
+                side_conv_model_menu_open.set(false);
             } else {
                 show_right.set(false);
             }
@@ -9098,6 +9620,11 @@ fn App() -> impl IntoView {
         if side_chat_model_menu_open.get() {
             ev.prevent_default();
             side_chat_model_menu_open.set(false);
+            return;
+        }
+        if side_conv_model_menu_open.get() {
+            ev.prevent_default();
+            side_conv_model_menu_open.set(false);
             return;
         }
         if runtime_environment_pinned.get() {
@@ -10606,7 +11133,8 @@ fn App() -> impl IntoView {
         create_memo(move |_| show_right.get() && !scratch_open.get() && !demo_mode.get());
     let center_preview = create_memo(move |_| {
         let path = (!demo_mode.get()).then(|| center_file.get()).flatten()?;
-        let file = center_files.with(|files| files.iter().find(|file| file.path == path).cloned())?;
+        let file =
+            center_files.with(|files| files.iter().find(|file| file.path == path).cloned())?;
         let revision = center_file_revisions
             .with(|revisions| revisions.get(&path).copied().unwrap_or_default());
         let display_path = project_info
@@ -11806,7 +12334,7 @@ fn App() -> impl IntoView {
                         </button>
                         <button type="button" class="selection-popup-btn"
                             on:click=move |_| {
-                                side_chat_quotes.update(|items| items.push(
+                                side_conv_quotes.update(|items| items.push(
                                     ComposerQuote::from_selection(
                                         side_quote.clone(),
                                         side_quote_source.clone(),
@@ -11815,12 +12343,12 @@ fn App() -> impl IntoView {
                                 selection_popup.set(None);
                                 clear_selection();
                                 ensure_right_tab(
-                                    RightTab::SideChat,
+                                    RightTab::SideConversation,
                                     show_right,
                                     open_right_tabs,
                                     right_tab,
                                 );
-                                focus_element_soon(SIDE_CHAT_INPUT_ID);
+                                focus_element_soon(SIDE_CONV_INPUT_ID);
                             }>
                             {compose_icon("chat")}
                             <span>{t(locale.get(), "selection.quote_side_chat")}</span>
@@ -14815,6 +15343,7 @@ fn App() -> impl IntoView {
                                     RightTab::File => t(loc, "right.file").into(),
                                     RightTab::Hosts => t(loc, "contexts.title").into(),
                                     RightTab::SideChat => t(loc, "sidechat.title").into(),
+                                    RightTab::SideConversation => t(loc, "sideconv.title").into(),
                                 };
                                 let is_active = active == tab;
                                 view! {
@@ -14928,6 +15457,7 @@ fn App() -> impl IntoView {
                                             RightTab::File => t(loc, "right.file").into(),
                                             RightTab::Hosts => t(loc, "contexts.title").into(),
                                             RightTab::SideChat => t(loc, "sidechat.title").into(),
+                                    RightTab::SideConversation => t(loc, "sideconv.title").into(),
                                         };
                                         let is_open = open.contains(&tab);
                                         view! {
@@ -16215,6 +16745,235 @@ fn App() -> impl IntoView {
                                                 on:click=move |_| send_side_chat((
                                                     side_chat_input.get(),
                                                     side_chat_quotes.get(),
+                                                    true,
+                                                ))>
+                                                {move || t(locale.get(), "composer.send")}
+                                            </button>
+                                        </div>
+                                      </div>
+                                    </div>
+                                </div>
+                            }.into_view()
+                        }
+                        RightTab::SideConversation => {
+                            let side_conv_page_rows = move || {
+                                side_conv_rows
+                                    .get()
+                                    .into_iter()
+                                    .enumerate()
+                                    .map(|(index, item)| (index, item.fingerprint(), item))
+                                    .collect::<Vec<_>>()
+                            };
+                            view! {
+                                <div class="sidechat-in-pane">
+                                    <div class="sidechat-head">
+                                        <span class="sidechat-title">{move || t(locale.get(), "sideconv.title")}</span>
+                                        <button type="button" class="icon-btn"
+                                            title=move || t(locale.get(), "sideconv.new")
+                                            aria-label=move || t(locale.get(), "sideconv.new")
+                                            disabled=move || side_conv_session.get().is_none()
+                                            on:click=move |_| {
+                                                // Unbind only: the old session stays in the
+                                                // sidebar, and the draft keeps its quotes.
+                                                side_conv_session.set(None);
+                                                side_conv_acp_agent.set(None);
+                                                spawn_local(async move {
+                                                    let arg = to_value(&serde_json::json!({ "sessionId": null })).unwrap();
+                                                    let _ = invoke_checked("set_side_session_binding", arg).await;
+                                                });
+                                            }>{compose_icon("plus")}</button>
+                                        <button type="button" class="icon-btn"
+                                            title=move || t(locale.get(), "sideconv.close")
+                                            aria-label=move || t(locale.get(), "sideconv.close")
+                                            on:click=move |_| close_right_tab(
+                                                RightTab::SideConversation,
+                                                show_right,
+                                                open_right_tabs,
+                                                right_tab,
+                                            )>{compose_icon("close")}</button>
+                                    </div>
+                                    <div class="sidechat-log" id=SIDE_CONV_SCROLLER_ID>
+                                        {move || (side_conv_rows.get().is_empty() && !side_conv_busy.get()).then(|| view! {
+                                            <div class="sidechat-empty">{move || t(locale.get(), "sideconv.empty")}</div>
+                                        })}
+                                        <For
+                                            each=side_conv_page_rows
+                                            key=|(index, fingerprint, _)| (*index, *fingerprint)
+                                            children=move |(row_index, _, item)| {
+                                                render_side_conv_row(
+                                                    row_index,
+                                                    item,
+                                                    side_conv_session.get_untracked(),
+                                                    respond_confirm,
+                                                    on_artifact_select,
+                                                    on_file_link,
+                                                    on_side_conv_question_answer,
+                                                )
+                                            }
+                                        />
+                                        {move || side_conv_busy.get().then(|| view! {
+                                            <div class="sidechat-thinking">{move || t(locale.get(), "sidechat.thinking")}</div>
+                                        })}
+                                    </div>
+                                    <div class="sidechat-composer">
+                                      <div class="sidechat-composer-inner">
+                                        {move || (!side_conv_quotes.get().is_empty()).then(|| view! {
+                                            <div class="composer-attachments composer-reference-chips sidechat-quotes">
+                                                {side_conv_quotes.get().into_iter().enumerate().map(|(idx, quote)| {
+                                                    let label = quote_label(&quote.text);
+                                                    let title = quote.source.as_ref().map_or_else(
+                                                        || quote.text.clone(),
+                                                        |source| format!("{source}\n\n{}", quote.text),
+                                                    );
+                                                    let source = quote.source.clone();
+                                                    view! {
+                                                        <div class="composer-attachment-row composer-reference-card quote"
+                                                            data-testid="sideconv-quote" title=title>
+                                                            <span class="composer-attachment-icon">{compose_icon("chat")}</span>
+                                                            <span class="composer-attachment-copy">
+                                                                <span class="composer-attachment ready">{label}</span>
+                                                                <span class="composer-attachment-meta">{move || source.clone().unwrap_or_else(|| t(locale.get(), "attachment.quote").into())}</span>
+                                                            </span>
+                                                            <button type="button" class="composer-attachment-remove"
+                                                                title=move || t(locale.get(), "composer.remove_attachment")
+                                                                aria-label=move || t(locale.get(), "composer.remove_attachment")
+                                                                on:click=move |_| side_conv_quotes.update(|items| {
+                                                                    if idx < items.len() {
+                                                                        items.remove(idx);
+                                                                    }
+                                                                })>{compose_icon("close")}</button>
+                                                        </div>
+                                                    }
+                                                }).collect_view()}
+                                            </div>
+                                        })}
+                                        <textarea
+                                            id=SIDE_CONV_INPUT_ID
+                                            rows="2"
+                                            prop:value=move || side_conv_input.get()
+                                            prop:placeholder=move || t(locale.get(), "sideconv.placeholder")
+                                            on:input=move |ev| side_conv_input.set(event_target_value(&ev))
+                                            on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                                if ime_composing(&ev) { return; }
+                                                if ev.key() == "Enter" && !ev.shift_key() {
+                                                    ev.prevent_default();
+                                                    send_side_conversation((
+                                                        side_conv_input.get(),
+                                                        side_conv_quotes.get(),
+                                                        true,
+                                                    ));
+                                                }
+                                            }
+                                        ></textarea>
+                                        <div class="sidechat-actions">
+                                            {move || (!models.get().is_empty() || !acp_agents.get().is_empty()).then(|| view! {
+                                                <div class="sidechat-model">
+                                                    <button type="button" class="sidechat-model-btn"
+                                                        class:active=move || side_conv_model_menu_open.get()
+                                                        on:click=move |_| side_conv_model_menu_open.update(|o| *o = !*o)>
+                                                        <span class="model-picker-label">{move || {
+                                                            if let Some(id) = side_conv_acp_agent.get() {
+                                                                acp_agents.get().into_iter().find(|agent| agent.id == id).map(|agent| agent.label).unwrap_or_else(|| "ACP Agent".into())
+                                                            } else {
+                                                                let list = models.get();
+                                                                let session_model = side_conv_session
+                                                                    .get()
+                                                                    .and_then(|sid| session_model_ids.get_untracked().get(&sid).cloned());
+                                                                model_label(&list, session_model.as_deref())
+                                                                    .or_else(|| {
+                                                                        list.iter()
+                                                                            .find(|m| m.active && m.is_chat_model())
+                                                                            .or_else(|| list.iter().find(|m| m.is_chat_model()))
+                                                                            .map(|m| m.label.clone())
+                                                                    })
+                                                                    .unwrap_or_default()
+                                                            }
+                                                        }}</span>
+                                                        {compose_icon("chevron-down")}
+                                                    </button>
+                                                    {move || side_conv_model_menu_open.get().then(|| view! {
+                                                        <div class="sidechat-model-backdrop" on:click=move |_| side_conv_model_menu_open.set(false)></div>
+                                                        <div class="sidechat-model-menu">
+                                                            {move || {
+                                                                let session_model = side_conv_session
+                                                                    .get()
+                                                                    .and_then(|sid| session_model_ids.get_untracked().get(&sid).cloned());
+                                                                models.get().into_iter().filter(ModelProfile::is_chat_model).map(|m| {
+                                                                    let pick_id = m.id.clone();
+                                                                    let is_active = session_model.as_deref() == Some(m.id.as_str())
+                                                                        && side_conv_acp_agent.get().is_none();
+                                                                    view! {
+                                                                        <button type="button" class="sidechat-model-row" class:active=is_active
+                                                                            on:click=move |_| {
+                                                                                side_conv_model_menu_open.set(false);
+                                                                                side_conv_acp_agent.set(None);
+                                                                                let id = pick_id.clone();
+                                                                                let id_for_map = id.clone();
+                                                                                let session_id = side_conv_session.get_untracked();
+                                                                                spawn_local(async move {
+                                                                                    let arg = to_value(&serde_json::json!({
+                                                                                        "id": id.clone(),
+                                                                                        "sessionId": session_id,
+                                                                                    })).unwrap();
+                                                                                    match invoke_checked("set_active_model", arg).await {
+                                                                                        Ok(v) => {
+                                                                                            if let Ok(list) = serde_wasm_bindgen::from_value::<Vec<ModelProfile>>(v) {
+                                                                                                models.set(list);
+                                                                                            }
+                                                                                        }
+                                                                                        Err(err) => {
+                                                                                            web_sys::console::warn_1(&format!("set_active_model failed: {:?}", err).into());
+                                                                                        }
+                                                                                    }
+                                                                                });
+                                                                                if let Some(sid) = side_conv_session.get_untracked() {
+                                                                                    session_model_ids.update(|map| {
+                                                                                        map.insert(sid, id_for_map);
+                                                                                    });
+                                                                                }
+                                                                            }>
+                                                                        <span>{m.label.clone()}</span>
+                                                                        {is_active.then(|| compose_icon("check"))}
+                                                                    </button>
+                                                                }
+                                                            }).collect_view()}
+                                                            }
+                                                            {move || (!acp_agents.get().is_empty()).then(|| view! {
+                                                                <div class="sidechat-model-group">"ACP Agents"</div>
+                                                                {acp_agents.get().into_iter().map(|agent| {
+                                                                    let id = agent.id.clone();
+                                                                    let selected = side_conv_acp_agent.get().as_deref() == Some(agent.id.as_str());
+                                                                    view! {
+                                                                        <button type="button" class="sidechat-model-row" class:active=selected
+                                                                            on:click=move |_| {
+                                                                                side_conv_model_menu_open.set(false);
+                                                                                side_conv_acp_agent.set(Some(id.clone()));
+                                                                            }>
+                                                                            <span>{agent.label.clone()}</span>
+                                                                            {selected.then(|| compose_icon("check"))}
+                                                                        </button>
+                                                                    }
+                                                                }).collect_view()}
+                                                            })}
+                                                        </div>
+                                                    })}
+                                                </div>
+                                            })}
+                                            {move || side_conv_busy.get().then(|| view! {
+                                                <button type="button" class="sidechat-send sideconv-stop"
+                                                    data-testid="sideconv-stop"
+                                                    on:click=move |_| stop_side_conversation(())>
+                                                    {move || t(locale.get(), "composer.stop")}
+                                                </button>
+                                            })}
+                                            <button type="button" class="sidechat-send"
+                                                data-testid="sideconv-send"
+                                                disabled=move || side_conv_busy.get()
+                                                    || (side_conv_input.get().trim().is_empty()
+                                                        && side_conv_quotes.get().is_empty())
+                                                on:click=move |_| send_side_conversation((
+                                                    side_conv_input.get(),
+                                                    side_conv_quotes.get(),
                                                     true,
                                                 ))>
                                                 {move || t(locale.get(), "composer.send")}
