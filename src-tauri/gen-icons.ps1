@@ -4,8 +4,40 @@ try {
     # One three-wisp mark, with platform-specific tile geometry. Legacy ICNS
     # needs its own rounded tile and transparent margin. Store/mobile assets
     # use the full square; Windows/Linux use a rounded tile without the margin.
-    $fullBleed = Resolve-Path "icons/app-icon.svg"
-    $rounded = Resolve-Path "icons/app-icon-rounded.svg"
+    # `cargo tauri icon` rejects non-square sources, but the brand SVGs are
+    # authored at 986x833. Pad the viewBox to a square canvas (centered, no
+    # stretch) before generating so Windows/Linux builds do not fail.
+    function Get-SquareSvg([string]$Path) {
+        $raw = Get-Content -Raw -LiteralPath $Path
+        $svg = [regex]::Match($raw, '<svg\b[^>]*>')
+        if (-not $svg.Success) { return $Path }
+        $box = [regex]::Match($svg.Value, 'viewBox="([^"]+)"')
+        if (-not $box.Success) { return $Path }
+        $n = @($box.Groups[1].Value -split '[\s,]+' |
+            Where-Object { $_ -ne '' } | ForEach-Object { [double]$_ })
+        if ($n.Count -ne 4) { return $Path }
+        $w = $n[2]; $h = $n[3]
+        if ([Math]::Abs($w - $h) -lt 0.01) { return $Path }
+        $size = [Math]::Max($w, $h)
+        $x = $n[0] - ($size - $w) / 2
+        $y = $n[1] - ($size - $h) / 2
+        $inv = [System.Globalization.CultureInfo]::InvariantCulture
+        $tag = [regex]::Replace($svg.Value, 'viewBox="[^"]+"',
+            ('viewBox="{0} {1} {2} {3}"' -f $x.ToString($inv), $y.ToString($inv),
+                $size.ToString($inv), $size.ToString($inv)))
+        $tag = [regex]::Replace($tag, 'width="[^"]+"', ('width="{0}"' -f $size.ToString($inv)))
+        $tag = [regex]::Replace($tag, 'height="[^"]+"', ('height="{0}"' -f $size.ToString($inv)))
+        $square = $raw.Substring(0, $svg.Index) + $tag +
+            $raw.Substring($svg.Index + $svg.Length)
+        $out = Join-Path ([System.IO.Path]::GetTempPath()) `
+            ((Split-Path -Leaf $Path) -replace '\.svg$', '-square.svg')
+        [System.IO.File]::WriteAllText($out, $square,
+            (New-Object System.Text.UTF8Encoding($false)))
+        return $out
+    }
+
+    $fullBleed = Get-SquareSvg (Resolve-Path "icons/app-icon.svg")
+    $rounded = Get-SquareSvg (Resolve-Path "icons/app-icon-rounded.svg")
     $macos = Resolve-Path "icons/app-icon-macos.svg"
     $desktopNames = @(
         "icon.ico", "icon.png", "32x32.png", "64x64.png",
