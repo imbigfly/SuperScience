@@ -15,7 +15,8 @@ permissions:
 
 concurrency:
   group: ci-installers
-  cancel-in-progress: true
+  # Let the in-flight run finish so its rust-cache lands; the next push queues.
+  cancel-in-progress: false
 
 jobs:
   macos:
@@ -110,7 +111,24 @@ jobs:
         shell: pwsh
         env:
           SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD: ${{ secrets.SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD }}
-        run: cargo tauri build --bundles msi,nsis
+        run: |
+          cargo tauri build --bundles msi,nsis 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload build log on failure
+        if: failure()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if (-not (Test-Path build.log)) { exit 0 }
+          gh release view ci-debug-logs --repo $env:GITHUB_REPOSITORY 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create ci-debug-logs --repo $env:GITHUB_REPOSITORY `
+              --prerelease --title "CI debug logs" `
+              --notes "Build logs from failed CI runs." --target $env:GITHUB_SHA
+          }
+          gh release upload ci-debug-logs build.log --repo $env:GITHUB_REPOSITORY --clobber
 
       - name: Collect installers
         shell: pwsh
