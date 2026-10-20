@@ -112,30 +112,39 @@ jobs:
         env:
           SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD: ${{ secrets.SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD }}
         run: |
-          cargo tauri build --bundles msi,nsis 2>&1 | Tee-Object -FilePath build.log
+          cargo tauri build --bundles nsis 2>&1 | Tee-Object -FilePath build.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # WiX 3's light.exe rejects the Chinese product name on this runner.
+          # Keep trying so the log shows the exact failure, but ship the NSIS
+          # installer either way.
+          cargo tauri build --bundles msi 2>&1 | Tee-Object -FilePath build-msi.log -Append
+          exit 0
 
-      - name: Upload build log on failure
-        if: failure()
+      - name: Upload build logs
+        if: always()
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if (-not (Test-Path build.log)) { exit 0 }
+          $logs = @("build.log", "build-msi.log") | Where-Object { Test-Path $_ }
+          if (-not $logs) { exit 0 }
           gh release view ci-debug-logs --repo $env:GITHUB_REPOSITORY 2>$null
           if ($LASTEXITCODE -ne 0) {
             gh release create ci-debug-logs --repo $env:GITHUB_REPOSITORY `
               --prerelease --title "CI debug logs" `
-              --notes "Build logs from failed CI runs." --target $env:GITHUB_SHA
+              --notes "Build logs from CI runs." --target $env:GITHUB_SHA
           }
-          gh release upload ci-debug-logs build.log --repo $env:GITHUB_REPOSITORY --clobber
+          foreach ($log in $logs) {
+            gh release upload ci-debug-logs $log --repo $env:GITHUB_REPOSITORY --clobber
+          }
 
       - name: Collect installers
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path out | Out-Null
-          Copy-Item "target/release/bundle/msi/*.msi" out/
-          Copy-Item "target/release/bundle/nsis/*.exe" out/
+          Copy-Item "target/release/bundle/msi/*.msi" out/ -ErrorAction SilentlyContinue
+          Copy-Item "target/release/bundle/nsis/*.exe" out/ -ErrorAction SilentlyContinue
+          if (-not (Get-ChildItem out)) { throw "No Windows installers were produced" }
           Get-ChildItem out | Format-Table Name, Length
 
       - uses: actions/upload-artifact@v4
