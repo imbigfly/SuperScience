@@ -65,17 +65,33 @@ runs:
         }
 
         # trunk-rs/trunk publishes a prebuilt binary for every runner above.
-        # Windows assets are .zip; the other runners ship .tar.gz.
+        # Windows assets are .zip; the other runners ship .tar.gz. Fall back to
+        # a source build if the download, extraction, or install fails.
         if ! command -v trunk >/dev/null 2>&1; then
           case "$TARGET" in
             *windows*) TRUNK_EXT=zip ;;
             *)         TRUNK_EXT=tar.gz ;;
           esac
-          curl -fsSL --retry 3 -o "$TMP/trunk.asset" \
-            "https://github.com/trunk-rs/trunk/releases/download/${TRUNK_TAG}/trunk-${TARGET}.${TRUNK_EXT}"
-          mkdir "$TMP/trunk" && unpack "$TMP/trunk.asset" "$TMP/trunk"
-          install -m 0755 "$(find "$TMP/trunk" -type f \( -name trunk -o -name trunk.exe \) | head -1)" \
-            "$HOME/.cargo/bin/$TRUNK_BIN"
+          trunk_url="https://github.com/trunk-rs/trunk/releases/download/${TRUNK_TAG}/trunk-${TARGET}.${TRUNK_EXT}"
+          if ! { curl -fsSL --retry 3 -o "$TMP/trunk.asset" "$trunk_url" \
+                 && mkdir "$TMP/trunk" && unpack "$TMP/trunk.asset" "$TMP/trunk"; }; then
+            echo "::warning::prebuilt trunk failed ($trunk_url); compiling from source"
+            cargo install trunk --version "${TRUNK_TAG#v}" --locked
+          else
+            found="$(find "$TMP/trunk" -type f \( -name trunk -o -name trunk.exe \) | head -1)"
+            if [ -z "$found" ]; then
+              echo "::warning::trunk binary not found in $trunk_url; compiling from source"
+              cargo install trunk --version "${TRUNK_TAG#v}" --locked
+            else
+              cp "$found" "$HOME/.cargo/bin/$TRUNK_BIN"
+              chmod 0755 "$HOME/.cargo/bin/$TRUNK_BIN"
+            fi
+          fi
+        fi
+        if ! trunk --version >/dev/null 2>&1; then
+          echo "::warning::trunk is not runnable; compiling from source"
+          rm -f "$HOME/.cargo/bin/$TRUNK_BIN"
+          cargo install trunk --version "${TRUNK_TAG#v}" --locked
         fi
         trunk --version
 
@@ -100,11 +116,26 @@ runs:
               *-unknown-linux-*) EXT=tgz ;;
               *)                 EXT=zip ;;
             esac
-            curl -fsSL --retry 3 -o "$TMP/tauri-cli.asset" \
-              "https://github.com/tauri-apps/tauri/releases/download/${TAURI_TAG}/cargo-tauri-${TARGET}.${EXT}"
-            mkdir "$TMP/tauri-cli" && unpack "$TMP/tauri-cli.asset" "$TMP/tauri-cli"
-            install -m 0755 "$(find "$TMP/tauri-cli" -type f \( -name cargo-tauri -o -name cargo-tauri.exe \) | head -1)" \
-              "$HOME/.cargo/bin/$TAURI_BIN"
+            tauri_url="https://github.com/tauri-apps/tauri/releases/download/${TAURI_TAG}/cargo-tauri-${TARGET}.${EXT}"
+            if ! { curl -fsSL --retry 3 -o "$TMP/tauri-cli.asset" "$tauri_url" \
+                   && mkdir "$TMP/tauri-cli" && unpack "$TMP/tauri-cli.asset" "$TMP/tauri-cli"; }; then
+              echo "::warning::prebuilt cargo-tauri failed ($tauri_url); compiling from source"
+              cargo install tauri-cli --version "${TAURI_TAG#tauri-cli-v}" --locked
+            else
+              found="$(find "$TMP/tauri-cli" -type f \( -name cargo-tauri -o -name cargo-tauri.exe \) | head -1)"
+              if [ -z "$found" ]; then
+                echo "::warning::cargo-tauri binary not found in $tauri_url; compiling from source"
+                cargo install tauri-cli --version "${TAURI_TAG#tauri-cli-v}" --locked
+              else
+                cp "$found" "$HOME/.cargo/bin/$TAURI_BIN"
+                chmod 0755 "$HOME/.cargo/bin/$TAURI_BIN"
+              fi
+            fi
           fi
+        fi
+        if ! cargo-tauri --version >/dev/null 2>&1; then
+          echo "::warning::cargo-tauri is not runnable; compiling from source"
+          rm -f "$HOME/.cargo/bin/$TAURI_BIN"
+          cargo install tauri-cli --version "${TAURI_TAG#tauri-cli-v}" --locked
         fi
         cargo-tauri --version
