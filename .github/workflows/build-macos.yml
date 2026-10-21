@@ -5,6 +5,10 @@ name: macOS Build
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+  actions: write
+
 jobs:
   build:
     runs-on: macos-latest
@@ -43,3 +47,23 @@ jobs:
           tauriScript: cargo tauri
           uploadWorkflowArtifacts: true
           args: --bundles app,dmg
+
+      - name: Publish to ci-latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')"
+          ARCH="$(uname -m)"
+          case "$ARCH" in arm64) ARCH=aarch64 ;; x86_64) ARCH=x86_64 ;; esac
+          DMG="$(find src-tauri/target -path '*/bundle/dmg/*.dmg' -type f | head -1)"
+          test -n "$DMG"
+          mkdir -p out
+          cp "$DMG" "out/SuperScience-${VERSION}-macos-${ARCH}.dmg"
+          gh release view ci-latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create ci-latest -R "$GITHUB_REPOSITORY" --prerelease \
+              --title "CI latest installers" \
+              --notes "Automated installer artifacts from the latest packaging runs."
+          gh release upload ci-latest -R "$GITHUB_REPOSITORY" \
+            "out/SuperScience-${VERSION}-macos-${ARCH}.dmg" --clobber

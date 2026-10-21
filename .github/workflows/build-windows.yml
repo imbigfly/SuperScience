@@ -5,6 +5,10 @@ name: Windows Build
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+  actions: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -43,3 +47,21 @@ jobs:
           tauriScript: cargo tauri
           uploadWorkflowArtifacts: true
           args: --bundles nsis
+
+      - name: Publish to ci-latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')"
+          EXE="$(find src-tauri/target -path '*/bundle/nsis/*.exe' -type f | head -1)"
+          test -n "$EXE"
+          mkdir -p out
+          cp "$EXE" "out/SuperScience-${VERSION}-windows-x64-setup.exe"
+          gh release view ci-latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create ci-latest -R "$GITHUB_REPOSITORY" --prerelease \
+              --title "CI latest installers" \
+              --notes "Automated installer artifacts from the latest packaging runs."
+          gh release upload ci-latest -R "$GITHUB_REPOSITORY" \
+            "out/SuperScience-${VERSION}-windows-x64-setup.exe" --clobber

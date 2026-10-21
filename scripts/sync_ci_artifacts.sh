@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Sync the newest macOS/Windows installers to this machine.
 #
-# Primary path: read the `ci-latest` prerelease (published by the
-# publish-ci-installers workflow), download its assets through a GitHub mirror,
-# and verify SHA256SUMS. Fallback: nightly.link workflow artifacts.
+# Primary path: read the `ci-latest` prerelease (the build workflows publish
+# each platform there after a successful package), download the assets through
+# a GitHub mirror, and verify each asset's API digest.
+# Fallback: nightly.link workflow artifacts.
 #
-# The script is safe to run repeatedly: a release digest marker skips unchanged
-# assets, and a directory lock prevents concurrent runs from launchd.
+# Repeat runs skip unchanged assets via a digest marker. A directory lock keeps
+# launchd from stacking runs.
 set -euo pipefail
 
 REPO="${CI_SYNC_REPO:-imbigfly/SuperScience}"
@@ -36,41 +37,33 @@ hash_file() {
   fi
 }
 
-verify_sums() {
-  local dir="$1"
-  if command -v sha256sum >/dev/null 2>&1; then
-    (cd "$dir" && sha256sum -c SHA256SUMS)
-  else
-    (cd "$dir" && shasum -a 256 -c SHA256SUMS)
-  fi
-}
-
 sync_release() {
   local json
   json="$(curl -fsSL --max-time 30 \
     "https://api.github.com/repos/$REPO/releases/tags/$RELEASE_TAG")" || return 1
 
-  local mac win marker parsed
-  parsed="$(python3 - "$json" <<'PY'
+  local mac mac_digest win win_digest
+  IFS=$'\t' read -r mac mac_digest win win_digest <<< "$(python3 - "$json" <<'PY'
 import json, sys
 d = json.loads(sys.argv[1])
 assets = {a.get("name", ""): a for a in d.get("assets", [])}
 mac = next((n for n in assets if n.endswith("-macos-aarch64.dmg")), "")
 win = next((n for n in assets if n.endswith("-windows-x64-setup.exe")), "")
-marker = "|".join(sorted(
-    f"{n}:{assets[n].get('digest') or assets[n].get('updated_at') or assets[n].get('size')}"
-    for n in assets
-))
-print("\t".join([mac, win, marker]))
+print("\t".join([
+    mac,
+    assets.get(mac, {}).get("digest", ""),
+    win,
+    assets.get(win, {}).get("digest", ""),
+]))
 PY
 )"
-  IFS=$'\t' read -r mac win marker <<< "$parsed"
 
   if [ -z "$mac" ] || [ -z "$win" ]; then
     log "release $RELEASE_TAG has no installer assets"
     return 1
   fi
 
+  local marker="$mac_digest|$win_digest"
   local marker_file="$DEST/.$RELEASE_TAG.digest"
   if [ "$FORCE" = 0 ] && [ -f "$marker_file" ] \
      && [ "$(cat "$marker_file")" = "$marker" ] \
@@ -84,14 +77,26 @@ PY
   mkdir -p "$tmp"
   local base="https://github.com/$REPO/releases/download/$RELEASE_TAG"
   log "downloading $RELEASE_TAG assets through $MIRROR"
-  for name in SHA256SUMS "$mac" "$win"; do
+  for spec in "$mac:$mac_digest" "$win:$win_digest"; do
+    local name="${spec%%:*}"
+    local digest="${spec#*:}"
     curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 3600 \
       -o "$tmp/$name" "${MIRROR}${base}/${name}"
+    if [ -n "$digest" ]; then
+      local expected="${digest#sha256:}"
+      local actual
+      actual="$(hash_file "$tmp/$name")"
+      if [ "$actual" != "$expected" ]; then
+        log "checksum mismatch for $name"
+        rm -rf "$tmp"
+        return 1
+      fi
+      log "verified $name"
+    fi
   done
-  verify_sums "$tmp"
 
   rm -f "$DEST"/SuperScience-*-macos-*.dmg "$DEST"/SuperScience-*-windows-*.exe
-  mv "$tmp/$mac" "$tmp/$win" "$tmp/SHA256SUMS" "$DEST/"
+  mv "$tmp/$mac" "$tmp/$win" "$DEST/"
   rm -rf "$tmp"
   printf '%s\n' "$marker" > "$marker_file"
   log "saved $mac and $win to $DEST"
