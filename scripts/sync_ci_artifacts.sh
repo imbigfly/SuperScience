@@ -28,39 +28,39 @@ trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
 
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
 
-latest_branch() {
+latest_run() {
   local workflow="$1"
   curl -fsSL --max-time 20 \
     "https://api.github.com/repos/$REPO/actions/workflows/$workflow/runs?status=success&per_page=1" \
     | python3 -c 'import json,sys
 d=json.load(sys.stdin)
 runs=d.get("workflow_runs") or []
-print(runs[0].get("head_branch","") if runs else "")' 2>/dev/null || true
+if runs:
+    r=runs[0]
+    print(str(r.get("id","")) + "\t" + r.get("head_branch",""))' 2>/dev/null || true
 }
 
 sync_one() {
   local workflow="$1" artifact="$2" label="$3"
-  local branch
-  branch="$(latest_branch "$workflow.yml")"
-  if [ -z "$branch" ]; then
+  local run branch
+  IFS=$'\t' read -r run branch <<< "$(latest_run "$workflow.yml")"
+  if [ -z "$run" ]; then
     branch="${CI_SYNC_BRANCH:-ci/final-build}"
+    run="branch:$branch"
     log "$workflow: no successful run found; falling back to $branch"
   fi
 
   local encoded="${branch//\//%2F}"
   local url="https://nightly.link/$REPO/workflows/$workflow/$encoded/$artifact.zip"
-  local marker="$DEST/.$artifact.etag"
-  local etag
-  etag="$(curl -fsSIL --max-time 40 "$url" 2>/dev/null \
-    | awk 'BEGIN{IGNORECASE=1} /^etag:/{sub(/\r$/,""); print $2}' | tail -1 || true)"
+  local marker="$DEST/.$artifact.run"
 
-  if [ "$FORCE" = 0 ] && [ -n "$etag" ] && [ -f "$marker" ] \
-     && [ "$(cat "$marker")" = "$etag" ] && [ -d "$DEST/$label" ]; then
-    log "$artifact: unchanged (etag $etag)"
+  if [ "$FORCE" = 0 ] && [ -f "$marker" ] \
+     && [ "$(cat "$marker")" = "$run" ] && [ -d "$DEST/$label" ]; then
+    log "$artifact: unchanged (run $run)"
     return 0
   fi
 
-  log "$artifact: downloading from $url"
+  log "$artifact: downloading run $run from $url"
   local tmp="$DEST/.$artifact.zip.part"
   rm -f "$tmp"
   curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 7200 \
@@ -73,9 +73,7 @@ sync_one() {
   unzip -q -o "$tmp" -d "$out"
   rm -f "$tmp"
 
-  if [ -n "$etag" ]; then
-    printf '%s\n' "$etag" > "$marker"
-  fi
+  printf '%s\n' "$run" > "$marker"
   log "$artifact: saved to $out"
 }
 

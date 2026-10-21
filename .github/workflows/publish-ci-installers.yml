@@ -1,0 +1,54 @@
+name: Publish CI Installers
+
+# Copy the installers from a packaging run into a stable prerelease so they
+# can be downloaded without a GitHub login (and through a mirror when needed).
+on:
+  workflow_dispatch:
+  push:
+    branches: [ci/publish-installers]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p out/macos out/windows
+          gh run download 39607485476 -R "$GITHUB_REPOSITORY" -n darwin-aarch64-dmg -D out/macos
+          gh run download 39607485556 -R "$GITHUB_REPOSITORY" -n windows-x64-nsis -D out/windows
+          find out -maxdepth 4 -type f -print
+
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')"
+          MAC="$(find out/macos -type f -name '*.dmg' | head -1)"
+          WIN="$(find out/windows -type f -name '*.exe' | head -1)"
+          test -n "$MAC" && test -n "$WIN"
+          cp "$MAC" "out/SuperScience-${VERSION}-macos-aarch64.dmg"
+          cp "$WIN" "out/SuperScience-${VERSION}-windows-x64-setup.exe"
+          (cd out && sha256sum SuperScience-* > SHA256SUMS)
+
+          gh release view ci-latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create ci-latest -R "$GITHUB_REPOSITORY" --prerelease \
+              --title "CI latest installers" \
+              --notes "Automated installer artifacts from the latest packaging runs."
+
+          gh release upload ci-latest -R "$GITHUB_REPOSITORY" \
+            "out/SuperScience-${VERSION}-macos-aarch64.dmg" \
+            "out/SuperScience-${VERSION}-windows-x64-setup.exe" \
+            out/SHA256SUMS --clobber
+
+          gh release view ci-latest -R "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[] | "\(.name) \(.size)"'
