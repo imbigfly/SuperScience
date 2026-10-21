@@ -59,9 +59,14 @@ runs:
         }
 
         # trunk-rs/trunk publishes a prebuilt binary for every runner above.
+        # Windows assets are .zip; the other runners ship .tar.gz.
         if ! command -v trunk >/dev/null 2>&1; then
+          case "$TARGET" in
+            *windows*) TRUNK_EXT=zip ;;
+            *)         TRUNK_EXT=tar.gz ;;
+          esac
           curl -fsSL --retry 3 -o "$TMP/trunk.asset" \
-            "https://github.com/trunk-rs/trunk/releases/download/${TRUNK_TAG}/trunk-${TARGET}.tar.gz"
+            "https://github.com/trunk-rs/trunk/releases/download/${TRUNK_TAG}/trunk-${TARGET}.${TRUNK_EXT}"
           mkdir "$TMP/trunk" && unpack "$TMP/trunk.asset" "$TMP/trunk"
           install -m 0755 "$(find "$TMP/trunk" -type f \( -name trunk -o -name trunk.exe \) | head -1)" \
             "$HOME/.cargo/bin/trunk"
