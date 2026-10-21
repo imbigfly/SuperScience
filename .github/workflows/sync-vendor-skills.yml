@@ -6,9 +6,6 @@ name: Sync Vendor Skills
 
 on:
   workflow_dispatch:
-  # Temporary branch trigger for the initial sync; remove after the run.
-  push:
-    branches: [ci/sync-vendor-skills]
 
 permissions:
   contents: write
