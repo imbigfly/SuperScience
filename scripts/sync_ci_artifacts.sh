@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
-# Sync the newest successful macOS/Windows installer artifacts to this machine.
+# Sync the newest macOS/Windows installers to this machine.
 #
-# GitHub Actions artifacts normally require a signed-in session. nightly.link
-# exposes the latest artifact of a workflow/branch as a plain ZIP, so this
-# script can run from launchd without a token.
+# Primary path: read the `ci-latest` prerelease (published by the
+# publish-ci-installers workflow), download its assets through a GitHub mirror,
+# and verify SHA256SUMS. Fallback: nightly.link workflow artifacts.
 #
-# The script asks the GitHub API for the latest successful run of each build
-# workflow (on any branch), then downloads that run's artifact through
-# nightly.link. A per-artifact ETag marker prevents repeat downloads.
+# The script is safe to run repeatedly: a release digest marker skips unchanged
+# assets, and a directory lock prevents concurrent runs from launchd.
 set -euo pipefail
 
 REPO="${CI_SYNC_REPO:-imbigfly/SuperScience}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEST="${CI_ARTIFACT_DIR:-$ROOT/dist/final}"
+RELEASE_TAG="${CI_RELEASE_TAG:-ci-latest}"
+MIRROR="${CI_MIRROR:-https://ghfast.top/}"
 FORCE=0
 [ "${1:-}" = "--force" ] && FORCE=1
 
 mkdir -p "$DEST"
 
-# One sync at a time; launchd can fire while a manual run is in flight.
 LOCK="$DEST/.sync.lock"
 if ! mkdir "$LOCK" 2>/dev/null; then
   echo "another artifact sync is already running"
@@ -28,56 +28,99 @@ trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
 
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
 
-latest_run() {
-  local workflow="$1"
-  curl -fsSL --max-time 20 \
-    "https://api.github.com/repos/$REPO/actions/workflows/$workflow/runs?status=success&per_page=1" \
-    | python3 -c 'import json,sys
-d=json.load(sys.stdin)
-runs=d.get("workflow_runs") or []
-if runs:
-    r=runs[0]
-    print(str(r.get("id","")) + "\t" + r.get("head_branch",""))' 2>/dev/null || true
+hash_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
 }
 
-sync_one() {
-  local workflow="$1" artifact="$2" label="$3"
-  local run branch
-  IFS=$'\t' read -r run branch <<< "$(latest_run "$workflow.yml")"
-  if [ -z "$run" ]; then
-    branch="${CI_SYNC_BRANCH:-ci/final-build}"
-    run="branch:$branch"
-    log "$workflow: no successful run found; falling back to $branch"
+verify_sums() {
+  local dir="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    (cd "$dir" && sha256sum -c SHA256SUMS)
+  else
+    (cd "$dir" && shasum -a 256 -c SHA256SUMS)
+  fi
+}
+
+sync_release() {
+  local json
+  json="$(curl -fsSL --max-time 30 \
+    "https://api.github.com/repos/$REPO/releases/tags/$RELEASE_TAG")" || return 1
+
+  local mac win marker parsed
+  parsed="$(python3 - "$json" <<'PY'
+import json, sys
+d = json.loads(sys.argv[1])
+assets = {a.get("name", ""): a for a in d.get("assets", [])}
+mac = next((n for n in assets if n.endswith("-macos-aarch64.dmg")), "")
+win = next((n for n in assets if n.endswith("-windows-x64-setup.exe")), "")
+marker = "|".join(sorted(
+    f"{n}:{assets[n].get('digest') or assets[n].get('updated_at') or assets[n].get('size')}"
+    for n in assets
+))
+print("\t".join([mac, win, marker]))
+PY
+)"
+  IFS=$'\t' read -r mac win marker <<< "$parsed"
+
+  if [ -z "$mac" ] || [ -z "$win" ]; then
+    log "release $RELEASE_TAG has no installer assets"
+    return 1
   fi
 
-  local encoded="${branch//\//%2F}"
-  local url="https://nightly.link/$REPO/workflows/$workflow/$encoded/$artifact.zip"
-  local marker="$DEST/.$artifact.run"
-
-  if [ "$FORCE" = 0 ] && [ -f "$marker" ] \
-     && [ "$(cat "$marker")" = "$run" ] && [ -d "$DEST/$label" ]; then
-    log "$artifact: unchanged (run $run)"
+  local marker_file="$DEST/.$RELEASE_TAG.digest"
+  if [ "$FORCE" = 0 ] && [ -f "$marker_file" ] \
+     && [ "$(cat "$marker_file")" = "$marker" ] \
+     && [ -f "$DEST/$mac" ] && [ -f "$DEST/$win" ]; then
+    log "release $RELEASE_TAG unchanged"
     return 0
   fi
 
-  log "$artifact: downloading run $run from $url"
+  local tmp="$DEST/.incoming"
+  rm -rf "$tmp"
+  mkdir -p "$tmp"
+  local base="https://github.com/$REPO/releases/download/$RELEASE_TAG"
+  log "downloading $RELEASE_TAG assets through $MIRROR"
+  for name in SHA256SUMS "$mac" "$win"; do
+    curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 3600 \
+      -o "$tmp/$name" "${MIRROR}${base}/${name}"
+  done
+  verify_sums "$tmp"
+
+  rm -f "$DEST"/SuperScience-*-macos-*.dmg "$DEST"/SuperScience-*-windows-*.exe
+  mv "$tmp/$mac" "$tmp/$win" "$tmp/SHA256SUMS" "$DEST/"
+  rm -rf "$tmp"
+  printf '%s\n' "$marker" > "$marker_file"
+  log "saved $mac and $win to $DEST"
+  return 0
+}
+
+sync_nightly_fallback() {
+  local workflow="$1" artifact="$2" label="$3"
+  local branch="${CI_SYNC_BRANCH:-ci/final-build}"
+  local encoded="${branch//\//%2F}"
+  local url="https://nightly.link/$REPO/workflows/$workflow/$encoded/$artifact.zip"
   local tmp="$DEST/.$artifact.zip.part"
+  log "fallback: downloading $artifact from $url"
   rm -f "$tmp"
   curl -fL --retry 5 --retry-all-errors --connect-timeout 20 --max-time 7200 \
     -o "$tmp" "$url"
   unzip -tq "$tmp" >/dev/null
-
   local out="$DEST/$label"
   rm -rf "$out"
   mkdir -p "$out"
   unzip -q -o "$tmp" -d "$out"
   rm -f "$tmp"
-
-  printf '%s\n' "$run" > "$marker"
-  log "$artifact: saved to $out"
+  log "fallback: saved $artifact to $out"
 }
 
-sync_one "build-macos" "darwin-aarch64-dmg" "macos"
-sync_one "build-windows" "windows-x64-nsis" "windows"
+if ! sync_release; then
+  log "falling back to workflow artifacts"
+  sync_nightly_fallback "build-macos" "darwin-aarch64-dmg" "macos"
+  sync_nightly_fallback "build-windows" "windows-x64-nsis" "windows"
+fi
 
 log "done"
