@@ -4,9 +4,6 @@ name: macOS Build
 # release packages only come from release-macos.yml on a version tag.
 on:
   workflow_dispatch:
-  # Temporary: rebuild with the synced skills; removed after the run starts.
-  push:
-    branches: [ci/final-build]
 
 jobs:
   build:
