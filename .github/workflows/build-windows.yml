@@ -4,9 +4,6 @@ name: Windows Build
 # packages only come from release-windows.yml on a version tag.
 on:
   workflow_dispatch:
-  # Temporary retry trigger; removed immediately after the run starts.
-  push:
-    branches: [ci/desktop-automation]
 
 jobs:
   build:
