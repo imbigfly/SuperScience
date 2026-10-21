@@ -25,6 +25,16 @@ jobs:
       - name: Install Trunk and Tauri CLI
         uses: ./.github/actions/install-tauri-tools
 
+      - name: Cache Cua Driver
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/binaries
+          key: cua-driver-${{ runner.os }}-${{ runner.arch }}-0.37.0
+
+      - name: Fetch Cua Driver
+        shell: bash
+        run: bash scripts/fetch_cua_driver.sh
+
       - uses: tauri-apps/tauri-action@v1
         env:
           SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD: ${{ secrets.SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD }}

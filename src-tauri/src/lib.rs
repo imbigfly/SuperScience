@@ -43,6 +43,7 @@ mod delegation_resources;
 mod delegation_runtime;
 mod delegation_tool;
 mod demo_save;
+mod desktop_control;
 mod desktop_lifecycle;
 mod device_bridge;
 mod device_hub;
@@ -5546,6 +5547,21 @@ async fn finish_custom_mcp_wiring(
                 }
                 result.errors.push(message);
             }
+        }
+    }
+
+    // The bundled desktop driver is an optional connector: when its sidecar is
+    // absent (a build without fetch_cua_driver.sh), it disappears instead of
+    // turning every tool-wiring pass into a startup error.
+    if connector_allow.is_none_or(|allow| allow.contains(desktop_control::CONNECTOR_ID))
+        && desktop_control::resolve_driver_path(None).is_some()
+    {
+        match desktop_control::connect(None).await {
+            Ok(client) => match desktop_control::register(registry, client).await {
+                Ok(names) => result.added_tools.extend(names),
+                Err(error) => result.errors.push(format!("Desktop: {error}")),
+            },
+            Err(error) => result.errors.push(format!("Desktop: {error}")),
         }
     }
     result

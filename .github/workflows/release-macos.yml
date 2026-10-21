@@ -56,6 +56,16 @@ jobs:
       - name: Install Trunk and Tauri CLI
         uses: ./.github/actions/install-tauri-tools
 
+      - name: Cache Cua Driver
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/binaries
+          key: cua-driver-${{ runner.os }}-${{ runner.arch }}-0.37.0
+
+      - name: Fetch Cua Driver
+        shell: bash
+        run: bash scripts/fetch_cua_driver.sh
+
       # Baked into the binary via option_env! so installed apps can send feedback
       # without a sidecar feedback.local.toml. Never commit the password.
       - name: Require feedback SMTP password secret

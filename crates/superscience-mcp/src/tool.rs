@@ -13,6 +13,9 @@ const MAX_PRESENTATION_HTML_BYTES: usize = 32 * 1024 * 1024;
 
 pub struct McpTool {
     name: String,
+    /// The name the MCP server knows this tool by. It differs from `name`
+    /// when a host exposes the tool under a connector prefix.
+    remote_name: String,
     schema: ToolSchema,
     remote: RemoteTool,
     client: Arc<McpClient>,
@@ -44,9 +47,24 @@ impl McpTool {
         connector_id: impl Into<String>,
         catalog: Arc<Vec<RemoteTool>>,
     ) -> Self {
-        let schema = ToolSchema::new(&tool.name, &tool.description, tool.input_schema.clone());
+        let name = tool.name.clone();
+        Self::with_catalog_named(tool, &name, client, connector_id, catalog)
+    }
+
+    /// Same as [`Self::with_catalog`], but exposes the tool under a different
+    /// name while still dispatching `tools/call` to the server's original
+    /// name. Hosts use this to prefix several MCP servers into one namespace.
+    pub fn with_catalog_named(
+        tool: RemoteTool,
+        exposed_name: &str,
+        client: Arc<McpClient>,
+        connector_id: impl Into<String>,
+        catalog: Arc<Vec<RemoteTool>>,
+    ) -> Self {
+        let schema = ToolSchema::new(exposed_name, &tool.description, tool.input_schema.clone());
         Self {
-            name: tool.name.clone(),
+            name: exposed_name.to_string(),
+            remote_name: tool.name.clone(),
             schema,
             remote: tool,
             client: Arc::clone(&client),
@@ -62,7 +80,20 @@ impl McpTool {
         connector_id: impl Into<String>,
         catalog: Arc<Vec<RemoteTool>>,
     ) -> Self {
-        let mut wrapped = Self::with_catalog(tool, client, connector_id, catalog);
+        let name = tool.name.clone();
+        Self::with_catalog_named_requiring_approval(tool, &name, client, connector_id, catalog)
+    }
+
+    /// Named variant of [`Self::with_catalog_requiring_approval`].
+    pub fn with_catalog_named_requiring_approval(
+        tool: RemoteTool,
+        exposed_name: &str,
+        client: Arc<McpClient>,
+        connector_id: impl Into<String>,
+        catalog: Arc<Vec<RemoteTool>>,
+    ) -> Self {
+        let mut wrapped =
+            Self::with_catalog_named(tool, exposed_name, client, connector_id, catalog);
         wrapped.require_approval = true;
         wrapped
     }
@@ -463,7 +494,7 @@ impl Tool for McpTool {
         s.chars().take(120).collect()
     }
     async fn run(&self, args: &Value, env: &dyn ToolEnv) -> ToolResult {
-        match self.client.tool_call_rich(&self.name, args).await {
+        match self.client.tool_call_rich(&self.remote_name, args).await {
             Ok(result) => {
                 let mut content = result.text_content();
                 let artifacts = materialize_html_resources(&result, env.project_root(), env).await;

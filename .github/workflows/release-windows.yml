@@ -62,6 +62,16 @@ jobs:
       - name: Install Trunk and Tauri CLI
         uses: ./.github/actions/install-tauri-tools
 
+      - name: Cache Cua Driver
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/binaries
+          key: cua-driver-${{ runner.os }}-${{ runner.arch }}-0.37.0
+
+      - name: Fetch Cua Driver
+        shell: bash
+        run: bash scripts/fetch_cua_driver.sh
+
       # Safety net: never publish installers signed with the test certificate.
       - name: Guard against publishing test-signed installers
         if: github.event_name == 'workflow_dispatch' && inputs.publish && env.SIGNING_POLICY != 'release-signing'
