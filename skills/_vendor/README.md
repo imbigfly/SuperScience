@@ -5,9 +5,9 @@ Bundled into SuperScience `skills/` for offline discovery and DMG packaging
 
 | Source | Upstream | What we ship |
 |---|---|---|
-| Academic research skills | https://github.com/Imbad0202/academic-research-skills v3.21.2 (CC BY-NC 4.0) | `academic-paper`, `academic-paper-reviewer`, `academic-pipeline`, `deep-research`, plus lifted `academic-shared` |
-| nature-skills | https://github.com/Yuan1z0825/nature-skills `2661b531` (Apache-2.0) | `nature-*` including `nature-shared` and `nature-image2ppt` |
-| OfficeCLI | https://github.com/iOfficeAI/OfficeCLI v1.0.149 (Apache-2.0); auto-update pack `officecli` | `officecli*`, `morph-ppt*` |
+| Academic research skills | https://github.com/Imbad0202/academic-research-skills v3.23.1 (CC BY-NC 4.0) | `academic-paper`, `academic-paper-reviewer`, `academic-pipeline`, `deep-research`, plus lifted `academic-shared` |
+| nature-skills | https://github.com/Yuan1z0825/nature-skills `2a163b95` (Apache-2.0) | `nature-*` including `nature-shared` and `nature-image2ppt` |
+| OfficeCLI | https://github.com/iOfficeAI/OfficeCLI v1.0.158 (Apache-2.0); auto-update pack `officecli` | `officecli*`, `morph-ppt*` |
 | Humanizer-zh | https://github.com/op7418/Humanizer-zh `f4518a8e` (MIT) | `humanizer-zh` |
 | academic-search-pro | https://skillhub.cn/skills/user_8d26dabd/academic-search-pro v1.0.5 (no LICENSE in package) | `academic-search-pro` |
 
