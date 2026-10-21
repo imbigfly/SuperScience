@@ -4,6 +4,9 @@ name: Windows Build
 # packages only come from release-windows.yml on a version tag.
 on:
   workflow_dispatch:
+  # Temporary: lets the integration branch start a packaging run without a PAT.
+  push:
+    branches: [ci/desktop-automation]
 
 jobs:
   build:
