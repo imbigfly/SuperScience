@@ -1,6 +1,6 @@
 name: Windows Build
 
-# Manual diagnostic/packaging build (msi/nsis). Not tied to push — release
+# Manual diagnostic/packaging build (nsis). Not tied to push — release
 # packages only come from release-windows.yml on a version tag.
 on:
   workflow_dispatch:
@@ -42,4 +42,4 @@ jobs:
           projectPath: src-tauri
           tauriScript: cargo tauri
           uploadWorkflowArtifacts: true
-          args: --bundles msi,nsis
+          args: --bundles nsis
