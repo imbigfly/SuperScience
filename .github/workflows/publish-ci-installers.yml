@@ -4,8 +4,6 @@ name: Publish CI Installers
 # can be downloaded without a GitHub login (and through a mirror when needed).
 on:
   workflow_dispatch:
-  push:
-    branches: [ci/publish-installers]
 
 permissions:
   actions: read
