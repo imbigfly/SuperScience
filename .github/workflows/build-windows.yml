@@ -4,9 +4,6 @@ name: Windows Build
 # packages only come from release-windows.yml on a version tag.
 on:
   workflow_dispatch:
-  # Temporary: build the PyMOL + embedded-driver installers.
-  push:
-    branches: [ci/pymol-build]
 
 permissions:
   contents: write
