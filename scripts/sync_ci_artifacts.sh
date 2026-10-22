@@ -15,6 +15,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEST="${CI_ARTIFACT_DIR:-$ROOT/dist/final}"
 RELEASE_TAG="${CI_RELEASE_TAG:-ci-latest}"
 MIRROR="${CI_MIRROR:-https://ghfast.top/}"
+PYTHON="${PYTHON_BIN:-python3}"
 FORCE=0
 [ "${1:-}" = "--force" ] && FORCE=1
 
@@ -39,11 +40,18 @@ hash_file() {
 
 sync_release() {
   local json
-  json="$(curl -fsSL --max-time 30 \
-    "https://api.github.com/repos/$REPO/releases/tags/$RELEASE_TAG")" || return 1
+  if ! json="$(curl -fsSL --max-time 30 \
+    "https://api.github.com/repos/$REPO/releases/tags/$RELEASE_TAG")"; then
+    if compgen -G "$DEST/SuperScience-*-macos-*.dmg" >/dev/null \
+       && compgen -G "$DEST/SuperScience-*-windows-*.exe" >/dev/null; then
+      log "release API unavailable; keeping existing installers"
+      return 0
+    fi
+    return 1
+  fi
 
   local mac mac_digest win win_digest
-  IFS=$'\t' read -r mac mac_digest win win_digest <<< "$(python3 - "$json" <<'PY'
+  IFS=$'\t' read -r mac mac_digest win win_digest <<< "$("$PYTHON" - "$json" <<'PY'
 import json, sys
 d = json.loads(sys.argv[1])
 assets = {a.get("name", ""): a for a in d.get("assets", [])}

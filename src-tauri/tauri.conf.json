@@ -24,9 +24,6 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": false,
-    "macOS": {
-      "signingIdentity": "-"
-    },
     "resources": {
       "../docs/project-sync.md": "docs/project-sync.md",
       "../docs/project-sync.zh-CN.md": "docs/project-sync.zh-CN.md",

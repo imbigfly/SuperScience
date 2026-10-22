@@ -55,7 +55,7 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')"
-          EXE="$(find src-tauri/target -path '*/bundle/nsis/*.exe' -type f | head -1)"
+          EXE="$(find target src-tauri/target -path '*/bundle/nsis/*.exe' -type f 2>/dev/null | head -1)"
           test -n "$EXE"
           mkdir -p out
           cp "$EXE" "out/SuperScience-${VERSION}-windows-x64-setup.exe"

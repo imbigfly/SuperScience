@@ -46,7 +46,22 @@ jobs:
           projectPath: src-tauri
           tauriScript: cargo tauri
           uploadWorkflowArtifacts: true
-          args: --bundles app,dmg
+          args: --bundles app
+
+      - name: Sign and package DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')"
+          ARCH="$(uname -m)"
+          case "$ARCH" in arm64) ARCH=aarch64 ;; x86_64) ARCH=x86_64 ;; esac
+          APP="$(find target src-tauri/target -path '*/bundle/macos/*.app' -type d 2>/dev/null | head -1)"
+          test -n "$APP"
+          codesign --force --sign - --identifier science.superscience "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          mkdir -p out
+          hdiutil create -volname "天成科研助手" -srcfolder "$APP" -ov -format UDZO \
+            "out/SuperScience-${VERSION}-macos-${ARCH}.dmg"
 
       - name: Publish to ci-latest
         env:
@@ -57,13 +72,10 @@ jobs:
           VERSION="$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')"
           ARCH="$(uname -m)"
           case "$ARCH" in arm64) ARCH=aarch64 ;; x86_64) ARCH=x86_64 ;; esac
-          DMG="$(find src-tauri/target -path '*/bundle/dmg/*.dmg' -type f | head -1)"
-          test -n "$DMG"
-          mkdir -p out
-          cp "$DMG" "out/SuperScience-${VERSION}-macos-${ARCH}.dmg"
+          DMG="out/SuperScience-${VERSION}-macos-${ARCH}.dmg"
+          test -f "$DMG"
           gh release view ci-latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
             gh release create ci-latest -R "$GITHUB_REPOSITORY" --prerelease \
               --title "CI latest installers" \
               --notes "Automated installer artifacts from the latest packaging runs."
-          gh release upload ci-latest -R "$GITHUB_REPOSITORY" \
-            "out/SuperScience-${VERSION}-macos-${ARCH}.dmg" --clobber
+          gh release upload ci-latest -R "$GITHUB_REPOSITORY" "$DMG" --clobber
