@@ -4,6 +4,9 @@ name: Windows Build
 # packages only come from release-windows.yml on a version tag.
 on:
   workflow_dispatch:
+  # Temporary: retry with fixed artifact discovery.
+  push:
+    branches: [ci/pymol-build]
 
 permissions:
   contents: write
@@ -55,9 +58,9 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')"
-          EXE="$(find target src-tauri/target -path '*/bundle/nsis/*.exe' -type f 2>/dev/null | head -1)"
+          EXE="$(find target src-tauri/target -path '*/bundle/nsis/*.exe' -type f 2>/dev/null | head -1 || true)"
           if [ -z "$EXE" ]; then
-            EXE="$(find . -maxdepth 8 -path '*/bundle/nsis/*.exe' -type f 2>/dev/null | head -1)"
+            EXE="$(find . -maxdepth 8 -path '*/bundle/nsis/*.exe' -type f 2>/dev/null | head -1 || true)"
           fi
           if [ -z "$EXE" ]; then
             echo "::error::NSIS installer was not found"

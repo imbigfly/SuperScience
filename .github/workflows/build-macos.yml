@@ -4,6 +4,9 @@ name: macOS Build
 # release packages only come from release-macos.yml on a version tag.
 on:
   workflow_dispatch:
+  # Temporary: retry with fixed artifact discovery.
+  push:
+    branches: [ci/pymol-build]
 
 permissions:
   contents: write
@@ -55,9 +58,9 @@ jobs:
           VERSION="$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')"
           ARCH="$(uname -m)"
           case "$ARCH" in arm64) ARCH=aarch64 ;; x86_64) ARCH=x86_64 ;; esac
-          APP="$(find target src-tauri/target -path '*/bundle/macos/*.app' -type d 2>/dev/null | head -1)"
+          APP="$(find target src-tauri/target -path '*/bundle/macos/*.app' -type d 2>/dev/null | head -1 || true)"
           if [ -z "$APP" ]; then
-            APP="$(find . -maxdepth 8 -path '*/bundle/macos/*.app' -type d 2>/dev/null | head -1)"
+            APP="$(find . -maxdepth 8 -path '*/bundle/macos/*.app' -type d 2>/dev/null | head -1 || true)"
           fi
           if [ -z "$APP" ]; then
             echo "::error::macOS app bundle was not found"
