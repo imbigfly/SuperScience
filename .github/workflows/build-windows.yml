@@ -4,9 +4,6 @@ name: Windows Build
 # packages only come from release-windows.yml on a version tag.
 on:
   workflow_dispatch:
-  # Temporary: rebuild Windows with the same integration state.
-  push:
-    branches: [ci/cua-embedded]
 
 permissions:
   contents: write
