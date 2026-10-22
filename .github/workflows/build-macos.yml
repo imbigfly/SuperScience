@@ -4,6 +4,9 @@ name: macOS Build
 # release packages only come from release-macos.yml on a version tag.
 on:
   workflow_dispatch:
+  # Temporary: retry PyMOL multi-platform packaging.
+  push:
+    branches: [ci/pymol-build]
 
 permissions:
   contents: write
@@ -96,9 +99,19 @@ jobs:
           ARCH="$(uname -m)"
           case "$ARCH" in arm64) ARCH=aarch64 ;; x86_64) ARCH=x86_64 ;; esac
           DMG="out/SuperScience-${VERSION}-macos-${ARCH}.dmg"
-          test -f "$DMG"
-          gh release view ci-latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+          if [ ! -f "$DMG" ]; then
+            echo "::error::DMG not found: $DMG"
+            ls -l out || true
+            exit 1
+          fi
+          if ! gh release view ci-latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create ci-latest -R "$GITHUB_REPOSITORY" --prerelease \
               --title "CI latest installers" \
-              --notes "Automated installer artifacts from the latest packaging runs."
-          gh release upload ci-latest -R "$GITHUB_REPOSITORY" "$DMG" --clobber
+              --notes "Automated installer artifacts from the latest packaging runs." || true
+          fi
+          if ! OUT="$(gh release upload ci-latest -R "$GITHUB_REPOSITORY" "$DMG" --clobber 2>&1)"; then
+            echo "::error::gh release upload failed: $OUT"
+            exit 1
+          fi
+          gh release view ci-latest -R "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[] | "\(.name) \(.size)"'
