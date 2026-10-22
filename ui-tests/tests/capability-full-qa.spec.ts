@@ -52,6 +52,7 @@ const CATALOG: Cap[] = [
   { id: "figure-duplicate-audit", group: "效率工具", title: "图片查重", kind: "guided", skill: "figure-duplicate-audit", specialist: "figure_duplicate_audit", turns: ["查这份 PDF 的 Figure 2–5，看有没有复用或翻转后再用的图块。", "先说明不会自行扫描项目找图。", "说明哈希匹配只是候选。"] },
   { id: "handwriting-extract", group: "效率工具", title: "手写数据提取", kind: "guided", skill: "handwriting-extract", specialist: "handwriting_extract", turns: ["识别两张手写 CRF 照片成 CSV。", "先说明如何标存疑格子。", "给出输出路径约定。"] },
   { id: "conversation-analysis", group: "协作扩展", title: "对话分析", kind: "guided", specialist: "conversation_analysis", turns: ["分析全部会话，写成对话分析报告.html。", "先列出将要分析的会话并请我确认。", "确认后说明报告只保留用户消息和模型结论。"] },
+  { id: "pymol-assistant", group: "协作扩展", title: "PyMOL 助手", kind: "guided", skill: "pymol", specialist: "pymol_assistant", turns: ["用 PDB 1CRN 做 cartoon 图，白底，1600×1200。", "先说明你会先探测 PyMOL 并写脚本。", "确认会保存 .pse 和脚本。"] },
   { id: "topic-coach", group: "效率工具", title: "选题引导", kind: "guided", skill: "topic-coach", turns: ["我有一份回顾性队列，想投中华系列。", "先列资料盘点要问什么。", "给 3 个选题候选的评分维度。"] },
   { id: "knowledge", group: "效率工具", title: "知识库", kind: "guided", turns: ["查本机知识库里关于 PD-1 耐药的笔记。", "先说明你会怎么检索。", "引用一条片段并标出来源。"] },
   { id: "env-setup", group: "协作扩展", title: "配置本机环境", kind: "runtime", turns: ["打开本机环境准备面板", "确认未新开聊天", "收起后面板芯片仍在"] },

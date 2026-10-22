@@ -41,6 +41,7 @@ mod provider_form_tests {
             context_window: 128_000,
             reasoning_effort: String::new(),
             service_tier: String::new(),
+            user_agent: String::new(),
             supports_vision: false,
             use_for_vision: false,
             use_for_image_generation: false,

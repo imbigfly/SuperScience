@@ -116,6 +116,7 @@ pub(crate) fn intro_for(id: &str) -> Option<&'static CapabilityIntro> {
         "figure-duplicate-audit" => &FIGURE_DUPLICATE_AUDIT,
         "handwriting-extract" => &HANDWRITING_EXTRACT,
         "conversation-analysis" => &CONVERSATION_ANALYSIS,
+        "pymol-assistant" => &PYMOL_ASSISTANT,
         "topic-coach" => &TOPIC_COACH,
         "knowledge" => &KNOWLEDGE,
         "channels" => &CHANNELS,
@@ -1420,6 +1421,33 @@ const CONVERSATION_ANALYSIS: CapabilityIntro = intro(
     help(
         "I will list every saved session across projects, wait for your confirmation, then write 对话分析报告.html with a left session list so you can jump to any chat. Intermediate thinking will not appear.",
         "会先列出全部项目的会话，等你确认后再写成带左侧会话列表的对话分析报告.html，点选即可跳转。中间思考不会出现。",
+    ),
+);
+
+const PYMOL_ASSISTANT: CapabilityIntro = intro(
+    help(
+        "You have a PDB/mmCIF file or a PDB ID and need a publication figure, a saved .pse session, or a reproducible PyMOL script.\nClick the card, then say what to show: “Use PDB 1CRN, cartoon, white background, highlight the disulfide bonds, 1600×1200.”",
+        "你有一个 PDB/mmCIF 文件或 PDB ID，要出出版级图、保存 .pse 会话，或留下可复现的 PyMOL 脚本。\n点卡片，然后直接说想展示什么，例如：「用 PDB 1CRN，cartoon，白底，标出二硫键，1600×1200。」",
+    ),
+    help(
+        "Clicking through the PyMOL GUI is hard to reproduce, and colors, clipping, and camera settings drift between attempts.\nA screenshot without the script or .pse cannot be rerun or adjusted later.\nThe machine may not have PyMOL at all.\nIt is easy to label the wrong residue or claim a binding site that the structure does not support.",
+        "在 PyMOL 界面里手点很难复现，配色、裁切和相机会在几次尝试之间漂移。\n只留一张截图、没有脚本和 .pse，之后无法重跑或微调。\n这台机器可能根本没有装 PyMOL。\n很容易标错残基，或把结构并不支持的结合位点说成结论。",
+    ),
+    help(
+        "Headless script first | The assistant writes a project-local .py, runs `pymol -cq`, and keeps the script so the figure can be regenerated.\nFigure plus session | Deliverables include the ray-traced PNG and the .pse session, not just a screenshot.\nChecked selections | Chains, residues, ligands, and measurements are read back from the loaded structure before labeling.\nGUI only on request | Desktop automation is a fallback for interactive inspection, not the batch-rendering path.",
+        "脚本优先 | 先写项目内的 .py，用 `pymol -cq` 执行，并保留脚本，之后可以重新生成。\n图与会话一起交付 | 除了 PNG，还会保存 .pse 会话，不是只给一张截图。\n选择先核对 | 标注前先读回链、残基、配体和测量值。\nGUI 仅按需 | 桌面自动化只用于交互查看，不作为批量渲染主路径。",
+    ),
+    help(
+        "Click the card to start a guided chat with the PyMOL Assistant specialist\nGive the structure source (PDB ID, local PDB/mmCIF, or .pse) and what to show\nIf PyMOL is missing, the assistant proposes a pixi/conda setup and waits for your confirmation\nAsk for the headless render; ask for the GUI only when you want to inspect the window",
+        "点卡片，打开一场由「PyMOL 助手」专家引导的对话\n给出结构来源（PDB ID、本地 PDB/mmCIF 或 .pse）和想展示的内容\n如果没装 PyMOL，助手会先给 pixi/conda 方案，等你确认后再装\n默认让它 headless 渲染；只有想交互查看时才要求操作 GUI",
+    ),
+    help(
+        "Use PDB 1CRN, cartoon, white background, highlight the disulfide bonds, 1600×1200, and save the PSE plus the script.",
+        "用 PDB 1CRN，cartoon，白底，标出二硫键，1600×1200，并保存 PSE 和脚本。",
+    ),
+    help(
+        "I will probe PyMOL, load 1CRN, verify the chains and disulfide residues, write scripts/1crn.py, render figures/1crn.png, save figures/1crn.pse, and inspect the PNG before reporting.",
+        "会先探测 PyMOL，加载 1CRN，核对链和二硫键残基，写 scripts/1crn.py，渲染 figures/1crn.png，保存 figures/1crn.pse，并检查 PNG 后再汇报。",
     ),
 );
 

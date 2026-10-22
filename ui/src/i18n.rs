@@ -154,6 +154,14 @@ fn fork_lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "specialists.builtin.conversation_analysis.description") => {
             Some("Analyzes every saved conversation across all projects and writes an HTML chat report of user messages and model conclusions.")
         }
+        (Locale::Zh, "specialists.builtin.pymol_assistant.name") => Some("PyMOL 助手"),
+        (Locale::En, "specialists.builtin.pymol_assistant.name") => Some("PyMOL Assistant"),
+        (Locale::Zh, "specialists.builtin.pymol_assistant.description") => {
+            Some("用 PyMOL 检查结构、搭场景、出出版级图，并保存可复用的 .pse 与脚本。")
+        }
+        (Locale::En, "specialists.builtin.pymol_assistant.description") => {
+            Some("Inspects structures, builds scenes, renders publication figures, and saves reusable .pse sessions and scripts.")
+        }
         (Locale::Zh, "specialists.chat_with_prompt") => {
             Some("请以{name}的身份开始工作。先问我一个短问题，确认这次要完成的事，然后开始做。")
         }
@@ -3509,6 +3517,8 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         (Locale::En, "caps.tile.browser.blurb") => Some("Control your local Chrome via the companion extension."),
         (Locale::En, "caps.tile.playwright.title") => Some("Playwright headless browser"),
         (Locale::En, "caps.tile.playwright.blurb") => Some("Script Chromium/Firefox/WebKit for e2e tests, screenshots, and scrapers."),
+        (Locale::En, "caps.tile.pymol_assistant.title") => Some("PyMOL assistant"),
+        (Locale::En, "caps.tile.pymol_assistant.blurb") => Some("Build structures, render publication figures, and save reusable .pse sessions and scripts."),
         (Locale::En, "caps.tile.plugins.title") => Some("Plugins"),
         (Locale::En, "caps.tile.plugins.blurb") => Some("Install packaged Skill + MCP extensions into the workbench."),
         (Locale::En, "caps.tile.skills.title") => Some("Skill extensions"),
@@ -3587,6 +3597,9 @@ fn lookup(locale: Locale, key: &str) -> Option<&'static str> {
         ),
         (Locale::En, "caps.prompt.playwright") => Some(
             "Automate a headless browser for tests, screenshots, or scraping — not my logged-in Chrome. First ask the page and action. Install Node/Playwright only if missing.",
+        ),
+        (Locale::En, "caps.prompt.pymol_assistant") => Some(
+            "Build a PyMOL scene from a PDB ID or a local PDB/mmCIF file. First confirm the structure source and what to show, then write a reproducible script, render a publication figure, and save the .pse plus the script. Probe PyMOL first; if it is missing, propose a pixi or conda setup and wait for my confirmation.",
         ),
         (Locale::En, "env.title") => Some("Local environment (optional)"),
         (Locale::En, "env.optional") => Some("Detected paths are saved to Local, keeping your choices. Missing tools do not block startup. Use local-env-setup after launch when needed."),
@@ -6849,6 +6862,8 @@ Do not leave generated files in the project root.",
         (Locale::Zh, "caps.tile.browser.blurb") => Some("通过本机 Chrome 扩展完成网页自动化。"),
         (Locale::Zh, "caps.tile.playwright.title") => Some("Playwright 无头浏览器"),
         (Locale::Zh, "caps.tile.playwright.blurb") => Some("用脚本驱动 Chromium/Firefox/WebKit，适合 e2e、截图与抓取。"),
+        (Locale::Zh, "caps.tile.pymol_assistant.title") => Some("PyMOL 助手"),
+        (Locale::Zh, "caps.tile.pymol_assistant.blurb") => Some("搭结构、出出版级图，并保存可复用的 .pse 会话与脚本。"),
         (Locale::Zh, "caps.tile.plugins.title") => Some("插件扩展"),
         (Locale::Zh, "caps.tile.plugins.blurb") => Some("安装打包的 Skill + MCP 功能插件。"),
         (Locale::Zh, "caps.tile.skills.title") => Some("技能扩展"),
@@ -6927,6 +6942,9 @@ Do not leave generated files in the project root.",
         ),
         (Locale::Zh, "caps.prompt.playwright") => Some(
             "用无头浏览器做测试、截图或抓取，不是我已登录的 Chrome。先问页面和动作。缺 Node/Playwright 再装。",
+        ),
+        (Locale::Zh, "caps.prompt.pymol_assistant") => Some(
+            "用 PDB ID 或本地 PDB/mmCIF 文件做 PyMOL 场景。先确认结构来源和想展示的内容，再写可复现脚本、渲染出版级图，并保存 .pse 和脚本。先探测 PyMOL；缺失时给出 pixi 或 conda 方案，等我确认后再装。",
         ),
         (Locale::Zh, "caps.runtime") => Some("运行时 v{version}"),
         (Locale::Zh, "caps.workspace") => Some("工作区：{path}"),
@@ -8133,6 +8151,10 @@ mod queue_label_tests {
                 true
             ),
             "对话分析"
+        );
+        assert_eq!(
+            specialist_display_name(Locale::Zh, "pymol_assistant", "PyMOL Assistant", true),
+            "PyMOL 助手"
         );
         assert_eq!(
             specialist_display_name(Locale::Zh, "mine", "我的专家", false),

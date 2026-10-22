@@ -197,6 +197,24 @@ function filterSessions(q) {
 </script>
 ```"#;
 
+pub const PYMOL_ASSISTANT_ID: &str = "pymol_assistant";
+pub const PYMOL_ASSISTANT_NAME: &str = "PyMOL Assistant";
+pub const PYMOL_ASSISTANT_DESCRIPTION: &str =
+    "Builds, inspects, and renders molecular structures with PyMOL; headless scripts first, GUI control only when requested.";
+pub const PYMOL_ASSISTANT_RUBRIC: &str = r#"你是「PyMOL 助手」，一名资深结构生物学可视化专家。你熟悉 PyMOL 的对象与选择语法、cartoon/sticks/surface/mesh 表示、chainbow/byelement/colorbychain 配色、align/super/cealign 叠合、distance/angle/dihedral 测量、scene、ray/png、PSE 会话、isomesh 电子密度、symmetry、PDB/mmCIF、配体与溶剂处理。
+
+工作方式（按优先级）：
+1. 先确认输入与目标：PDB ID、本地 PDB/mmCIF/PSE 路径，想展示的链、配体、残基、视角、画布尺寸和输出格式。最多问 1-2 个真正阻塞的问题，不要长问卷。
+2. 先探测环境：`pymol --version`、`pixi run pymol --version`、`python -c "import pymol"`。缺失时给出 pixi 或 conda-forge 方案（例如 `pixi add -c conda-forge pymol-open-source`），等用户确认后再安装；不要静默安装。
+3. 默认 headless + Python API：写项目内 `scripts/<name>.py`，用 `pymol -cq scripts/<name>.py` 或 `pixi run pymol -cq ...` 执行。不要为了出图去点 GUI。
+4. 脚本必须可复现：输入路径、对象名、选择、配色、相机、`ray width,height`、`png ..., dpi=..., ray=1`、`save .pse` 都写在脚本里；保留脚本和命令日志。
+5. 输出约定：`figures/<name>.png`、`figures/<name>.pse`、`scripts/<name>.py`；不要覆盖已有文件，必要时加后缀。
+6. 先验证再交付：用 `cmd.get_names`、`cmd.get_chains`、`cmd.count_atoms`、`cmd.identify` 读回对象和选择；检查 PNG 非空、尺寸正确，并用图片预览检查裁切、标签和配色。
+7. 不编造结构事实：残基编号、链、配体、距离、角度、二面角、结合位点必须来自实际加载的结构；不确定就说明。
+8. GUI 回退：只有用户明确要求操作 PyMOL 窗口，或任务确实无法 headless 完成时，才加载 `desktop-use`；先 `desktop_health_report` / `desktop_check_permissions`，再 `desktop_get_window_state`，按 element token 操作并验证。不要用 GUI 做批量渲染，不要长期占用鼠标或焦点。
+9. 结构查询可用 `structures-interactions` 连接器（PDB/AlphaFold/EMDB）；没有该连接器时，用 PyMOL 自带 `fetch` 或用户提供的文件。
+10. 遇到缺少包、无法渲染、选择为空时，先诊断并报告，不要假装成功。"#;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Specialist {
     pub id: String,
@@ -359,6 +377,27 @@ pub fn builtin_conversation_analysis() -> Specialist {
     }
 }
 
+pub fn builtin_pymol_assistant() -> Specialist {
+    Specialist {
+        id: PYMOL_ASSISTANT_ID.into(),
+        name: PYMOL_ASSISTANT_NAME.into(),
+        icon: "dna".into(),
+        color: "clay".into(),
+        description: PYMOL_ASSISTANT_DESCRIPTION.into(),
+        instructions: PYMOL_ASSISTANT_RUBRIC.into(),
+        default_instructions: Some(PYMOL_ASSISTANT_RUBRIC.into()),
+        model_id: String::new(),
+        review_backend: None,
+        skills: Some(vec![
+            "pymol".into(),
+            "local-env-setup".into(),
+            "desktop-use".into(),
+        ]),
+        connectors: Some(vec!["cua-driver".into(), "structures-interactions".into()]),
+        builtin: true,
+    }
+}
+
 fn pin_r_bioinformatics_figure(spec: &mut Specialist) {
     spec.builtin = true;
     spec.default_instructions = Some(R_BIOINFORMATICS_FIGURE_RUBRIC.into());
@@ -397,6 +436,20 @@ fn pin_conversation_analysis(spec: &mut Specialist) {
     spec.review_backend = None;
     spec.skills = Some(vec![]);
     spec.connectors = Some(vec![]);
+}
+
+fn pin_pymol_assistant(spec: &mut Specialist) {
+    spec.builtin = true;
+    spec.name = PYMOL_ASSISTANT_NAME.into();
+    spec.description = PYMOL_ASSISTANT_DESCRIPTION.into();
+    spec.default_instructions = Some(PYMOL_ASSISTANT_RUBRIC.into());
+    spec.review_backend = None;
+    spec.skills = Some(vec![
+        "pymol".into(),
+        "local-env-setup".into(),
+        "desktop-use".into(),
+    ]);
+    spec.connectors = Some(vec!["cua-driver".into(), "structures-interactions".into()]);
 }
 
 async fn load_raw(store: &Store) -> Vec<Specialist> {
@@ -488,6 +541,10 @@ pub async fn ensure(store: &Store) -> Vec<Specialist> {
     match list.iter_mut().find(|s| s.id == CONVERSATION_ANALYSIS_ID) {
         Some(analyst) => pin_conversation_analysis(analyst),
         None => list.insert(6.min(list.len()), builtin_conversation_analysis()),
+    }
+    match list.iter_mut().find(|s| s.id == PYMOL_ASSISTANT_ID) {
+        Some(assistant) => pin_pymol_assistant(assistant),
+        None => list.insert(7.min(list.len()), builtin_pymol_assistant()),
     }
     for spec in list.iter_mut() {
         if spec.builtin {
@@ -591,6 +648,8 @@ pub async fn upsert(store: &Store, mut spec: Specialist) -> Result<Vec<Specialis
             spec.review_backend = None;
             spec.skills = Some(vec![]);
             spec.connectors = Some(vec![]);
+        } else if spec.id == PYMOL_ASSISTANT_ID {
+            pin_pymol_assistant(&mut spec);
         }
         *existing = spec;
     } else {
@@ -821,6 +880,17 @@ mod tests {
     }
 
     #[test]
+    fn pymol_rubric_prefers_headless_and_keeps_gui_as_fallback() {
+        let rubric = PYMOL_ASSISTANT_RUBRIC;
+        assert!(rubric.contains("pymol -cq"));
+        assert!(rubric.contains("pixi add -c conda-forge pymol-open-source"));
+        assert!(rubric.contains("desktop-use"));
+        assert!(rubric.contains("不要静默安装"));
+        assert!(rubric.contains("不要假装成功"));
+        assert_eq!(PYMOL_ASSISTANT_ID, "pymol_assistant");
+    }
+
+    #[test]
     fn handwriting_rubric_requires_calibrate_tool() {
         let rubric = HANDWRITING_EXTRACT_RUBRIC;
         assert!(rubric.contains("calibrate_handwriting"));
@@ -862,7 +932,7 @@ mod tests {
     async fn ensure_materializes_builtin_specialists_once() {
         let (store, tmp) = test_store().await;
         let list = ensure(&store).await;
-        assert_eq!(list.len(), 7);
+        assert_eq!(list.len(), 8);
         let r = &list[0];
         assert_eq!(r.id, "reviewer");
         assert!(r.builtin);
@@ -917,8 +987,31 @@ mod tests {
         assert_eq!(analyst.description, CONVERSATION_ANALYSIS_DESCRIPTION);
         assert_eq!(analyst.instructions, CONVERSATION_ANALYSIS_RUBRIC);
         assert_eq!(analyst.skills.as_deref(), Some(&[][..]));
+        let pymol = &list[7];
+        assert_eq!(pymol.id, PYMOL_ASSISTANT_ID);
+        assert!(pymol.builtin);
+        assert_eq!(pymol.instructions, PYMOL_ASSISTANT_RUBRIC);
+        assert_eq!(
+            pymol.skills.as_deref(),
+            Some(
+                &[
+                    "pymol".to_string(),
+                    "local-env-setup".to_string(),
+                    "desktop-use".to_string()
+                ][..]
+            )
+        );
+        assert_eq!(
+            pymol.connectors.as_deref(),
+            Some(
+                &[
+                    "cua-driver".to_string(),
+                    "structures-interactions".to_string()
+                ][..]
+            )
+        );
         // Second read does not duplicate the built-ins.
-        assert_eq!(ensure(&store).await.len(), 7);
+        assert_eq!(ensure(&store).await.len(), 8);
 
         let mut leftover = get(&store, HANDWRITING_EXTRACT_ID).await.unwrap();
         leftover.model_id = "m5".into();
@@ -981,6 +1074,7 @@ mod tests {
         assert!(remove(&store, HANDWRITING_EXTRACT_ID).await.is_err());
         assert!(remove(&store, FIGURE_DUPLICATE_AUDIT_ID).await.is_err());
         assert!(remove(&store, CONVERSATION_ANALYSIS_ID).await.is_err());
+        assert!(remove(&store, PYMOL_ASSISTANT_ID).await.is_err());
         // Built-in instructions are now user-editable. The override persists
         // separately from the compiled rubric so it can be rolled back.
         let mut r = get(&store, "reviewer").await.unwrap();

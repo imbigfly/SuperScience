@@ -217,6 +217,14 @@ mod tests {
         })
         .expect("conversation analysis");
         assert_eq!(conversation.id, "conversation-analysis");
+
+        let pymol = ability_card_for_action(&CapabilityAction::GuidedChat {
+            prompt_key: "caps.prompt.pymol_assistant",
+            skill: Some("pymol"),
+            specialist: Some("pymol_assistant"),
+        })
+        .expect("pymol assistant");
+        assert_eq!(pymol.id, "pymol-assistant");
     }
 
     #[test]

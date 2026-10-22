@@ -11211,6 +11211,23 @@ test("conversation analysis tile starts a specialist chat", async ({ page }) => 
   expect(String(sent?.message ?? "")).toContain("向我确认范围后再导出");
 });
 
+test("pymol assistant tile starts a specialist skill chat", async ({ page }) => {
+  await page.goto("/?mockLocale=zh");
+  await expect(page.getByTestId("capability-scene")).toBeVisible();
+  await page.getByRole("tab", { name: "协作扩展" }).click();
+  await expect(page.getByTestId("cap-tile-pymol-assistant")).toBeVisible();
+  await expect(page.getByTestId("cap-tile-pymol-assistant")).toContainText("PyMOL 助手");
+  const sendsBefore = await invokeCount(page, "send_message");
+  await page.getByTestId("cap-tile-pymol-assistant").click();
+  await expect.poll(() => invokeCount(page, "send_message"), { timeout: 15_000 }).toBeGreaterThan(sendsBefore);
+  await expect.poll(() => lastInvokeArgs(page, "set_session_specialist")).toMatchObject({
+    id: "pymol_assistant",
+  });
+  const sent = await lastInvokeArgs(page, "send_message");
+  expect(JSON.stringify(sent?.references ?? [])).toContain("pymol");
+  expect(String(sent?.message ?? "")).toContain("先确认结构来源");
+});
+
 test("handwriting extract opens settings instead of chat when no calibration model is saved", async ({ page }) => {
   await openHandwritingExtractHome(page, "/?mockHandwritingCalibrationUnset=1");
   const sendsBefore = await invokeCount(page, "send_message");

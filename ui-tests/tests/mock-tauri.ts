@@ -589,6 +589,7 @@ export function tauriMock(fixtures?: { xlsxBase64?: string; pptxBase64?: string;
     { id: "handwriting_extract", name: "Handwriting Extract", icon: "grid", color: "clay", description: "Reads handwritten tables", instructions: "handwriting rubric", model_id: query.get("mockHandwritingCalibrationUnset") === "1" ? "" : "default", skills: ["handwriting-extract"], connectors: [], builtin: true },
     { id: "figure_duplicate_audit", name: "Figure Duplicate Audit", icon: "copy", color: "clay", description: "Audit figures for duplicated panels", instructions: "figure audit rubric", model_id: "", skills: ["figure-duplicate-audit", "local-env-setup"], connectors: [], builtin: true },
     { id: "conversation_analysis", name: "对话分析", icon: "chat", color: "clay", description: "分析系统内全部项目的全部会话，提取每个会话中用户发送的所有消息，以及模型在每一轮对话中最终回复的结论性内容，并以对话聊天的形式生成一个 HTML 报告。", instructions: "# 对话分析 Agent 提示词", model_id: "", skills: [], connectors: [], builtin: true },
+    { id: "pymol_assistant", name: "PyMOL 助手", icon: "dna", color: "clay", description: "用 PyMOL 检查结构、搭场景、出图。", instructions: "pymol assistant rubric", model_id: "", skills: ["pymol", "local-env-setup", "desktop-use"], connectors: ["cua-driver", "structures-interactions"], builtin: true },
   ];
   let sessionSpecialists: Record<string, string> = {};
   let mockBrowserUrlFilters = { block: [] as { host: string; reason?: string }[], prefer: [] as { host: string; reason?: string }[] };

@@ -1292,6 +1292,20 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
                 "先列出全部项目里的全部会话，等你确认后再生成 HTML 报告：左侧选会话，右侧看对话。",
             ),
         ),
+        specialist_skill_tile(
+            "pymol-assistant",
+            CapabilityGroup::Collab,
+            "caps.tile.pymol_assistant.title",
+            "caps.tile.pymol_assistant.blurb",
+            "caps.prompt.pymol_assistant",
+            "pymol",
+            "pymol_assistant",
+            "dna",
+            help(
+                "Give it a PDB/mmCIF file or PDB ID. It builds the scene, renders a publication figure, and saves a reusable .pse plus a PyMOL script.",
+                "给它 PDB/mmCIF 文件或 PDB ID。它会搭好场景、出出版级图，并留下可复用的 .pse 和 PyMOL 脚本。",
+            ),
+        ),
         guided_tile(
             "browser",
             CapabilityGroup::Collab,
@@ -2754,6 +2768,7 @@ mod tests {
             vec![
                 "channels",
                 "conversation-analysis",
+                "pymol-assistant",
                 "browser",
                 "playwright",
                 "plugins",
@@ -2768,6 +2783,18 @@ mod tests {
         assert_eq!(
             skills.action,
             CapabilityAction::OpenSettings { section: "skills" }
+        );
+        let pymol = capability_catalog()
+            .iter()
+            .find(|tile| tile.id == "pymol-assistant")
+            .expect("pymol assistant tile");
+        assert_eq!(
+            pymol.action,
+            CapabilityAction::GuidedChat {
+                prompt_key: "caps.prompt.pymol_assistant",
+                skill: Some("pymol"),
+                specialist: Some("pymol_assistant"),
+            }
         );
     }
 
@@ -3108,6 +3135,7 @@ mod tests {
             context_window: 128_000,
             reasoning_effort: String::new(),
             service_tier: String::new(),
+            user_agent: String::new(),
             supports_vision: false,
             use_for_vision: false,
             use_for_image_generation,
