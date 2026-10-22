@@ -4,6 +4,9 @@ name: Windows Build
 # packages only come from release-windows.yml on a version tag.
 on:
   workflow_dispatch:
+  # Temporary: retry Windows packaging with a portable version read.
+  push:
+    branches: [ci/pymol-build]
 
 permissions:
   contents: write
@@ -54,7 +57,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')"
+          VERSION="$(grep -m1 '"version"' src-tauri/tauri.conf.json | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
+          if [ -z "$VERSION" ]; then
+            echo "::error::could not read the app version"
+            exit 1
+          fi
           EXE="$(find target src-tauri/target -path '*/bundle/nsis/*.exe' -type f 2>/dev/null | head -1 || true)"
           if [ -z "$EXE" ]; then
             EXE="$(find . -maxdepth 8 -path '*/bundle/nsis/*.exe' -type f 2>/dev/null | head -1 || true)"
@@ -77,5 +84,4 @@ jobs:
             echo "::error::gh release upload failed: $OUT"
             exit 1
           fi
-          gh release view ci-latest -R "$GITHUB_REPOSITORY" --json assets \
-            --jq '.assets[] | "\(.name) \(.size)"'
+          gh release view ci-latest -R "$GITHUB_REPOSITORY" | head -20 || true
