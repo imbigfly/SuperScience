@@ -1,9 +1,12 @@
 name: macOS Build
 
-# Manual diagnostic/packaging build (unsigned app + dmg). Not tied to push —
+# Manual diagnostic/packaging build (ad-hoc signed app + dmg). Not tied to push —
 # release packages only come from release-macos.yml on a version tag.
 on:
   workflow_dispatch:
+  # Temporary: validate the embedded-driver fix.
+  push:
+    branches: [ci/cua-embedded]
 
 permissions:
   contents: write
