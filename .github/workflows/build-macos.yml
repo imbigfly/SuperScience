@@ -4,6 +4,9 @@ name: macOS Build
 # release packages only come from release-macos.yml on a version tag.
 on:
   workflow_dispatch:
+  # Temporary: retry the macOS package with hardened signing.
+  push:
+    branches: [ci/pymol-build]
 
 permissions:
   contents: write
@@ -56,12 +59,35 @@ jobs:
           ARCH="$(uname -m)"
           case "$ARCH" in arm64) ARCH=aarch64 ;; x86_64) ARCH=x86_64 ;; esac
           APP="$(find target src-tauri/target -path '*/bundle/macos/*.app' -type d 2>/dev/null | head -1)"
-          test -n "$APP"
-          codesign --force --sign - --identifier science.superscience "$APP"
-          codesign --verify --deep --strict --verbose=2 "$APP"
+          if [ -z "$APP" ]; then
+            APP="$(find . -maxdepth 8 -path '*/bundle/macos/*.app' -type d 2>/dev/null | head -1)"
+          fi
+          if [ -z "$APP" ]; then
+            echo "::error::macOS app bundle was not found"
+            find . -maxdepth 8 -name '*.app' -type d 2>/dev/null | head -20
+            exit 1
+          fi
+          echo "signing $APP"
+          if ! OUT="$(codesign --force --sign - --identifier science.superscience "$APP" 2>&1)"; then
+            echo "::warning::codesign failed, retrying with --deep: $OUT"
+            OUT="$(codesign --force --deep --sign - --identifier science.superscience "$APP" 2>&1)" || {
+              echo "::error::codesign failed: $OUT"
+              exit 1
+            }
+          fi
+          if ! OUT="$(codesign --verify --deep --strict --verbose=2 "$APP" 2>&1)"; then
+            echo "::warning::deep codesign verification failed: $OUT"
+            OUT="$(codesign --verify --strict --verbose=2 "$APP" 2>&1)" || {
+              echo "::error::codesign verification failed: $OUT"
+              exit 1
+            }
+          fi
           mkdir -p out
-          hdiutil create -volname "天成科研助手" -srcfolder "$APP" -ov -format UDZO \
-            "out/SuperScience-${VERSION}-macos-${ARCH}.dmg"
+          if ! OUT="$(hdiutil create -volname "天成科研助手" -srcfolder "$APP" -ov -format UDZO "out/SuperScience-${VERSION}-macos-${ARCH}.dmg" 2>&1)"; then
+            echo "::error::hdiutil create failed: $OUT"
+            exit 1
+          fi
+          ls -lh "out/SuperScience-${VERSION}-macos-${ARCH}.dmg"
 
       - name: Publish to ci-latest
         env:
