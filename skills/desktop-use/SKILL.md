@@ -24,9 +24,13 @@ work, use the ordinary file and shell tools.
 
 ## Workflow
 
-1. **Check readiness.** Run the driver's status/doctor tool first. On macOS the
-   host app needs Accessibility and Screen Recording grants; on Linux the
-   session needs AT-SPI and a supported compositor.
+1. **Check readiness.** Call `desktop_check_permissions` (read-only when
+   `prompt` is false) and `desktop_health_report`. On macOS both Accessibility
+   and Screen Recording must be granted to the SuperScience app in
+   System Settings → Privacy & Security; the embedded driver inherits those
+   grants. If either is missing, stop and ask the user to grant it, then
+   restart the app. On Linux the session needs AT-SPI and a supported
+   compositor.
 2. **Observe narrowly.** List windows, then read one window with a query and a
    small depth/element budget. Do not dump a whole dense application tree.
 3. **Act by element token.** Prefer `element_token` / snapshot-bound references

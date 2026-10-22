@@ -1,9 +1,13 @@
 //! Bundled Cua Driver integration.
 //!
-//! Cua Driver ships as a sidecar MCP server. The app resolves the bundled
-//! binary, launches `cua-driver mcp --direct`, and registers its tools with a
-//! `desktop_` prefix. Read-only tools stay silent; tools that mutate desktop
-//! state require approval.
+//! On macOS the driver runs as an embedded daemon:
+//! `cua-driver serve --embedded` is spawned directly by the app, so the daemon
+//! inherits the app's Accessibility and Screen Recording grants. A
+//! `cua-driver mcp --embedded --socket` proxy exposes that daemon over stdio.
+//! On Windows and Linux the MCP server owns its runtime directly.
+//!
+//! Tools are registered with a `desktop_` prefix. Read-only tools stay silent;
+//! tools that mutate desktop state require approval.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -11,6 +15,17 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use superscience_mcp::{McpClient, McpTool, RemoteTool};
 use superscience_tools::Registry;
+
+#[cfg(target_os = "macos")]
+const HOST_BUNDLE_ID: &str = "science.superscience";
+
+/// Keeps the embedded daemon alive for the app's lifetime. The daemon owns
+/// the TCC responsibility chain; dropping its `Child` would orphan it.
+#[cfg(target_os = "macos")]
+static DAEMON: std::sync::OnceLock<std::sync::Mutex<Option<std::process::Child>>> =
+    std::sync::OnceLock::new();
+#[cfg(target_os = "macos")]
+static DAEMON_SOCKET: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 pub(crate) const CONNECTOR_ID: &str = "cua-driver";
 pub(crate) const TOOL_PREFIX: &str = "desktop_";
@@ -71,24 +86,106 @@ pub(crate) fn resolve_driver_path(resource_root: Option<&Path>) -> Option<PathBu
     dev.is_file().then_some(dev)
 }
 
-/// Launch the bundled driver's stdio MCP server.
+/// Start (or reuse) the embedded daemon.
 ///
-/// `--direct` makes macOS attribute Accessibility and Screen Recording grants
-/// to the host app (the Tauri process) instead of a separately installed
-/// helper bundle. The process inherits no ambient secret environment.
+/// The daemon must be spawned directly by the host app, not through
+/// LaunchServices, so macOS keeps it in the app's TCC responsibility chain.
+/// `--embedded` disables the standalone driver's responsibility disclaimer,
+/// which is what makes the daemon inherit the app's grants.
+#[cfg(target_os = "macos")]
+fn ensure_daemon(driver: &Path) -> Result<PathBuf> {
+    let socket = DAEMON_SOCKET.get_or_init(|| {
+        PathBuf::from(format!("/tmp/superscience-cua-{}.sock", std::process::id()))
+    });
+    let holder = DAEMON.get_or_init(|| std::sync::Mutex::new(None));
+    let mut guard = holder
+        .lock()
+        .map_err(|_| anyhow!("cua-driver daemon lock is poisoned"))?;
+
+    if let Some(child) = guard.as_mut() {
+        let alive = child.try_wait().ok().flatten().is_none();
+        if alive && socket.exists() {
+            return Ok(socket.clone());
+        }
+    }
+
+    let _ = std::fs::remove_file(socket);
+    let log_path =
+        std::env::temp_dir().join(format!("superscience-cua-{}.log", std::process::id()));
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .ok();
+
+    let mut cmd = std::process::Command::new(driver);
+    cmd.arg("serve")
+        .arg("--embedded")
+        .arg("--socket")
+        .arg(socket)
+        .arg("--host-bundle-id")
+        .arg(HOST_BUNDLE_ID)
+        .arg("--permission-mode")
+        .arg("standard")
+        .env("CUA_DRIVER_EMBEDDED", "1")
+        .env("CUA_DRIVER_HOST_BUNDLE_ID", HOST_BUNDLE_ID)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null());
+    if let Some(log) = log {
+        cmd.stderr(std::process::Stdio::from(log));
+    } else {
+        cmd.stderr(std::process::Stdio::null());
+    }
+
+    let child = cmd
+        .spawn()
+        .map_err(|error| anyhow!("spawn cua-driver daemon: {error}"))?;
+    *guard = Some(child);
+
+    for _ in 0..100 {
+        if socket.exists() {
+            return Ok(socket.clone());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    Err(anyhow!(
+        "cua-driver daemon did not create {}; see {}",
+        socket.display(),
+        log_path.display()
+    ))
+}
+
+/// Launch the bundled driver's MCP endpoint.
 pub(crate) async fn connect(resource_root: Option<&Path>) -> Result<Arc<McpClient>> {
     let path = resolve_driver_path(resource_root)
         .ok_or_else(|| anyhow!("bundled cua-driver binary was not found"))?;
-    let mut cmd = tokio::process::Command::new(&path);
-    cmd.arg("mcp");
-    // `--direct` is the macOS TCC attribution mode: the host app owns the
-    // Accessibility/Screen Recording grants instead of a separate helper app.
+
     #[cfg(target_os = "macos")]
-    cmd.arg("--direct");
-    cmd.env("CUA_DRIVER_PERMISSION_MODE", "standard");
-    superscience_tools::process::hide_console_async(&mut cmd);
-    let client = McpClient::launch_with_command(cmd).await?;
-    Ok(Arc::new(client))
+    {
+        // The daemon inherits the app's TCC grants; the stdio MCP process is
+        // only a proxy, so it never owns or prompts for permissions.
+        let socket = ensure_daemon(&path)?;
+        let mut cmd = tokio::process::Command::new(&path);
+        cmd.arg("mcp")
+            .arg("--embedded")
+            .arg("--socket")
+            .arg(&socket)
+            .env("CUA_DRIVER_EMBEDDED", "1")
+            .env("CUA_DRIVER_HOST_BUNDLE_ID", HOST_BUNDLE_ID);
+        superscience_tools::process::hide_console_async(&mut cmd);
+        let client = McpClient::launch_with_command(cmd).await?;
+        Ok(Arc::new(client))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut cmd = tokio::process::Command::new(&path);
+        cmd.arg("mcp");
+        cmd.env("CUA_DRIVER_PERMISSION_MODE", "standard");
+        superscience_tools::process::hide_console_async(&mut cmd);
+        let client = McpClient::launch_with_command(cmd).await?;
+        Ok(Arc::new(client))
+    }
 }
 
 /// Whether a tool needs an approval card.
