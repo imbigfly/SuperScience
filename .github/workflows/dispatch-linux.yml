@@ -4,10 +4,7 @@ name: Dispatch Linux Release
 # branch, so GitHub does not show its "Run workflow" button. This push-triggered
 # helper dispatches it on the release branch. Removed after the v1.12.1 run.
 on:
-  push:
-    branches: [local/brand-tiancheng]
-    paths:
-      - .github/workflows/dispatch-linux.yml
+  workflow_dispatch:
 
 permissions:
   actions: write
