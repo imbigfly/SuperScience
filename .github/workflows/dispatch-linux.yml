@@ -20,5 +20,6 @@ jobs:
       - name: Dispatch Linux Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: v1.12.1
-        run: gh workflow run release-linux.yml --ref local/brand-tiancheng -f tag="$TAG"
+        run: |
+          printf '%s' '{"ref":"local/brand-tiancheng","inputs":{"tag":"v1.12.1"}}' \
+            | gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/workflows/404120727/dispatches" --input -
