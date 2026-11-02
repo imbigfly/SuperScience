@@ -25,6 +25,10 @@ jobs:
         target: [aarch64-apple-darwin, x86_64-apple-darwin]
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      MAC_CERT_P12_BASE64: ${{ secrets.MAC_CERT_P12_BASE64 }}
+      MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -60,7 +64,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: src-tauri/binaries
-          key: cua-driver-${{ runner.os }}-${{ runner.arch }}-0.37.0
+          key: cua-driver-${{ runner.os }}-${{ runner.arch }}-0.38.0
 
       - name: Fetch Cua Driver
         shell: bash
@@ -79,7 +83,10 @@ jobs:
 
       # Import the Developer ID cert into a temp keychain and extract the signing
       # identity at runtime, so no hardcoded APPLE_SIGNING_IDENTITY secret is needed.
+      # When the repository has no certificate secrets, the unsigned path below
+      # still publishes the app/dmg so a release can ship without notarization.
       - name: Import Developer ID certificate
+        if: env.MAC_CERT_P12_BASE64 != ''
         env:
           MAC_CERT_P12_BASE64: ${{ secrets.MAC_CERT_P12_BASE64 }}
           MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
@@ -109,7 +116,10 @@ jobs:
           rm -f cert.p12
 
       # Per-arch bundles: aarch64 (Apple Silicon) and x86_64 (Intel) built separately.
-      - uses: tauri-apps/tauri-action@v1
+      # Signed path (Developer ID cert present): notarized app/dmg + updater manifest.
+      - name: Build and upload signed bundles
+        if: env.MAC_CERT_P12_BASE64 != ''
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # APPLE_SIGNING_IDENTITY comes from the import step above (via $GITHUB_ENV).
@@ -129,6 +139,23 @@ jobs:
           uploadUpdaterSignatures: true
           args: --config tauri.updater.conf.json --target ${{ matrix.target }} --bundles app,dmg
 
+      # Unsigned path (no Developer ID cert): still publish app/dmg so the
+      # release has installers. No updater artifacts, because those require the
+      # Tauri signing key and are verified only on the signed path.
+      - name: Build and upload unsigned bundles
+        if: env.MAC_CERT_P12_BASE64 == ''
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD: ${{ secrets.SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD }}
+        with:
+          projectPath: src-tauri
+          tauriScript: cargo tauri
+          releaseId: ${{ steps.release.outputs.release-id }}
+          uploadUpdaterJson: false
+          uploadUpdaterSignatures: false
+          args: --target ${{ matrix.target }} --bundles app,dmg
+
       - name: Clean up keychain
         if: always()
         run: |
@@ -143,7 +170,16 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     steps:
+      - name: Detect updater signing
+        id: updater
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Verify updater manifest and both macOS architectures
+        if: steps.updater.outputs.skip != 'true'
         run: |
           set -euo pipefail
           manifest_dir="${RUNNER_TEMP}/wisp-updater-manifest"

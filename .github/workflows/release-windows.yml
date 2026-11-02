@@ -66,7 +66,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: src-tauri/binaries
-          key: cua-driver-${{ runner.os }}-${{ runner.arch }}-0.37.0
+          key: cua-driver-${{ runner.os }}-${{ runner.arch }}-0.38.0
 
       - name: Fetch Cua Driver
         shell: bash
@@ -90,18 +90,31 @@ jobs:
           }
 
       # Build only; signing (SignPath) must happen before the release is published.
+      # NSIS is the supported installer; WiX/MSI is skipped because WiX 3 rejects
+      # the Chinese product name.
       - name: Build Tauri bundles
         shell: pwsh
         env:
           SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD: ${{ secrets.SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD }}
-        run: cargo tauri build --bundles msi,nsis
+        run: cargo tauri build --bundles nsis
 
       # SignPath: the API token belongs to a CI user that is a submitter for the
       # release-signing policy. OrganizationId is not a secret.
       # Set repo variable SKIP_WINDOWS_SIGNING=true to publish unsigned
       # installers (e.g. while the release certificate is still being issued).
+      # An absent token also skips signing, so the NSIS installer still ships.
+      - name: Detect SignPath token
+        id: signpath
+        shell: pwsh
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_API_TOKEN)) {
+            "skip=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          }
+
       - name: Sign installers with SignPath
-        if: vars.SKIP_WINDOWS_SIGNING != 'true'
+        if: vars.SKIP_WINDOWS_SIGNING != 'true' && steps.signpath.outputs.skip != 'true'
         shell: pwsh
         env:
           SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}

@@ -80,7 +80,9 @@ jobs:
           set -euo pipefail
           case "${{ runner.arch }}" in
             ARM64) WBG_TARGET=aarch64-unknown-linux-gnu ;;
-            X64)   WBG_TARGET=x86_64-unknown-linux-gnu ;;
+            # 0.2.96 publishes no gnu asset for x86_64; the musl build is static
+            # and runs fine on the glibc runner.
+            X64)   WBG_TARGET=x86_64-unknown-linux-musl ;;
             *) echo "::error::Unsupported arch ${{ runner.arch }}" >&2; exit 1 ;;
           esac
           if ! command -v wasm-bindgen.real >/dev/null 2>&1 || ! wasm-bindgen.real --version | grep -q '0\.2\.96'; then
