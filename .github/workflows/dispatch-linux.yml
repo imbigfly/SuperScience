@@ -1,0 +1,24 @@
+name: Dispatch Linux Release
+
+# Temporary bridge: the Linux release workflow is not present on the default
+# branch, so GitHub does not show its "Run workflow" button. This push-triggered
+# helper dispatches it on the release branch. Removed after the v1.12.1 run.
+on:
+  push:
+    branches: [local/brand-tiancheng]
+    paths:
+      - .github/workflows/dispatch-linux.yml
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch Linux Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v1.12.1
+        run: gh workflow run release-linux.yml --ref local/brand-tiancheng -f tag="$TAG"
