@@ -6,8 +6,13 @@
 # it once locally.
 set -euo pipefail
 
-VERSION="${CUA_DRIVER_VERSION:-0.37.0}"
+VERSION="${CUA_DRIVER_VERSION:-0.38.0}"
 REPO="${CUA_DRIVER_REPO:-trycua/cua}"
+# GitHub release downloads can be slow or blocked on some networks. Set
+# CUA_DRIVER_BASE_URL to a mirror root that serves the same files, e.g.
+#   CUA_DRIVER_BASE_URL=https://ghfast.top/https://github.com/trycua/cua/releases/download/cua-driver-rs-v0.38.0
+# The SHA256SUMS check below still validates the downloaded archive.
+BASE_URL="${CUA_DRIVER_BASE_URL:-}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEST_DIR="$ROOT/src-tauri/binaries"
 FORCE=0
@@ -50,7 +55,7 @@ fi
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-base="https://github.com/${REPO}/releases/download/cua-driver-rs-v${VERSION}"
+base="${BASE_URL:-https://github.com/${REPO}/releases/download/cua-driver-rs-v${VERSION}}"
 
 echo "fetching $asset"
 curl -fL --retry 3 --retry-all-errors --retry-delay 2 --connect-timeout 20 \

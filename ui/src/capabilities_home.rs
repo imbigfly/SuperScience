@@ -1302,8 +1302,8 @@ pub(crate) fn capability_catalog() -> &'static [CapabilityTile] {
             "pymol_assistant",
             "dna",
             help(
-                "Give it a PDB/mmCIF file or PDB ID. It builds the scene, renders a publication figure, and saves a reusable .pse plus a PyMOL script.",
-                "给它 PDB/mmCIF 文件或 PDB ID。它会搭好场景、出出版级图，并留下可复用的 .pse 和 PyMOL 脚本。",
+                "Give it a PDB/mmCIF file or PDB ID. It first asks what to show, then opens the installed PyMOL app, drives the window to build the scene and render a figure, and saves the .pse plus the script.",
+                "给它 PDB/mmCIF 文件或 PDB ID。它会先问清要展示什么，再打开本机 PyMOL，在窗口里搭场景、出图，并保存 .pse 和脚本。",
             ),
         ),
         guided_tile(

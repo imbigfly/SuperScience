@@ -4293,8 +4293,45 @@ async fn project_skill_catalog(
 }
 
 async fn active_skill_index(store: &Store, ap: &ActiveProject) -> Arc<SkillIndex> {
+    active_skill_index_with(store, ap, &HashSet::new()).await
+}
+
+/// Build the project skill index with `extra` names forced on.
+///
+/// A capability card, a composer skill chip, or a specialist whitelist names a
+/// skill explicitly. That explicit choice must win over the project's
+/// `project_enabled_skills` snapshot, which can predate a newly bundled skill
+/// (for example `pymol` and `desktop-use`). Unknown names stay absent because
+/// `filtered_by_names` only keeps catalog entries.
+pub(crate) async fn active_skill_index_with(
+    store: &Store,
+    ap: &ActiveProject,
+    extra: &HashSet<String>,
+) -> Arc<SkillIndex> {
     let (catalog, enabled) = project_skill_catalog(store, ap).await;
+    let enabled = enabled_skills_with_extra(&catalog, enabled, extra);
     Arc::new(catalog.filtered_by_names(enabled.as_ref()))
+}
+
+/// Force `extra` skill names into an enabled set. `None` means "no explicit
+/// allow-list", in which case the catalog already includes every skill.
+fn enabled_skills_with_extra(
+    catalog: &SkillIndex,
+    enabled: Option<HashSet<String>>,
+    extra: &HashSet<String>,
+) -> Option<HashSet<String>> {
+    if extra.is_empty() {
+        return enabled;
+    }
+    let mut enabled = enabled.unwrap_or_else(|| {
+        catalog
+            .all()
+            .iter()
+            .map(|skill| skill.name.clone())
+            .collect()
+    });
+    enabled.extend(extra.iter().cloned());
+    Some(enabled)
 }
 
 /// Identity section appended after the base system prompt when a session has

@@ -24,6 +24,18 @@ impl TurnOrigin {
     }
 }
 
+/// Skill names the user or the specialist named explicitly. They bypass the
+/// project's enabled-skills snapshot for this turn so a capability card keeps
+/// working after a new bundled skill is added.
+fn referenced_skill_names(refs: &[ComposerReferenceArg]) -> HashSet<String> {
+    refs.iter()
+        .filter_map(|reference| match reference {
+            ComposerReferenceArg::Skill { name } => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 #[tauri::command]
 pub(crate) async fn send_message(
     state: State<'_, AppState>,
@@ -190,7 +202,8 @@ pub(crate) async fn send_message_inner(
         runtime.cancel.store(false, Ordering::SeqCst);
         let _turn_in_flight = TurnInFlight::begin(&runtime);
         let refs = references.as_deref().unwrap_or_default();
-        let skills = active_skill_index(&state.store, &ap).await;
+        let extra_skills = referenced_skill_names(refs);
+        let skills = active_skill_index_with(&state.store, &ap, &extra_skills).await;
         let mut injected_context =
             resolve_composer_references(&state.store, refs, &frame_id, &ap.root, &skills).await?;
         let package_guidance = network::package_guidance(&network::load(&state.store).await?);
@@ -531,7 +544,11 @@ pub(crate) async fn send_message_inner(
     }
     let reused_agent = guard.is_some();
     if guard.is_none() {
-        let skills = active_skill_index(&state.store, &ap).await;
+        let mut extra_skills = referenced_skill_names(references.as_deref().unwrap_or_default());
+        if let Some(names) = specialist.as_ref().and_then(|s| s.skills.as_ref()) {
+            extra_skills.extend(names.iter().cloned());
+        }
+        let skills = active_skill_index_with(&state.store, &ap, &extra_skills).await;
         let skills = match specialist.as_ref().and_then(|s| s.skills.as_ref()) {
             Some(names) => {
                 let set: HashSet<String> = names.iter().cloned().collect();
@@ -929,7 +946,8 @@ pub(crate) async fn send_message_inner(
         if let Some(compute) = ssh_hosts::stored_compute_section(&state.store, &frame_id).await {
             agent.ctx.inject_user(compute);
         }
-        let skills = active_skill_index(&state.store, &ap).await;
+        let skills =
+            active_skill_index_with(&state.store, &ap, &referenced_skill_names(&refs)).await;
         for injection in
             resolve_composer_references(&state.store, &refs, &frame_id, &ap.root, &skills).await?
         {
@@ -1659,4 +1677,27 @@ pub(crate) async fn stop_agent(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn referenced_skill_names_only_collects_explicit_skill_references() {
+        let refs = vec![
+            ComposerReferenceArg::Skill {
+                name: "pymol".into(),
+            },
+            ComposerReferenceArg::Skill {
+                name: "desktop-use".into(),
+            },
+            ComposerReferenceArg::Project { id: "p1".into() },
+            ComposerReferenceArg::Session { id: "s1".into() },
+        ];
+        let names = referenced_skill_names(&refs);
+        assert!(names.contains("pymol"));
+        assert!(names.contains("desktop-use"));
+        assert_eq!(names.len(), 2);
+    }
 }

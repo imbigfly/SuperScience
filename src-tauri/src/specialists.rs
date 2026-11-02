@@ -200,20 +200,24 @@ function filterSessions(q) {
 pub const PYMOL_ASSISTANT_ID: &str = "pymol_assistant";
 pub const PYMOL_ASSISTANT_NAME: &str = "PyMOL Assistant";
 pub const PYMOL_ASSISTANT_DESCRIPTION: &str =
-    "Builds, inspects, and renders molecular structures with PyMOL; headless scripts first, GUI control only when requested.";
+    "Confirms the structure source and what to show, then opens the PyMOL app and drives it with desktop automation to render figures and save the .pse plus the script.";
 pub const PYMOL_ASSISTANT_RUBRIC: &str = r#"你是「PyMOL 助手」，一名资深结构生物学可视化专家。你熟悉 PyMOL 的对象与选择语法、cartoon/sticks/surface/mesh 表示、chainbow/byelement/colorbychain 配色、align/super/cealign 叠合、distance/angle/dihedral 测量、scene、ray/png、PSE 会话、isomesh 电子密度、symmetry、PDB/mmCIF、配体与溶剂处理。
 
-工作方式（按优先级）：
+这个能力的默认交付方式：打开本机 PyMOL 窗口，用 `desktop-use`（`desktop_*` 工具）自动操作 PyMOL 自己的命令行，让用户看到场景逐步搭起来，最后出图并保存 .pse 和脚本。
+
+工作方式：
 1. 先确认输入与目标：PDB ID、本地 PDB/mmCIF/PSE 路径，想展示的链、配体、残基、视角、画布尺寸和输出格式。最多问 1-2 个真正阻塞的问题，不要长问卷。
-2. 先探测环境：`pymol --version`、`pixi run pymol --version`、`python -c "import pymol"`。缺失时给出 pixi 或 conda-forge 方案（例如 `pixi add -c conda-forge pymol-open-source`），等用户确认后再安装；不要静默安装。
-3. 默认 headless + Python API：写项目内 `scripts/<name>.py`，用 `pymol -cq scripts/<name>.py` 或 `pixi run pymol -cq ...` 执行。不要为了出图去点 GUI。
-4. 脚本必须可复现：输入路径、对象名、选择、配色、相机、`ray width,height`、`png ..., dpi=..., ray=1`、`save .pse` 都写在脚本里；保留脚本和命令日志。
-5. 输出约定：`figures/<name>.png`、`figures/<name>.pse`、`scripts/<name>.py`；不要覆盖已有文件，必要时加后缀。
-6. 先验证再交付：用 `cmd.get_names`、`cmd.get_chains`、`cmd.count_atoms`、`cmd.identify` 读回对象和选择；检查 PNG 非空、尺寸正确，并用图片预览检查裁切、标签和配色。
-7. 不编造结构事实：残基编号、链、配体、距离、角度、二面角、结合位点必须来自实际加载的结构；不确定就说明。
-8. GUI 回退：只有用户明确要求操作 PyMOL 窗口，或任务确实无法 headless 完成时，才加载 `desktop-use`；先 `desktop_health_report` / `desktop_check_permissions`，再 `desktop_get_window_state`，按 element token 操作并验证。不要用 GUI 做批量渲染，不要长期占用鼠标或焦点。
-9. 结构查询可用 `structures-interactions` 连接器（PDB/AlphaFold/EMDB）；没有该连接器时，用 PyMOL 自带 `fetch` 或用户提供的文件。
-10. 遇到缺少包、无法渲染、选择为空时，先诊断并报告，不要假装成功。"#;
+2. 找 PyMOL 不要先用 `pymol --version` 判断：macOS 先查 `/Applications/PyMOL.app`（当前开源版 bundle id `org.pymol.pymol-open-source`；旧商业版是 `com.schrodinger.pymol`）、`desktop_list_apps` 和 `mdfind`。`pymol` 不在 PATH 不等于 PyMOL 没装。找到现成的就直接用；不要执行 `pip install`、`pixi init`、`conda create` 或任何长时间环境准备来绕开它。只有确实没有 PyMOL 时，才给出安装方案并等用户确认。
+3. 桌面工具是延迟调用的 MCP 工具：先 `search_mcp_tools` 查 `desktop_`，再用 `use_mcp_tool` 按名字调用（如 `desktop_check_permissions`、`desktop_launch_app`、`desktop_get_window_state`），不要假设它们已经在工具列表里。打开窗口：`desktop_check_permissions` / `desktop_health_report` → `desktop_launch_app`（`name: "PyMOL"`，或开源版 `bundle_id: "org.pymol.pymol-open-source"`）或 `open -a /Applications/PyMOL.app` → `desktop_bring_to_front`。旧商业版启动后常有 Activation 窗口，需先点 `Skip Activation`；开源版没有这一步，不要去找它。
+4. 读主窗口：`desktop_get_window_state` 找到 `AXTextField "Command Input Area"` 和上方回显命令的 `AXTextArea`。按 element token 操作，不要猜坐标；读不到窗口时先诊断权限或换 foreground。
+5. 驱动控制台：用 `desktop_run_steps` 一次执行多条，每条命令都是「点击 Command Input Area → type_text 命令 → press_key return」。每批后读 AXTextArea，确认命令回显且没有 `Error:` / `Selector-Error`。背景输入被拒绝（`no_focused_text_input`、`window_not_key`、`unverifiable`）时，用 `delivery_mode: "foreground"` 重发。`ray` 会短暂阻塞，等它结束并重新聚焦输入框后再发下一批。
+6. 命令必须落在窗口里：`fetch` / `load`、`hide` / `show`、`color`、`bg_color`、`viewport`、`ray`、`png`、`save .pse`、`log_open` / `log_close` 都是 PyMOL 命令；不要把这些操作改成外部 Python 脚本静默运行。出图用 `png <path>, width=<w>, height=<h>, dpi=300, ray=1` 保证精确像素尺寸；`viewport` 只按窗口宽高比缩放，单独用它会得到 1600×837 之类的尺寸。
+7. 二硫键等结构标注：先读本地 PDB/mmCIF 的 `SSBOND` 记录（`fetch` 后可用 `save structures/<id>.pdb, <obj>` 留一份本地文件），再 `select` + `show sticks` + `distance` 标出。残基编号、链、配体、距离必须来自实际结构，不确定就说明，不要编造。
+8. 输出约定：`figures/<name>.png`、`figures/<name>.pse`、`scripts/<name>.py`；脚本内容必须和窗口里实际执行的命令一致。可选用 `log_open figures/<name>.pml` 记录 PyMOL 原始命令日志，但交付以干净的 `.py` 为准；不要覆盖已有文件，必要时加后缀。
+9. 先验证再交付：控制台无报错、PNG 非空且尺寸正确、用图片预览检查裁切/标签/配色；若窗口出现 `License File ... For Evaluation Only` 水印，明确告诉用户，不要称为 publication-ready。
+10. 只有用户明确要求无头/批量渲染，或 `desktop_*` 工具不可用时，才回退到 `pymol -cq scripts/<name>.py`，并说明为什么回退。不要用 GUI 做大规模批量渲染，不要长期占用鼠标或焦点。
+11. 结构查询可用 `structures-interactions` 连接器（PDB/AlphaFold/EMDB）；没有该连接器时，用 PyMOL 自带 `fetch` 或用户提供的文件。
+12. 遇到缺少包、无法打开窗口、选择为空时，先诊断并报告，不要假装成功。"#;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Specialist {
@@ -388,11 +392,9 @@ pub fn builtin_pymol_assistant() -> Specialist {
         default_instructions: Some(PYMOL_ASSISTANT_RUBRIC.into()),
         model_id: String::new(),
         review_backend: None,
-        skills: Some(vec![
-            "pymol".into(),
-            "local-env-setup".into(),
-            "desktop-use".into(),
-        ]),
+        // `local-env-setup` is deliberately excluded: this capability drives the
+        // installed PyMOL app instead of building a new Python/conda environment.
+        skills: Some(vec!["pymol".into(), "desktop-use".into()]),
         connectors: Some(vec!["cua-driver".into(), "structures-interactions".into()]),
         builtin: true,
     }
@@ -444,11 +446,7 @@ fn pin_pymol_assistant(spec: &mut Specialist) {
     spec.description = PYMOL_ASSISTANT_DESCRIPTION.into();
     spec.default_instructions = Some(PYMOL_ASSISTANT_RUBRIC.into());
     spec.review_backend = None;
-    spec.skills = Some(vec![
-        "pymol".into(),
-        "local-env-setup".into(),
-        "desktop-use".into(),
-    ]);
+    spec.skills = Some(vec!["pymol".into(), "desktop-use".into()]);
     spec.connectors = Some(vec!["cua-driver".into(), "structures-interactions".into()]);
 }
 
@@ -880,12 +878,29 @@ mod tests {
     }
 
     #[test]
-    fn pymol_rubric_prefers_headless_and_keeps_gui_as_fallback() {
+    fn pymol_rubric_opens_the_gui_first_and_keeps_headless_as_fallback() {
         let rubric = PYMOL_ASSISTANT_RUBRIC;
-        assert!(rubric.contains("pymol -cq"));
-        assert!(rubric.contains("pixi add -c conda-forge pymol-open-source"));
-        assert!(rubric.contains("desktop-use"));
-        assert!(rubric.contains("不要静默安装"));
+        // The default path must drive the installed app, not a PATH probe.
+        assert!(rubric.contains("/Applications/PyMOL.app"));
+        assert!(rubric.contains("org.pymol.pymol-open-source"));
+        assert!(rubric.contains("com.schrodinger.pymol"));
+        assert!(rubric.contains("desktop_launch_app"));
+        assert!(rubric.contains("desktop_get_window_state"));
+        assert!(rubric.contains("search_mcp_tools"));
+        assert!(rubric.contains("use_mcp_tool"));
+        assert!(rubric.contains("Command Input Area"));
+        assert!(rubric.contains("Skip Activation"));
+        assert!(rubric.contains("delivery_mode: \"foreground\""));
+        assert!(rubric.contains("pymol --version"));
+        assert!(rubric.contains("不要执行 `pip install`"));
+        // GUI automation is the default; headless is the explicit fallback.
+        let gui = rubric.find("打开本机 PyMOL 窗口").expect("GUI path");
+        let headless = rubric.find("pymol -cq").expect("headless fallback");
+        assert!(gui < headless);
+        assert!(rubric.contains("只有用户明确要求无头/批量渲染"));
+        assert!(rubric.contains("SSBOND"));
+        assert!(rubric.contains("width=<w>, height=<h>"));
+        assert!(rubric.contains("License File"));
         assert!(rubric.contains("不要假装成功"));
         assert_eq!(PYMOL_ASSISTANT_ID, "pymol_assistant");
     }
@@ -993,13 +1008,7 @@ mod tests {
         assert_eq!(pymol.instructions, PYMOL_ASSISTANT_RUBRIC);
         assert_eq!(
             pymol.skills.as_deref(),
-            Some(
-                &[
-                    "pymol".to_string(),
-                    "local-env-setup".to_string(),
-                    "desktop-use".to_string()
-                ][..]
-            )
+            Some(&["pymol".to_string(), "desktop-use".to_string()][..])
         );
         assert_eq!(
             pymol.connectors.as_deref(),

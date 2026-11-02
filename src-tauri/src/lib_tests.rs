@@ -4,16 +4,17 @@ use super::desktop_lifecycle::{should_activate_workspace_window, should_hide_wor
 use super::session_commands::transcript_page_items;
 use super::{
     begin_queued_cutin, branch_title, client_turn_error, coalesce_live_agent_events,
-    copy_dir_recursive, enable_referenced_contexts, events_to_items, limit_persisted_ui_event,
-    merge_pending_ui_event, message_uses_resource_bindings, messages_to_items, navigation_allowed,
-    parse_disabled_skills, parse_enabled_skill_names, parse_follow_up_questions, parse_skill_tags,
-    persist_ui_events, provenance_ui_file_changes, receive_confirm_decision,
-    reclaim_unconsumed_cutin, resolve_acp_artifact_references, resolve_composer_references,
-    resolve_reader_references, resolve_review_backend, resolve_workspace, session_runtime_status,
-    session_turn_in_flight, should_hide_app_on_macos_close, should_persist_ui_event,
-    user_message_start, AgentEvent, ComposerReferenceArg, McpConnection, McpHttpAuth, McpTransport,
-    ProjectActivityLocks, QueuedItem, SessionRuntime, SkillInfo, StartupReport, StartupTimeline,
-    TurnInFlight, MAX_PENDING_UI_EVENT_BYTES, UI_STREAM_OUTPUT_MAX_BYTES, UI_TOOL_RESULT_MAX_CHARS,
+    copy_dir_recursive, enable_referenced_contexts, enabled_skills_with_extra, events_to_items,
+    limit_persisted_ui_event, merge_pending_ui_event, message_uses_resource_bindings,
+    messages_to_items, navigation_allowed, parse_disabled_skills, parse_enabled_skill_names,
+    parse_follow_up_questions, parse_skill_tags, persist_ui_events, provenance_ui_file_changes,
+    receive_confirm_decision, reclaim_unconsumed_cutin, resolve_acp_artifact_references,
+    resolve_composer_references, resolve_reader_references, resolve_review_backend,
+    resolve_workspace, session_runtime_status, session_turn_in_flight,
+    should_hide_app_on_macos_close, should_persist_ui_event, user_message_start, AgentEvent,
+    ComposerReferenceArg, McpConnection, McpHttpAuth, McpTransport, ProjectActivityLocks,
+    QueuedItem, SessionRuntime, SkillInfo, StartupReport, StartupTimeline, TurnInFlight,
+    MAX_PENDING_UI_EVENT_BYTES, UI_STREAM_OUTPUT_MAX_BYTES, UI_TOOL_RESULT_MAX_CHARS,
 };
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -1970,6 +1971,42 @@ fn parse_disabled_skills_handles_missing_and_valid() {
     assert!(parse_disabled_skills(Some("not json")).is_empty());
     let s = parse_disabled_skills(Some(r#"["literature-review","analysis-workflow"]"#));
     assert!(s.contains("literature-review") && s.contains("analysis-workflow") && s.len() == 2);
+}
+
+#[test]
+fn explicit_skill_references_bypass_the_project_enable_snapshot() {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let base = std::env::temp_dir().join(format!("wisp_skill_extra_{stamp}"));
+    for name in ["pymol", "other"] {
+        let dir = base.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: test\n---\nbody"),
+        )
+        .unwrap();
+    }
+    let catalog = superscience_skills::SkillIndex::load(&[base.clone()]);
+    let enabled: HashSet<String> = ["other".to_string()].into_iter().collect();
+    let filtered = catalog.filtered_by_names(Some(&enabled));
+    assert!(filtered.get("pymol").is_none());
+    assert!(filtered.get("other").is_some());
+
+    let extra: HashSet<String> = ["pymol".to_string()].into_iter().collect();
+    let extended = enabled_skills_with_extra(&catalog, Some(enabled), &extra).unwrap();
+    let filtered = catalog.filtered_by_names(Some(&extended));
+    assert!(filtered.get("pymol").is_some());
+    assert!(filtered.get("other").is_some());
+
+    // `None` means the project has no explicit allow-list; keep it that way.
+    assert_eq!(
+        enabled_skills_with_extra(&catalog, None, &HashSet::new()),
+        None
+    );
+    std::fs::remove_dir_all(base).ok();
 }
 
 #[test]

@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""PyMOL rendering template.
+"""Headless PyMOL rendering template (fallback path).
+
+The default PyMOL flow is GUI automation: open the installed app and drive its
+command line. Use this template only for batch/headless rendering, or when the
+desktop tools are unavailable.
 
 Copy this file to `scripts/<name>.py` and edit the CONFIG block. Run it with:
 
