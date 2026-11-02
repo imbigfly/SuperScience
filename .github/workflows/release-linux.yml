@@ -21,8 +21,12 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-24.04
+            tauri_script: cargo tauri
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
+            # The arm64 runner uses the npm @tauri-apps/cli binary, which
+            # expects `tauri build` rather than the `cargo tauri` subcommand.
+            tauri_script: tauri
     runs-on: ${{ matrix.os }}
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
@@ -116,7 +120,7 @@ jobs:
           SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD: ${{ secrets.SUPERSCIENCE_FEEDBACK_SMTP_PASSWORD }}
         with:
           projectPath: src-tauri
-          tauriScript: cargo tauri
+          tauriScript: ${{ matrix.tauri_script }}
           releaseId: ${{ steps.release.outputs.release-id }}
           uploadUpdaterJson: false
           args: --target ${{ matrix.target }} --bundles deb,appimage
